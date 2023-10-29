@@ -1,16 +1,8 @@
-use std::io::Result;
-
 use actix_web::{http::header::ContentType, test, App};
-use candle_vllm::openai;
-use candle_vllm::openai::openai_server::chat_completions;
+use candle_vllm::openai::{self, openai_server::chat_completions};
 
-#[actix_web::main]
-async fn main() -> Result<()> {
-    /*HttpServer::new(|| App::new().service(candle_vllm::openai::openai_server::chat_completions))
-    .bind(("127.0.0.1", 8000))?
-    .run()
-    .await*/
-
+#[actix_web::test]
+async fn chat_completion() {
     let app = test::init_service(App::new().service(chat_completions)).await;
     let req = test::TestRequest::with_uri("/v1/chat/completions")
         .insert_header(ContentType::json())
@@ -31,7 +23,5 @@ async fn main() -> Result<()> {
         .to_request();
 
     let resp = test::call_service(&app, req).await;
-    println!("{:?}", resp.status());
-    println!("{:?}", resp.into_body());
-    Ok(())
+    assert!(resp.status().is_success());
 }
