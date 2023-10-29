@@ -16,5 +16,13 @@ async fn chat_completions(request: web::Json<ChatCompletionRequest>) -> Result<S
     let model_name = &request.model;
     verify_model(model_name)?;
 
+    if request.logit_bias.as_ref().is_some()
+        && request.logit_bias.as_ref().is_some_and(|x| !x.is_empty())
+    {
+        return Err(APIError::new_str(
+            "`logit_bias` is not currently supported.",
+        ));
+    }
+
     Ok("Success".to_string())
 }

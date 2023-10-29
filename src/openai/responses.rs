@@ -13,4 +13,10 @@ impl APIError {
     pub fn new(data: String) -> Self {
         Self { data }
     }
+
+    pub fn new_str(data: &str) -> Self {
+        Self {
+            data: data.to_string(),
+        }
+    }
 }
