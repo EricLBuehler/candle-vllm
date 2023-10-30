@@ -19,6 +19,12 @@ async fn chat_completion() {
             frequency_penalty: None,
             logit_bias: None,
             user: None,
+            top_k: None,
+            best_of: None,
+            use_beam_search: None,
+            skip_special_tokens: None,
+            ignore_eos: None,
+            stop_token_ids: None,
         })
         .to_request();
 
