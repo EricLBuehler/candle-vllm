@@ -10,4 +10,5 @@ actix-web = "4.4.0"
 candle-lora = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 candle-lora-macro = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 derive_more = "0.99.17"
+dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }

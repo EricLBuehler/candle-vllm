@@ -411,6 +411,7 @@ dependencies = [
  "candle-lora",
  "candle-lora-macro",
  "derive_more",
+ "dyn-fmt",
  "serde",
 ]
 
@@ -545,6 +546,12 @@ dependencies = [
  "block-buffer",
  "crypto-common",
 ]
+
+[[package]]
+name = "dyn-fmt"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "79ef34f092abc832595d6e7b81a416403243ab94cc4c8262608aa4fddc95209a"
 
 [[package]]
 name = "dyn-stack"

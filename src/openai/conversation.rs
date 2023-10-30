@@ -1,6 +1,8 @@
-const ROLES: (&str, &str) = ("ROLES", "ASSISTANT");
-const SYSTEM_TEMPLATE: &str = "{system_template}";
-const DEFAULT_SEP: &str = "\n";
+use dyn_fmt::AsStrFormatExt;
+
+pub const ROLES: (&str, &str) = ("ROLES", "ASSISTANT");
+pub const SYSTEM_TEMPLATE: &str = "{system_template}";
+pub const DEFAULT_SEP: &str = "\n";
 
 pub struct Message((String, Option<String>));
 
@@ -35,6 +37,7 @@ pub enum SeperatorStyle {
 pub struct Conversation {
     name: String,
     system_message: String,
+    system_template: String,
     messages: Vec<Message>,
     offset: usize,
     sep_style: SeperatorStyle,
@@ -62,6 +65,7 @@ impl Conversation {
         Self {
             name,
             system_message,
+            system_template: SYSTEM_TEMPLATE.to_string(),
             messages,
             offset,
             sep_style,
@@ -71,21 +75,6 @@ impl Conversation {
             sep,
             sep2,
         }
-    }
-
-    pub fn default(name: String) -> Self {
-        Self::new(
-            name,
-            SYSTEM_TEMPLATE.to_string(),
-            Default::default(),
-            0,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-            (ROLES.0.to_string(), ROLES.1.to_string()),
-            DEFAULT_SEP.to_string(),
-            None,
-        )
     }
 
     /// Set the system message.
@@ -104,9 +93,10 @@ impl Conversation {
     }
 
     pub fn get_prompt(&mut self) -> String {
+        let system_prompt = self.system_template.format(&[self.system_message.clone()]);
         match self.sep_style {
             SeperatorStyle::AddColonSingle => {
-                let mut accum = self.system_message.clone() + &self.sep;
+                let mut accum = system_prompt + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
                     if let Some(message) = message {
@@ -120,7 +110,7 @@ impl Conversation {
 
             SeperatorStyle::AddColonTwo => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                let mut accum = self.system_message.clone() + &self.sep;
+                let mut accum = system_prompt + &self.sep;
                 for (i, message) in self.messages.iter().enumerate() {
                     let Message((role, message)) = message;
                     if let Some(message) = message {
@@ -133,7 +123,7 @@ impl Conversation {
             }
 
             SeperatorStyle::AddColonSpaceSingle => {
-                let mut accum = self.system_message.clone() + &self.sep;
+                let mut accum = system_prompt + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
                     if let Some(message) = message {
@@ -146,10 +136,10 @@ impl Conversation {
             }
 
             SeperatorStyle::AddNewLineSingle => {
-                let mut accum = if self.system_message.is_empty() {
+                let mut accum = if system_prompt.is_empty() {
                     "".to_string()
                 } else {
-                    self.system_message.clone() + &self.sep
+                    system_prompt.clone() + &self.sep
                 };
                 for message in &self.messages {
                     let Message((role, message)) = message;
@@ -163,7 +153,7 @@ impl Conversation {
             }
 
             SeperatorStyle::NoColonSingle => {
-                let mut accum = self.system_message.clone();
+                let mut accum = system_prompt.clone();
                 for message in &self.messages {
                     let Message((role, message)) = message;
                     if let Some(message) = message {
@@ -177,7 +167,7 @@ impl Conversation {
 
             SeperatorStyle::NoColonTwo => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                let mut accum = self.system_message.clone();
+                let mut accum = system_prompt.clone();
                 for (i, message) in self.messages.iter().enumerate() {
                     let Message((role, message)) = message;
                     if let Some(message) = message {
@@ -190,7 +180,7 @@ impl Conversation {
             }
 
             SeperatorStyle::RWKV => {
-                let mut accum = self.system_message.clone() + &self.sep;
+                let mut accum = system_prompt.clone() + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
                     if let Some(message) = message {
@@ -207,8 +197,8 @@ impl Conversation {
 
             SeperatorStyle::Llama2 => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                let mut accum = if !self.system_message.is_empty() {
-                    self.system_message.clone()
+                let mut accum = if !system_prompt.is_empty() {
+                    system_prompt.clone()
                 } else {
                     "[INST] ".to_string()
                 };
@@ -233,8 +223,8 @@ impl Conversation {
             SeperatorStyle::ChatGLM => {
                 let round_add_n = if self.name == "chatglm2" { 1 } else { 0 };
 
-                let mut accum = if !self.system_message.is_empty() {
-                    self.system_message.clone()
+                let mut accum = if !system_prompt.is_empty() {
+                    system_prompt.clone()
                 } else {
                     "".to_string()
                 };
@@ -254,8 +244,8 @@ impl Conversation {
             }
 
             SeperatorStyle::ChatML => {
-                let mut accum = if !self.system_message.is_empty() {
-                    format!("{}{}\n", self.system_message.clone(), self.sep)
+                let mut accum = if !system_prompt.is_empty() {
+                    format!("{}{}\n", system_prompt, self.sep)
                 } else {
                     "".to_string()
                 };
@@ -272,7 +262,7 @@ impl Conversation {
 
             SeperatorStyle::ChatIntern => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                let mut accum = self.system_message.clone();
+                let mut accum = system_prompt.clone();
                 for (i, message) in self.messages.iter().enumerate() {
                     if i % 2 == 0 {
                         accum += "<s>";
@@ -291,7 +281,7 @@ impl Conversation {
 
             SeperatorStyle::Dolly => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                let mut accum = self.system_message.clone();
+                let mut accum = system_prompt.clone();
                 for (i, message) in self.messages.iter().enumerate() {
                     let Message((role, message)) = message;
 
@@ -308,7 +298,7 @@ impl Conversation {
             }
 
             SeperatorStyle::Phoenix => {
-                let mut accum = self.system_message.clone() + &self.sep;
+                let mut accum = system_prompt.clone() + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
                     if let Some(message) = message {
@@ -321,7 +311,7 @@ impl Conversation {
             }
 
             SeperatorStyle::Robin => {
-                let mut accum = self.system_message.clone() + &self.sep;
+                let mut accum = system_prompt.clone() + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
                     if let Some(message) = message {
@@ -335,8 +325,8 @@ impl Conversation {
 
             SeperatorStyle::FalconChat => {
                 let mut accum = "".to_string();
-                if !self.system_message.is_empty() {
-                    accum += &format!("{}{}", self.system_message, self.sep)
+                if !system_prompt.is_empty() {
+                    accum += &format!("{}{}", system_prompt, self.sep)
                 }
                 for message in &self.messages {
                     let Message((role, message)) = message;
