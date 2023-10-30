@@ -1,7 +1,7 @@
 use dyn_fmt::AsStrFormatExt;
 
 pub const ROLES: (&str, &str) = ("ROLES", "ASSISTANT");
-pub const SYSTEM_TEMPLATE: &str = "{system_template}";
+pub const SYSTEM_TEMPLATE: &str = "{}";
 pub const DEFAULT_SEP: &str = "\n";
 
 pub struct Message((String, Option<String>));
@@ -52,7 +52,7 @@ impl Conversation {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
-        system_message: String,
+        system_template: String,
         messages: Vec<Message>,
         offset: usize,
         sep_style: SeperatorStyle,
@@ -64,8 +64,8 @@ impl Conversation {
     ) -> Self {
         Self {
             name,
-            system_message,
-            system_template: SYSTEM_TEMPLATE.to_string(),
+            system_message: "".to_string(),
+            system_template,
             messages,
             offset,
             sep_style,
@@ -87,11 +87,21 @@ impl Conversation {
         self.messages.push(Message((role, Some(message))));
     }
 
+    /// Append a new `None` message.
+    pub fn append_none_message(&mut self, role: String) {
+        self.messages.push(Message((role, None)));
+    }
+
     /// Set the last message to `None`.
     pub fn update_last_messge(&mut self) {
         self.messages.last_mut().unwrap().0 .1 = None;
     }
 
+    pub fn get_roles(&self) -> &(String, String) {
+        &self.roles
+    }
+
+    /// Convert this conversation to a String prompt
     pub fn get_prompt(&mut self) -> String {
         let system_prompt = self.system_template.format(&[self.system_message.clone()]);
         match self.sep_style {
@@ -338,8 +348,6 @@ impl Conversation {
                 }
                 accum
             }
-        };
-
-        todo!();
+        }
     }
 }
