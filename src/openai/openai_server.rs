@@ -4,15 +4,16 @@ use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::OpenAIServerData;
 use super::{conversation::Conversation, requests::ChatCompletionRequest};
 use actix_web::{get, web};
-use tokenizers::{Encoding, InputSequence};
+use tokenizers::Encoding;
 use uuid::Uuid;
 
-fn verify_model(model_name: &String) -> Result<(), APIError> {
-    match model_name.as_str() {
-        "llama" => Ok(()),
-        _ => Err(APIError::new(format!(
+fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
+    if &data.model.name() == model_name {
+        Err(APIError::new(format!(
             "Model name `{model_name}` is invalid."
-        ))),
+        )))
+    } else {
+        Ok(())
     }
 }
 
@@ -100,7 +101,7 @@ async fn chat_completions(
     request: web::Json<ChatCompletionRequest>,
 ) -> Result<String, APIError> {
     let model_name = &request.model;
-    verify_model(model_name)?;
+    verify_model(&data, model_name)?;
 
     if request.logit_bias.as_ref().is_some()
         && request.logit_bias.as_ref().is_some_and(|x| !x.is_empty())
