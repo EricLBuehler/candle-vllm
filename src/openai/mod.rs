@@ -1,5 +1,7 @@
+use std::sync::Mutex;
+
 use candle_core::Device;
-use tokenizers::{EncodeInput, Encoding, Token, Tokenizer};
+use tokenizers::{EncodeInput, Encoding, Tokenizer};
 
 use self::{responses::APIError, sampling_params::SamplingParams};
 
@@ -45,8 +47,9 @@ pub struct PipelineConfig {
 }
 
 pub struct OpenAIServerData<'s> {
-    pub model: Box<dyn ModulePipeline<'s>>,
+    pub model: Mutex<Box<dyn ModulePipeline<'s>>>,
     pub pipeline_config: PipelineConfig,
+    pub device: Device,
 }
 
 pub mod models;

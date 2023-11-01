@@ -1,4 +1,5 @@
 use std::io::Result;
+use std::sync::Mutex;
 
 use actix_web::{http::header::ContentType, test, App};
 use candle_core::{DType, Device};
@@ -26,10 +27,11 @@ async fn main() -> Result<()> {
 
     let server_data = OpenAIServerData {
         pipeline_config: model.1,
-        model: Box::new(model.0),
+        model: Mutex::new(Box::new(model.0)),
+        device: Device::Cpu,
     };
 
-    let app = test::init_service(App::new().service(chat_completions)).await;
+    let app = test::init_service(App::new().service(chat_completions).app_data(server_data)).await;
     let req = test::TestRequest::with_uri("/v1/chat/completions")
         .insert_header(ContentType::json())
         .set_json(openai::requests::ChatCompletionRequest {

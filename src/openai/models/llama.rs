@@ -11,13 +11,13 @@ use candle_core::{DType, Device, Tensor};
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
 use candle_transformers::{
     generation::LogitsProcessor,
-    models::llama::{Cache, Config, Llama, LlamaConfig},
+    models::llama::{Cache, Llama, LlamaConfig},
 };
 use hf_hub::{
     api::sync::{ApiBuilder, ApiError},
     Repo, RepoType,
 };
-use tokenizers::{InputSequence, Token, Tokenizer};
+use tokenizers::Tokenizer;
 
 const EOS_TOKEN: &str = "</s>";
 const NAME: &str = "llama";

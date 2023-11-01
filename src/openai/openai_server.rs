@@ -8,7 +8,11 @@ use tokenizers::Encoding;
 use uuid::Uuid;
 
 fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
-    if &data.model.name() == model_name {
+    let current_name = {
+        let model = data.model.lock().unwrap();
+        model.name()
+    };
+    if &current_name == model_name {
         Err(APIError::new(format!(
             "Model name `{model_name}` is invalid."
         )))
@@ -71,7 +75,10 @@ fn check_length(
     prompt: String,
     data: &OpenAIServerData<'_>,
 ) -> Result<Encoding, APIError> {
-    let token_ids = data.model.tokenizer().tokenize(prompt)?;
+    let token_ids = {
+        let model = data.model.lock().unwrap();
+        model.tokenizer().tokenize(prompt)?
+    };
 
     let max_tokens = if let Some(max_toks) = request.max_tokens {
         max_toks
@@ -136,6 +143,11 @@ async fn chat_completions(
         None,
         request.skip_special_tokens.unwrap_or(true),
     )?;
+
+    let result = {
+        let mut model = data.model.lock().unwrap();
+        model.forward(&token_ids, sampling_params, data.device.clone())?
+    };
 
     Ok("Done".to_string())
 }
