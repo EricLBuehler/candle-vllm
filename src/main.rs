@@ -1,8 +1,10 @@
 use std::io::Result;
 
 use actix_web::{http::header::ContentType, test, App};
-use candle_vllm::openai;
+use candle_core::{DType, Device};
+use candle_vllm::openai::models::llama::{LlamaPipeline, LlamaSpecifcConfig};
 use candle_vllm::openai::openai_server::chat_completions;
+use candle_vllm::openai::{self, OpenAIServerData};
 
 #[actix_web::main]
 async fn main() -> Result<()> {
@@ -10,6 +12,22 @@ async fn main() -> Result<()> {
     .bind(("127.0.0.1", 8000))?
     .run()
     .await*/
+
+    let paths =
+        LlamaPipeline::download_model("meta-llama/Llama-2-7b-hf".to_string(), None, ".hf_token")
+            .unwrap();
+    let model = LlamaPipeline::new_default(
+        paths,
+        LlamaSpecifcConfig::default(),
+        DType::F16,
+        Device::Cpu,
+    )
+    .unwrap();
+
+    let server_data = OpenAIServerData {
+        pipeline_config: model.1,
+        model: Box::new(model.0),
+    };
 
     let app = test::init_service(App::new().service(chat_completions)).await;
     let req = test::TestRequest::with_uri("/v1/chat/completions")

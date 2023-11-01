@@ -19,4 +19,22 @@ impl APIError {
             data: data.to_string(),
         }
     }
+
+    pub fn new_from_io_err(data: std::io::Error) -> Self {
+        Self {
+            data: data.to_string(),
+        }
+    }
+
+    pub fn new_from_serde_err(data: serde_json::Error) -> Self {
+        Self {
+            data: data.to_string(),
+        }
+    }
+
+    pub fn new_from_candle_err(data: candle_core::Error) -> Self {
+        Self {
+            data: data.to_string(),
+        }
+    }
 }

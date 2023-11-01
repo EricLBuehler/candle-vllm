@@ -1,6 +1,7 @@
-use tokenizers::{EncodeInput, Encoding};
+use candle_core::Device;
+use tokenizers::{EncodeInput, Encoding, Token, Tokenizer};
 
-use self::responses::APIError;
+use self::{responses::APIError, sampling_params::SamplingParams};
 
 pub mod requests;
 pub mod responses;
@@ -16,18 +17,38 @@ where
     fn tokenize(&self, input: E) -> Result<Encoding, APIError>;
 }
 
-pub trait ModulePipeline {
-    fn forward(&self, xs: &Encoding) -> Result<String, APIError>;
+impl<'s, E> TokenizerWrapper<'s, E> for Tokenizer
+where
+    E: Into<EncodeInput<'s>>,
+{
+    fn tokenize(&self, input: E) -> Result<Encoding, APIError> {
+        self.encode(input, false)
+            .map_err(|x| APIError::new(x.to_string()))
+    }
+}
+
+pub trait ModulePipeline<'s> {
+    fn forward(
+        &mut self,
+        xs: &Encoding,
+        sampling: SamplingParams,
+        device: Device,
+    ) -> Result<String, APIError>;
+
+    fn name(&self) -> String;
+
+    fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String>;
 }
 
 pub struct PipelineConfig {
     pub max_model_len: usize,
 }
 
-pub struct OpenAIServerData<'a> {
-    tokenizer: Box<dyn TokenizerWrapper<'a, String>>,
-    model: Box<dyn ModulePipeline>,
-    pipeline_config: PipelineConfig,
+pub struct OpenAIServerData<'s> {
+    pub model: Box<dyn ModulePipeline<'s>>,
+    pub pipeline_config: PipelineConfig,
 }
+
+pub mod models;
 
 pub mod openai_server;

@@ -4,7 +4,7 @@ use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::OpenAIServerData;
 use super::{conversation::Conversation, requests::ChatCompletionRequest};
 use actix_web::{get, web};
-use tokenizers::Encoding;
+use tokenizers::{Encoding, InputSequence};
 use uuid::Uuid;
 
 fn verify_model(model_name: &String) -> Result<(), APIError> {
@@ -70,7 +70,7 @@ fn check_length(
     prompt: String,
     data: &OpenAIServerData<'_>,
 ) -> Result<Encoding, APIError> {
-    let token_ids = data.tokenizer.tokenize(prompt)?;
+    let token_ids = data.model.tokenizer().tokenize(prompt)?;
 
     let max_tokens = if let Some(max_toks) = request.max_tokens {
         max_toks
