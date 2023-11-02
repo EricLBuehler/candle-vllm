@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use super::responses::APIError;
+use super::{requests::StopTokens, responses::APIError};
 
 const SAMPLING_EPS: f32 = 1e-5;
 
@@ -55,7 +55,7 @@ pub struct SamplingParams {
     /// rec. default = EarlyStoppingCondition::UnlikelyBetterCandidates
     pub early_stopping: EarlyStoppingCondition,
     /// Strings that stop generation when generated.
-    pub stop: Vec<String>,
+    pub stop: Option<StopTokens>,
     /// Tokens to stop on.
     pub stop_token_ids: Vec<usize>,
     /// Whether to ignore EOS token.
@@ -87,7 +87,7 @@ impl SamplingParams {
         use_beam_search: bool,
         length_penalty: f32,
         early_stopping: EarlyStoppingCondition,
-        stop: Vec<String>,
+        stop: Option<StopTokens>,
         stop_token_ids: Vec<usize>,
         ignore_eos: bool,
         max_tokens: usize,

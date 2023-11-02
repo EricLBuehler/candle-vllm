@@ -1,5 +1,5 @@
 use actix_web::{http::header::ContentType, test, App};
-use candle_vllm::openai::{self, openai_server::chat_completions};
+use candle_vllm::openai::{self, openai_server::chat_completions, requests::Messages};
 
 #[actix_web::test]
 async fn chat_completion() {
@@ -8,7 +8,7 @@ async fn chat_completion() {
         .insert_header(ContentType::json())
         .set_json(openai::requests::ChatCompletionRequest {
             model: "llama".to_string(),
-            messages: vec![],
+            messages: Messages::Literal("How are you, ".to_string()),
             temperature: None,
             top_p: None,
             n: None,

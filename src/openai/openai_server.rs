@@ -1,4 +1,5 @@
 use super::conversation::SeperatorStyle;
+use super::requests::Messages;
 use super::responses::{APIError, ChatCompletionResponse};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::OpenAIServerData;
@@ -42,26 +43,32 @@ fn get_conversational_template(model_name: &str) -> Conversation {
 async fn get_gen_prompt(request: &web::Json<ChatCompletionRequest>) -> Result<String, APIError> {
     let mut conversation = get_conversational_template(&request.model);
 
-    //assume messages are not String
-    for message in &request.messages {
-        let role = message
-            .get("role")
-            .ok_or(APIError::new("Message key `role` not found.".to_string()))?;
-        let content = message
-            .get("content")
-            .ok_or(APIError::new(
-                "Message key `content` not found.".to_string(),
-            ))?
-            .clone();
+    match &request.messages {
+        Messages::Literal(msg) => {
+            conversation.append_message(conversation.get_roles().0.clone(), msg.clone());
+        }
+        Messages::Map(messages) => {
+            for message in messages {
+                let role = message
+                    .get("role")
+                    .ok_or(APIError::new("Message key `role` not found.".to_string()))?;
+                let content = message
+                    .get("content")
+                    .ok_or(APIError::new(
+                        "Message key `content` not found.".to_string(),
+                    ))?
+                    .clone();
 
-        if role == "system" {
-            conversation.set_system_message(content);
-        } else if role == "user" {
-            conversation.append_message(conversation.get_roles().0.clone(), content)
-        } else if role == "assistant" {
-            conversation.append_message(conversation.get_roles().1.clone(), content)
-        } else {
-            return Err(APIError::new(format!("Unknown role: {role}")));
+                if role == "system" {
+                    conversation.set_system_message(content);
+                } else if role == "user" {
+                    conversation.append_message(conversation.get_roles().0.clone(), content)
+                } else if role == "assistant" {
+                    conversation.append_message(conversation.get_roles().1.clone(), content)
+                } else {
+                    return Err(APIError::new(format!("Unknown role: {role}")));
+                }
+            }
         }
     }
 
@@ -135,7 +142,7 @@ async fn chat_completions(
         request.use_beam_search.unwrap_or(false),
         1.0,
         EarlyStoppingCondition::UnlikelyBetterCandidates,
-        request.stop.clone().unwrap_or(vec![]),
+        request.stop.clone(),
         request.stop_token_ids.clone().unwrap_or(vec![]),
         request.ignore_eos.unwrap_or(false),
         request.max_tokens.unwrap_or(16),
