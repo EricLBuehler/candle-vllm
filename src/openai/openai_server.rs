@@ -1,5 +1,5 @@
 use super::conversation::SeperatorStyle;
-use super::responses::APIError;
+use super::responses::{APIError, ChatCompletionResponse, ChatCompletionUsageResponse};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::OpenAIServerData;
 use super::{conversation::Conversation, requests::ChatCompletionRequest};
@@ -106,7 +106,7 @@ fn check_length(
 async fn chat_completions(
     data: web::Data<OpenAIServerData<'_>>,
     request: web::Json<ChatCompletionRequest>,
-) -> Result<String, APIError> {
+) -> Result<web::Json<ChatCompletionResponse>, APIError> {
     let model_name = &request.model;
     verify_model(&data, model_name)?;
 
@@ -149,5 +149,16 @@ async fn chat_completions(
         model.forward(&token_ids, sampling_params, data.device.clone())?
     };
 
-    Ok("Done".to_string())
+    Ok(web::Json(ChatCompletionResponse {
+        id: request_id,
+        choices: vec![result],
+        created: 1234,
+        model: request.model.clone(),
+        object: "chat.completion".to_string(),
+        usage: ChatCompletionUsageResponse {
+            completion_tokens: 12345,
+            prompt_tokens: 1234,
+            total_tokens: 1234,
+        },
+    }))
 }

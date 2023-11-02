@@ -71,7 +71,13 @@ impl LlamaPipeline {
         let config_filename = api.get("config.json")?;
 
         let mut filenames = vec![];
-        for rfilename in api.info()?.siblings.iter().map(|x| x.rfilename.clone()) {
+        for rfilename in api
+            .info()?
+            .siblings
+            .iter()
+            .map(|x| x.rfilename.clone())
+            .filter(|x| x.ends_with(".safetensors"))
+        {
             let filename = api.get(&rfilename)?;
             filenames.push(filename);
         }
@@ -94,8 +100,7 @@ impl LlamaPipeline {
         )
         .map_err(APIError::new_from_serde_err)?;
         let config = config.into_config(args.use_flash_attn);
-        let vb = from_mmaped_safetensors(&paths.filenames, dtype, &device)
-            .map_err(APIError::new_from_candle_err)?;
+        let vb = from_mmaped_safetensors(&paths.filenames, dtype, &device).unwrap(); //.map_err(APIError::new_from_candle_err)?;
 
         let cache = Cache::new(!args.no_kv_cache, dtype, &config, &device)
             .map_err(APIError::new_from_candle_err)?;

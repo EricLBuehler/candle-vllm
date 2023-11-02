@@ -1,5 +1,9 @@
-use actix_web::error;
+use actix_web::{error, CustomizeResponder, Responder};
 use derive_more::{Display, Error};
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Display, Error)]
 #[display(fmt = "Error: {}", data)]
@@ -37,4 +41,21 @@ impl APIError {
             data: data.to_string(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletionUsageResponse {
+    pub completion_tokens: usize,
+    pub prompt_tokens: usize,
+    pub total_tokens: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletionResponse {
+    pub id: String,
+    pub choices: Vec<String>,
+    pub created: usize,
+    pub model: String,
+    pub object: String,
+    pub usage: ChatCompletionUsageResponse,
 }
