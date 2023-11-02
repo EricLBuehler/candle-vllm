@@ -1,5 +1,5 @@
 use super::conversation::SeperatorStyle;
-use super::responses::{APIError, ChatCompletionResponse, ChatCompletionUsageResponse};
+use super::responses::{APIError, ChatCompletionResponse};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::OpenAIServerData;
 use super::{conversation::Conversation, requests::ChatCompletionRequest};
@@ -12,7 +12,7 @@ fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), 
         let model = data.model.lock().unwrap();
         model.name()
     };
-    if &current_name == model_name {
+    if &current_name != model_name {
         Err(APIError::new(format!(
             "Model name `{model_name}` is invalid."
         )))
@@ -151,14 +151,10 @@ async fn chat_completions(
 
     Ok(web::Json(ChatCompletionResponse {
         id: request_id,
-        choices: vec![result],
+        choices: vec![result.0],
         created: 1234,
         model: request.model.clone(),
         object: "chat.completion".to_string(),
-        usage: ChatCompletionUsageResponse {
-            completion_tokens: 12345,
-            prompt_tokens: 1234,
-            total_tokens: 1234,
-        },
+        usage: result.1,
     }))
 }

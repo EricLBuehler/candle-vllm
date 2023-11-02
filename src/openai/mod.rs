@@ -3,7 +3,10 @@ use std::sync::Mutex;
 use candle_core::Device;
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
 
-use self::{responses::APIError, sampling_params::SamplingParams};
+use self::{
+    responses::{APIError, ChatCompletionUsageResponse},
+    sampling_params::SamplingParams,
+};
 
 pub mod requests;
 pub mod responses;
@@ -35,7 +38,7 @@ pub trait ModulePipeline<'s> {
         xs: &Encoding,
         sampling: SamplingParams,
         device: Device,
-    ) -> Result<String, APIError>;
+    ) -> Result<(String, ChatCompletionUsageResponse), APIError>;
 
     fn name(&self) -> String;
 

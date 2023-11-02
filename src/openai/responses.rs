@@ -1,7 +1,5 @@
-use actix_web::{error, CustomizeResponder, Responder};
+use actix_web::error;
 use derive_more::{Display, Error};
-
-use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 

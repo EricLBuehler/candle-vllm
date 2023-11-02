@@ -4,8 +4,9 @@ use std::{
 };
 
 use crate::openai::{
-    responses::APIError, sampling_params::SamplingParams, ModulePipeline, PipelineConfig,
-    TokenizerWrapper,
+    responses::{APIError, ChatCompletionUsageResponse},
+    sampling_params::SamplingParams,
+    ModulePipeline, PipelineConfig, TokenizerWrapper,
 };
 use candle_core::{DType, Device, Tensor};
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
@@ -100,7 +101,11 @@ impl LlamaPipeline {
         )
         .map_err(APIError::new_from_serde_err)?;
         let config = config.into_config(args.use_flash_attn);
-        let vb = from_mmaped_safetensors(&paths.filenames, dtype, &device).unwrap(); //.map_err(APIError::new_from_candle_err)?;
+
+        println!("Loading Llama model.");
+
+        let vb = from_mmaped_safetensors(&paths.filenames, dtype, &device, false)
+            .map_err(APIError::new_from_candle_err)?;
 
         let cache = Cache::new(!args.no_kv_cache, dtype, &config, &device)
             .map_err(APIError::new_from_candle_err)?;
@@ -109,6 +114,8 @@ impl LlamaPipeline {
 
         let tokenizer = Tokenizer::from_file(paths.tokenizer_filename)
             .map_err(|x| APIError::new(x.to_string()))?;
+
+        println!("Done loading.");
 
         //max is https://huggingface.co/docs/transformers/model_doc/llama2#transformers.LlamaConfig.max_position_embeddings
         let pipeline_config = PipelineConfig {
@@ -132,7 +139,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         xs: &tokenizers::Encoding,
         sampling: SamplingParams,
         device: Device,
-    ) -> Result<String, APIError> {
+    ) -> Result<(String, ChatCompletionUsageResponse), APIError> {
         let mut tokens = xs.get_ids().to_vec();
 
         let eos_token_id = self.tokenizer.token_to_id(EOS_TOKEN);
@@ -146,6 +153,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         let mut index_pos = 0;
         let mut index = 0;
         let mut result = "".to_string();
+        let mut tokens_generated = 0;
         loop {
             let context_size = if self.cache.use_kv_cache && index > 0 {
                 1
@@ -179,6 +187,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 .sample(&logits)
                 .map_err(APIError::new_from_candle_err)?;
             tokens.push(next_token);
+            tokens_generated += 1;
 
             // Extracting the last token as a string is complicated, here we just apply some simple
             // heuristics as it seems to work well enough for this example. See the following for more
@@ -195,7 +204,14 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
             index += 1;
         }
 
-        Ok(result)
+        Ok((
+            result,
+            ChatCompletionUsageResponse {
+                completion_tokens: tokens_generated,
+                prompt_tokens: xs.len(),
+                total_tokens: tokens_generated + xs.len(),
+            },
+        ))
     }
 
     fn name(&self) -> String {

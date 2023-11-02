@@ -1,6 +1,7 @@
 use std::io::Result;
 use std::sync::Mutex;
 
+use actix_web::web::Data;
 use actix_web::{http::header::ContentType, test, App};
 use candle_core::{DType, Device};
 use candle_vllm::openai::models::llama::{LlamaPipeline, LlamaSpecifcConfig};
@@ -31,7 +32,12 @@ async fn main() -> Result<()> {
         device: Device::Cpu,
     };
 
-    let app = test::init_service(App::new().service(chat_completions).app_data(server_data)).await;
+    let app = test::init_service(
+        App::new()
+            .service(chat_completions)
+            .app_data(Data::new(server_data)),
+    )
+    .await;
     let req = test::TestRequest::with_uri("/v1/chat/completions")
         .insert_header(ContentType::json())
         .set_json(openai::requests::ChatCompletionRequest {
