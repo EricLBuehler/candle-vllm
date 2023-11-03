@@ -45,7 +45,7 @@ async fn get_gen_prompt(request: &web::Json<ChatCompletionRequest>) -> Result<St
 
     match &request.messages {
         Messages::Literal(msg) => {
-            conversation.append_message(conversation.get_roles().0.clone(), msg.clone());
+            return Ok(msg.clone());
         }
         Messages::Map(messages) => {
             for message in messages {
