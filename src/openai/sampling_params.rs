@@ -27,13 +27,13 @@ pub struct SamplingParams {
     pub n: usize,
     /// Number of output seqs that are generated from the prompt, from these `best_of` seqs, the top `n` sequences are returned. `best_of` must be `>=n`. Default = `n`.
     pub best_of: usize,
-    /// Penalize new tokens based upon whether they appear in the generated text so far, >0 enourage new, <0 encourage repeat.
+    /// Penalize new tokens based upon whether they appear in the generated text so far, >0 encourage new, <0 encourage repeat.
     /// rec. default = 0
     pub presence_penalty: f32,
-    /// Penalize new tokens based upon whether their frequency in the generated text so far, >0 enourage new, <0 encourage repeat.
+    /// Penalize new tokens based upon whether their frequency in the generated text so far, >0 encourage new, <0 encourage repeat.
     /// rec. default = 0
     pub frequency_penalty: f32,
-    /// Penalize new tokens based upon whether their frequency in the generated text so far, >1 enourage new, <1 encourage repeat
+    /// Penalize new tokens based upon whether their frequency in the generated text so far, >1 encourage new, <1 encourage repeat
     /// rec. default = 1
     pub repetition_penalty: f32,
     /// Randomness of sampling.
