@@ -780,6 +780,7 @@ dependencies = [
  "candle-lora-transformers",
  "candle-nn",
  "candle-transformers",
+ "clap",
  "cudarc",
  "derive_more",
  "dyn-fmt",

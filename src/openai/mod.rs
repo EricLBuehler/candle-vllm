@@ -1,6 +1,9 @@
-use std::sync::Mutex;
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
-use candle_core::Device;
+use candle_core::{DType, Device};
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
 
 use self::{
@@ -38,11 +41,33 @@ pub trait ModulePipeline<'s> {
         xs: &Encoding,
         sampling: SamplingParams,
         device: Device,
-    ) -> Result<(String, ChatCompletionUsageResponse), APIError>;
+    ) -> Result<(Vec<String>, ChatCompletionUsageResponse), APIError>;
 
     fn name(&self) -> String;
 
     fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String>;
+}
+
+pub trait ModelPaths {
+    fn get_weight_filenames(&self) -> &Vec<PathBuf>;
+    fn get_config_filename(&self) -> &PathBuf;
+    fn get_tokenizer_filename(&self) -> &PathBuf;
+}
+
+pub trait ModelLoader<'a, P: AsRef<Path>> {
+    fn download_model(
+        &self,
+        model_id: String,
+        revision: Option<String>,
+        hf_token: Option<P>,
+    ) -> Result<Box<dyn ModelPaths>, APIError>;
+
+    fn load_model(
+        &self,
+        paths: Box<dyn ModelPaths>,
+        dtype: DType,
+        device: Device,
+    ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError>;
 }
 
 pub struct PipelineConfig {
@@ -55,6 +80,6 @@ pub struct OpenAIServerData<'s> {
     pub device: Device,
 }
 
-pub mod models;
+pub mod pipelines;
 
 pub mod openai_server;

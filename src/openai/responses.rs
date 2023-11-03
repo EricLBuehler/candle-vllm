@@ -1,6 +1,7 @@
 use actix_web::error;
 use derive_more::{Display, Error};
 
+use hf_hub::api::sync::ApiError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Display, Error)]
@@ -39,6 +40,12 @@ impl APIError {
             data: data.to_string(),
         }
     }
+
+    pub fn new_from_hf_err(data: ApiError) -> Self {
+        Self {
+            data: data.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,7 +59,7 @@ pub struct ChatCompletionUsageResponse {
 pub struct ChatCompletionResponse {
     pub id: String,
     pub choices: Vec<String>,
-    pub created: usize,
+    pub created: u64,
     pub model: String,
     pub object: String,
     pub usage: ChatCompletionUsageResponse,

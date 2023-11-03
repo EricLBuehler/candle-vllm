@@ -25,6 +25,7 @@ intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"], option
 cudarc = { version = "0.9.14", features = ["f16"], optional = true }
 half = { version = "2.3.1", features = ["num-traits", "use-intrinsics", "rand_distr"], optional = true }
 candle-flash-attn = { git = "https://github.com/huggingface/candle.git", version = "0.3.0", optional = true }
+clap = { version = "4.4.7", features = ["derive"] }
 
 [features]
 default = []

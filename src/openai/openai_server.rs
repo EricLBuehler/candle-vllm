@@ -1,3 +1,5 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use super::conversation::SeperatorStyle;
 use super::requests::Messages;
 use super::responses::{APIError, ChatCompletionResponse};
@@ -151,6 +153,9 @@ async fn chat_completions(
         request.skip_special_tokens.unwrap_or(true),
     )?;
 
+    let created = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time travel has occured...");
     let result = {
         let mut model = data.model.lock().unwrap();
         model.forward(&token_ids, sampling_params, data.device.clone())?
@@ -158,8 +163,8 @@ async fn chat_completions(
 
     Ok(web::Json(ChatCompletionResponse {
         id: request_id,
-        choices: vec![result.0],
-        created: 1234,
+        choices: result.0,
+        created: created.as_secs(),
         model: request.model.clone(),
         object: "chat.completion".to_string(),
         usage: result.1,
