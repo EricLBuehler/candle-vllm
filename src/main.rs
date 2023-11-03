@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Result;
 use std::sync::Mutex;
 
@@ -39,11 +40,26 @@ async fn main() -> Result<()> {
             .app_data(Data::new(server_data)),
     )
     .await;
+
+    let mut system = HashMap::new();
+    system.insert("role".to_string(), "system".to_string());
+    system.insert(
+        "content".to_string(),
+        "You are a talented author who specializes in writing poems.".to_string(),
+    );
+
+    let mut user = HashMap::new();
+    user.insert("role".to_string(), "user".to_string());
+    user.insert(
+        "content".to_string(),
+        "Please write me a poem about why Rust is a great programming language:".to_string(),
+    );
+
     let req = test::TestRequest::with_uri("/v1/chat/completions")
         .insert_header(ContentType::json())
         .set_json(openai::requests::ChatCompletionRequest {
             model: "llama".to_string(),
-            messages: Messages::Literal("How are you, ".to_string()),
+            messages: Messages::Map(vec![system, user]),
             temperature: None,
             top_p: None,
             n: None,
