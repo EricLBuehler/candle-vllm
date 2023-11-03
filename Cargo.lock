@@ -3,6 +3,12 @@
 version = 3
 
 [[package]]
+name = "accelerate-src"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "415ed64958754dbe991900f3940677e6a7eefb4d7367afd70d642677b0c7d19d"
+
+[[package]]
 name = "actix-codec"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -436,6 +442,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base16ct"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "349a06037c7bf932dd7e7d1f653678b2038b9ad46a74102f1fc7bd7872678cce"
+
+[[package]]
 name = "base64"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -588,11 +600,16 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.3.0"
-source = "git+https://github.com/huggingface/candle.git#b97463098ceeb80feabfd385d7062dfdb55068ee"
+source = "git+https://github.com/huggingface/candle.git#a2a20aeeccdcbcbd00e48d6f7ac97b2435b2378c"
 dependencies = [
+ "accelerate-src",
  "byteorder",
+ "candle-kernels",
+ "cudarc",
  "gemm",
  "half",
+ "intel-mkl-src",
+ "libc",
  "memmap2",
  "num-traits",
  "num_cpus",
@@ -608,7 +625,7 @@ dependencies = [
 [[package]]
 name = "candle-datasets"
 version = "0.3.0"
-source = "git+https://github.com/huggingface/candle.git#b97463098ceeb80feabfd385d7062dfdb55068ee"
+source = "git+https://github.com/huggingface/candle.git#a2a20aeeccdcbcbd00e48d6f7ac97b2435b2378c"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -625,7 +642,7 @@ dependencies = [
 [[package]]
 name = "candle-examples"
 version = "0.3.0"
-source = "git+https://github.com/huggingface/candle.git#b97463098ceeb80feabfd385d7062dfdb55068ee"
+source = "git+https://github.com/huggingface/candle.git#a2a20aeeccdcbcbd00e48d6f7ac97b2435b2378c"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -639,6 +656,28 @@ dependencies = [
  "serde",
  "serde_json",
  "tokenizers 0.13.4",
+]
+
+[[package]]
+name = "candle-flash-attn"
+version = "0.3.0"
+source = "git+https://github.com/huggingface/candle.git#a2a20aeeccdcbcbd00e48d6f7ac97b2435b2378c"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "half",
+ "num_cpus",
+ "rayon",
+]
+
+[[package]]
+name = "candle-kernels"
+version = "0.3.0"
+source = "git+https://github.com/huggingface/candle.git#a2a20aeeccdcbcbd00e48d6f7ac97b2435b2378c"
+dependencies = [
+ "anyhow",
+ "glob",
+ "rayon",
 ]
 
 [[package]]
@@ -695,10 +734,12 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.3.0"
-source = "git+https://github.com/huggingface/candle.git#b97463098ceeb80feabfd385d7062dfdb55068ee"
+source = "git+https://github.com/huggingface/candle.git#a2a20aeeccdcbcbd00e48d6f7ac97b2435b2378c"
 dependencies = [
+ "accelerate-src",
  "candle-core",
  "half",
+ "intel-mkl-src",
  "num-traits",
  "rayon",
  "safetensors",
@@ -709,11 +750,14 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.3.0"
-source = "git+https://github.com/huggingface/candle.git#b97463098ceeb80feabfd385d7062dfdb55068ee"
+source = "git+https://github.com/huggingface/candle.git#a2a20aeeccdcbcbd00e48d6f7ac97b2435b2378c"
 dependencies = [
+ "accelerate-src",
  "byteorder",
  "candle-core",
+ "candle-flash-attn",
  "candle-nn",
+ "intel-mkl-src",
  "num-traits",
  "rand",
  "rayon",
@@ -727,16 +771,21 @@ dependencies = [
 name = "candle-vllm"
 version = "0.1.0"
 dependencies = [
+ "accelerate-src",
  "actix-web",
  "candle-core",
+ "candle-flash-attn",
  "candle-lora",
  "candle-lora-macro",
  "candle-lora-transformers",
  "candle-nn",
  "candle-transformers",
+ "cudarc",
  "derive_more",
  "dyn-fmt",
+ "half",
  "hf-hub",
+ "intel-mkl-src",
  "serde",
  "serde_json",
  "tokenizers 0.14.1",
@@ -767,7 +816,9 @@ checksum = "7f2c685bad3eb3d45a01354cedb7d5faa66194d1d58ba6e267a8de788f79db38"
 dependencies = [
  "android-tzdata",
  "iana-time-zone",
+ "js-sys",
  "num-traits",
+ "wasm-bindgen",
  "windows-targets 0.48.5",
 ]
 
@@ -998,6 +1049,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cudarc"
+version = "0.9.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1871a911a2b9a3f66a285896a719159985683bf9903aa2cf89e0c9f53e14552"
+dependencies = [
+ "half",
+]
+
+[[package]]
 name = "darling"
 version = "0.14.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1043,11 +1103,32 @@ dependencies = [
 
 [[package]]
 name = "derive_builder"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d07adf7be193b71cc36b193d0f5fe60b918a3a9db4dad0449f57bcfd519704a3"
+dependencies = [
+ "derive_builder_macro 0.11.2",
+]
+
+[[package]]
+name = "derive_builder"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8d67778784b508018359cbc8696edb3db78160bab2c2a28ba7f56ef6932997f8"
 dependencies = [
- "derive_builder_macro",
+ "derive_builder_macro 0.12.0",
+]
+
+[[package]]
+name = "derive_builder_core"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f91d4cfa921f1c05904dc3c57b4a32c38aed3340cce209f3a6fd1478babafc4"
+dependencies = [
+ "darling",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -1064,11 +1145,21 @@ dependencies = [
 
 [[package]]
 name = "derive_builder_macro"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f0314b72bed045f3a68671b3c86328386762c93f82d98c65c3cb5e5f573dd68"
+dependencies = [
+ "derive_builder_core 0.11.2",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "derive_builder_macro"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebcda35c7a396850a55ffeac740804b40ffec779b98fffbb1738f4033f0ee79e"
 dependencies = [
- "derive_builder_core",
+ "derive_builder_core 0.12.0",
  "syn 1.0.109",
 ]
 
@@ -1094,6 +1185,15 @@ dependencies = [
  "block-buffer",
  "crypto-common",
  "subtle",
+]
+
+[[package]]
+name = "directories"
+version = "4.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f51c5d4ddabd36886dd3e1438cb358cdcb0d7c499cb99cb4ac2e38e18b5cb210"
+dependencies = [
+ "dirs-sys 0.3.7",
 ]
 
 [[package]]
@@ -1467,6 +1567,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "getset"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e45727250e75cc04ff2846a66397da8ef2b3db8e40e0cef4df67950a07621eb9"
+dependencies = [
+ "proc-macro-error",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "gimli"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1756,6 +1868,28 @@ name = "integer-encoding"
 version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bb03732005da905c88227371639bf1ad885cc712789c011c31c5fb3ab3ccf02"
+
+[[package]]
+name = "intel-mkl-src"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ee70586cd5b3e772a8739a1bd43eaa90d4f4bf0fb2a4edc202e979937ee7f5e"
+dependencies = [
+ "anyhow",
+ "intel-mkl-tool",
+ "ocipkg",
+]
+
+[[package]]
+name = "intel-mkl-tool"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "887a16b4537d82227af54d3372971cfa5e0cde53322e60f57584056c16ada1b4"
+dependencies = [
+ "anyhow",
+ "log",
+ "walkdir",
+]
 
 [[package]]
 name = "ipnet"
@@ -2227,6 +2361,46 @@ dependencies = [
 ]
 
 [[package]]
+name = "oci-spec"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98135224dd4faeb24c05a2fac911ed53ea6b09ecb09d7cada1cb79963ab2ee34"
+dependencies = [
+ "derive_builder 0.11.2",
+ "getset",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "ocipkg"
+version = "0.2.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60cf01280832705a4e4c4d046d9e67a54b900297c69191457a8fc6d198ddefa2"
+dependencies = [
+ "base16ct",
+ "base64 0.13.1",
+ "chrono",
+ "directories",
+ "flate2",
+ "lazy_static",
+ "log",
+ "oci-spec",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "thiserror",
+ "toml",
+ "ureq",
+ "url",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2456,6 +2630,30 @@ name = "ppv-lite86"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b40af805b3121feab8a3c29f04d8ad262fa8e0561883e7653e024ae4479e6de"
+
+[[package]]
+name = "proc-macro-error"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da25490ff9892aab3fcf7c36f08cfb902dd3e71ca0f9f9517bea02a73a5ce38c"
+dependencies = [
+ "proc-macro-error-attr",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+ "version_check",
+]
+
+[[package]]
+name = "proc-macro-error-attr"
+version = "1.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1be40180e52ecc98ad80b184934baf3d0d29f979574e439af5a55274b35f869"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "version_check",
+]
 
 [[package]]
 name = "proc-macro2"
@@ -2800,6 +2998,15 @@ checksum = "d93279b86b3de76f820a8854dd06cbc33cfa57a417b19c47f6a25280112fb1df"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "same-file"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
+dependencies = [
+ "winapi-util",
 ]
 
 [[package]]
@@ -3237,7 +3444,7 @@ dependencies = [
  "aho-corasick 0.7.20",
  "cached-path",
  "clap",
- "derive_builder",
+ "derive_builder 0.12.0",
  "dirs 4.0.0",
  "esaxx-rs",
  "getrandom",
@@ -3272,7 +3479,7 @@ checksum = "d9be88c795d8b9f9c4002b3a8f26a6d0876103a6f523b32ea3bac52d8560c17c"
 dependencies = [
  "aho-corasick 1.1.2",
  "clap",
- "derive_builder",
+ "derive_builder 0.12.0",
  "esaxx-rs",
  "getrandom",
  "indicatif 0.17.7",
@@ -3337,6 +3544,15 @@ dependencies = [
  "pin-project-lite",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "toml"
+version = "0.5.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4f7f0dd8d50a853a531c426359045b1998f04219d88799810762cd4ad314234"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -3577,6 +3793,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 
 [[package]]
+name = "walkdir"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d71d857dc86794ca4c280d616f7da00d2dbfd8cd788846559a6813e6aa4b54ee"
+dependencies = [
+ "same-file",
+ "winapi-util",
+]
+
+[[package]]
 name = "want"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3697,6 +3923,15 @@ name = "winapi-i686-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
+name = "winapi-util"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f29e6f9198ba0d26b4c9f07dbe6f9ed633e1f3d5b8b414090084349e46a52596"
+dependencies = [
+ "winapi",
+]
 
 [[package]]
 name = "winapi-x86_64-pc-windows-gnu"
