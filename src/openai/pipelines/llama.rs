@@ -38,6 +38,7 @@ impl Default for LlamaSpecifcConfig {
     }
 }
 
+/// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct LlamaPipeline {
     llama: Llama,
     args: LlamaSpecifcConfig,

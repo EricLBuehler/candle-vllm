@@ -26,6 +26,7 @@ pub struct SamplingParams {
     /// Number of output seqs to return for a prompt.
     pub n: usize,
     /// Number of output seqs that are generated from the prompt, from these `best_of` seqs, the top `n` sequences are returned. `best_of` must be `>=n`. Default = `n`.
+    /// Beam width when `use_beam_search` is true.
     pub best_of: usize,
     /// Penalize new tokens based upon whether they appear in the generated text so far, >0 encourage new, <0 encourage repeat.
     /// rec. default = 0
