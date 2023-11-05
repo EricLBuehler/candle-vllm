@@ -18,6 +18,8 @@ pub mod conversation;
 
 pub mod sampling_params;
 
+pub mod beam_search;
+
 pub trait TokenizerWrapper<'s, E>
 where
     E: Into<EncodeInput<'s>>,
