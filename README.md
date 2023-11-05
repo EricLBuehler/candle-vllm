@@ -2,6 +2,24 @@
 
 Efficient platform for inference and serving local LLMs including an OpenAI compatible API server.
 
+**This project is in active development**. I would appreciate any contributions, but contributions pertaining to the following features would
+be especially welcome:
+- Sampling methods:
+  - Beam search
+  - `presence_penalty` and `frequency_penalty`
+- Pipeline batching (#3)
+- KV cache (#3)
+- PagedAttention (#3)
+- More pipelines (models)
+
+Currently, I am actively working on the following features:
+- Streaming: (#2)
+  - Streaming support in generation (expect)
+- Top-K support (candle/#1271)
+- Beam search
+- More pipelines (models)
+
+
 ## Overview
 `candle-vllm` is designed to interface locally served LLMs using an OpenAI compatible API server. `candle-vllm` can serve a single model per instance
 (multiple `candle-vllm`s could serve different ones). 
