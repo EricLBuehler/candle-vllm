@@ -7,15 +7,15 @@ be especially welcome:
 - Sampling methods:
   - Beam search
   - `presence_penalty` and `frequency_penalty`
-- Pipeline batching (#3)
-- KV cache (#3)
-- PagedAttention (#3)
+- Pipeline batching ([#3](https://github.com/EricLBuehler/candle-vllm/issues/3))
+- KV cache ([#3](https://github.com/EricLBuehler/candle-vllm/issues/3))
+- PagedAttention ([#3](https://github.com/EricLBuehler/candle-vllm/issues/3))
 - More pipelines (models)
 
 Currently, I am actively working on the following features:
-- Streaming: (#2)
+- Streaming: ([#2](https://github.com/EricLBuehler/candle-vllm/issues/2))
   - Streaming support in generation (expect)
-- Top-K support (candle/#1271)
+- Top-K support ([candle/#1271](https://github.com/huggingface/candle/pull/1271))
 - Beam search
 - More pipelines (models)
 
