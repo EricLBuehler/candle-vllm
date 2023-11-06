@@ -18,7 +18,7 @@ pub mod conversation;
 
 pub mod sampling_params;
 
-pub mod beam_search;
+pub mod beam_search_scorer;
 
 pub trait TokenizerWrapper<'s, E>
 where

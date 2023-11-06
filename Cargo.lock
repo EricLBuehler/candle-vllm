@@ -748,6 +748,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-sampling"
+version = "0.1.0"
+source = "git+https://github.com/EricLBuehler/candle-sampling.git#4dcecfee0cabb34f6a22f6e9a27c682997d5a0a6"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "rand",
+]
+
+[[package]]
 name = "candle-transformers"
 version = "0.3.0"
 source = "git+https://github.com/huggingface/candle.git#a2a20aeeccdcbcbd00e48d6f7ac97b2435b2378c"
@@ -779,6 +789,7 @@ dependencies = [
  "candle-lora-macro",
  "candle-lora-transformers",
  "candle-nn",
+ "candle-sampling",
  "candle-transformers",
  "clap",
  "cudarc",

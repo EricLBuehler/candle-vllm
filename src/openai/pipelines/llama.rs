@@ -10,10 +10,8 @@ use crate::openai::{
 };
 use candle_core::{DType, Device, Tensor};
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
-use candle_transformers::{
-    generation::LogitsProcessor,
-    models::llama::{Cache, Llama, LlamaConfig},
-};
+use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
+use candle_transformers::models::llama::{Cache, Llama, LlamaConfig};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
 
@@ -240,7 +238,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         let mut logits_processor = LogitsProcessor::new(
             SAMPLING_SEED,
             Some(sampling.temperature.try_into().unwrap()),
-            Some(sampling.top_p.try_into().unwrap()),
+            SamplingMethod::TopP(sampling.top_p.try_into().unwrap()),
         );
 
         let mut tokens_generated = 0;

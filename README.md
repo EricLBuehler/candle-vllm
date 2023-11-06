@@ -15,8 +15,7 @@ be especially welcome:
 Currently, I am actively working on the following features:
 - Streaming: ([#2](https://github.com/EricLBuehler/candle-vllm/issues/2))
   - Streaming support in generation (expect)
-- Top-K support ([candle/#1271](https://github.com/huggingface/candle/pull/1271))
-- Beam search
+- Beam search (developed here, will be moved to [candle-sampling](https://github.com/EricLBuehler/candle-sampling))
 - More pipelines (models)
 
 
