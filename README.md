@@ -13,8 +13,6 @@ be especially welcome:
 - More pipelines (models)
 
 Currently, I am actively working on the following features:
-- Streaming: ([#2](https://github.com/EricLBuehler/candle-vllm/issues/2))
-  - Streaming support in generation (expect)
 - Beam search (See [candle-sampling](https://github.com/EricLBuehler/candle-sampling))
 - More pipelines (models)
 
@@ -35,6 +33,7 @@ new pipelines to be rapidly implemented.
 - OpenAI compatible API server provided for serving LLMs.
 - `ModulePipeline` trait acts like the `Module` trait in `Candle`. It provides a clean interface for
   new pipelines to be rapidly implemented.
+- Streaming support in generation.
 
 ## Resources
 - Python implementation: [`vllm-project`](https://github.com/vllm-project/vllm)
