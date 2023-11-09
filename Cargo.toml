@@ -27,6 +27,8 @@ half = { version = "2.3.1", features = ["num-traits", "use-intrinsics", "rand_di
 candle-flash-attn = { git = "https://github.com/huggingface/candle.git", version = "0.3.0", optional = true }
 clap = { version = "4.4.7", features = ["derive"] }
 candle-sampling = { git = "https://github.com/EricLBuehler/candle-sampling.git", version = "0.1.0" }
+futures = "0.3.29"
+tokio = { version = "1.33.0", features = ["sync"] }
 
 [features]
 default = []

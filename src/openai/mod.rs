@@ -3,20 +3,22 @@ use std::{
     sync::Mutex,
 };
 
+use actix_web::web::Bytes;
 use candle_core::{DType, Device};
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
+use tokio::sync::mpsc::Sender;
 
 use self::{
-    responses::{APIError, ChatCompletionUsageResponse},
+    responses::{APIError, ChatChoice, ChatCompletionUsageResponse},
     sampling_params::SamplingParams,
+    streaming::SenderError,
 };
 
+pub mod conversation;
 pub mod requests;
 pub mod responses;
-
-pub mod conversation;
-
 pub mod sampling_params;
+mod streaming;
 
 pub trait TokenizerWrapper<'s, E>
 where
@@ -35,13 +37,15 @@ where
     }
 }
 
-pub trait ModulePipeline<'s> {
+pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(
         &mut self,
         xs: &Encoding,
         sampling: SamplingParams,
         device: Device,
-    ) -> Result<(Vec<String>, ChatCompletionUsageResponse), APIError>;
+        streamer: Option<Sender<Result<Bytes, SenderError>>>,
+        roles: &(String, String),
+    ) -> Result<(Option<Vec<ChatChoice>>, ChatCompletionUsageResponse), APIError>;
 
     fn name(&self) -> String;
 

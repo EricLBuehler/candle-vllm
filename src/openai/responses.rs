@@ -4,7 +4,7 @@ use derive_more::{Display, Error};
 use hf_hub::api::sync::ApiError;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Display, Error)]
+#[derive(Debug, Display, Error, Serialize)]
 #[display(fmt = "Error: {}", data)]
 pub struct APIError {
     data: String,
@@ -55,12 +55,49 @@ pub struct ChatCompletionUsageResponse {
     pub total_tokens: usize,
 }
 
+// tool_calls, function_call not supported!
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatChoiceData {
+    pub content: Option<String>,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatChoice {
+    pub message: ChatChoiceData,
+    pub finish_reason: Option<String>,
+    pub index: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionResponse {
     pub id: String,
-    pub choices: Vec<String>,
+    pub choices: Vec<ChatChoice>,
     pub created: u64,
     pub model: String,
-    pub object: String,
+    pub object: &'static str,
     pub usage: ChatCompletionUsageResponse,
+}
+
+// tool_calls, function_call not supported!
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingChoiceData {
+    pub content: Option<String>,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingChoice {
+    pub delta: StreamingChoiceData,
+    pub finish_reason: Option<String>,
+    pub index: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StreamingChatCompletionResponse {
+    pub id: String,
+    pub choices: Vec<StreamingChoice>,
+    pub created: u64,
+    pub model: String,
+    pub object: &'static str,
 }

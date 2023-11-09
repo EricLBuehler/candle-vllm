@@ -1,6 +1,6 @@
 use dyn_fmt::AsStrFormatExt;
 
-pub const ROLES: (&str, &str) = ("ROLES", "ASSISTANT");
+pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
 pub const SYSTEM_TEMPLATE: &str = "{}";
 pub const DEFAULT_SEP: &str = "\n";
 

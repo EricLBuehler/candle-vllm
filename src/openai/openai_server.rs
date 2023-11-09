@@ -1,12 +1,15 @@
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::conversation::SeperatorStyle;
 use super::requests::Messages;
 use super::responses::{APIError, ChatCompletionResponse};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
+use super::streaming::new_streaming_conn;
 use super::OpenAIServerData;
 use super::{conversation::Conversation, requests::ChatCompletionRequest};
-use actix_web::{get, web};
+use actix_web::web::Bytes;
+use actix_web::{get, web, Either, HttpResponse};
 use tokenizers::Encoding;
 use uuid::Uuid;
 
@@ -42,12 +45,15 @@ fn get_conversational_template(model_name: &str) -> Conversation {
     }
 }
 
-async fn get_gen_prompt(request: &web::Json<ChatCompletionRequest>) -> Result<String, APIError> {
+// Get prompt, roles
+async fn get_gen_prompt(
+    request: &web::Json<ChatCompletionRequest>,
+) -> Result<(String, (String, String)), APIError> {
     let mut conversation = get_conversational_template(&request.model);
 
     match &request.messages {
         Messages::Literal(msg) => {
-            return Ok(msg.clone());
+            return Ok((msg.clone(), conversation.get_roles().clone()));
         }
         Messages::Map(messages) => {
             for message in messages {
@@ -76,7 +82,7 @@ async fn get_gen_prompt(request: &web::Json<ChatCompletionRequest>) -> Result<St
 
     conversation.append_none_message(conversation.get_roles().1.clone());
 
-    Ok(conversation.get_prompt())
+    Ok((conversation.get_prompt(), conversation.get_roles().clone()))
 }
 
 fn check_length(
@@ -113,22 +119,34 @@ fn check_length(
 
 #[get("/v1/chat/completions")]
 async fn chat_completions(
-    data: web::Data<OpenAIServerData<'_>>,
+    data: web::Data<OpenAIServerData<'static>>,
     request: web::Json<ChatCompletionRequest>,
-) -> Result<web::Json<ChatCompletionResponse>, APIError> {
+) -> Either<Result<web::Json<ChatCompletionResponse>, APIError>, HttpResponse> {
     let model_name = &request.model;
-    verify_model(&data, model_name)?;
+    let res = verify_model(&data, model_name);
+    if res.is_err() {
+        return Either::Left(Err(res.err().unwrap()));
+    }
 
     if request.logit_bias.as_ref().is_some()
         && request.logit_bias.as_ref().is_some_and(|x| !x.is_empty())
     {
-        return Err(APIError::new_str(
+        return Either::Left(Err(APIError::new_str(
             "`logit_bias` is not currently supported.",
-        ));
+        )));
     }
 
-    let prompt = get_gen_prompt(&request).await?;
-    let token_ids = check_length(&request, prompt, &data)?;
+    let prompt = get_gen_prompt(&request).await;
+    if prompt.is_err() {
+        return Either::Left(Err(prompt.err().unwrap()));
+    }
+    let prompt = prompt.unwrap();
+
+    let token_ids = check_length(&request, prompt.0, &data);
+    if token_ids.is_err() {
+        return Either::Left(Err(token_ids.err().unwrap()));
+    }
+    let token_ids = token_ids.unwrap();
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
 
@@ -151,22 +169,69 @@ async fn chat_completions(
         None,
         None,
         request.skip_special_tokens.unwrap_or(true),
-    )?;
+    );
+    if sampling_params.is_err() {
+        return Either::Left(Err(sampling_params.err().unwrap()));
+    }
+    let sampling_params = sampling_params.unwrap();
 
     let created = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("Time travel has occured...");
+
+    if request.stream.is_some_and(|x| x) {
+        let (sender, receiver) = new_streaming_conn();
+        let _ = thread::spawn(move || {
+            let mut model = data.model.lock().unwrap();
+            let model_res = model.forward(
+                &token_ids,
+                sampling_params,
+                data.device.clone(),
+                Some(sender.clone()),
+                &prompt.1,
+            );
+            if model_res.is_err() {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+
+                // Ignore sending errors
+                let _ = runtime.block_on(sender.send(Ok(Bytes::from(
+                    serde_json::to_vec(&model_res.err().unwrap()).unwrap(),
+                ))));
+            }
+        });
+
+        return Either::Right(
+            HttpResponse::Ok()
+                .append_header(("content-type", "text/event-stream"))
+                //.no_chunking(asdf)
+                .streaming(receiver),
+        );
+    }
+
     let result = {
         let mut model = data.model.lock().unwrap();
-        model.forward(&token_ids, sampling_params, data.device.clone())?
+        let model_res = model.forward(
+            &token_ids,
+            sampling_params,
+            data.device.clone(),
+            None,
+            &prompt.1,
+        );
+        if model_res.is_err() {
+            return Either::Left(Err(model_res.err().unwrap()));
+        }
+        model_res.unwrap()
     };
 
-    Ok(web::Json(ChatCompletionResponse {
+    Either::Left(Ok(web::Json(ChatCompletionResponse {
         id: request_id,
-        choices: result.0,
+        choices: result.0.unwrap(),
         created: created.as_secs(),
         model: request.model.clone(),
-        object: "chat.completion".to_string(),
+        object: "chat.completion",
         usage: result.1,
-    }))
+    })))
 }
