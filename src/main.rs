@@ -8,8 +8,9 @@ use actix_web::{http::header::ContentType, test, App};
 use candle_core::{DType, Device};
 use candle_vllm::openai::openai_server::chat_completions;
 use candle_vllm::openai::pipelines::llama::LlamaLoader;
+use candle_vllm::openai::pipelines::ModelLoader;
 use candle_vllm::openai::requests::Messages;
-use candle_vllm::openai::{self, ModelLoader, OpenAIServerData};
+use candle_vllm::openai::{self, OpenAIServerData};
 use clap::Parser;
 
 const SERVED_MODELS: [&str; 1] = ["llama"];

@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::openai::{
+    pipelines::conversation::{DefaultConversationSeperators, SeperatorStyle},
     requests::StopTokens,
     responses::{
         APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
@@ -12,7 +13,7 @@ use crate::openai::{
     },
     sampling_params::SamplingParams,
     streaming::SenderError,
-    ModelLoader, ModelPaths, ModulePipeline, PipelineConfig, TokenizerWrapper,
+    PipelineConfig, TokenizerWrapper,
 };
 use actix_web::web::Bytes;
 use candle_core::{DType, Device, Tensor};
@@ -23,6 +24,11 @@ use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
+
+use super::{
+    conversation::{Conversation, DefaultConversation},
+    ModelLoader, ModelPaths, ModulePipeline,
+};
 
 const EOS_TOKEN: &str = "</s>";
 const NAME: &str = "llama";
@@ -51,6 +57,7 @@ pub struct LlamaPipeline {
     args: LlamaSpecifcConfig,
     cache: Cache,
     tokenizer: Tokenizer,
+    conversation: DefaultConversation,
 }
 
 pub struct LlamaLoader;
@@ -155,6 +162,20 @@ impl<'a, P: AsRef<Path>> ModelLoader<'a, P> for LlamaLoader {
                 args,
                 cache,
                 tokenizer,
+                conversation: DefaultConversation::new(
+                    "llama-2".to_string(),
+                    "[INST] <<SYS>>\n{}\n<</SYS>>\n\n".to_string(),
+                    Vec::default(),
+                    0,
+                    SeperatorStyle::Llama2,
+                    "".to_string(),
+                    Vec::default(),
+                    ("[INST]".to_string(), "[/INST]".to_string()),
+                    DefaultConversationSeperators {
+                        sep: " ".to_string(),
+                        sep2: Some(" </s></s>".to_string()),
+                    },
+                ),
             }),
             pipeline_config,
         ))
@@ -215,7 +236,6 @@ impl LlamaPipeline {
         streamer: Option<Sender<Result<Bytes, SenderError>>>,
         stop_tokens: Vec<String>,
         gen_index: usize,
-        roles: (String, String),
     ) -> Result<(Option<ChatChoice>, ChatCompletionUsageResponse), APIError> {
         match streamer {
             Some(streamer) => {
@@ -257,7 +277,7 @@ impl LlamaPipeline {
                             choices.push(StreamingChoice {
                                 delta: StreamingChoiceData {
                                     content: None,
-                                    role: roles.1.clone(),
+                                    role: self.conversation.get_roles().1.clone(),
                                 },
                                 finish_reason: gen.done_reason.clone(),
                                 index: i,
@@ -393,7 +413,7 @@ impl LlamaPipeline {
                     Some(ChatChoice {
                         message: ChatChoiceData {
                             content: Some(result),
-                            role: roles.1,
+                            role: self.conversation.get_roles().1.clone(),
                         },
                         finish_reason: Some(finish_reason),
                         index: gen_index,
@@ -416,7 +436,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         sampling: SamplingParams,
         device: Device,
         streamer: Option<Sender<Result<Bytes, SenderError>>>,
-        roles: &(String, String),
     ) -> Result<(Option<Vec<ChatChoice>>, ChatCompletionUsageResponse), APIError> {
         let eos_token_id = self.tokenizer.token_to_id(EOS_TOKEN);
 
@@ -450,7 +469,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                     Some(streamer),
                     stop_tokens,
                     usize::MAX,
-                    roles.clone(),
                 )?;
             }
             None => {
@@ -466,7 +484,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                         None,
                         stop_tokens.clone(),
                         i,
-                        roles.clone(),
                     )?;
                     tokens_generated += tokens_gen.completion_tokens;
                     choices.push(result.unwrap());
@@ -490,6 +507,10 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
 
     fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String> {
         &self.tokenizer
+    }
+
+    fn get_conversation(&mut self) -> &mut dyn Conversation {
+        &mut self.conversation
     }
 }
 

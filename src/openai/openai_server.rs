@@ -1,13 +1,12 @@
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::conversation::{Conversation, DefaultConversationSeperators, SeperatorStyle};
+use super::requests::ChatCompletionRequest;
 use super::requests::Messages;
 use super::responses::{APIError, ChatCompletionResponse};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::new_streaming_conn;
 use super::OpenAIServerData;
-use super::{conversation::DefaultConversation, requests::ChatCompletionRequest};
 use actix_web::web::Bytes;
 use actix_web::{get, web, Either, HttpResponse};
 use tokenizers::Encoding;
@@ -27,35 +26,17 @@ fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), 
     }
 }
 
-fn get_conversation_generator(model_name: &str) -> Box<dyn Conversation> {
-    match model_name {
-        "llama" => Box::new(DefaultConversation::new(
-            "llama-2".to_string(),
-            "[INST] <<SYS>>\n{}\n<</SYS>>\n\n".to_string(),
-            Vec::default(),
-            0,
-            SeperatorStyle::Llama2,
-            "".to_string(),
-            Vec::default(),
-            ("[INST]".to_string(), "[/INST]".to_string()),
-            DefaultConversationSeperators {
-                sep: " ".to_string(),
-                sep2: Some(" </s></s>".to_string()),
-            },
-        )),
-        _ => unreachable!(),
-    }
-}
-
 // Get prompt, roles
 async fn get_gen_prompt(
+    data: &OpenAIServerData<'_>,
     request: &web::Json<ChatCompletionRequest>,
-) -> Result<(String, (String, String)), APIError> {
-    let mut conversation = get_conversation_generator(&request.model);
+) -> Result<String, APIError> {
+    let mut model = data.model.lock().unwrap();
+    let conversation = model.get_conversation();
 
     match &request.messages {
         Messages::Literal(msg) => {
-            return Ok((msg.clone(), conversation.get_roles().clone()));
+            return Ok(msg.clone());
         }
         Messages::Map(messages) => {
             for message in messages {
@@ -84,7 +65,7 @@ async fn get_gen_prompt(
 
     conversation.append_none_message(conversation.get_roles().1.clone());
 
-    Ok((conversation.get_prompt(), conversation.get_roles().clone()))
+    Ok(conversation.get_prompt())
 }
 
 fn check_length(
@@ -138,13 +119,13 @@ async fn chat_completions(
         )));
     }
 
-    let prompt = get_gen_prompt(&request).await;
+    let prompt = get_gen_prompt(&data, &request).await;
     if prompt.is_err() {
         return Either::Left(Err(prompt.err().unwrap()));
     }
     let prompt = prompt.unwrap();
 
-    let token_ids = check_length(&request, prompt.0, &data);
+    let token_ids = check_length(&request, prompt, &data);
     if token_ids.is_err() {
         return Either::Left(Err(token_ids.err().unwrap()));
     }
@@ -190,7 +171,6 @@ async fn chat_completions(
                 sampling_params,
                 data.device.clone(),
                 Some(sender.clone()),
-                &prompt.1,
             );
             if model_res.is_err() {
                 let runtime = tokio::runtime::Builder::new_current_thread()
@@ -215,13 +195,7 @@ async fn chat_completions(
 
     let result = {
         let mut model = data.model.lock().unwrap();
-        let model_res = model.forward(
-            &token_ids,
-            sampling_params,
-            data.device.clone(),
-            None,
-            &prompt.1,
-        );
+        let model_res = model.forward(&token_ids, sampling_params, data.device.clone(), None);
         if model_res.is_err() {
             return Either::Left(Err(model_res.err().unwrap()));
         }
