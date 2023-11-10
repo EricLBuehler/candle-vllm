@@ -4,14 +4,6 @@ pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
 pub const SYSTEM_TEMPLATE: &str = "{}";
 pub const DEFAULT_SEP: &str = "\n";
 
-pub struct Message((String, Option<String>));
-
-impl Message {
-    pub fn new(message: (String, String)) -> Message {
-        Message((message.0, Some(message.1)))
-    }
-}
-
 #[derive(Default)]
 pub enum SeperatorStyle {
     #[default]
@@ -34,7 +26,7 @@ pub enum SeperatorStyle {
 
 /// A struct for managing prompt templates and conversation history.
 #[allow(dead_code)]
-pub struct Conversation {
+pub struct DefaultConversation {
     name: String,
     system_message: String,
     system_template: String,
@@ -42,13 +34,40 @@ pub struct Conversation {
     offset: usize,
     sep_style: SeperatorStyle,
     stop_criteria: String,
-    stop_token_ids: Vec<isize>,
+    stop_token_ids: Vec<usize>,
     roles: (String, String),
     sep: String,
     sep2: Option<String>,
 }
 
-impl Conversation {
+pub struct DefaultConversationSeperators {
+    pub sep: String,
+    pub sep2: Option<String>,
+}
+
+pub struct Message((String, Option<String>));
+
+impl Message {
+    pub fn new(message: (String, String)) -> Message {
+        Message((message.0, Some(message.1)))
+    }
+}
+
+pub trait Conversation {
+    fn set_system_message(&mut self, system_message: String);
+
+    fn append_message(&mut self, role: String, message: String);
+
+    fn append_none_message(&mut self, role: String);
+
+    fn update_last_messge(&mut self);
+
+    fn get_roles(&self) -> &(String, String);
+
+    fn get_prompt(&mut self) -> String;
+}
+
+impl DefaultConversation {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
@@ -57,10 +76,9 @@ impl Conversation {
         offset: usize,
         sep_style: SeperatorStyle,
         stop_criteria: String,
-        stop_token_ids: Vec<isize>,
+        stop_token_ids: Vec<usize>,
         roles: (String, String),
-        sep: String,
-        sep2: Option<String>,
+        seps: DefaultConversationSeperators,
     ) -> Self {
         Self {
             name,
@@ -72,37 +90,39 @@ impl Conversation {
             stop_criteria,
             stop_token_ids,
             roles,
-            sep,
-            sep2,
+            sep: seps.sep,
+            sep2: seps.sep2,
         }
     }
+}
 
+impl Conversation for DefaultConversation {
     /// Set the system message.
-    pub fn set_system_message(&mut self, system_message: String) {
+    fn set_system_message(&mut self, system_message: String) {
         self.system_message = system_message;
     }
 
     /// Append a new message.
-    pub fn append_message(&mut self, role: String, message: String) {
+    fn append_message(&mut self, role: String, message: String) {
         self.messages.push(Message((role, Some(message))));
     }
 
     /// Append a new `None` message.
-    pub fn append_none_message(&mut self, role: String) {
+    fn append_none_message(&mut self, role: String) {
         self.messages.push(Message((role, None)));
     }
 
     /// Set the last message to `None`.
-    pub fn update_last_messge(&mut self) {
+    fn update_last_messge(&mut self) {
         self.messages.last_mut().unwrap().0 .1 = None;
     }
 
-    pub fn get_roles(&self) -> &(String, String) {
+    fn get_roles(&self) -> &(String, String) {
         &self.roles
     }
 
     /// Convert this conversation to a String prompt
-    pub fn get_prompt(&mut self) -> String {
+    fn get_prompt(&mut self) -> String {
         let system_prompt = self.system_template.format(&[self.system_message.clone()]);
         match self.sep_style {
             SeperatorStyle::AddColonSingle => {

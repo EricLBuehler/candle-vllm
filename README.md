@@ -17,6 +17,11 @@ Currently, I am actively working on the following features:
 - More pipelines (models)
 
 
+## Features
+- OpenAI compatible API server provided for serving LLMs.
+- Highly extensible trait-based system to allow rapid addition of new module pipelines, conversation generators, and tokenizers.
+- Streaming support in generation.
+
 ## Overview
 `candle-vllm` is designed to interface locally served LLMs using an OpenAI compatible API server. `candle-vllm` can serve a single model per instance
 (multiple `candle-vllm`s could serve different ones). 
@@ -28,12 +33,6 @@ output.
 
 - This process is abstracted by a trait `ModulePipeline` which acts like the `Module` trait in `Candle`. It provides a clean interface for
 new pipelines to be rapidly implemented.
-
-## Features
-- OpenAI compatible API server provided for serving LLMs.
-- `ModulePipeline` trait acts like the `Module` trait in `Candle`. It provides a clean interface for
-  new pipelines to be rapidly implemented.
-- Streaming support in generation.
 
 ## Resources
 - Python implementation: [`vllm-project`](https://github.com/vllm-project/vllm)

@@ -1,13 +1,13 @@
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::conversation::SeperatorStyle;
+use super::conversation::{Conversation, DefaultConversationSeperators, SeperatorStyle};
 use super::requests::Messages;
 use super::responses::{APIError, ChatCompletionResponse};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::new_streaming_conn;
 use super::OpenAIServerData;
-use super::{conversation::Conversation, requests::ChatCompletionRequest};
+use super::{conversation::DefaultConversation, requests::ChatCompletionRequest};
 use actix_web::web::Bytes;
 use actix_web::{get, web, Either, HttpResponse};
 use tokenizers::Encoding;
@@ -27,9 +27,9 @@ fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), 
     }
 }
 
-fn get_conversational_template(model_name: &str) -> Conversation {
+fn get_conversation_generator(model_name: &str) -> Box<dyn Conversation> {
     match model_name {
-        "llama" => Conversation::new(
+        "llama" => Box::new(DefaultConversation::new(
             "llama-2".to_string(),
             "[INST] <<SYS>>\n{}\n<</SYS>>\n\n".to_string(),
             Vec::default(),
@@ -38,9 +38,11 @@ fn get_conversational_template(model_name: &str) -> Conversation {
             "".to_string(),
             Vec::default(),
             ("[INST]".to_string(), "[/INST]".to_string()),
-            " ".to_string(),
-            Some(" </s></s>".to_string()),
-        ),
+            DefaultConversationSeperators {
+                sep: " ".to_string(),
+                sep2: Some(" </s></s>".to_string()),
+            },
+        )),
         _ => unreachable!(),
     }
 }
@@ -49,7 +51,7 @@ fn get_conversational_template(model_name: &str) -> Conversation {
 async fn get_gen_prompt(
     request: &web::Json<ChatCompletionRequest>,
 ) -> Result<(String, (String, String)), APIError> {
-    let mut conversation = get_conversational_template(&request.model);
+    let mut conversation = get_conversation_generator(&request.model);
 
     match &request.messages {
         Messages::Literal(msg) => {
