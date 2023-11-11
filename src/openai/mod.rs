@@ -37,6 +37,7 @@ pub struct OpenAIServerData<'s> {
     pub device: Device,
 }
 
-pub mod pipelines;
-
+pub mod conversation;
 pub mod openai_server;
+pub mod pipelines;
+mod utils;

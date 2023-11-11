@@ -1,11 +1,14 @@
 use dyn_fmt::AsStrFormatExt;
 
+use super::Conversation;
+
 pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
 pub const SYSTEM_TEMPLATE: &str = "{}";
 pub const DEFAULT_SEP: &str = "\n";
 
+/// Separator style for default conversation.
 #[derive(Default)]
-pub enum SeperatorStyle {
+pub enum SeparatorStyle {
     #[default]
     AddColonSingle,
     AddColonTwo,
@@ -32,7 +35,7 @@ pub struct DefaultConversation {
     system_template: String,
     messages: Vec<Message>,
     offset: usize,
-    sep_style: SeperatorStyle,
+    sep_style: SeparatorStyle,
     stop_criteria: String,
     stop_token_ids: Vec<usize>,
     roles: (String, String),
@@ -40,31 +43,19 @@ pub struct DefaultConversation {
     sep2: Option<String>,
 }
 
-pub struct DefaultConversationSeperators {
+/// Default conversion separators
+pub struct DefaultConversationSeparators {
     pub sep: String,
     pub sep2: Option<String>,
 }
 
+/// A message in a conversation
 pub struct Message((String, Option<String>));
 
 impl Message {
     pub fn new(message: (String, String)) -> Message {
         Message((message.0, Some(message.1)))
     }
-}
-
-pub trait Conversation {
-    fn set_system_message(&mut self, system_message: String);
-
-    fn append_message(&mut self, role: String, message: String);
-
-    fn append_none_message(&mut self, role: String);
-
-    fn update_last_messge(&mut self);
-
-    fn get_roles(&self) -> &(String, String);
-
-    fn get_prompt(&mut self) -> String;
 }
 
 impl DefaultConversation {
@@ -74,11 +65,11 @@ impl DefaultConversation {
         system_template: String,
         messages: Vec<Message>,
         offset: usize,
-        sep_style: SeperatorStyle,
+        sep_style: SeparatorStyle,
         stop_criteria: String,
         stop_token_ids: Vec<usize>,
         roles: (String, String),
-        seps: DefaultConversationSeperators,
+        seps: DefaultConversationSeparators,
     ) -> Self {
         Self {
             name,
@@ -113,7 +104,7 @@ impl Conversation for DefaultConversation {
     }
 
     /// Set the last message to `None`.
-    fn update_last_messge(&mut self) {
+    fn update_last_message(&mut self) {
         self.messages.last_mut().unwrap().0 .1 = None;
     }
 
@@ -125,7 +116,7 @@ impl Conversation for DefaultConversation {
     fn get_prompt(&mut self) -> String {
         let system_prompt = self.system_template.format(&[self.system_message.clone()]);
         match self.sep_style {
-            SeperatorStyle::AddColonSingle => {
+            SeparatorStyle::AddColonSingle => {
                 let mut accum = system_prompt + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
@@ -138,7 +129,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::AddColonTwo => {
+            SeparatorStyle::AddColonTwo => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
                 let mut accum = system_prompt + &self.sep;
                 for (i, message) in self.messages.iter().enumerate() {
@@ -152,7 +143,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::AddColonSpaceSingle => {
+            SeparatorStyle::AddColonSpaceSingle => {
                 let mut accum = system_prompt + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
@@ -165,7 +156,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::AddNewLineSingle => {
+            SeparatorStyle::AddNewLineSingle => {
                 let mut accum = if system_prompt.is_empty() {
                     "".to_string()
                 } else {
@@ -182,7 +173,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::NoColonSingle => {
+            SeparatorStyle::NoColonSingle => {
                 let mut accum = system_prompt.clone();
                 for message in &self.messages {
                     let Message((role, message)) = message;
@@ -195,7 +186,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::NoColonTwo => {
+            SeparatorStyle::NoColonTwo => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
                 let mut accum = system_prompt.clone();
                 for (i, message) in self.messages.iter().enumerate() {
@@ -209,7 +200,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::RWKV => {
+            SeparatorStyle::RWKV => {
                 let mut accum = system_prompt.clone() + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
@@ -225,7 +216,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::Llama2 => {
+            SeparatorStyle::Llama2 => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
                 let mut accum = if !system_prompt.is_empty() {
                     system_prompt.clone()
@@ -250,7 +241,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::ChatGLM => {
+            SeparatorStyle::ChatGLM => {
                 let round_add_n = if self.name == "chatglm2" { 1 } else { 0 };
 
                 let mut accum = if !system_prompt.is_empty() {
@@ -273,7 +264,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::ChatML => {
+            SeparatorStyle::ChatML => {
                 let mut accum = if !system_prompt.is_empty() {
                     format!("{}{}\n", system_prompt, self.sep)
                 } else {
@@ -290,7 +281,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::ChatIntern => {
+            SeparatorStyle::ChatIntern => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
                 let mut accum = system_prompt.clone();
                 for (i, message) in self.messages.iter().enumerate() {
@@ -309,7 +300,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::Dolly => {
+            SeparatorStyle::Dolly => {
                 let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
                 let mut accum = system_prompt.clone();
                 for (i, message) in self.messages.iter().enumerate() {
@@ -327,7 +318,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::Phoenix => {
+            SeparatorStyle::Phoenix => {
                 let mut accum = system_prompt.clone() + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
@@ -340,7 +331,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::Robin => {
+            SeparatorStyle::Robin => {
                 let mut accum = system_prompt.clone() + &self.sep;
                 for message in &self.messages {
                     let Message((role, message)) = message;
@@ -353,7 +344,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeperatorStyle::FalconChat => {
+            SeparatorStyle::FalconChat => {
                 let mut accum = "".to_string();
                 if !system_prompt.is_empty() {
                     accum += &format!("{}{}", system_prompt, self.sep)

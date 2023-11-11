@@ -1,11 +1,15 @@
 use std::{
     fs, iter,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::openai::{
-    pipelines::conversation::{DefaultConversationSeperators, SeperatorStyle},
+    conversation::{
+        default_conversation::{
+            DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
+        },
+        Conversation,
+    },
     requests::StopTokens,
     responses::{
         APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
@@ -13,6 +17,7 @@ use crate::openai::{
     },
     sampling_params::SamplingParams,
     streaming::SenderError,
+    utils::get_created_time_secs,
     PipelineConfig, TokenizerWrapper,
 };
 use actix_web::web::Bytes;
@@ -25,23 +30,20 @@ use tokenizers::Tokenizer;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
-use super::{
-    conversation::{Conversation, DefaultConversation},
-    ModelLoader, ModelPaths, ModulePipeline,
-};
+use super::{ModelLoader, ModelPaths, ModulePipeline};
 
 const EOS_TOKEN: &str = "</s>";
 const NAME: &str = "llama";
 const SAMPLING_SEED: u64 = 299792458;
 
 #[derive(Debug, Clone)]
-pub struct LlamaSpecifcConfig {
+pub struct LlamaSpecificConfig {
     no_kv_cache: bool,
     repeat_last_n: usize,
     use_flash_attn: bool,
 }
 
-impl Default for LlamaSpecifcConfig {
+impl Default for LlamaSpecificConfig {
     fn default() -> Self {
         Self {
             no_kv_cache: false,
@@ -54,7 +56,7 @@ impl Default for LlamaSpecifcConfig {
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct LlamaPipeline {
     llama: Llama,
-    args: LlamaSpecifcConfig,
+    args: LlamaSpecificConfig,
     cache: Cache,
     tokenizer: Tokenizer,
     conversation: DefaultConversation,
@@ -129,7 +131,7 @@ impl<'a, P: AsRef<Path>> ModelLoader<'a, P> for LlamaLoader {
         dtype: DType,
         device: Device,
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
-        let args = LlamaSpecifcConfig::default();
+        let args = LlamaSpecificConfig::default();
 
         let config: LlamaConfig = serde_json::from_slice(
             &std::fs::read(paths.get_config_filename()).map_err(APIError::new_from_io_err)?,
@@ -167,11 +169,11 @@ impl<'a, P: AsRef<Path>> ModelLoader<'a, P> for LlamaLoader {
                     "[INST] <<SYS>>\n{}\n<</SYS>>\n\n".to_string(),
                     Vec::default(),
                     0,
-                    SeperatorStyle::Llama2,
+                    SeparatorStyle::Llama2,
                     "".to_string(),
                     Vec::default(),
                     ("[INST]".to_string(), "[/INST]".to_string()),
-                    DefaultConversationSeperators {
+                    DefaultConversationSeparators {
                         sep: " ".to_string(),
                         sep2: Some(" </s></s>".to_string()),
                     },
@@ -266,9 +268,7 @@ impl LlamaPipeline {
 
                 while tokens_n.iter().all(|gen| gen.done_reason.is_some()) {
                     let request_id = format!("cmpl-{}", Uuid::new_v4());
-                    let created = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .expect("Time travel has occured...");
+                    let created = get_created_time_secs();
 
                     let mut choices = Vec::new();
 
@@ -343,7 +343,7 @@ impl LlamaPipeline {
                             serde_json::to_vec(&StreamingChatCompletionResponse {
                                 choices,
                                 id: request_id,
-                                created: created.as_secs(),
+                                created,
                                 model: self.name(),
                                 object: "chat.completion.chunk",
                             })

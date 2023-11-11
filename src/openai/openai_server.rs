@@ -1,11 +1,11 @@
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::requests::ChatCompletionRequest;
 use super::requests::Messages;
 use super::responses::{APIError, ChatCompletionResponse};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::new_streaming_conn;
+use super::utils::get_created_time_secs;
 use super::OpenAIServerData;
 use actix_web::web::Bytes;
 use actix_web::{get, web, Either, HttpResponse};
@@ -158,9 +158,7 @@ async fn chat_completions(
     }
     let sampling_params = sampling_params.unwrap();
 
-    let created = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("Time travel has occured...");
+    let created = get_created_time_secs();
 
     if request.stream.is_some_and(|x| x) {
         let (sender, receiver) = new_streaming_conn();
@@ -205,7 +203,7 @@ async fn chat_completions(
     Either::Left(Ok(web::Json(ChatCompletionResponse {
         id: request_id,
         choices: result.0.unwrap(),
-        created: created.as_secs(),
+        created,
         model: request.model.clone(),
         object: "chat.completion",
         usage: result.1,

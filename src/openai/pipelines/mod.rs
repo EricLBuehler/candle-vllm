@@ -5,18 +5,17 @@ use candle_core::{DType, Device};
 use tokenizers::Encoding;
 use tokio::sync::mpsc::Sender;
 
-use self::conversation::Conversation;
-
 use super::{
+    conversation::Conversation,
     responses::{APIError, ChatChoice, ChatCompletionUsageResponse},
     sampling_params::SamplingParams,
     streaming::SenderError,
     PipelineConfig, TokenizerWrapper,
 };
 
-pub mod conversation;
 pub mod llama;
 
+/// A module pipeline that encompasses the inference pass, tokenizer, and conversation.
 pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(
         &mut self,
