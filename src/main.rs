@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Result;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -10,6 +9,7 @@ use candle_vllm::openai::openai_server::chat_completions;
 use candle_vllm::openai::pipelines::llama::LlamaLoader;
 use candle_vllm::openai::pipelines::ModelLoader;
 use candle_vllm::openai::requests::Messages;
+use candle_vllm::openai::responses::APIError;
 use candle_vllm::openai::{self, OpenAIServerData};
 use clap::Parser;
 
@@ -45,7 +45,7 @@ fn get_model_loader<'a, P: AsRef<Path>>(
 }
 
 #[actix_web::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), APIError> {
     /*HttpServer::new(|| App::new().service(candle_vllm::openai::openai_server::chat_completions))
     .bind(("127.0.0.1", 8000))?
     .run()
@@ -54,10 +54,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let (loader, model_id) = get_model_loader(&args.selected_model);
-    let paths = loader
-        .download_model(model_id, None, args.hf_token)
-        .unwrap();
-    let model = loader.load_model(paths, DType::F16, Device::Cpu).unwrap();
+    let paths = loader.download_model(model_id, None, args.hf_token)?;
+    let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
 
     let server_data = OpenAIServerData {
         pipeline_config: model.1,
