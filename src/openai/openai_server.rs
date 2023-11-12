@@ -146,7 +146,7 @@ async fn chat_completions(
         1.0,
         EarlyStoppingCondition::UnlikelyBetterCandidates,
         request.stop.clone(),
-        request.stop_token_ids.clone().unwrap_or(vec![]),
+        request.stop_token_ids.clone().unwrap_or_default(),
         request.ignore_eos.unwrap_or(false),
         request.max_tokens.unwrap_or(16),
         None,
