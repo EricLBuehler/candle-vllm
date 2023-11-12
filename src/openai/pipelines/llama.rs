@@ -1,7 +1,4 @@
-use std::{
-    fs, iter,
-    path::{Path, PathBuf},
-};
+use std::{iter, path::PathBuf};
 
 use crate::openai::{
     conversation::{
@@ -82,18 +79,16 @@ impl ModelPaths for LlamaModelPaths<PathBuf> {
     }
 }
 
-impl<'a, P: AsRef<Path>> ModelLoader<'a, P> for LlamaLoader {
+impl<'a> ModelLoader<'a> for LlamaLoader {
     fn download_model(
         &self,
         model_id: String,
         revision: Option<String>,
-        hf_token: Option<P>,
+        hf_token: Option<String>,
     ) -> Result<Box<dyn ModelPaths>, APIError> {
         let api = ApiBuilder::new()
             .with_progress(true)
-            .with_token(Some(
-                fs::read_to_string(hf_token.unwrap()).map_err(APIError::new_from_io_err)?,
-            ))
+            .with_token(hf_token)
             .build()
             .map_err(APIError::new_from_hf_err)?;
         let revision = revision.unwrap_or("main".to_string());

@@ -1,19 +1,15 @@
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::Mutex;
 
 use actix_web::web::Data;
 use actix_web::{http::header::ContentType, test, App};
 use candle_core::{DType, Device};
+use candle_vllm::get_model_loader;
 use candle_vllm::openai::openai_server::chat_completions;
-use candle_vllm::openai::pipelines::llama::LlamaLoader;
-use candle_vllm::openai::pipelines::ModelLoader;
 use candle_vllm::openai::requests::Messages;
 use candle_vllm::openai::responses::APIError;
 use candle_vllm::openai::{self, OpenAIServerData};
 use clap::Parser;
-
-const SERVED_MODELS: [&str; 1] = ["llama"];
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -27,30 +23,8 @@ struct Args {
     hf_token: Option<String>,
 }
 
-fn get_model_loader<'a, P: AsRef<Path>>(
-    selected_model: &String,
-) -> (Box<dyn ModelLoader<'a, P>>, String) {
-    if !SERVED_MODELS.contains(&selected_model.as_str()) {
-        panic!("Model {} is not supported", selected_model);
-    }
-    match selected_model.as_str() {
-        "llama" => (
-            Box::new(LlamaLoader),
-            "meta-llama/Llama-2-7b-hf".to_string(),
-        ),
-        _ => {
-            unreachable!();
-        }
-    }
-}
-
 #[actix_web::main]
 async fn main() -> Result<(), APIError> {
-    /*HttpServer::new(|| App::new().service(candle_vllm::openai::openai_server::chat_completions))
-    .bind(("127.0.0.1", 8000))?
-    .run()
-    .await*/
-
     let args = Args::parse();
 
     let (loader, model_id) = get_model_loader(&args.selected_model);

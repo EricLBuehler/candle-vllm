@@ -1,4 +1,5 @@
 # candle-vllm
+[![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
 
 Efficient platform for inference and serving local LLMs including an OpenAI compatible API server.
 

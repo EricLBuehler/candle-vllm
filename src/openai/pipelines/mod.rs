@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use actix_web::web::Bytes;
 use candle_core::{DType, Device};
@@ -38,12 +38,12 @@ pub trait ModelPaths {
     fn get_tokenizer_filename(&self) -> &PathBuf;
 }
 
-pub trait ModelLoader<'a, P: AsRef<Path>> {
+pub trait ModelLoader<'a> {
     fn download_model(
         &self,
         model_id: String,
         revision: Option<String>,
-        hf_token: Option<P>,
+        hf_token: Option<String>,
     ) -> Result<Box<dyn ModelPaths>, APIError>;
 
     fn load_model(
