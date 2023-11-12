@@ -34,8 +34,6 @@ jobs:
         os: [ubuntu-latest, windows-latest, macOS-latest]
         rust: [stable]
     steps:
-      env:
-        TESTS_HF_TOKEN: ${{secrets.TESTS_HF_TOKEN}}
       - uses: actions/checkout@v2
       - uses: actions-rs/toolchain@v1
         with:
@@ -43,6 +41,8 @@ jobs:
           toolchain: ${{ matrix.rust }}
           override: true
       - uses: actions-rs/cargo@v1
+        env:
+          TESTS_HF_TOKEN: ${{ secrets.TESTS_HF_TOKEN }}
         with:
           command: test
           args: --workspace
