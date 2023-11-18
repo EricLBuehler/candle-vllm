@@ -154,7 +154,7 @@ fn generate_answer(_prompt: String, args: &Args) -> Result<String> {
 
     let mut generated_text = String::new();
 
-    let (_builder, mut _tokenizer) = T5ModelBuilder::load(&args)?;
+    let (_builder, mut _tokenizer) = T5ModelBuilder::load(args)?;
     let device = &_builder.device;
     let _tokenizer = _tokenizer
         .with_padding(None)
