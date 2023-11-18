@@ -783,6 +783,7 @@ version = "0.1.0"
 dependencies = [
  "accelerate-src",
  "actix-web",
+ "anyhow",
  "candle-core",
  "candle-flash-attn",
  "candle-lora",

@@ -151,7 +151,6 @@ impl T5ModelBuilder {
     }
 }
 fn generate_answer(_prompt: String, args: &Args) -> Result<String> {
-
     let mut generated_text = String::new();
 
     let (_builder, mut _tokenizer) = T5ModelBuilder::load(args)?;
@@ -169,14 +168,13 @@ fn generate_answer(_prompt: String, args: &Args) -> Result<String> {
     let mut model = _builder.build_model()?;
     let mut output_token_ids = [_builder.config.pad_token_id as u32].to_vec();
     let temperature = 0.8f64;
-    
+
     let mut logits_processor = LogitsProcessor::new(299792458, Some(temperature), None);
     let encoder_output = model.encode(&input_token_ids)?;
 
     let start = std::time::Instant::now();
 
     for index in 0.. {
-        
         if output_token_ids.len() > 512 {
             break;
         }
@@ -219,7 +217,7 @@ fn generate_answer(_prompt: String, args: &Args) -> Result<String> {
         output_token_ids.len() as f64 / dt.as_secs_f64(),
     );
 
-    Ok(generated_text)   
+    Ok(generated_text)
 }
 
 // request struct
