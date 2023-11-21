@@ -8,6 +8,10 @@ Efficient platform for inference and serving local LLMs including an OpenAI comp
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
 - Streaming support in generation.
 
+## Pipelines
+- Llama
+- Mistral
+
 ## Overview
 One of the goals of `candle-vllm` is to interface locally served LLMs using an OpenAI compatible API server.
 

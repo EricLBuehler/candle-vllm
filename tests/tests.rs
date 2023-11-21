@@ -8,11 +8,16 @@ use candle_vllm::{
         self, openai_server::chat_completions, requests::Messages, responses::APIError,
         OpenAIServerData,
     },
+    ModelSelected,
 };
 
 #[actix_web::test]
 async fn test_llama() -> Result<(), APIError> {
-    let (loader, model_id) = get_model_loader(&"llama".to_string());
+    let (loader, model_id) = get_model_loader(ModelSelected::Llama {
+        no_kv_cache: false,
+        repeat_last_n: 64,
+        use_flash_attn: false,
+    });
     let paths = loader.download_model(
         model_id,
         None,

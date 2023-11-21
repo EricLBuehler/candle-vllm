@@ -9,13 +9,14 @@ edition = "2021"
 actix-web = "4.4.0"
 anyhow = "1.0.75"
 candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.3.0" }
+candle-examples = { git = "https://github.com/huggingface/candle.git", version = "0.3.0" }
 candle-lora = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 candle-lora-macro = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 candle-lora-transformers = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 candle-nn = { git = "https://github.com/huggingface/candle.git", version = "0.3.0" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
-tokenizers = "0.14.1"
+tokenizers = "0.13.4"
 uuid = { version = "1.5.0", features = ["v4"] }
 candle-transformers = { git = "https://github.com/huggingface/candle.git", version = "0.3.0" }
 hf-hub = "0.3.2"

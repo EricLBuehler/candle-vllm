@@ -4,30 +4,29 @@ use std::sync::Mutex;
 use actix_web::web::Data;
 use actix_web::{http::header::ContentType, test, App};
 use candle_core::{DType, Device};
-use candle_vllm::get_model_loader;
 use candle_vllm::openai::openai_server::chat_completions;
 use candle_vllm::openai::requests::Messages;
 use candle_vllm::openai::responses::APIError;
 use candle_vllm::openai::{self, OpenAIServerData};
+use candle_vllm::{get_model_loader, ModelSelected};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Select model to serve.
-    #[arg(long)]
-    selected_model: String,
-
     /// Huggingface token (optional)
     #[arg(long)]
     hf_token: Option<String>,
+
+    #[clap(subcommand)]
+    command: ModelSelected,
 }
 
 #[actix_web::main]
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
 
-    let (loader, model_id) = get_model_loader(&args.selected_model);
+    let (loader, model_id) = get_model_loader(args.command);
     let paths = loader.download_model(model_id, None, args.hf_token)?;
     let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
 

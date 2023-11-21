@@ -19,9 +19,10 @@ use crate::openai::{
 };
 use actix_web::web::Bytes;
 use candle_core::{DType, Device, Tensor};
+use candle_examples::token_output_stream::TokenOutputStream;
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
 use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
-use candle_transformers::models::llama::{Cache, Llama, LlamaConfig};
+use candle_transformers::models::mistral::{Config, Model};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
 use tokio::sync::mpsc::Sender;
@@ -29,21 +30,21 @@ use uuid::Uuid;
 
 use super::{ModelLoader, ModelPaths, ModulePipeline};
 
+const NAME: &str = "mistral";
 const EOS_TOKEN: &str = "</s>";
-const NAME: &str = "llama";
 const SAMPLING_SEED: u64 = 299792458;
 
 #[derive(Debug, Clone)]
-pub struct LlamaSpecificConfig {
-    no_kv_cache: bool,
+pub struct Mistral7BSpecificConfig {
+    repeat_penalty: f32,
     repeat_last_n: usize,
     use_flash_attn: bool,
 }
 
-impl LlamaSpecificConfig {
-    pub fn new(no_kv_cache: bool, repeat_last_n: usize, use_flash_attn: bool) -> Self {
+impl Mistral7BSpecificConfig {
+    pub fn new(repeat_penalty: f32, repeat_last_n: usize, use_flash_attn: bool) -> Self {
         Self {
-            no_kv_cache,
+            repeat_penalty,
             repeat_last_n,
             use_flash_attn,
         }
@@ -51,23 +52,24 @@ impl LlamaSpecificConfig {
 }
 
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
-pub struct LlamaPipeline {
-    llama: Llama,
-    args: LlamaSpecificConfig,
-    cache: Cache,
-    tokenizer: Tokenizer,
+pub struct Mistral7BPipeline {
+    mistral: Model,
+    args: Mistral7BSpecificConfig,
+    tokenizer: TokenOutputStream,
+    raw_tokenizer: Tokenizer,
     conversation: DefaultConversation,
+    device: Device,
 }
 
-pub struct LlamaLoader(LlamaSpecificConfig);
+pub struct Mistral7BLoader(Mistral7BSpecificConfig);
 
-pub struct LlamaModelPaths<P> {
+pub struct Mistral7BModelPaths<P> {
     tokenizer_filename: P,
     config_filename: P,
     filenames: Vec<P>,
 }
 
-impl ModelPaths for LlamaModelPaths<PathBuf> {
+impl ModelPaths for Mistral7BModelPaths<PathBuf> {
     fn get_config_filename(&self) -> &PathBuf {
         &self.config_filename
     }
@@ -79,13 +81,13 @@ impl ModelPaths for LlamaModelPaths<PathBuf> {
     }
 }
 
-impl LlamaLoader {
-    pub fn new(config: LlamaSpecificConfig) -> Self {
+impl Mistral7BLoader {
+    pub fn new(config: Mistral7BSpecificConfig) -> Self {
         Self(config)
     }
 }
 
-impl<'a> ModelLoader<'a> for LlamaLoader {
+impl<'a> ModelLoader<'a> for Mistral7BLoader {
     fn download_model(
         &self,
         model_id: String,
@@ -119,7 +121,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
             filenames.push(filename);
         }
 
-        Ok(Box::new(LlamaModelPaths {
+        Ok(Box::new(Mistral7BModelPaths {
             tokenizer_filename,
             config_filename,
             filenames,
@@ -134,43 +136,34 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
         let args = self.0.clone();
 
-        let config: LlamaConfig = serde_json::from_slice(
-            &std::fs::read(paths.get_config_filename()).map_err(APIError::new_from_io_err)?,
-        )
-        .map_err(APIError::new_from_serde_err)?;
-        let config = config.into_config(args.use_flash_attn);
+        let config = Config::config_7b_v0_1(args.use_flash_attn);
 
-        println!("Loading Llama model.");
+        println!("Loading Mistral model.");
 
         let vb = from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device, false)
             .map_err(APIError::new_from_candle_err)?;
 
-        let cache = Cache::new(!args.no_kv_cache, dtype, &config, &device)
-            .map_err(APIError::new_from_candle_err)?;
-
-        let llama = Llama::load(vb, &cache, &config).map_err(APIError::new_from_candle_err)?;
+        let mistral = Model::new(&config, vb).map_err(APIError::new_from_candle_err)?;
 
         let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
             .map_err(|x| APIError::new(x.to_string()))?;
 
         println!("Done loading.");
 
-        //max is https://huggingface.co/docs/transformers/model_doc/llama2#transformers.LlamaConfig.max_position_embeddings
         let pipeline_config = PipelineConfig {
             max_model_len: 4096,
         };
 
-        //reference: https://huggingface.co/blog/codellama#conversational-instructions,
-        //reference: https://github.com/facebookresearch/llama/blob/1a240688810f8036049e8da36b073f63d2ac552c/llama/generation.py#L212
+        // source: https://docs.mistral.ai/llm/mistral-instruct-v0.1#chat-template
         Ok((
-            Box::new(LlamaPipeline {
-                llama,
+            Box::new(Mistral7BPipeline {
+                mistral,
                 args,
-                cache,
-                tokenizer,
+                tokenizer: TokenOutputStream::new(tokenizer.clone()),
+                raw_tokenizer: tokenizer,
                 conversation: DefaultConversation::new(
-                    "llama-2".to_string(),
-                    "[INST] <<SYS>>\n{}\n<</SYS>>\n\n".to_string(),
+                    "mistral-7b".to_string(),
+                    "[INST]{}\n".to_string(),
                     Vec::default(),
                     0,
                     SeparatorStyle::Llama2,
@@ -179,49 +172,53 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                     ("[INST]".to_string(), "[/INST]".to_string()),
                     DefaultConversationSeparators {
                         sep: " ".to_string(),
-                        sep2: Some(" </s></s>".to_string()),
+                        sep2: Some("</s>".to_string()),
                     },
                 ),
+                device,
             }),
             pipeline_config,
         ))
     }
 }
 
-impl LlamaPipeline {
+impl Mistral7BPipeline {
     #[allow(clippy::too_many_arguments)]
     fn generate_token(
         &mut self,
         tokens: &Vec<u32>,
         logits_processor: &mut LogitsProcessor,
         tokens_generated: &mut usize,
-        index_pos: &mut usize,
         context_size: usize,
-        device: &Device,
-        sampling: &SamplingParams,
     ) -> Result<u32, APIError> {
-        let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
-        let input = Tensor::new(ctxt, device)
+        let start_pos = tokens.len().saturating_sub(context_size);
+        let ctxt = &tokens[start_pos..];
+        let input = Tensor::new(ctxt, &self.device)
             .map_err(APIError::new_from_candle_err)?
             .unsqueeze(0)
             .map_err(APIError::new_from_candle_err)?;
         let logits = self
-            .llama
-            .forward(&input, *index_pos)
+            .mistral
+            .forward(&input, start_pos)
             .map_err(APIError::new_from_candle_err)?;
-        let logits = logits.squeeze(0).map_err(APIError::new_from_candle_err)?;
-        let logits = if sampling.repetition_penalty == 1. {
+        let logits = logits
+            .squeeze(0)
+            .map_err(APIError::new_from_candle_err)?
+            .squeeze(0)
+            .map_err(APIError::new_from_candle_err)?
+            .to_dtype(DType::F32)
+            .map_err(APIError::new_from_candle_err)?;
+        let logits = if self.args.repeat_penalty == 1. {
             logits
         } else {
             let start_at = tokens.len().saturating_sub(self.args.repeat_last_n);
             candle_transformers::utils::apply_repeat_penalty(
                 &logits,
-                sampling.repetition_penalty,
+                self.args.repeat_penalty,
                 &tokens[start_at..],
             )
             .map_err(APIError::new_from_candle_err)?
         };
-        *index_pos += ctxt.len();
 
         let next_token = logits_processor
             .sample(&logits)
@@ -236,7 +233,6 @@ impl LlamaPipeline {
         &mut self,
         mut tokens: Vec<u32>,
         sampling: &SamplingParams,
-        device: &Device,
         eos_token_id: &Option<u32>,
         logits_processor: &mut LogitsProcessor,
         streamer: Option<Sender<Result<Bytes, SenderError>>>,
@@ -246,7 +242,6 @@ impl LlamaPipeline {
         match streamer {
             Some(streamer) => {
                 struct StreamingGen {
-                    index_pos: usize,
                     index: i32,
                     tokens_generated: usize,
                     done_reason: Option<String>,
@@ -256,7 +251,6 @@ impl LlamaPipeline {
                 let mut tokens_n = Vec::new();
                 for _ in 0..sampling.n {
                     tokens_n.push(StreamingGen {
-                        index_pos: 0,
                         index: 0,
                         tokens_generated: 0,
                         done_reason: None,
@@ -293,28 +287,24 @@ impl LlamaPipeline {
                             continue;
                         }
 
-                        let context_size = if self.cache.use_kv_cache && gen.index > 0 {
-                            1
-                        } else {
-                            tokens.len()
-                        };
+                        let index = tokens.len() - 1;
+                        let context_size = if index > 0 { 1 } else { tokens.len() };
 
                         let next_token = self.generate_token(
                             tokens,
                             logits_processor,
                             &mut gen.tokens_generated,
-                            &mut gen.index_pos,
                             context_size,
-                            device,
-                            sampling,
                         )?;
 
                         tokens.push(next_token);
                         total_tokens_generated += 1;
 
-                        if let Some(text) = self.tokenizer.id_to_token(next_token) {
-                            let text = text.replace('▁', " ").replace("<0x0A>", "\n");
-
+                        if let Some(text) = self
+                            .tokenizer
+                            .next_token(next_token)
+                            .map_err(APIError::new_from_candle_err)?
+                        {
                             if stop_tokens.contains(&text) {
                                 gen.done_reason = Some("stop".to_string());
                             }
@@ -371,33 +361,28 @@ impl LlamaPipeline {
             }
 
             None => {
-                let mut index_pos = 0;
                 let mut index = 0;
                 let mut result = "".to_string();
                 let mut tokens_generated = 0;
                 let finish_reason;
 
                 loop {
-                    let context_size = if self.cache.use_kv_cache && index > 0 {
-                        1
-                    } else {
-                        tokens.len()
-                    };
+                    let context_size = if index > 0 { 1 } else { tokens.len() };
 
                     let next_token = self.generate_token(
                         &tokens,
                         logits_processor,
                         &mut tokens_generated,
-                        &mut index_pos,
                         context_size,
-                        device,
-                        sampling,
                     )?;
 
                     tokens.push(next_token);
 
-                    if let Some(text) = self.tokenizer.id_to_token(next_token) {
-                        let text = text.replace('▁', " ").replace("<0x0A>", "\n");
+                    if let Some(text) = self
+                        .tokenizer
+                        .next_token(next_token)
+                        .map_err(APIError::new_from_candle_err)?
+                    {
                         if stop_tokens.contains(&text) {
                             finish_reason = "stop".to_string();
                             break;
@@ -437,15 +422,15 @@ impl LlamaPipeline {
     }
 }
 
-impl<'s> ModulePipeline<'s> for LlamaPipeline {
+impl<'s> ModulePipeline<'s> for Mistral7BPipeline {
     fn forward(
         &mut self,
         xs: &tokenizers::Encoding,
         sampling: SamplingParams,
-        device: Device,
+        _device: Device,
         streamer: Option<Sender<Result<Bytes, SenderError>>>,
     ) -> Result<(Option<Vec<ChatChoice>>, ChatCompletionUsageResponse), APIError> {
-        let eos_token_id = self.tokenizer.token_to_id(EOS_TOKEN);
+        let eos_token_id = self.tokenizer.get_token(EOS_TOKEN);
 
         let mut logits_processor = LogitsProcessor::new(
             SAMPLING_SEED,
@@ -471,7 +456,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 let (_result, _tokens_gen) = self.forward_inner(
                     tokens,
                     &sampling,
-                    &device,
                     &eos_token_id,
                     &mut logits_processor,
                     Some(streamer),
@@ -486,7 +470,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                     let (result, tokens_gen) = self.forward_inner(
                         tokens,
                         &sampling,
-                        &device,
                         &eos_token_id,
                         &mut logits_processor,
                         None,
@@ -514,7 +497,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
     }
 
     fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String> {
-        &self.tokenizer
+        &self.raw_tokenizer
     }
 
     fn get_conversation(&mut self) -> &mut dyn Conversation {
@@ -522,5 +505,5 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
     }
 }
 
-unsafe impl Send for LlamaPipeline {}
-unsafe impl Sync for LlamaPipeline {}
+unsafe impl Send for Mistral7BPipeline {}
+unsafe impl Sync for Mistral7BPipeline {}

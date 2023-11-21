@@ -14,6 +14,7 @@ use super::{
 };
 
 pub mod llama;
+pub mod mistral;
 
 /// A module pipeline that encompasses the inference pass, tokenizer, and conversation.
 pub trait ModulePipeline<'s>: Send + Sync {
