@@ -28,8 +28,6 @@ struct Args {
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
 
-    println!("Loading {} model...", args.command.to_string());
-
     let (loader, model_id) = get_model_loader(args.command);
     let paths = loader.download_model(model_id, None, args.hf_token)?;
     let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
