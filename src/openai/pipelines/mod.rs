@@ -26,7 +26,7 @@ pub trait ModulePipeline<'s>: Send + Sync {
         streamer: Option<Sender<Result<Bytes, SenderError>>>,
     ) -> Result<(Option<Vec<ChatChoice>>, ChatCompletionUsageResponse), APIError>;
 
-    fn name(&self) -> String;
+    fn name(&self) -> &str;
 
     fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String>;
 

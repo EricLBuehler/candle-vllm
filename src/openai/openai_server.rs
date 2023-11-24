@@ -15,7 +15,7 @@ use uuid::Uuid;
 fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
     let current_name = {
         let model = data.model.lock().unwrap();
-        model.name()
+        model.name().to_string()
     };
     if &current_name != model_name {
         Err(APIError::new(format!(

@@ -16,7 +16,7 @@ use candle_vllm::{
 
 #[actix_web::test]
 async fn test_llama() -> Result<(), APIError> {
-    let (loader, model_id) = get_model_loader(ModelSelected::Llama {
+    let (loader, model_id) = get_model_loader(ModelSelected::Llama7b {
         no_kv_cache: false,
         repeat_last_n: 64,
         use_flash_attn: false,

@@ -338,7 +338,7 @@ impl Mistral7BPipeline {
                                 choices,
                                 id: request_id,
                                 created,
-                                model: self.name(),
+                                model: self.name().to_string(),
                                 object: "chat.completion.chunk",
                             })
                             .unwrap(),
@@ -488,8 +488,8 @@ impl<'s> ModulePipeline<'s> for Mistral7BPipeline {
         ))
     }
 
-    fn name(&self) -> String {
-        NAME.to_string()
+    fn name(&self) -> &str {
+        NAME
     }
 
     fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String> {

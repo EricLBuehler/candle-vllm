@@ -38,18 +38,18 @@ openai.api_key = "EMPTY"
 openai.base_url = "http://localhost:2000/v1/"
 
 completion = openai.chat.completions.create(
-    model="llama",
+    model="llama7b",
     messages=[
         {
             "role": "user",
-            "content": "How should I learn to type?",
+            "content": "Explain how to best learn Rust.",
         },
     ],
-    max_tokens = 32,
+    max_tokens = 64,
 )
 print(completion.choices[0].message.content)
 ```
-Next, launch a `candle-vllm` instance by running `HF_TOKEN=... cargo run --release -- --hf-token HF_TOKEN --port 2000 llama --repeat-last-n 64`.
+Next, launch a `candle-vllm` instance by running `HF_TOKEN=... cargo run --release -- --hf-token HF_TOKEN --port 2000 llama7b --repeat-last-n 64`.
 
 After the `candle-vllm` instance is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 

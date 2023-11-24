@@ -30,7 +30,6 @@ use uuid::Uuid;
 use super::{read_env_var, ModelLoader, ModelPaths, ModulePipeline};
 
 const EOS_TOKEN: &str = "</s>";
-const NAME: &str = "llama";
 const SAMPLING_SEED: u64 = 299792458;
 
 #[derive(Debug, Clone)]
@@ -57,9 +56,13 @@ pub struct LlamaPipeline {
     cache: Cache,
     tokenizer: Tokenizer,
     conversation: DefaultConversation,
+    name: String,
 }
 
-pub struct LlamaLoader(LlamaSpecificConfig);
+pub struct LlamaLoader {
+    config: LlamaSpecificConfig,
+    name: String,
+}
 
 pub struct LlamaModelPaths<P> {
     tokenizer_filename: P,
@@ -80,8 +83,8 @@ impl ModelPaths for LlamaModelPaths<PathBuf> {
 }
 
 impl LlamaLoader {
-    pub fn new(config: LlamaSpecificConfig) -> Self {
-        Self(config)
+    pub fn new(config: LlamaSpecificConfig, name: String) -> Self {
+        Self { config, name }
     }
 }
 
@@ -130,7 +133,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         dtype: DType,
         device: Device,
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
-        let args = self.0.clone();
+        let args = self.config.clone();
 
         let config: LlamaConfig = serde_json::from_slice(
             &std::fs::read(paths.get_config_filename()).map_err(APIError::from)?,
@@ -138,7 +141,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         .map_err(APIError::from)?;
         let config = config.into_config(args.use_flash_attn);
 
-        println!("Loading Llama model.");
+        println!("Loading {} model.", self.name);
 
         let vb = from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device, false)
             .map_err(APIError::from)?;
@@ -180,6 +183,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                         sep2: Some(" </s></s>".to_string()),
                     },
                 ),
+                name: self.name.clone(),
             }),
             pipeline_config,
         ))
@@ -348,7 +352,7 @@ impl LlamaPipeline {
                                 choices,
                                 id: request_id,
                                 created,
-                                model: self.name(),
+                                model: self.name().to_string(),
                                 object: "chat.completion.chunk",
                             })
                             .unwrap(),
@@ -508,8 +512,8 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         ))
     }
 
-    fn name(&self) -> String {
-        NAME.to_string()
+    fn name(&self) -> &str {
+        &self.name
     }
 
     fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String> {

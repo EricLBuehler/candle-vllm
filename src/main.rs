@@ -59,12 +59,16 @@ async fn main() -> Result<(), APIError> {
         .await
         .map_err(|e| APIError::new(e.to_string()))?;
     } else {
-        HttpServer::new(move || App::new().wrap(Logger::default()).service(chat_completions))
-            .bind(("127.0.0.1", args.port))
-            .map_err(|e| APIError::new(e.to_string()))?
-            .run()
-            .await
-            .map_err(|e| APIError::new(e.to_string()))?;
+        HttpServer::new(move || {
+            App::new()
+                .service(chat_completions)
+                .app_data(Data::new(server_data.clone()))
+        })
+        .bind(("127.0.0.1", args.port))
+        .map_err(|e| APIError::new(e.to_string()))?
+        .run()
+        .await
+        .map_err(|e| APIError::new(e.to_string()))?;
     }
 
     Ok(())
