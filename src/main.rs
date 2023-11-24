@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 
+use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::{App, HttpServer};
 use candle_core::{DType, Device};
@@ -39,9 +40,10 @@ async fn main() -> Result<(), APIError> {
     };
 
     println!("Starting server...");
-
+    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     HttpServer::new(move || {
         App::new()
+            .wrap(Logger::default())
             .service(chat_completions)
             .app_data(Data::new(server_data.clone()))
     })

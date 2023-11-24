@@ -7,6 +7,7 @@ use crate::openai::{
         },
         Conversation,
     },
+    models::llama::{Cache, Llama, LlamaConfig},
     requests::StopTokens,
     responses::{
         APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
@@ -21,7 +22,6 @@ use actix_web::web::Bytes;
 use candle_core::{DType, Device, Tensor};
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
 use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
-use candle_transformers::models::llama::{Cache, Llama, LlamaConfig};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
 use tokio::sync::mpsc::Sender;
@@ -494,6 +494,9 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 }
             }
         }
+
+        let config = self.llama.get_config().clone();
+        self.llama.clear_cache(&config);
 
         Ok((
             Some(choices),

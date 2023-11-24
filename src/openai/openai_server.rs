@@ -8,7 +8,7 @@ use super::streaming::new_streaming_conn;
 use super::utils::get_created_time_secs;
 use super::OpenAIServerData;
 use actix_web::web::Bytes;
-use actix_web::{get, web, Either, HttpResponse};
+use actix_web::{post, web, Either, HttpResponse};
 use tokenizers::Encoding;
 use uuid::Uuid;
 
@@ -100,7 +100,7 @@ fn check_length(
     }
 }
 
-#[get("/v1/chat/completions")]
+#[post("/v1/chat/completions")]
 async fn chat_completions(
     data: web::Data<OpenAIServerData<'static>>,
     request: web::Json<ChatCompletionRequest>,

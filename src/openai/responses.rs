@@ -23,6 +23,7 @@ impl APIError {
     }
 
     pub fn from<T: ToString>(value: T) -> Self {
+        //panic!("{}", value.to_string());
         Self::new(value.to_string())
     }
 }

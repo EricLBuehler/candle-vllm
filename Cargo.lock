@@ -600,7 +600,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.3.1"
-source = "git+https://github.com/huggingface/candle.git#ca19a9af6220366bb0beaea1eb7f34a1a8a2e07b"
+source = "git+https://github.com/huggingface/candle.git#762e996ce636c5168ec1dc3ded9bd729d4f14d84"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -625,7 +625,7 @@ dependencies = [
 [[package]]
 name = "candle-datasets"
 version = "0.3.1"
-source = "git+https://github.com/huggingface/candle.git#ca19a9af6220366bb0beaea1eb7f34a1a8a2e07b"
+source = "git+https://github.com/huggingface/candle.git#762e996ce636c5168ec1dc3ded9bd729d4f14d84"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -642,7 +642,7 @@ dependencies = [
 [[package]]
 name = "candle-examples"
 version = "0.3.1"
-source = "git+https://github.com/huggingface/candle.git#ca19a9af6220366bb0beaea1eb7f34a1a8a2e07b"
+source = "git+https://github.com/huggingface/candle.git#762e996ce636c5168ec1dc3ded9bd729d4f14d84"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -661,7 +661,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn"
 version = "0.3.1"
-source = "git+https://github.com/huggingface/candle.git#ca19a9af6220366bb0beaea1eb7f34a1a8a2e07b"
+source = "git+https://github.com/huggingface/candle.git#762e996ce636c5168ec1dc3ded9bd729d4f14d84"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -673,7 +673,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.3.1"
-source = "git+https://github.com/huggingface/candle.git#ca19a9af6220366bb0beaea1eb7f34a1a8a2e07b"
+source = "git+https://github.com/huggingface/candle.git#762e996ce636c5168ec1dc3ded9bd729d4f14d84"
 dependencies = [
  "anyhow",
  "glob",
@@ -734,7 +734,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.3.1"
-source = "git+https://github.com/huggingface/candle.git#ca19a9af6220366bb0beaea1eb7f34a1a8a2e07b"
+source = "git+https://github.com/huggingface/candle.git#762e996ce636c5168ec1dc3ded9bd729d4f14d84"
 dependencies = [
  "accelerate-src",
  "candle-core",
@@ -760,7 +760,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.3.1"
-source = "git+https://github.com/huggingface/candle.git#ca19a9af6220366bb0beaea1eb7f34a1a8a2e07b"
+source = "git+https://github.com/huggingface/candle.git#762e996ce636c5168ec1dc3ded9bd729d4f14d84"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -798,6 +798,7 @@ dependencies = [
  "cudarc",
  "derive_more",
  "dyn-fmt",
+ "env_logger",
  "futures",
  "half",
  "hf-hub",
@@ -806,6 +807,7 @@ dependencies = [
  "serde_json",
  "tokenizers",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -1292,6 +1294,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_logger"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95b3f3e67048839cb0d0781f445682a35113da7121f7c949db0e2be96a4fbece"
+dependencies = [
+ "humantime",
+ "is-terminal",
+ "log",
+ "regex",
+ "termcolor",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1644,9 +1659,9 @@ dependencies = [
 
 [[package]]
 name = "gimli"
-version = "0.28.0"
+version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fb8d784f27acf97159b40fc4db5ecd8aa23b9ad5ef69cdd136d3bc80665f0c0"
+checksum = "4271d37baee1b8c7e4b708028c57d816cf9d2434acb33a549475f78c181f6253"
 
 [[package]]
 name = "glob"
@@ -1764,6 +1779,12 @@ name = "httpdate"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df3b46402a9d5adb4c86a0cf463f42e19994e3ee891101b1841f30a545cb49a9"
+
+[[package]]
+name = "humantime"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
 
 [[package]]
 name = "hyper"
@@ -1954,6 +1975,17 @@ name = "ipnet"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f518f335dce6725a761382244631d86cf0ccb2863413590b31338feb467f9c3"
+
+[[package]]
+name = "is-terminal"
+version = "0.4.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb0889898416213fab133e1d33a0e5858a48177452750691bde3666d0fdbaf8b"
+dependencies = [
+ "hermit-abi",
+ "rustix",
+ "windows-sys 0.48.0",
+]
 
 [[package]]
 name = "itertools"
@@ -3376,6 +3408,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "termcolor"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff1bc3d3f05aff0403e8ac0d92ced918ec05b666a43f83297ccef5bea8a3d449"
+dependencies = [
+ "winapi-util",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.50"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3732,9 +3773,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "ureq"
-version = "2.9.0"
+version = "2.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7830e33f6e25723d41a63f77e434159dad02919f18f55a512b5f16f3b1d77138"
+checksum = "f8cdd25c339e200129fe4de81451814e5228c9b771d57378817d6117cc2b3f97"
 dependencies = [
  "base64 0.21.5",
  "flate2",

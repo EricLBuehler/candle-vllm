@@ -18,7 +18,7 @@ pub enum ModelSelected {
     },
 
     /// Select the mistral model.
-    Mistral {
+    Mistral7b {
         #[arg(long)]
         repeat_penalty: f32,
         #[arg(long)]
@@ -36,11 +36,11 @@ impl ToString for ModelSelected {
                 repeat_last_n: _,
                 use_flash_attn: _,
             } => "llama".to_string(),
-            ModelSelected::Mistral {
+            ModelSelected::Mistral7b {
                 repeat_penalty: _,
                 repeat_last_n: _,
                 use_flash_attn: _,
-            } => "mistral".to_string(),
+            } => "mistral7b".to_string(),
         }
     }
 }
@@ -59,7 +59,7 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
             ))),
             "meta-llama/Llama-2-7b-hf".to_string(),
         ),
-        ModelSelected::Mistral {
+        ModelSelected::Mistral7b {
             repeat_penalty,
             repeat_last_n,
             use_flash_attn,

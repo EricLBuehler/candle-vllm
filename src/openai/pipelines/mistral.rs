@@ -7,6 +7,7 @@ use crate::openai::{
         },
         Conversation,
     },
+    models::mistral::{Config, Model},
     requests::StopTokens,
     responses::{
         APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
@@ -22,7 +23,6 @@ use candle_core::{DType, Device, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
 use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
-use candle_transformers::models::mistral::{Config, Model};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
 use tokio::sync::mpsc::Sender;
