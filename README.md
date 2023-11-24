@@ -23,6 +23,37 @@ One of the goals of `candle-vllm` is to interface locally served LLMs using an O
       - If a streaming request is received, token-by-token streaming using SSEs is established (`n` choices of 1 token).
       - Otherwise, a `n` choices are generated and returned.
 
+## Examples
+See [this folder](examples/) for some examples.
+
+### Example with Llama
+In your terminal, install the `openai` Python package by running `pip install openai`.
+
+Then, create a new Python file and write the following code:
+```python
+import openai
+
+openai.api_key = "EMPTY"
+
+openai.base_url = "http://localhost:2000/v1/"
+
+completion = openai.chat.completions.create(
+    model="llama",
+    messages=[
+        {
+            "role": "user",
+            "content": "How should I learn to type?",
+        },
+    ],
+    max_tokens = 32,
+)
+print(completion.choices[0].message.content)
+```
+Next, launch a `candle-vllm` instance by running `HF_TOKEN=... cargo run --release -- --hf-token HF_TOKEN --port 2000 llama --repeat-last-n 64`.
+
+After the `candle-vllm` instance is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
+
+
 ## Contributing
 The following features are planned to be implemented, but contributions are especially welcome:
 - Sampling methods:

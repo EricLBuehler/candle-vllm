@@ -1,9 +1,9 @@
 import openai
 
-# optional; defaults to `os.environ['OPENAI_API_KEY']`
+# Run: HF_TOKEN=... cargo run --release -- --hf-token HF_TOKEN --port 2000 llama --repeat-last-n 64
+
 openai.api_key = "EMPTY"
 
-# all client options can be configured just like the `OpenAI` instantiation counterpart
 openai.base_url = "http://localhost:2000/v1/"
 
 completion = openai.chat.completions.create(
@@ -11,8 +11,9 @@ completion = openai.chat.completions.create(
     messages=[
         {
             "role": "user",
-            "content": "How do I output all files in a directory using Python?",
+            "content": "How should I learn to type?",
         },
     ],
+    max_tokens = 32,
 )
 print(completion.choices[0].message.content)
