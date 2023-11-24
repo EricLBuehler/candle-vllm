@@ -1,13 +1,11 @@
-use std::collections::HashMap;
 use std::sync::Mutex;
 
 use actix_web::web::Data;
-use actix_web::{http::header::ContentType, test, App};
+use actix_web::{test, App};
 use candle_core::{DType, Device};
 use candle_vllm::openai::openai_server::chat_completions;
-use candle_vllm::openai::requests::Messages;
 use candle_vllm::openai::responses::APIError;
-use candle_vllm::openai::{self, OpenAIServerData};
+use candle_vllm::openai::OpenAIServerData;
 use candle_vllm::{get_model_loader, ModelSelected};
 use clap::Parser;
 
@@ -26,6 +24,8 @@ struct Args {
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
 
+    println!("Loading {} model...", args.command.to_string());
+
     let (loader, model_id) = get_model_loader(args.command);
     let paths = loader.download_model(model_id, None, args.hf_token)?;
     let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
@@ -36,14 +36,16 @@ async fn main() -> Result<(), APIError> {
         device: Device::Cpu,
     };
 
-    let app = test::init_service(
+    println!("Starting server...");
+
+    let _app = test::init_service(
         App::new()
             .service(chat_completions)
             .app_data(Data::new(server_data)),
     )
     .await;
 
-    let mut system = HashMap::new();
+    /*let mut system = HashMap::new();
     system.insert("role".to_string(), "system".to_string());
     system.insert(
         "content".to_string(),
@@ -83,6 +85,6 @@ async fn main() -> Result<(), APIError> {
 
     let resp = test::call_service(&app, req).await;
     println!("{:?}", resp.status());
-    println!("{:?}", resp.into_body());
+    println!("{:?}", resp.into_body());*/
     Ok(())
 }

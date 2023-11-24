@@ -28,6 +28,23 @@ pub enum ModelSelected {
     },
 }
 
+impl ToString for ModelSelected {
+    fn to_string(&self) -> String {
+        match self {
+            ModelSelected::Llama {
+                no_kv_cache: _,
+                repeat_last_n: _,
+                use_flash_attn: _,
+            } => "llama".to_string(),
+            ModelSelected::Mistral {
+                repeat_penalty: _,
+                repeat_last_n: _,
+                use_flash_attn: _,
+            } => "mistral".to_string(),
+        }
+    }
+}
+
 pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoader<'a>>, String) {
     match selected_model {
         ModelSelected::Llama {
