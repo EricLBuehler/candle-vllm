@@ -21,6 +21,10 @@ struct Args {
     #[arg(long)]
     port: u16,
 
+    /// Set verbose mode (print all requests)
+    #[arg(long)]
+    verbose: bool,
+
     #[clap(subcommand)]
     command: ModelSelected,
 }
@@ -40,18 +44,28 @@ async fn main() -> Result<(), APIError> {
     };
 
     println!("Starting server...");
-    env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
-    HttpServer::new(move || {
-        App::new()
-            .wrap(Logger::default())
-            .service(chat_completions)
-            .app_data(Data::new(server_data.clone()))
-    })
-    .bind(("127.0.0.1", args.port))
-    .map_err(|e| APIError::new(e.to_string()))?
-    .run()
-    .await
-    .map_err(|e| APIError::new(e.to_string()))?;
+    if args.verbose {
+        env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
+
+        HttpServer::new(move || {
+            App::new()
+                .wrap(Logger::default())
+                .service(chat_completions)
+                .app_data(Data::new(server_data.clone()))
+        })
+        .bind(("127.0.0.1", args.port))
+        .map_err(|e| APIError::new(e.to_string()))?
+        .run()
+        .await
+        .map_err(|e| APIError::new(e.to_string()))?;
+    } else {
+        HttpServer::new(move || App::new().wrap(Logger::default()).service(chat_completions))
+            .bind(("127.0.0.1", args.port))
+            .map_err(|e| APIError::new(e.to_string()))?
+            .run()
+            .await
+            .map_err(|e| APIError::new(e.to_string()))?;
+    }
 
     Ok(())
 }
