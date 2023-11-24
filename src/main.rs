@@ -43,7 +43,7 @@ async fn main() -> Result<(), APIError> {
         device: Device::Cpu,
     };
 
-    println!("Starting server...");
+    println!("Server started at http://127.0.0.1:{}.", args.port);
     if args.verbose {
         env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
