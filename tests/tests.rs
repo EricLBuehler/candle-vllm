@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use actix_web::{http::header::ContentType, test, web::Data, App};
 use candle_core::{DType, Device};
@@ -27,7 +30,7 @@ async fn test_llama() -> Result<(), APIError> {
 
     let server_data = OpenAIServerData {
         pipeline_config: model.1,
-        model: Mutex::new(model.0),
+        model: Arc::new(Mutex::new(model.0)),
         device: Device::Cpu,
     };
 

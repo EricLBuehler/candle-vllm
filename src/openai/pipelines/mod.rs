@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{env, path::PathBuf};
 
 use actix_web::web::Bytes;
 use candle_core::{DType, Device};
@@ -31,6 +31,10 @@ pub trait ModulePipeline<'s>: Send + Sync {
     fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String>;
 
     fn get_conversation(&mut self) -> &mut dyn Conversation;
+}
+
+pub(crate) fn read_env_var(var: String) -> Result<String, APIError> {
+    env::var(var).map_err(APIError::from)
 }
 
 pub trait ModelPaths {

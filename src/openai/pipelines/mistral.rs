@@ -28,7 +28,7 @@ use tokenizers::Tokenizer;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
-use super::{ModelLoader, ModelPaths, ModulePipeline};
+use super::{read_env_var, ModelLoader, ModelPaths, ModulePipeline};
 
 const NAME: &str = "mistral";
 const EOS_TOKEN: &str = "</s>";
@@ -96,28 +96,26 @@ impl<'a> ModelLoader<'a> for Mistral7BLoader {
     ) -> Result<Box<dyn ModelPaths>, APIError> {
         let api = ApiBuilder::new()
             .with_progress(true)
-            .with_token(hf_token)
+            .with_token(Some(read_env_var(hf_token.unwrap())?))
             .build()
-            .map_err(APIError::new_from_hf_err)?;
+            .map_err(APIError::from)?;
         let revision = revision.unwrap_or("main".to_string());
         let api = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
 
-        let tokenizer_filename = api
-            .get("tokenizer.json")
-            .map_err(APIError::new_from_hf_err)?;
+        let tokenizer_filename = api.get("tokenizer.json").map_err(APIError::from)?;
 
-        let config_filename = api.get("config.json").map_err(APIError::new_from_hf_err)?;
+        let config_filename = api.get("config.json").map_err(APIError::from)?;
 
         let mut filenames = vec![];
         for rfilename in api
             .info()
-            .map_err(APIError::new_from_hf_err)?
+            .map_err(APIError::from)?
             .siblings
             .iter()
             .map(|x| x.rfilename.clone())
             .filter(|x| x.ends_with(".safetensors"))
         {
-            let filename = api.get(&rfilename).map_err(APIError::new_from_hf_err)?;
+            let filename = api.get(&rfilename).map_err(APIError::from)?;
             filenames.push(filename);
         }
 
@@ -141,9 +139,9 @@ impl<'a> ModelLoader<'a> for Mistral7BLoader {
         println!("Loading Mistral model.");
 
         let vb = from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device, false)
-            .map_err(APIError::new_from_candle_err)?;
+            .map_err(APIError::from)?;
 
-        let mistral = Model::new(&config, vb).map_err(APIError::new_from_candle_err)?;
+        let mistral = Model::new(&config, vb).map_err(APIError::from)?;
 
         let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
             .map_err(|x| APIError::new(x.to_string()))?;
@@ -194,20 +192,20 @@ impl Mistral7BPipeline {
         let start_pos = tokens.len().saturating_sub(context_size);
         let ctxt = &tokens[start_pos..];
         let input = Tensor::new(ctxt, &self.device)
-            .map_err(APIError::new_from_candle_err)?
+            .map_err(APIError::from)?
             .unsqueeze(0)
-            .map_err(APIError::new_from_candle_err)?;
+            .map_err(APIError::from)?;
         let logits = self
             .mistral
             .forward(&input, start_pos)
-            .map_err(APIError::new_from_candle_err)?;
+            .map_err(APIError::from)?;
         let logits = logits
             .squeeze(0)
-            .map_err(APIError::new_from_candle_err)?
+            .map_err(APIError::from)?
             .squeeze(0)
-            .map_err(APIError::new_from_candle_err)?
+            .map_err(APIError::from)?
             .to_dtype(DType::F32)
-            .map_err(APIError::new_from_candle_err)?;
+            .map_err(APIError::from)?;
         let logits = if self.args.repeat_penalty == 1. {
             logits
         } else {
@@ -217,12 +215,10 @@ impl Mistral7BPipeline {
                 self.args.repeat_penalty,
                 &tokens[start_at..],
             )
-            .map_err(APIError::new_from_candle_err)?
+            .map_err(APIError::from)?
         };
 
-        let next_token = logits_processor
-            .sample(&logits)
-            .map_err(APIError::new_from_candle_err)?;
+        let next_token = logits_processor.sample(&logits).map_err(APIError::from)?;
         *tokens_generated += 1;
 
         Ok(next_token)
@@ -303,7 +299,7 @@ impl Mistral7BPipeline {
                         if let Some(text) = self
                             .tokenizer
                             .next_token(next_token)
-                            .map_err(APIError::new_from_candle_err)?
+                            .map_err(APIError::from)?
                         {
                             if stop_tokens.contains(&text) {
                                 gen.done_reason = Some("stop".to_string());
@@ -381,7 +377,7 @@ impl Mistral7BPipeline {
                     if let Some(text) = self
                         .tokenizer
                         .next_token(next_token)
-                        .map_err(APIError::new_from_candle_err)?
+                        .map_err(APIError::from)?
                     {
                         if stop_tokens.contains(&text) {
                             finish_reason = "stop".to_string();

@@ -1,7 +1,6 @@
 use actix_web::error;
 use derive_more::{Display, Error};
 
-use hf_hub::api::sync::ApiError;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Display, Error, Serialize)]
@@ -23,28 +22,8 @@ impl APIError {
         }
     }
 
-    pub fn new_from_io_err(data: std::io::Error) -> Self {
-        Self {
-            data: data.to_string(),
-        }
-    }
-
-    pub fn new_from_serde_err(data: serde_json::Error) -> Self {
-        Self {
-            data: data.to_string(),
-        }
-    }
-
-    pub fn new_from_candle_err(data: candle_core::Error) -> Self {
-        Self {
-            data: data.to_string(),
-        }
-    }
-
-    pub fn new_from_hf_err(data: ApiError) -> Self {
-        Self {
-            data: data.to_string(),
-        }
+    pub fn from<T: ToString>(value: T) -> Self {
+        Self::new(value.to_string())
     }
 }
 

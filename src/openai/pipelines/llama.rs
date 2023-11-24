@@ -27,7 +27,7 @@ use tokenizers::Tokenizer;
 use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
-use super::{ModelLoader, ModelPaths, ModulePipeline};
+use super::{read_env_var, ModelLoader, ModelPaths, ModulePipeline};
 
 const EOS_TOKEN: &str = "</s>";
 const NAME: &str = "llama";
@@ -94,28 +94,26 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
     ) -> Result<Box<dyn ModelPaths>, APIError> {
         let api = ApiBuilder::new()
             .with_progress(true)
-            .with_token(hf_token)
+            .with_token(Some(read_env_var(hf_token.unwrap())?))
             .build()
-            .map_err(APIError::new_from_hf_err)?;
+            .map_err(APIError::from)?;
         let revision = revision.unwrap_or("main".to_string());
         let api = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
 
-        let tokenizer_filename = api
-            .get("tokenizer.json")
-            .map_err(APIError::new_from_hf_err)?;
+        let tokenizer_filename = api.get("tokenizer.json").map_err(APIError::from)?;
 
-        let config_filename = api.get("config.json").map_err(APIError::new_from_hf_err)?;
+        let config_filename = api.get("config.json").map_err(APIError::from)?;
 
         let mut filenames = vec![];
         for rfilename in api
             .info()
-            .map_err(APIError::new_from_hf_err)?
+            .map_err(APIError::from)?
             .siblings
             .iter()
             .map(|x| x.rfilename.clone())
             .filter(|x| x.ends_with(".safetensors"))
         {
-            let filename = api.get(&rfilename).map_err(APIError::new_from_hf_err)?;
+            let filename = api.get(&rfilename).map_err(APIError::from)?;
             filenames.push(filename);
         }
 
@@ -135,20 +133,20 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         let args = self.0.clone();
 
         let config: LlamaConfig = serde_json::from_slice(
-            &std::fs::read(paths.get_config_filename()).map_err(APIError::new_from_io_err)?,
+            &std::fs::read(paths.get_config_filename()).map_err(APIError::from)?,
         )
-        .map_err(APIError::new_from_serde_err)?;
+        .map_err(APIError::from)?;
         let config = config.into_config(args.use_flash_attn);
 
         println!("Loading Llama model.");
 
         let vb = from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device, false)
-            .map_err(APIError::new_from_candle_err)?;
+            .map_err(APIError::from)?;
 
-        let cache = Cache::new(!args.no_kv_cache, dtype, &config, &device)
-            .map_err(APIError::new_from_candle_err)?;
+        let cache =
+            Cache::new(!args.no_kv_cache, dtype, &config, &device).map_err(APIError::from)?;
 
-        let llama = Llama::load(vb, &cache, &config).map_err(APIError::new_from_candle_err)?;
+        let llama = Llama::load(vb, &cache, &config).map_err(APIError::from)?;
 
         let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
             .map_err(|x| APIError::new(x.to_string()))?;
@@ -202,14 +200,14 @@ impl LlamaPipeline {
     ) -> Result<u32, APIError> {
         let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
         let input = Tensor::new(ctxt, device)
-            .map_err(APIError::new_from_candle_err)?
+            .map_err(APIError::from)?
             .unsqueeze(0)
-            .map_err(APIError::new_from_candle_err)?;
+            .map_err(APIError::from)?;
         let logits = self
             .llama
             .forward(&input, *index_pos)
-            .map_err(APIError::new_from_candle_err)?;
-        let logits = logits.squeeze(0).map_err(APIError::new_from_candle_err)?;
+            .map_err(APIError::from)?;
+        let logits = logits.squeeze(0).map_err(APIError::from)?;
         let logits = if sampling.repetition_penalty == 1. {
             logits
         } else {
@@ -219,13 +217,11 @@ impl LlamaPipeline {
                 sampling.repetition_penalty,
                 &tokens[start_at..],
             )
-            .map_err(APIError::new_from_candle_err)?
+            .map_err(APIError::from)?
         };
         *index_pos += ctxt.len();
 
-        let next_token = logits_processor
-            .sample(&logits)
-            .map_err(APIError::new_from_candle_err)?;
+        let next_token = logits_processor.sample(&logits).map_err(APIError::from)?;
         *tokens_generated += 1;
 
         Ok(next_token)

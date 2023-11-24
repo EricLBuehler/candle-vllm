@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use candle_core::Device;
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
@@ -27,12 +27,14 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct PipelineConfig {
     pub max_model_len: usize,
 }
 
+#[derive(Clone)]
 pub struct OpenAIServerData<'s> {
-    pub model: Mutex<Box<dyn ModulePipeline<'s>>>,
+    pub model: Arc<Mutex<Box<dyn ModulePipeline<'s>>>>,
     pub pipeline_config: PipelineConfig,
     pub device: Device,
 }
