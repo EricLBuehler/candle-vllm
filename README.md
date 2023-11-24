@@ -10,7 +10,11 @@ Efficient platform for inference and serving local LLMs including an OpenAI comp
 
 ## Pipelines
 - Llama
+    - 7b
+    - 13b
+    - 70b
 - Mistral
+    - 7b
 
 ## Overview
 One of the goals of `candle-vllm` is to interface locally served LLMs using an OpenAI compatible API server.
