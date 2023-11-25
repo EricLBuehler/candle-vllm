@@ -160,7 +160,7 @@ impl<'a> ModelLoader<'a> for Mistral7BLoader {
                 tokenizer: TokenOutputStream::new(tokenizer.clone()),
                 raw_tokenizer: tokenizer,
                 conversation: DefaultConversation::new(
-                    "mistral-7b".to_string(),
+                    "mistral7b".to_string(),
                     "[INST]{}\n".to_string(),
                     Vec::default(),
                     0,
