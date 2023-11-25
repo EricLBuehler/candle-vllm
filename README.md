@@ -53,6 +53,7 @@ The following features are planned to be implemented, but contributions are espe
   - Beam search ([huggingface/candle#1319](https://github.com/huggingface/candle/issues/1319))
 - Pipeline batching ([#3](https://github.com/EricLBuehler/candle-vllm/issues/3))
 - PagedAttention ([#3](https://github.com/EricLBuehler/candle-vllm/issues/3))
+    - See [this](https://github.com/EricLBuehler/candle-vllm/tree/paged_attention) branch.
 - More pipelines (from `candle-transformers`)
 
 ## Resources
