@@ -78,13 +78,13 @@ impl PagedAttention {
             //Run PagedAttention V2
             assert_eq!(_PARTION_SIZE % block_size, 0);
 
-            let tmp_output = Tensor::zeros(
+            let tmp_output = Tensor::zeros( //use Tensor::empty, huggingface/candle#1374
                 (num_seqs, num_heads, max_num_partions, head_size),
                 output.dtype(),
                 output.device(),
             )
             .map_err(APIError::from)?;
-            let exp_sums = Tensor::zeros(
+            let exp_sums = Tensor::zeros( //use Tensor::empty, huggingface/candle#1374
                 (num_seqs, num_heads, max_num_partions),
                 DType::F32,
                 output.device(),
