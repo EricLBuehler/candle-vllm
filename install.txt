@@ -1,0 +1,10 @@
+Download, unzip libtorch from https://pytorch.org/get-started/locally/. Add "export LIBTORCH=<path to libtorch>" to .bashrc .
+
+https://pytorch.org/get-started/previous-versions/, for me:
+pip install torch==2.1.0 torchvision==0.16.0 torchaudio==2.1.0 --index-url https://download.pytorch.org/whl/cu121
+
+Add "export LIBTORCH_USE_PYTORCH=1" to .bashrc .
+
+Run "source .bashrc"
+
+$ cargo install bindgen-cli
