@@ -36,6 +36,9 @@ tracing = "0.1.40"
 tch = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy_derive", version = "0.14.0" } # pending on LaurentMazare/tch-rs#823
 torch-sys = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy_derive", version = "0.14.0" } # pending on LaurentMazare/tch-rs#823
 
+[build-dependencies]
+cc = "1.0.83"
+
 [features]
 default = []
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]

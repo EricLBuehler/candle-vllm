@@ -8,3 +8,7 @@ Add "export LIBTORCH_USE_PYTORCH=1" to .bashrc .
 Run "source .bashrc"
 
 $ cargo install bindgen-cli
+
+sudo apt-get install python3-dev
+
+sudo apt install gcc-10
