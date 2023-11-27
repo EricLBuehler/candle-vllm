@@ -19,7 +19,7 @@ SUPPORTED_ARCHS = {"7.0", "7.5", "8.0", "8.6", "8.9", "9.0"}
 
 # Compiler flags.
 CXX_FLAGS = ["-g", "-O2", "-std=c++17"]
-# TODO(woosuk): Should we use -O3?
+# TODO(EricLBuehler): Should we use -O3?
 NVCC_FLAGS = ["-O2", "-std=c++17"]
 
 ABI = 1 if torch._C._GLIBCXX_USE_CXX11_ABI else 0
@@ -136,4 +136,85 @@ for capability in compute_capabilities:
     if capability.endswith("+PTX"):
         NVCC_FLAGS += ["-gencode", f"arch=compute_{num},code=compute_{num}"]
 
-print(NVCC_FLAGS)
+# Use NVCC threads to parallelize the build.
+if nvcc_cuda_version >= Version("11.2"):
+    num_threads = min(os.cpu_count(), 8)
+    NVCC_FLAGS += ["--threads", str(num_threads)]
+
+ext_modules = []
+vllm_extension = CUDAExtension(
+    name="candle_vllm._C",
+    sources=[
+        "csrc/cache_kernels.cu",
+        "csrc/attention/attention_kernels.cu",
+        "csrc/pos_encoding_kernels.cu",
+        "csrc/activation_kernels.cu",
+        "csrc/layernorm_kernels.cu",
+        "csrc/quantization/awq/gemm_kernels.cu",
+        "csrc/quantization/squeezellm/quant_cuda_kernel.cu",
+        "csrc/cuda_utils_kernels.cu",
+        "csrc/ops.h",
+    ],
+    extra_compile_args={
+        "cxx": CXX_FLAGS,
+        "nvcc": NVCC_FLAGS,
+    },
+)
+ext_modules.append(vllm_extension)
+
+
+def get_path(*filepath) -> str:
+    return os.path.join(ROOT_DIR, *filepath)
+
+
+def find_version(filepath: str) -> str:
+    """Extract version information from the given filepath.
+
+    Adapted from https://github.com/ray-project/ray/blob/0b190ee1160eeca9796bc091e07eaebf4c85b511/python/setup.py
+    """
+    with open(filepath) as fp:
+        version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]",
+                                  fp.read(), re.M)
+        if version_match:
+            return version_match.group(1)
+        raise RuntimeError("Unable to find version string.")
+
+
+def get_vllm_version() -> str:
+    return "0.1.0"
+
+
+def read_readme() -> str:
+    """Read the README file if present."""
+    p = get_path("README.md")
+    if os.path.isfile(p):
+        return io.open(get_path("README.md"), "r", encoding="utf-8").read()
+    else:
+        return ""
+
+
+def get_requirements() -> List[str]:
+    return ""
+
+
+setuptools.setup(
+    name="candle-vllm",
+    version=get_vllm_version(),
+    author="Eric Buehler",
+    license="MIT LICENSE",
+    description=None,
+    long_description=read_readme(),
+    long_description_content_type="text/markdown",
+    url="https://github.com/EricLBuehler/candle-vllm/",
+    project_urls={
+        "Homepage": "https://github.com/EricLBuehler/candle-vllm/",
+        "Documentation": None,
+    },
+    classifiers=[],
+    packages=setuptools.find_packages(exclude=("benchmarks", "csrc", "docs",
+                                               "examples", "tests")),
+    python_requires=">=3.8",
+    install_requires=get_requirements(),
+    ext_modules=ext_modules,
+    cmdclass={"build_ext": BuildExtension},
+)
