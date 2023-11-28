@@ -46,49 +46,52 @@ Next, launch a `candle-vllm` instance by running `HF_TOKEN=... cargo run --relea
 
 After the `candle-vllm` instance is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 
-## Installlation
+## Installation
+Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
+[issue](https://github.com/EricLBuehler/candle-lora/issues).
+
+0) Be sure to install Rust here: https://www.rust-lang.org/tools/install
 1) Run `sudo apt install libssl-dev` (may need to run `sudo apt update`)
 2) Run `sudo apt install pkg-config`
 
-Be sure to install Rust here: https://www.rust-lang.org/tools/install
 ### Install with Pytorch (recommended)
 3) Run `sudo find / -name libtorch_cpu.so`, taking note of the paths returned.
 4) Install Pytorch 2.1.0 from https://pytorch.org/get-started/previous-versions/. Be sure that the correct CUDA version is used (`nvcc --version`).
 5) Run `sudo find / -name libtorch_cpu.so` again. Take note of the new path (not including the filename).
-6) Add the following to .bashrc:
+6) Add the following to `.bashrc` or equivalent:
 ```bash
 # candle-vllm
 export LD_LIBRARY_PATH=/the/new/path/:$LD_LIBRARY_PATH
 export LIBTORCH_USE_PYTORCH=1
 ```
-7) Run `source .bashrc` or reload the terminal.
+7) Either run `source .bashrc` (or equivalent) or reload the terminal.
 
 ### Install wuth libtorch (manual)
 3) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget` command, ensure the following:
-    1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end)
-    2) If on Linux, use the link corresponding to the cxx11 ABI
-    3) The correct CUDA version is used (`nvcc --version`)
+    1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end).
+    2) If on Linux, use the link corresponding to the CXX11 ABI.
+    3) The correct CUDA version is used (`nvcc --version`).
 
 4) Unzip the directory.
 
-5) Add the following line to your .bashrc:
+5) Add the following line to your `.bashrc` or equivalent:
 ```bash
 # candle-lora
 export LIBTORCH=/path/to/libtorch
 ```
 
-6) Run `source .bashrc` or reload your terminal
+6) Either run `source .bashrc` (or equivalent) or reload your terminal.
 
 #### Error loading shared libraries
 If you get this error: `error while loading shared libraries: libtorch_cpu.so: cannot open shared object file: No such file or directory`,
-Add the following to your .bashrc:
+Add the following to your `.bashrc` or equivalent:
 ```bash
 # For Linux
 export LD_LIBRARY_PATH=/path/to/libtorch/lib:$LD_LIBRARY_PATH
 # For macOS
 export DYLD_LIBRARY_PATH=/path/to/libtorch/lib:$DYLD_LIBRARY_PATH
 ```
-Then, run "source .bashrc" or reload your terminal
+Then, either run `source .bashrc` (or equivalent) or reload the terminal
 
 ## Contributing
 The following features are planned to be implemented, but contributions are especially welcome:
