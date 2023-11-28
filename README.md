@@ -47,8 +47,8 @@ Next, launch a `candle-vllm` instance by running `HF_TOKEN=... cargo run --relea
 After the `candle-vllm` instance is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 
 ## Installlation
-1) Run "sudo apt install libssl-dev" (may need to run "sudo apt update")
-2) Run "sudo apt install pkg-config"
+1) Run `sudo apt install libssl-dev` (may need to run `sudo apt update`)
+2) Run `sudo apt install pkg-config`
 
 Be sure to install Rust here: https://www.rust-lang.org/tools/install
 
