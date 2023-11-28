@@ -46,6 +46,36 @@ Next, launch a `candle-vllm` instance by running `HF_TOKEN=... cargo run --relea
 
 After the `candle-vllm` instance is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 
+## Installlation
+1) Run "sudo apt install libssl-dev" (may need to run "sudo apt update")
+2) Run "sudo apt install pkg-config"
+
+Be sure to install Rust here: https://www.rust-lang.org/tools/install
+
+3) Download libtorch, the Pytorch C++ API from https://pytorch.org/get-started/locally/. Before executing the wget command, ensure the following:
+    1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end)
+    2) If on Linux, use the cxx11 ABI
+
+4) Unzip the directory.
+
+5) Add the following line to your .bashrc:
+```bash
+# candle-lora
+export LIBTORCH=/path/to/libtorch
+```
+
+6) Run "source .bashrc" or reload your terminal
+
+### Error loading shared libraries
+If you get this error: `error while loading shared libraries: libtorch_cpu.so: cannot open shared object file: No such file or directory`,
+Add the following to your .bashrc:
+```bash
+# For Linux
+export LD_LIBRARY_PATH=/path/to/libtorch/lib:$LD_LIBRARY_PATH
+# For macOS
+export DYLD_LIBRARY_PATH=/path/to/libtorch/lib:$DYLD_LIBRARY_PATH
+```
+Then, run "source .bashrc" or reload your terminal
 
 ## Contributing
 The following features are planned to be implemented, but contributions are especially welcome:

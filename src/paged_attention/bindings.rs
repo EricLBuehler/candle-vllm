@@ -2,9 +2,11 @@
 // Edited by Eric Buehler, added the Optional & Storage types from:
 // https://github.com/pytorch/pytorch/blob/0f5e24bda9450a89ba56d2fdd471f56d97fe4546/c10/util/Optional.h#L209
 
+use std::ffi::c_uchar;
+
 #[repr(C)]
 pub union Storage<T: Copy> {
-    pub dummy_: ::std::os::raw::c_uchar,
+    pub dummy_: c_uchar,
     pub value_: T,
 }
 
@@ -25,8 +27,8 @@ extern "C" {
         scale: f32,
         block_tables: *mut torch_sys::C_tensor,
         context_lens: *mut torch_sys::C_tensor,
-        block_size: ::std::os::raw::c_int,
-        max_context_len: ::std::os::raw::c_int,
+        block_size: ::std::ffi::c_int,
+        max_context_len: ::std::ffi::c_int,
         alibi_slopes: *const Optional<torch_sys::C_tensor>,
     );
 }
@@ -44,8 +46,8 @@ extern "C" {
         scale: f32,
         block_tables: *mut torch_sys::C_tensor,
         context_lens: *mut torch_sys::C_tensor,
-        block_size: ::std::os::raw::c_int,
-        max_context_len: ::std::os::raw::c_int,
+        block_size: ::std::ffi::c_int,
+        max_context_len: ::std::ffi::c_int,
         alibi_slopes: *const Optional<torch_sys::C_tensor>,
     );
 }
