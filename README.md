@@ -52,21 +52,21 @@ After the `candle-vllm` instance is running, run the Python script and enjoy eff
 
 Be sure to install Rust here: https://www.rust-lang.org/tools/install
 ### Install with Pytorch (recommended)
-3) Run `sudo find / -name libtorch_cpu.so`. Take note of the paths specified.
-4) Install pytorch from https://pytorch.org/get-started/previous-versions/. Be sure that the correct CUDA version is used (`nvcc --version`).
-5) Run `sudo find / -name libtorch_cpu.so`. Take note of the new path (not including the filename).
+3) Run `sudo find / -name libtorch_cpu.so`, taking note of the paths returned.
+4) Install Pytorch 2.1.0 from https://pytorch.org/get-started/previous-versions/. Be sure that the correct CUDA version is used (`nvcc --version`).
+5) Run `sudo find / -name libtorch_cpu.so` again. Take note of the new path (not including the filename).
 6) Add the following to .bashrc:
 ```bash
 # candle-vllm
 export LD_LIBRARY_PATH=/the/new/path/:$LD_LIBRARY_PATH
 export LIBTORCH_USE_PYTORCH=1
 ```
-7) Run `source .bashrc`
+7) Run `source .bashrc` or reload the terminal.
 
-### Install manually
-3) Download libtorch, the Pytorch C++ API from https://pytorch.org/get-started/locally/. Before executing the wget command, ensure the following:
+### Install wuth libtorch (manual)
+3) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget`` command, ensure the following:
     1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end)
-    2) If on Linux, use the cxx11 ABI
+    2) If on Linux, use the link corresponding to the cxx11 ABI
     3) The correct CUDA version is used (`nvcc --version`)
 
 4) Unzip the directory.
