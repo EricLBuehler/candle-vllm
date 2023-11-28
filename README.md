@@ -3,6 +3,8 @@
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
 
+**This is a development branch for PagedAttention. It is unstable and in active development.**
+
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
@@ -53,6 +55,7 @@ Installing `candle-vllm` is as simple as the following steps. If you have any pr
 0) Be sure to install Rust here: https://www.rust-lang.org/tools/install
 1) Run `sudo apt install libssl-dev` (may need to run `sudo apt update`)
 2) Run `sudo apt install pkg-config`
+3) Run `setup.py` to compile the PagedAttention CUDA headers.
 
 ### Install with Pytorch (recommended)
 3) Run `sudo find / -name libtorch_cpu.so`, taking note of the paths returned.
