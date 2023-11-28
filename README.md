@@ -73,7 +73,7 @@ export LIBTORCH_USE_PYTORCH=1
 ```
 8) Either run `source .bashrc` (or equivalent) or reload the terminal.
 
-### Install wuth libtorch (manual)
+### Install with libtorch (manual)
 4) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget` command, ensure the following:
     1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end).
     2) If on Linux, use the link corresponding to the CXX11 ABI.
