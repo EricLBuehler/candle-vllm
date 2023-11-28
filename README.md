@@ -51,10 +51,23 @@ After the `candle-vllm` instance is running, run the Python script and enjoy eff
 2) Run `sudo apt install pkg-config`
 
 Be sure to install Rust here: https://www.rust-lang.org/tools/install
+### Install with Pytorch (recommended)
+3) Run `sudo find / -name libtorch_cpu.so`. Take note of the paths specified.
+4) Install pytorch from https://pytorch.org/get-started/previous-versions/. Be sure that the correct CUDA version is used (`nvcc --version`).
+5) Run `sudo find / -name libtorch_cpu.so`. Take note of the new path (not including the filename).
+6) Add the following to .bashrc:
+```bash
+# candle-vllm
+export LD_LIBRARY_PATH=/home/ubuntu/.local/lib/python3.8/site-packages/torch/lib/:$LD_LIBRARY_PATH
+export LIBTORCH_USE_PYTORCH=1
+```
+7) Run `source .bashrc`
 
+### Install manually
 3) Download libtorch, the Pytorch C++ API from https://pytorch.org/get-started/locally/. Before executing the wget command, ensure the following:
     1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end)
     2) If on Linux, use the cxx11 ABI
+    3) The correct CUDA version is used (`nvcc --version`)
 
 4) Unzip the directory.
 
@@ -64,9 +77,9 @@ Be sure to install Rust here: https://www.rust-lang.org/tools/install
 export LIBTORCH=/path/to/libtorch
 ```
 
-6) Run "source .bashrc" or reload your terminal
+6) Run `source .bashrc` or reload your terminal
 
-### Error loading shared libraries
+#### Error loading shared libraries
 If you get this error: `error while loading shared libraries: libtorch_cpu.so: cannot open shared object file: No such file or directory`,
 Add the following to your .bashrc:
 ```bash
