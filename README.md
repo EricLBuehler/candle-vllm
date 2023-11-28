@@ -55,35 +55,39 @@ Installing `candle-vllm` is as simple as the following steps. If you have any pr
 0) Be sure to install Rust here: https://www.rust-lang.org/tools/install
 1) Run `sudo apt install libssl-dev` (may need to run `sudo apt update`)
 2) Run `sudo apt install pkg-config`
-3) Run `setup.py` to compile the PagedAttention CUDA headers.
+3) See the "Compiling PagedAttention CUDA kernels" section.
+
+### Compiling PagedAttention CUDA kernels
+1) Run `setup.py` to compile the PagedAttention CUDA headers.
+2) `todo!()`
 
 ### Install with Pytorch (recommended)
-3) Run `sudo find / -name libtorch_cpu.so`, taking note of the paths returned.
-4) Install Pytorch 2.1.0 from https://pytorch.org/get-started/previous-versions/. Be sure that the correct CUDA version is used (`nvcc --version`).
-5) Run `sudo find / -name libtorch_cpu.so` again. Take note of the new path (not including the filename).
-6) Add the following to `.bashrc` or equivalent:
+4) Run `sudo find / -name libtorch_cpu.so`, taking note of the paths returned.
+5) Install Pytorch 2.1.0 from https://pytorch.org/get-started/previous-versions/. Be sure that the correct CUDA version is used (`nvcc --version`).
+6) Run `sudo find / -name libtorch_cpu.so` again. Take note of the new path (not including the filename).
+7) Add the following to `.bashrc` or equivalent:
 ```bash
 # candle-vllm
 export LD_LIBRARY_PATH=/the/new/path/:$LD_LIBRARY_PATH
 export LIBTORCH_USE_PYTORCH=1
 ```
-7) Either run `source .bashrc` (or equivalent) or reload the terminal.
+8) Either run `source .bashrc` (or equivalent) or reload the terminal.
 
 ### Install wuth libtorch (manual)
-3) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget` command, ensure the following:
+4) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget` command, ensure the following:
     1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end).
     2) If on Linux, use the link corresponding to the CXX11 ABI.
     3) The correct CUDA version is used (`nvcc --version`).
 
-4) Unzip the directory.
+5) Unzip the directory.
 
-5) Add the following line to your `.bashrc` or equivalent:
+6) Add the following line to your `.bashrc` or equivalent:
 ```bash
 # candle-lora
 export LIBTORCH=/path/to/libtorch
 ```
 
-6) Either run `source .bashrc` (or equivalent) or reload your terminal.
+7) Either run `source .bashrc` (or equivalent) or reload your terminal.
 
 #### Error loading shared libraries
 If you get this error: `error while loading shared libraries: libtorch_cpu.so: cannot open shared object file: No such file or directory`,
