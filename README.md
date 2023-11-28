@@ -58,7 +58,7 @@ Be sure to install Rust here: https://www.rust-lang.org/tools/install
 6) Add the following to .bashrc:
 ```bash
 # candle-vllm
-export LD_LIBRARY_PATH=/home/ubuntu/.local/lib/python3.8/site-packages/torch/lib/:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/the/new/path/:$LD_LIBRARY_PATH
 export LIBTORCH_USE_PYTORCH=1
 ```
 7) Run `source .bashrc`
