@@ -60,7 +60,8 @@ Installing `candle-vllm` is as simple as the following steps. If you have any pr
 Go to either the "Install with Pytorch" or "Install with libtorch" section to continue.
 
 ### Compiling PagedAttention CUDA kernels
-1) Run `setup.py` to compile the PagedAttention CUDA headers.
+1) Install `setuptools >= 49.4.0`: `pip install setuptools==49.4.0`
+1) Run `python3 setup.py build` to compile the PagedAttention CUDA headers.
 2) `todo!()`
 
 ### Install with Pytorch (recommended)
