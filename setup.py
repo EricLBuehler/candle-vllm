@@ -145,14 +145,14 @@ ext_modules = []
 vllm_extension = CUDAExtension(
     name="candle_vllm._C",
     sources=[
-        "csrc/cache_kernels.cu",
+        # "csrc/cache_kernels.cu",
         "csrc/attention/attention_kernels.cu",
-        "csrc/pos_encoding_kernels.cu",
-        "csrc/activation_kernels.cu",
-        "csrc/layernorm_kernels.cu",
-        "csrc/quantization/awq/gemm_kernels.cu",
-        "csrc/quantization/squeezellm/quant_cuda_kernel.cu",
-        "csrc/cuda_utils_kernels.cu",
+        # "csrc/pos_encoding_kernels.cu",
+        # "csrc/activation_kernels.cu",
+        # "csrc/layernorm_kernels.cu",
+        # "csrc/quantization/awq/gemm_kernels.cu",
+        # "csrc/quantization/squeezellm/quant_cuda_kernel.cu",
+        # "csrc/cuda_utils_kernels.cu",
         "csrc/ops.h",
     ],
     extra_compile_args={
@@ -180,17 +180,12 @@ def find_version(filepath: str) -> str:
         raise RuntimeError("Unable to find version string.")
 
 
-def get_vllm_version() -> str:
+def get_candle_vllm_version() -> str:
     return "0.1.0"
 
 
 def read_readme() -> str:
-    """Read the README file if present."""
-    p = get_path("README.md")
-    if os.path.isfile(p):
-        return io.open(get_path("README.md"), "r", encoding="utf-8").read()
-    else:
-        return ""
+    return ""
 
 
 def get_requirements() -> List[str]:
@@ -199,7 +194,7 @@ def get_requirements() -> List[str]:
 
 setuptools.setup(
     name="candle-vllm",
-    version=get_vllm_version(),
+    version=get_candle_vllm_version(),
     author="Eric Buehler",
     license="MIT LICENSE",
     description=None,
