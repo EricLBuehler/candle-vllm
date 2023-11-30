@@ -244,4 +244,91 @@ impl PagedAttention {
         }
         Ok(())
     }
+
+    /// query: shape = [batch_size, seq_len, num_heads * head_size]
+    /// key: shape = [batch_size, seq_len, num_kv_heads * head_size]
+    /// value: shape = [batch_size, num_kv_heads * head_size]
+    /// key_cache: shape = [num_blocks, num_kv_heads, head_size/x,
+    ///     block_size, x]
+    /// value_cache: shape = [num_blocks, num_kv_heads, head_size,
+    ///     block_size]
+    /// input_metadata: metadata for paged attention.
+    pub fn forward(
+        &mut self,
+        query: Tensor,
+        key: Tensor,
+        value: Tensor,
+        key_cache: Option<Tensor>,
+        value_cache: Option<Tensor>,
+        input_metadata: &mut InputMetadata,
+    ) -> Result<Tensor, APIError> {
+        let (batch_size, seq_len, _) = query.shape().dims3().map_err(APIError::from)?;
+        let query = query
+            .reshape(((), self.num_attention_heads, self.head_dim))
+            .map_err(APIError::from)?;
+        let key = key
+            .reshape(((), self.num_key_value_heads, self.head_dim))
+            .map_err(APIError::from)?;
+        let value = value
+            .reshape(((), self.num_key_value_heads, self.head_dim))
+            .map_err(APIError::from)?;
+
+        let mut output = query.zeros_like().map_err(APIError::from)?;
+
+        let num_prompt_tokens = input_metadata.num_prompt_tokens;
+        if num_prompt_tokens > 0 {
+            // Prompt run
+            assert_eq!(input_metadata.num_generation_tokens, 0);
+            todo!("set_attention_bias");
+            todo!("multi_query_kv_attention");
+        }
+
+        if key_cache.as_ref().is_some_and(|_| value_cache.is_some()) {
+            let mut key_to_cache = key;
+            let mut value_to_cache = value;
+            let mut slot_mapping = input_metadata
+                .slot_mappinng
+                .reshape(((),))
+                .map_err(APIError::from)?;
+            if let Some(to_cache) = &input_metadata.to_cache {
+                assert_eq!(to_cache.shape().dims().len(), 1);
+                key_to_cache = key_to_cache
+                    .index_select(to_cache, 0)
+                    .map_err(APIError::from)?;
+                value_to_cache = value_to_cache
+                    .index_select(to_cache, 0)
+                    .map_err(APIError::from)?;
+                slot_mapping = slot_mapping
+                    .index_select(to_cache, 0)
+                    .map_err(APIError::from)?;
+            }
+
+            todo!("reshape_and_cache");
+        }
+
+        if input_metadata.num_generation_tokens > 0 {
+            assert_eq!(input_metadata.num_prompt_tokens, 0);
+            assert!(
+                key_cache.is_some() && value_cache.is_some(),
+                "key_cache and value_cache must be provided when generating_tokens"
+            );
+
+            self.single_query_kv_attention(
+                &mut output,
+                query,
+                key_cache.unwrap(),
+                value_cache.unwrap(),
+                input_metadata,
+                None,
+            )?;
+        }
+
+        Ok(output
+            .reshape((
+                batch_size,
+                seq_len,
+                self.num_attention_heads * self.head_dim,
+            ))
+            .map_err(APIError::from)?)
+    }
 }
