@@ -20,7 +20,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 See [this folder](examples/) for some examples.
 
 ### Example with Llama 7b
-In your terminal, install the `openai` Python package by running `pip install openai`.
+In your terminal, install the `openai` Python package by running `pip install openai`. I use version `1.3.5`.
 
 Then, create a new Python file and write the following code:
 ```python
