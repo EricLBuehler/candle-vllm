@@ -120,7 +120,7 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
                 repeat_last_n,
                 use_flash_attn,
             ))),
-            "mistralai/Mistral-7B-v0.1".to_string(),
+            "alpindale/mistral-7b-safetensors".to_string(),
         ),
     }
 }
