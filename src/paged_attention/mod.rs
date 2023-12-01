@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, Shape, Tensor};
 use tch::Kind;
 
 use crate::{
@@ -6,7 +6,11 @@ use crate::{
     paged_attention::bindings::{paged_attention_v1, paged_attention_v2, Optional, Storage},
 };
 
-use self::input_metadata::InputMetadata;
+use self::{
+    attn_bias::{AttentionBias, BlockDiagonalCausalMask},
+    input_metadata::InputMetadata,
+};
+mod attn_bias;
 mod bindings;
 mod input_metadata;
 
@@ -245,6 +249,25 @@ impl PagedAttention {
         Ok(())
     }
 
+    fn set_attention_bias(
+        &self,
+        input_metadata: &mut InputMetadata,
+        dtype: DType,
+        device: Device,
+    ) -> Result<(), APIError> {
+        if input_metadata.attn_bias.is_some() {
+            return Ok(());
+        }
+        let prompt_lens =
+            vec![input_metadata.max_prompt_len].repeat(input_metadata.num_prompt_tokens);
+        let attn_bias = BlockDiagonalCausalMask
+            .materialize(&Shape::from_dims(&prompt_lens[..]), dtype, device)
+            .map_err(APIError::from)?;
+        if let Some(sliding_window) = self.sliding_window {}
+        input_metadata.attn_bias = Some(attn_bias);
+        Ok(())
+    }
+
     /// query: shape = [batch_size, seq_len, num_heads * head_size]
     /// key: shape = [batch_size, seq_len, num_kv_heads * head_size]
     /// value: shape = [batch_size, num_kv_heads * head_size]
@@ -279,7 +302,7 @@ impl PagedAttention {
         if num_prompt_tokens > 0 {
             // Prompt run
             assert_eq!(input_metadata.num_generation_tokens, 0);
-            todo!("set_attention_bias");
+            self.set_attention_bias(input_metadata);
             todo!("multi_query_kv_attention");
         }
 
