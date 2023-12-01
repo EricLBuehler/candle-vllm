@@ -478,6 +478,8 @@ impl<'s> ModulePipeline<'s> for Mistral7BPipeline {
             }
         }
 
+        self.mistral.clear_cache();
+
         Ok((
             Some(choices),
             ChatCompletionUsageResponse {
