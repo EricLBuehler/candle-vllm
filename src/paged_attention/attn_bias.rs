@@ -6,17 +6,9 @@ use crate::openai::responses::APIError;
 
 pub trait AttentionBias {
     fn materialize(&self, shape: &Shape, dtype: DType, device: Device) -> Result<Tensor, APIError>;
-    fn from_seqlens(
-        &self,
-        q_seqlen: Vec<u32>,
-        kv_seqlen: Option<Vec<u32>>,
-        dtype: DType,
-        device: Device,
-    ) -> Result<Box<dyn AttentionBias>, APIError> {
-        unimplemented!()
-    }
 }
 
+#[derive(Clone)]
 struct SeqLenInfo {
     seqstart: Tensor,
     max_seqlen: u32,
@@ -34,8 +26,8 @@ impl SeqLenInfo {
         }
     }
 
-    fn from_seqlens(
-        seqlens: impl Iterator<Item = u32>,
+    fn from_seqlens<'a>(
+        seqlens: impl Iterator<Item = &'a u32>,
         dtype: DType,
         device: Device,
     ) -> Result<Self, APIError> {
@@ -44,12 +36,12 @@ impl SeqLenInfo {
         let mut min_seqlen: Option<u32> = None;
         for seqlen in seqlens.into_iter() {
             min_seqlen = Some(match min_seqlen {
-                None => seqlen,
-                Some(min_seqlen) => min_seqlen.min(seqlen),
+                None => *seqlen,
+                Some(min_seqlen) => min_seqlen.min(*seqlen),
             });
             max_seqlen = Some(match max_seqlen {
-                None => seqlen,
-                Some(max_seqlen) => max_seqlen.max(seqlen),
+                None => *seqlen,
+                Some(max_seqlen) => max_seqlen.max(*seqlen),
             });
             seqstart_py.push(seqstart_py[seqstart_py.len() - 1] + seqlen);
         }
@@ -63,8 +55,11 @@ impl SeqLenInfo {
         ))
     }
 
-    fn intervals(&self) -> Box<dyn Iterator<Item = (u32, &u32)>> {
-        Box::new(zip(self.seqstart_py, &self.seqstart_py[1..]))
+    fn intervals(&self) -> Box<dyn Iterator<Item = (u32, u32)>> {
+        Box::new(zip(
+            self.seqstart_py.clone(),
+            (&self.seqstart_py[1..]).iter().copied().collect::<Vec<_>>(),
+        ))
     }
 }
 
@@ -81,6 +76,24 @@ impl BlockDiagonalCausalMask {
             k_seqinfo,
             _batch_sizes,
         }
+    }
+
+    pub fn from_seqlens(
+        q_seqlen: Vec<u32>,
+        kv_seqlen: Option<Vec<u32>>,
+        dtype: DType,
+        device: Device,
+    ) -> Result<Box<dyn AttentionBias>, APIError> {
+        assert!(kv_seqlen.is_none() || q_seqlen.len() == kv_seqlen.as_ref().unwrap().len());
+        let q_seqinfo = SeqLenInfo::from_seqlens(q_seqlen.iter(), dtype, device.clone())
+            .map_err(APIError::from)?;
+        let k_seqinfo = if kv_seqlen.is_none() || &q_seqlen == kv_seqlen.as_ref().unwrap() {
+            q_seqinfo.clone()
+        } else {
+            SeqLenInfo::from_seqlens(kv_seqlen.unwrap().iter(), dtype, device)
+                .map_err(APIError::from)?
+        };
+        Ok(Box::new(Self::new(q_seqinfo, k_seqinfo, None)))
     }
 }
 
@@ -99,32 +112,27 @@ impl AttentionBias for BlockDiagonalCausalMask {
         .to_dtype(dtype)
         .map_err(APIError::from)?;
 
-        for (i, ((q_start, q_end), (k_start, k_end))) in zip(self.q_seqinfo.intervals(), self.k_seqinfo.intervals()).enumerate() {
-            mask.slice_assign(ranges, src);
+        for (i, ((q_start, q_end), (k_start, k_end))) in
+            zip(self.q_seqinfo.intervals(), self.k_seqinfo.intervals()).enumerate()
+        {
+            mask.slice_assign(
+                &[
+                    q_start as usize..q_end as usize,
+                    k_start as usize..k_end as usize,
+                ],
+                &Tensor::zeros(
+                    ((q_end - q_start) as usize, (k_end - k_start) as usize),
+                    dtype,
+                    &device,
+                )
+                .map_err(APIError::from)?,
+            )
+            .map_err(APIError::from)?;
         }
 
         for _ in 0..shape.dims().len() - 2 {
             mask.unsqueeze(0);
         }
         Ok(mask.expand(shape).map_err(APIError::from)?)
-    }
-
-    fn from_seqlens(
-        &self,
-        q_seqlen: Vec<u32>,
-        kv_seqlen: Option<Vec<u32>>,
-        dtype: DType,
-        device: Device,
-    ) -> Result<Box<dyn AttentionBias>, APIError> {
-        assert!(kv_seqlen.is_none() || q_seqlen.len() == kv_seqlen.unwrap().len());
-        let q_seqinfo = SeqLenInfo::from_seqlens(q_seqlen.into_iter(), dtype, device)
-            .map_err(APIError::from)?;
-        let k_seqinfo = if kv_seqlen.is_none() || q_seqlen == kv_seqlen.unwrap() {
-            q_seqinfo
-        } else {
-            SeqLenInfo::from_seqlens(kv_seqlen.unwrap().into_iter(), dtype, device)
-                .map_err(APIError::from)?
-        };
-        Ok(Box::new(Self::new(q_seqinfo, k_seqinfo, None)))
     }
 }

@@ -258,10 +258,9 @@ impl PagedAttention {
         if input_metadata.attn_bias.is_some() {
             return Ok(());
         }
-        let prompt_lens =
-            vec![input_metadata.max_prompt_len].repeat(input_metadata.num_prompt_tokens);
-        let attn_bias = BlockDiagonalCausalMask
-            .materialize(&Shape::from_dims(&prompt_lens[..]), dtype, device)
+        let prompt_lens = vec![input_metadata.max_prompt_len.try_into().unwrap()]
+            .repeat(input_metadata.num_prompt_tokens);
+        let attn_bias = BlockDiagonalCausalMask::from_seqlens(prompt_lens, None, dtype, device)
             .map_err(APIError::from)?;
         if let Some(sliding_window) = self.sliding_window {}
         input_metadata.attn_bias = Some(attn_bias);
@@ -284,6 +283,8 @@ impl PagedAttention {
         key_cache: Option<Tensor>,
         value_cache: Option<Tensor>,
         input_metadata: &mut InputMetadata,
+        dtype: DType,
+        device: Device,
     ) -> Result<Tensor, APIError> {
         let (batch_size, seq_len, _) = query.shape().dims3().map_err(APIError::from)?;
         let query = query
@@ -302,7 +303,8 @@ impl PagedAttention {
         if num_prompt_tokens > 0 {
             // Prompt run
             assert_eq!(input_metadata.num_generation_tokens, 0);
-            self.set_attention_bias(input_metadata);
+            self.set_attention_bias(input_metadata, dtype, device)
+                .map_err(APIError::from)?;
             todo!("multi_query_kv_attention");
         }
 
