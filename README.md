@@ -1,7 +1,6 @@
 <p align="center">
     <img src="./res/candle_vllm_logo.png" alt="candle vLLM logo"/>
 </p>
-<h1 align="center">candle vLLM</h1>
 
 [![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
 
