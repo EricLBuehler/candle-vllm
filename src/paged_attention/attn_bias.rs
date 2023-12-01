@@ -100,9 +100,13 @@ impl AttentionBias for BlockDiagonalCausalMask {
         .map_err(APIError::from)?;
 
         for (i, ((q_start, q_end), (k_start, k_end))) in zip(self.q_seqinfo.intervals(), self.k_seqinfo.intervals()).enumerate() {
-
+            mask.slice_assign(ranges, src);
         }
-        todo!()
+
+        for _ in 0..shape.dims().len() - 2 {
+            mask.unsqueeze(0);
+        }
+        Ok(mask.expand(shape).map_err(APIError::from)?)
     }
 
     fn from_seqlens(
