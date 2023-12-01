@@ -1,4 +1,8 @@
-# candle-vllm
+<p align="center">
+    <img src="./res/candle_vllm_logo.png" alt="candle vLLM logo"/>
+</p>
+<h1 align="center">candle vLLM</h1>
+
 [![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
@@ -8,7 +12,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
 - Streaming support in generation.
 
-## Pipelines
+### Pipelines
 - Llama
     - 7b
     - 13b
