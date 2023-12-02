@@ -153,7 +153,8 @@ vllm_extension = CUDAExtension(
         # "csrc/quantization/awq/gemm_kernels.cu",
         # "csrc/quantization/squeezellm/quant_cuda_kernel.cu",
         # "csrc/cuda_utils_kernels.cu",
-        # "csrc/ops.h",
+        "csrc/ops.h",
+        "csrc/cache.h",
     ],
     extra_compile_args={
         "cxx": CXX_FLAGS,
