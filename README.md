@@ -10,9 +10,6 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
 - Streaming support in generation.
 
-### Feature flags
-- `memory-efficient-attention`: **In development.** Use the attention mechanism described by [this](https://arxiv.org/abs/2112.05682) paper in portions of PagedAttention.
-
 ### Pipelines
 - Llama
     - 7b
