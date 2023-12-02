@@ -12,9 +12,7 @@ use self::input_metadata::InputMetadata;
 mod attn_bias;
 mod bindings;
 mod input_metadata;
-#[cfg(feature = "memory-efficient-attention")]
 mod memory_efficient_attention;
-#[cfg(feature = "memory-efficient-attention")]
 use memory_efficient_attention::_memory_efficient_attention;
 
 const _PARTION_SIZE: usize = 512;
@@ -268,7 +266,6 @@ impl PagedAttention {
         Ok(output)
     }
 
-    #[cfg(feature = "memory-efficient-attention")]
     fn _normal_attention(
         &self,
         query: Tensor,
@@ -291,15 +288,6 @@ impl PagedAttention {
             device,
             dtype,
         )
-    }
-
-    fn _normal_attention(
-        &self,
-        query: Tensor,
-        key: Tensor,
-        value: Tensor,
-    ) -> Result<Tensor, APIError> {
-        todo!()
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -366,7 +354,6 @@ impl PagedAttention {
         }
 
         let output = if input_metadata.is_prompt {
-            #[cfg(feature = "memory-efficient-attention")]
             self._normal_attention(
                 query,
                 key,
@@ -376,8 +363,7 @@ impl PagedAttention {
                 batch_size,
                 &device,
                 dtype,
-            )?;
-            self._normal_attention(query, key, value)?
+            )?
         } else {
             self._paged_attention(
                 query,
