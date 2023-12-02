@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::iter::zip;
 
 use candle_core::{DType, Device, Shape, Tensor};

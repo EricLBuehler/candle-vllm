@@ -38,6 +38,7 @@ torch-sys = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy
 
 [features]
 default = []
+memory-efficient-attention = []
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 cudnn = ["candle-core/cudnn"]
