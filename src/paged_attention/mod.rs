@@ -405,7 +405,11 @@ impl PagedAttention {
                     .map_err(APIError::from)?
                     .i((.., .., .., ..seq_len))
                     .map_err(APIError::from)?;
-                    todo!("copy_(bias) NOT IMPLEMENTED!"); //.copy_(bias)
+
+                    bias_new = bias_new
+                        .slice_assign(&[.., .., .., ..], &bias)
+                        .map_err(APIError::from)?;
+
                     bias_new = bias_new
                         .mul(
                             &alibi_slopes
