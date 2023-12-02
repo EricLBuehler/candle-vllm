@@ -25,7 +25,7 @@ impl InputMetadata {
         context_lens: Option<Tensor>,
         slot_mappinng: Tensor,
     ) -> Self {
-        let is_prompt = prompt_lens.len() > 0;
+        let is_prompt = !prompt_lens.is_empty();
         Self {
             prompt_lens,
             max_context_len,

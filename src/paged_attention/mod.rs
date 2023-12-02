@@ -166,11 +166,11 @@ impl PagedAttention {
             let (head_mapping_ptr, _) = convert_tch_to_ptr(&mut head_mapping_tch);
 
             let mut block_tbl_tch =
-                convert_candle_to_tch(&mut input_metadata.block_tables.as_mut().unwrap());
+                convert_candle_to_tch(input_metadata.block_tables.as_mut().unwrap());
             let (block_tbl_ptr, _) = convert_tch_to_ptr(&mut block_tbl_tch);
 
             let mut ctxt_lens_tch =
-                convert_candle_to_tch(&mut input_metadata.context_lens.as_mut().unwrap());
+                convert_candle_to_tch(input_metadata.context_lens.as_mut().unwrap());
             let (ctxt_lens_ptr, _) = convert_tch_to_ptr(&mut ctxt_lens_tch);
 
             let optional = convert_option_to_optional(alibi_slopes);
@@ -235,11 +235,11 @@ impl PagedAttention {
             let (head_mapping_ptr, _) = convert_tch_to_ptr(&mut head_mapping_tch);
 
             let mut block_tbl_tch =
-                convert_candle_to_tch(&mut input_metadata.block_tables.as_mut().unwrap());
+                convert_candle_to_tch(input_metadata.block_tables.as_mut().unwrap());
             let (block_tbl_ptr, _) = convert_tch_to_ptr(&mut block_tbl_tch);
 
             let mut ctxt_lens_tch =
-                convert_candle_to_tch(&mut input_metadata.context_lens.as_mut().unwrap());
+                convert_candle_to_tch(input_metadata.context_lens.as_mut().unwrap());
             let (ctxt_lens_ptr, _) = convert_tch_to_ptr(&mut ctxt_lens_tch);
 
             let optional = convert_option_to_optional(alibi_slopes);
@@ -266,6 +266,7 @@ impl PagedAttention {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
     /// query: shape = [batch_size, seq_len, num_heads * head_size]
     /// key: shape = [batch_size, seq_len, num_kv_heads * head_size]
     /// value: shape = [batch_size, num_kv_heads * head_size]
@@ -307,10 +308,10 @@ impl PagedAttention {
             let mut value_tch = convert_candle_to_tch(&mut value);
             let (value_ptr, _) = convert_tch_to_ptr(&mut value_tch);
 
-            let mut key_cache_tch = convert_candle_to_tch(&mut key_cache.as_mut().unwrap());
+            let mut key_cache_tch = convert_candle_to_tch(key_cache.as_mut().unwrap());
             let (key_cache_ptr, _) = convert_tch_to_ptr(&mut key_cache_tch);
 
-            let mut value_cache_tch = convert_candle_to_tch(&mut value_cache.as_mut().unwrap());
+            let mut value_cache_tch = convert_candle_to_tch(value_cache.as_mut().unwrap());
             let (value_cache_ptr, _) = convert_tch_to_ptr(&mut value_cache_tch);
 
             let mut slot_mapping_tch = convert_candle_to_tch(&mut slot_mapping);
@@ -420,7 +421,7 @@ impl PagedAttention {
                     input_metadata.attn_bias = Some(Box::new(attn_bias));
                 } else {
                     let mut attn_bias = BlockDiagonalCausalMask::from_seqlens(
-                        vec![seq_len.try_into().unwrap()].repeat(batch_size),
+                        [seq_len.try_into().unwrap()].repeat(batch_size),
                         None,
                     )
                     .map_err(APIError::from)?;
@@ -512,8 +513,8 @@ impl PagedAttention {
             )?
         };
 
-        Ok(output
+        output
             .reshape((batch_size, seq_len, hidden_size))
-            .map_err(APIError::from)?)
+            .map_err(APIError::from)
     }
 }

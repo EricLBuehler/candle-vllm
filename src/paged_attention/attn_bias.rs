@@ -42,7 +42,7 @@ pub trait AttentionBiasBlockDiagonal {
         for _ in 0..shape.dims().len() - 2 {
             mask = mask.unsqueeze(0).map_err(APIError::from)?;
         }
-        Ok(mask.expand(shape).map_err(APIError::from)?)
+        mask.expand(shape).map_err(APIError::from)
     }
 
     fn get_q_seqinfo(&self) -> &SeqLenInfo;
@@ -85,7 +85,7 @@ impl SeqLenInfo {
     fn intervals(&self) -> Box<dyn Iterator<Item = (u32, u32)>> {
         Box::new(zip(
             self.seqstart_py.clone(),
-            (&self.seqstart_py[1..]).iter().copied().collect::<Vec<_>>(),
+            self.seqstart_py[1..].to_vec(),
         ))
     }
 }
@@ -127,7 +127,7 @@ impl AttentionBiasBlockDiagonal for BlockDiagonalCausalMask {
         dtype: DType,
         device: &Device,
     ) -> Result<Tensor, APIError> {
-        Ok(Tensor::zeros(shape, dtype, device).map_err(APIError::from)?)
+        Tensor::zeros(shape, dtype, device).map_err(APIError::from)
     }
 
     fn get_k_seqinfo(&self) -> &SeqLenInfo {
@@ -205,12 +205,9 @@ impl LowerTriangularMaskWithTensorBias {
 
 impl AttentionBiasBlockDiagonal for LowerTriangularMaskWithTensorBias {
     fn materialize(&self, shape: &Shape, dtype: DType, device: Device) -> Result<Tensor, APIError> {
-        Ok(
-            (materialize_causal_mask(shape, dtype, &device, None, false)
-                .map_err(APIError::from)?
-                + &self.bias)
-                .map_err(APIError::from)?,
-        )
+        (materialize_causal_mask(shape, dtype, &device, None, false).map_err(APIError::from)?
+            + &self.bias)
+            .map_err(APIError::from)
     }
     fn _create_block_mask(
         &self,
@@ -249,12 +246,11 @@ fn apply_triangular(xs: &Tensor, diagonal: isize, upper: bool) -> Result<Tensor,
             xs_tri.push(if cond { 0u8 } else { 1u8 });
         }
     }
-    Ok((xs
-        * Tensor::from_vec(xs_tri, (l, s), device)
-            .map_err(APIError::from)?
-            .to_dtype(xs.dtype())
-            .map_err(APIError::from)?)
-    .map_err(APIError::from)?)
+    (xs * Tensor::from_vec(xs_tri, (l, s), device)
+        .map_err(APIError::from)?
+        .to_dtype(xs.dtype())
+        .map_err(APIError::from)?)
+    .map_err(APIError::from)
 }
 
 fn materialize_causal_mask(
@@ -284,9 +280,8 @@ fn materialize_causal_mask(
         mask = apply_triangular(&mask, (shift - window_size + 1).try_into().unwrap(), false)
             .map_err(APIError::from)?;
     }
-    Ok(mask
-        .log()
+    mask.log()
         .map_err(APIError::from)?
         .to_dtype(dtype)
-        .map_err(APIError::from)?)
+        .map_err(APIError::from)
 }
