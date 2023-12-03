@@ -1,14 +1,16 @@
-# candle-vllm
+<p align="center">
+    <img src="./res/candle_vllm_logo.png" alt="candle vLLM" width=55%/>
+</p>
+
 [![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
-
-**This is a development branch for PagedAttention. It is unstable and in active development.**
 
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
 - Streaming support in generation.
+- Efficient management of key-value cache with PagedAttention.
 
 ### Pipelines
 - Llama
