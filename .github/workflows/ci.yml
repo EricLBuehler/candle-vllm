@@ -52,6 +52,7 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+      - run: python3 ./.github/workflows/install.py
       - run: rustup component add clippy
       - uses: actions-rs/cargo@v1
         with:
@@ -68,6 +69,7 @@ jobs:
           profile: minimal
           toolchain: stable
           override: true
+      - run: python3 ./.github/workflows/install.py
       - uses: actions-rs/cargo@v1
         with:
           command: doc
