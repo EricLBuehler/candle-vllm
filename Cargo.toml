@@ -33,12 +33,14 @@ futures = "0.3.29"
 tokio = { version = "1.33.0", features = ["sync"] }
 env_logger = "0.10.1"
 tracing = "0.1.40"
+tch = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy_derive", version = "0.14.0" } # pending on LaurentMazare/tch-rs#823
+torch-sys = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy_derive", version = "0.14.0" } # pending on LaurentMazare/tch-rs#823
 
 [features]
 default = []
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:candle-flash-attn"]
 cudnn = ["candle-core/cudnn"]
-flash-attn = ["cuda", "candle-transformers/flash-attn", "dep:candle-flash-attn"]
+flash-attn = ["cuda", "candle-transformers/flash-attn"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
 nccl = ["cuda", "cudarc/nccl", "dep:half"]

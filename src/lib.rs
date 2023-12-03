@@ -1,3 +1,5 @@
+#![warn(clippy::cast_lossless)]
+
 use clap::Subcommand;
 use openai::pipelines::{
     llama::{LlamaLoader, LlamaSpecificConfig},
@@ -126,3 +128,4 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
 }
 
 pub mod openai;
+pub mod paged_attention;
