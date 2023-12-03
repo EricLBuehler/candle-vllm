@@ -15,7 +15,7 @@ mod input_metadata;
 mod memory_efficient_attention;
 use memory_efficient_attention::_memory_efficient_attention;
 
-const _PARTION_SIZE: usize = 512;
+const _PARTITION_SIZE: usize = 512;
 
 #[allow(dead_code)]
 pub struct PagedAttention {
@@ -143,11 +143,11 @@ impl PagedAttention {
 
         let block_size = *value_cache.shape().dims().get(3).unwrap();
         let (num_seqs, num_heads, head_size) = query.shape().dims3().map_err(APIError::from)?;
-        let max_num_partions =
-            (input_metadata.max_context_len.unwrap() + _PARTION_SIZE - 1) / _PARTION_SIZE;
+        let max_num_partitions =
+            (input_metadata.max_context_len.unwrap() + _PARTITION_SIZE - 1) / _PARTITION_SIZE;
 
         let use_v1 = input_metadata.max_context_len.unwrap() <= 8192
-            && (max_num_partions == 1 || num_seqs * num_heads > 512);
+            && (max_num_partitions == 1 || num_seqs * num_heads > 512);
         if use_v1 {
             //Run PagedAttention V1
             let mut output_tch = convert_candle_to_tch(&mut output);
@@ -192,18 +192,18 @@ impl PagedAttention {
             };
         } else {
             //Run PagedAttention V2
-            assert_eq!(_PARTION_SIZE % block_size, 0);
+            assert_eq!(_PARTITION_SIZE % block_size, 0);
 
             let mut tmp_output = Tensor::zeros(
                 //use Tensor::empty, huggingface/candle#1374
-                (num_seqs, num_heads, max_num_partions, head_size),
+                (num_seqs, num_heads, max_num_partitions, head_size),
                 output.dtype(),
                 output.device(),
             )
             .map_err(APIError::from)?;
             let mut exp_sums = Tensor::zeros(
                 //use Tensor::empty, huggingface/candle#1374
-                (num_seqs, num_heads, max_num_partions),
+                (num_seqs, num_heads, max_num_partitions),
                 DType::F32,
                 output.device(),
             )
