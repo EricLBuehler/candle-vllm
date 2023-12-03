@@ -1,5 +1,6 @@
 import subprocess
 
+print(subprocess.run("uname -a").stdout)
 subprocess.run("sudo apt update -y")
 subprocess.run("sudo apt install libssl-dev -y")
 subprocess.run("sudo apt install pkg-config -y")
