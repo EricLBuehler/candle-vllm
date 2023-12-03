@@ -128,5 +128,4 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
 }
 
 pub mod openai;
-#[cfg(not(feature = "no-paged-attention"))]
 pub mod paged_attention;

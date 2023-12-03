@@ -33,8 +33,6 @@ futures = "0.3.29"
 tokio = { version = "1.33.0", features = ["sync"] }
 env_logger = "0.10.1"
 tracing = "0.1.40"
-
-[target.'cfg(not(feature = "no-paged-attention"))'.dependencies]
 tch = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy_derive", version = "0.14.0" } # pending on LaurentMazare/tch-rs#823
 torch-sys = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy_derive", version = "0.14.0" } # pending on LaurentMazare/tch-rs#823
 
@@ -46,4 +44,3 @@ cudnn = ["candle-core/cudnn"]
 flash-attn = ["cuda", "candle-transformers/flash-attn"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
 nccl = ["cuda", "cudarc/nccl", "dep:half"]
-no-paged-attention = []
