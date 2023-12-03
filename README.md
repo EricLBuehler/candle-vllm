@@ -53,16 +53,16 @@ Installing `candle-vllm` is as simple as the following steps. If you have any pr
 [issue](https://github.com/EricLBuehler/candle-lora/issues).
 
 0) Be sure to install Rust here: https://www.rust-lang.org/tools/install
-1) Run `sudo apt install libssl-dev` (may need to run `sudo apt update`)
-2) Run `sudo apt install pkg-config`
+1) Run `sudo apt install libssl-dev` or equivalent install command
+2) Run `sudo apt install pkg-config` or equivalent install command
 3) See the "Compiling PagedAttention CUDA kernels" section.
 
 Go to either the "Install with Pytorch" or "Install with libtorch" section to continue.
 
 ### Compiling PagedAttention CUDA kernels
 1) Install `setuptools >= 49.4.0`: `pip install setuptools==49.4.0`
-1) Run `python3 setup.py build` to compile the PagedAttention CUDA headers.
-2) `todo!()`
+2) Run `python3 setup.py build` to compile the PagedAttention CUDA headers.
+3) `todo!()`
 
 ### Install with Pytorch (recommended)
 4) Run `sudo find / -name libtorch_cpu.so`, taking note of the paths returned.
