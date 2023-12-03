@@ -195,7 +195,7 @@ pub fn _memory_efficient_attention(
             )
         }
     };
-    //candle_flash_attn::flash_attn;
+
     let l = query.dim(D::Minus2).map_err(APIError::from)?;
     let s = key.dim(D::Minus2).map_err(APIError::from)?;
 
@@ -210,10 +210,36 @@ pub fn _memory_efficient_attention(
             .materialize(&Shape::from_dims(&[l, s]), query.dtype(), device)
             .map_err(APIError::from)?,
         None,
-        Some(this.scale as f64),
+        this.scale,
     )
 }
 
+#[cfg(feature = "cuda")]
+/// Flash-attention v2 layer.
+///
+/// This implements scaled dot-product attention, `softmax(Q @ K^T . softmax_scale) @ V`.
+/// Multi-query and grouped-query attention are supported by using tensors k and v with fewer heads
+/// than q, the number of heads in k and v has to be divisible by the number of heads in q.
+///
+/// # Arguments
+///
+/// * `q` - Query tensor with shape `(batch, seq_len_q, num_heads_q, head_size)`.
+/// * `k` - Key tensor with shape `(batch, seq_len_kv, num_heads_kv, head_size)`.
+/// * `v` - Value tensor with shape `(batch, seq_len_kv, num_heads_kv, head_size)`.
+///
+/// The resulting tensor has dimensions `(batch, seq_len_q, num_heads_q, head_size)`.
+pub fn scaled_dot_product_attention(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    attn_bias: &Tensor,
+    dropout_p: Option<f32>,
+    scale_factor: f32,
+) -> Result<Tensor, APIError> {
+    candle_flash_attn::flash_attn(query, key, value, scale_factor, false).map_err(APIError::from)
+}
+
+#[cfg(not(feature = "cuda"))]
 // https://github.com/mokeyish/candle-ext/blob/main/src/scaled_dot_product_attention.rs
 
 /// Computes scaled dot product attention on query, key and value tensors,
@@ -235,16 +261,8 @@ pub fn scaled_dot_product_attention(
     value: &Tensor,
     attn_bias: &Tensor,
     dropout_p: Option<f32>,
-    scale: Option<f64>,
+    scale_factor: f32,
 ) -> Result<Tensor, APIError> {
-    let dim = query.dim(D::Minus1).map_err(APIError::from)?;
-
-    let scale_factor = if let Some(scale) = scale {
-        scale
-    } else {
-        1.0 / (dim as f64).sqrt()
-    };
-
     let mut attn_weights = (query
         .matmul(
             &key.transpose(D::Minus2, D::Minus1)
@@ -253,7 +271,7 @@ pub fn scaled_dot_product_attention(
                 .map_err(APIError::from)?,
         )
         .map_err(APIError::from)?
-        * scale_factor)
+        * scale_factor as f64)
         .map_err(APIError::from)?;
 
     attn_weights = (&attn_weights
