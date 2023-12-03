@@ -56,7 +56,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: clippy
-          args: --workspace --tests --examples -- -D warnings
+          args: --features no-paged-attention --workspace --tests --examples -- -D warnings
 
   docs:
     name: Docs
@@ -71,7 +71,7 @@ jobs:
       - uses: actions-rs/cargo@v1
         with:
           command: doc
-          args: --workspace
+          args: --features no-paged-attention --workspace
 
   typos:
     name: Typos
