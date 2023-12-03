@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{DType, Device, IndexOp, Shape, Tensor, D};
 
 use crate::{
     openai::responses::APIError,
@@ -7,6 +7,7 @@ use crate::{
 
 use super::{input_metadata::InputMetadata, PagedAttention};
 
+#[allow(clippy::too_many_arguments)]
 pub fn _memory_efficient_attention(
     this: &PagedAttention,
     query: Tensor,
@@ -68,7 +69,7 @@ pub fn _memory_efficient_attention(
                     .unwrap()
                     .try_into()
                     .unwrap(),
-                &device,
+                device,
             )
             .map_err(APIError::from)?
             .to_dtype(dtype)
@@ -89,7 +90,7 @@ pub fn _memory_efficient_attention(
                     padded_len,
                 ),
                 dtype,
-                &device,
+                device,
             )
             .map_err(APIError::from)?
             .i((.., .., .., ..seq_len))
@@ -194,6 +195,76 @@ pub fn _memory_efficient_attention(
             )
         }
     };
+    //candle_flash_attn::flash_attn;
+    let l = query.dim(D::Minus2).map_err(APIError::from)?;
+    let s = key.dim(D::Minus2).map_err(APIError::from)?;
 
-    todo!("memory_efficient_attention_forward");
+    scaled_dot_product_attention(
+        &query,
+        &key,
+        &value,
+        &input_metadata
+            .attn_bias
+            .as_ref()
+            .unwrap()
+            .materialize(&Shape::from_dims(&[l, s]), query.dtype(), device)
+            .map_err(APIError::from)?,
+        None,
+        Some(this.scale as f64),
+    )
+}
+
+// https://github.com/mokeyish/candle-ext/blob/main/src/scaled_dot_product_attention.rs
+
+/// Computes scaled dot product attention on query, key and value tensors,
+/// using an optional attention mask if passed, and applying dropout
+/// if a probability greater than 0.0 is specified.
+///
+/// # Arguments
+/// - query   - Query tensor; shape (N, ..., L, E)
+/// - key     - Key tensor; shape (N, ..., S, E)
+/// - value   - Value tensor; shape (N, ..., S, E)
+///
+/// https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+/// # Errors
+///
+/// This function will return an error if .
+pub fn scaled_dot_product_attention(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    attn_bias: &Tensor,
+    dropout_p: Option<f32>,
+    scale: Option<f64>,
+) -> Result<Tensor, APIError> {
+    let dim = query.dim(D::Minus1).map_err(APIError::from)?;
+
+    let scale_factor = if let Some(scale) = scale {
+        scale
+    } else {
+        1.0 / (dim as f64).sqrt()
+    };
+
+    let mut attn_weights = (query
+        .matmul(
+            &key.transpose(D::Minus2, D::Minus1)
+                .map_err(APIError::from)?
+                .contiguous()
+                .map_err(APIError::from)?,
+        )
+        .map_err(APIError::from)?
+        * scale_factor)
+        .map_err(APIError::from)?;
+
+    attn_weights = (&attn_weights
+        + attn_bias
+            .broadcast_as(attn_weights.shape())
+            .map_err(APIError::from)?)
+    .map_err(APIError::from)?;
+    attn_weights = candle_nn::ops::softmax_last_dim(&attn_weights).map_err(APIError::from)?;
+
+    if let Some(drop_p) = dropout_p {
+        attn_weights = candle_nn::ops::dropout(&attn_weights, drop_p).map_err(APIError::from)?;
+    }
+    attn_weights.matmul(value).map_err(APIError::from)
 }

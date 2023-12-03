@@ -266,6 +266,7 @@ impl PagedAttention {
         Ok(output)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn _normal_attention(
         &self,
         query: Tensor,

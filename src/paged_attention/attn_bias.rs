@@ -11,11 +11,16 @@ pub trait AttentionBiasBlockDiagonal {
     /// A query Q in block i cannot attend to a key which is not in block i,
     /// nor one which is farther from the initial key in block i than Q
     /// is from the initial query in block i.
-    fn materialize(&self, shape: &Shape, dtype: DType, device: Device) -> Result<Tensor, APIError> {
+    fn materialize(
+        &self,
+        shape: &Shape,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Tensor, APIError> {
         //use Tensor::empty, huggingface/candle#1374
         let mut mask = Tensor::new(
             &shape.dims().iter().map(|x| (*x) as u32).collect::<Vec<_>>()[2..],
-            &device,
+            device,
         )
         .map_err(APIError::from)?
         .to_dtype(dtype)
@@ -35,7 +40,7 @@ pub trait AttentionBiasBlockDiagonal {
                 &self._create_block_mask(
                     &Shape::from_dims(&[(q_end - q_start) as usize, (k_end - k_start) as usize]),
                     dtype,
-                    &device,
+                    device,
                 )?,
             )
             .map_err(APIError::from)?;
@@ -206,8 +211,13 @@ impl LowerTriangularMaskWithTensorBias {
 }
 
 impl AttentionBiasBlockDiagonal for LowerTriangularMaskWithTensorBias {
-    fn materialize(&self, shape: &Shape, dtype: DType, device: Device) -> Result<Tensor, APIError> {
-        (materialize_causal_mask(shape, dtype, &device, None, false).map_err(APIError::from)?
+    fn materialize(
+        &self,
+        shape: &Shape,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<Tensor, APIError> {
+        (materialize_causal_mask(shape, dtype, device, None, false).map_err(APIError::from)?
             + &self.bias)
             .map_err(APIError::from)
     }
