@@ -1,3 +1,5 @@
+#![warn(clippy::cast_lossless)]
+
 use clap::Subcommand;
 use openai::pipelines::{
     llama::{LlamaLoader, LlamaSpecificConfig},

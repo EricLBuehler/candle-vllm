@@ -19,7 +19,11 @@ pub trait AttentionBiasBlockDiagonal {
     ) -> Result<Tensor, APIError> {
         //use Tensor::empty, huggingface/candle#1374
         let mut mask = Tensor::new(
-            &shape.dims().iter().map(|x| (*x) as u32).collect::<Vec<_>>()[2..],
+            &shape
+                .dims()
+                .iter()
+                .map(|x| (*x).try_into().unwrap())
+                .collect::<Vec<u32>>()[2..],
             device,
         )
         .map_err(APIError::from)?
@@ -248,8 +252,8 @@ fn apply_triangular(xs: &Tensor, diagonal: isize, upper: bool) -> Result<Tensor,
     let device = xs.device();
     let (l, s) = xs.dims2().map_err(APIError::from)?;
     let mut xs_tri = vec![];
-    for i in 0..l as isize {
-        for j in 0..s as isize {
+    for i in 0..l.try_into().unwrap() {
+        for j in 0..s.try_into().unwrap() {
             let cond = if upper {
                 i + diagonal > j
             } else {

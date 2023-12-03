@@ -271,8 +271,8 @@ pub fn scaled_dot_product_attention(
                 .map_err(APIError::from)?,
         )
         .map_err(APIError::from)?
-        * scale_factor as f64)
-        .map_err(APIError::from)?;
+        * f64::from(scale_factor))
+    .map_err(APIError::from)?;
 
     attn_weights = (&attn_weights
         + attn_bias
