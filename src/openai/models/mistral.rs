@@ -278,6 +278,10 @@ impl Attention {
             .reshape((b_sz, q_len, self.hidden_size))?
             .apply(&self.o_proj)
     }
+
+    fn clear_cache(&mut self) {
+        self.kv_cache = None;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -403,5 +407,11 @@ impl Model {
         xs.narrow(1, seq_len - 1, 1)?
             .apply(&self.norm)?
             .apply(&self.lm_head)
+    }
+
+    pub fn clear_cache(&mut self) {
+        for block in &mut self.layers {
+            block.self_attn.clear_cache();
+        }
     }
 }

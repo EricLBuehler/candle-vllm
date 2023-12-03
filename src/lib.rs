@@ -19,7 +19,7 @@ pub enum ModelSelected {
         use_flash_attn: bool,
     },
 
-    /// Select the llama7b model.
+    /// Select the llama13b model.
     Llama13b {
         #[arg(long)]
         no_kv_cache: bool,
@@ -88,7 +88,7 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
                 LlamaSpecificConfig::new(no_kv_cache, repeat_last_n, use_flash_attn),
                 "llama7b".to_string(),
             )),
-            "meta-llama/Llama-2-7b-chat-hf".to_string(),
+            "meta-llama/Llama-27b-chat-hf".to_string(),
         ),
         ModelSelected::Llama13b {
             no_kv_cache,
@@ -99,7 +99,7 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
                 LlamaSpecificConfig::new(no_kv_cache, repeat_last_n, use_flash_attn),
                 "llama13b".to_string(),
             )),
-            "meta-llama/Llama-2-13b-chat-hf".to_string(),
+            "meta-llama/Llama-213b-chat-hf".to_string(),
         ),
         ModelSelected::Llama70b {
             no_kv_cache,
@@ -110,7 +110,7 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
                 LlamaSpecificConfig::new(no_kv_cache, repeat_last_n, use_flash_attn),
                 "llama70b".to_string(),
             )),
-            "meta-llama/Llama-2-70b-chat-hf".to_string(),
+            "meta-llama/Llama-270b-chat-hf".to_string(),
         ),
         ModelSelected::Mistral7b {
             repeat_penalty,
@@ -122,7 +122,7 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
                 repeat_last_n,
                 use_flash_attn,
             ))),
-            "mistralai/Mistral-7B-v0.1".to_string(),
+            "alpindale/mistral-7b-safetensors".to_string(),
         ),
     }
 }
