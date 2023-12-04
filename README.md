@@ -6,6 +6,8 @@
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
 
+**candle-vllm is in active development and not currently stable.**
+
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
