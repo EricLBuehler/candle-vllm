@@ -1,10 +1,15 @@
 /// Llama LLM, https://github.com/huggingface/candle/blob/main/candle-transformers/src/models/llama.rs
-use candle_core::{DType, Device, IndexOp, Result, Tensor, D};
+use candle_core::{DType, Device, IndexOp, Tensor, D};
 use candle_nn::{Embedding, Module, VarBuilder};
 use candle_transformers::models::with_tracing::{linear_no_bias as linear, Linear};
 use serde::Deserialize;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::iter::zip;
+
+use crate::openai::responses::APIError;
+use crate::paged_attention::input_metadata::InputMetadata;
+use crate::paged_attention::PagedAttention;
+
+use super::ConfigLike;
 
 pub const MAX_SEQ_LEN: usize = 4096;
 
@@ -21,12 +26,27 @@ pub struct LlamaConfig {
     pub rope_theta: f32,
 }
 
+impl ConfigLike for LlamaConfig {
+    fn get_num_kv_heads(&self) -> usize {
+        self.num_key_value_heads.unwrap()
+    }
+    fn get_hidden_size(&self) -> usize {
+        self.hidden_size
+    }
+    fn get_num_hidden_layers(&self) -> usize {
+        self.num_hidden_layers
+    }
+    fn get_num_attention_heads(&self) -> usize {
+        self.num_attention_heads
+    }
+}
+
 fn default_rope() -> f32 {
     10_000.0
 }
 
 impl LlamaConfig {
-    pub fn into_config(self, use_flash_attn: bool) -> Config {
+    pub fn into_config(self) -> Config {
         Config {
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -36,7 +56,6 @@ impl LlamaConfig {
             num_key_value_heads: self.num_key_value_heads.unwrap_or(self.num_attention_heads),
             rms_norm_eps: self.rms_norm_eps,
             rope_theta: self.rope_theta,
-            use_flash_attn,
         }
     }
 }
@@ -49,13 +68,12 @@ pub struct Config {
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
     pub num_key_value_heads: usize,
-    pub use_flash_attn: bool,
     pub rms_norm_eps: f64,
     pub rope_theta: f32,
 }
 
 impl Config {
-    pub fn config_7b_v1(use_flash_attn: bool) -> Self {
+    pub fn config_7b_v1() -> Self {
         Self {
             hidden_size: 4096,
             intermediate_size: 11008,
@@ -63,13 +81,12 @@ impl Config {
             num_hidden_layers: 32,
             num_attention_heads: 32,
             num_key_value_heads: 32,
-            use_flash_attn,
             rms_norm_eps: 1e-6,
             rope_theta: 10_000.0,
         }
     }
 
-    pub fn config_7b_v2(use_flash_attn: bool) -> Self {
+    pub fn config_7b_v2() -> Self {
         Self {
             hidden_size: 4096,
             intermediate_size: 11008,
@@ -77,7 +94,6 @@ impl Config {
             num_hidden_layers: 32,
             num_attention_heads: 32,
             num_key_value_heads: 32,
-            use_flash_attn,
             rms_norm_eps: 1e-5,
             rope_theta: 10_000.0,
         }
@@ -86,17 +102,12 @@ impl Config {
 
 #[derive(Clone)]
 pub struct Cache {
-    masks: Arc<Mutex<HashMap<usize, Tensor>>>,
-    pub use_kv_cache: bool,
-    #[allow(clippy::type_complexity)]
-    kvs: Arc<Mutex<Vec<Option<(Tensor, Tensor)>>>>,
     cos: Tensor,
     sin: Tensor,
-    device: Device,
 }
 
 impl Cache {
-    pub fn new(use_kv_cache: bool, dtype: DType, config: &Config, device: &Device) -> Result<Self> {
+    pub fn new(dtype: DType, config: &Config, device: &Device) -> candle_core::Result<Self> {
         // precompute freqs_cis
         let n_elem = config.hidden_size / config.num_attention_heads;
         let theta: Vec<_> = (0..n_elem)
@@ -113,32 +124,11 @@ impl Cache {
         let idx_theta = Tensor::cat(&[&idx_theta, &idx_theta], D::Minus1)?;
         let cos = idx_theta.cos()?.to_dtype(dtype)?;
         let sin = idx_theta.sin()?.to_dtype(dtype)?;
-        Ok(Self {
-            masks: Arc::new(Mutex::new(HashMap::new())),
-            use_kv_cache,
-            kvs: Arc::new(Mutex::new(vec![None; config.num_hidden_layers])),
-            device: device.clone(),
-            cos,
-            sin,
-        })
-    }
-
-    fn mask(&self, t: usize) -> Result<Tensor> {
-        let mut masks = self.masks.lock().unwrap();
-        if let Some(mask) = masks.get(&t) {
-            Ok(mask.clone())
-        } else {
-            let mask: Vec<_> = (0..t)
-                .flat_map(|i| (0..t).map(move |j| u8::from(j > i)))
-                .collect();
-            let mask = Tensor::from_slice(&mask, (t, t), &self.device)?;
-            masks.insert(t, mask.clone());
-            Ok(mask)
-        }
+        Ok(Self { cos, sin })
     }
 }
 
-fn embedding(cfg: &Config, vb: VarBuilder) -> Result<Embedding> {
+fn embedding(cfg: &Config, vb: VarBuilder) -> candle_core::Result<Embedding> {
     let embeddings = vb.get((cfg.vocab_size, cfg.hidden_size), "weight")?;
     Ok(Embedding::new(embeddings, cfg.hidden_size))
 }
@@ -149,13 +139,13 @@ struct RmsNorm {
 }
 
 impl RmsNorm {
-    fn load(size: usize, eps: f64, vb: VarBuilder) -> Result<Self> {
+    fn load(size: usize, eps: f64, vb: VarBuilder) -> candle_core::Result<Self> {
         let span = tracing::span!(tracing::Level::TRACE, "rms-norm");
         let inner = candle_nn::rms_norm(size, eps, vb)?;
         Ok(Self { inner, span })
     }
 
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
         let _enter = self.span.enter();
         self.inner.forward(x)
     }
@@ -170,29 +160,13 @@ struct CausalSelfAttention {
     num_key_value_heads: usize,
     head_dim: usize,
     cache: Cache,
-    use_flash_attn: bool,
     span: tracing::Span,
     span_rot: tracing::Span,
-}
-
-#[cfg(feature = "flash-attn")]
-fn flash_attn(
-    q: &Tensor,
-    k: &Tensor,
-    v: &Tensor,
-    softmax_scale: f32,
-    causal: bool,
-) -> Result<Tensor> {
-    candle_flash_attn::flash_attn(q, k, v, softmax_scale, causal)
-}
-
-#[cfg(not(feature = "flash-attn"))]
-fn flash_attn(_: &Tensor, _: &Tensor, _: &Tensor, _: f32, _: bool) -> Result<Tensor> {
-    unimplemented!("compile with '--features flash-attn'")
+    attn: PagedAttention,
 }
 
 impl CausalSelfAttention {
-    fn apply_rotary_emb(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+    fn apply_rotary_emb(&self, x: &Tensor, index_pos: usize) -> candle_core::Result<Tensor> {
         let _enter = self.span_rot.enter();
         let (b_sz, _, seq_len, hidden_size) = x.dims4()?;
         let cos = self.cache.cos.narrow(0, index_pos, seq_len)?;
@@ -206,98 +180,72 @@ impl CausalSelfAttention {
         Ok(rope)
     }
 
-    fn forward(&self, x: &Tensor, index_pos: usize, block_idx: usize) -> Result<Tensor> {
+    fn forward(
+        &mut self,
+        x: &Tensor,
+        index_pos: usize,
+        input_metadata: &mut InputMetadata,
+        k_cache: &Tensor,
+        v_cache: &Tensor,
+    ) -> Result<Tensor, APIError> {
         let _enter = self.span.enter();
-        let (b_sz, seq_len, hidden_size) = x.dims3()?;
-        let q = self.q_proj.forward(x)?;
-        let k = self.k_proj.forward(x)?;
-        let v = self.v_proj.forward(x)?;
+        let (b_sz, seq_len, _) = x.dims3().map_err(APIError::from)?;
+        let q = self.q_proj.forward(x).map_err(APIError::from)?;
+        let k = self.k_proj.forward(x).map_err(APIError::from)?;
+        let v = self.v_proj.forward(x).map_err(APIError::from)?;
 
         let q = q
-            .reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim))
+            .map_err(APIError::from)?
+            .transpose(1, 2)
+            .map_err(APIError::from)?;
         let k = k
-            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
-            .transpose(1, 2)?;
-        let mut v = v
-            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
-            .transpose(1, 2)?;
+            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))
+            .map_err(APIError::from)?
+            .transpose(1, 2)
+            .map_err(APIError::from)?;
+        let v = v
+            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))
+            .map_err(APIError::from)?
+            .transpose(1, 2)
+            .map_err(APIError::from)?;
 
-        let q = self.apply_rotary_emb(&q, index_pos)?;
-        let mut k = self.apply_rotary_emb(&k, index_pos)?;
+        let q = self
+            .apply_rotary_emb(&q, index_pos)
+            .map_err(APIError::from)?;
+        let k = self
+            .apply_rotary_emb(&k, index_pos)
+            .map_err(APIError::from)?;
 
-        if self.cache.use_kv_cache {
-            let mut cache = self.cache.kvs.lock().unwrap();
-            if let Some((cache_k, cache_v)) = &cache[block_idx] {
-                k = Tensor::cat(&[cache_k, &k], 2)?.contiguous()?;
-                v = Tensor::cat(&[cache_v, &v], 2)?.contiguous()?;
-                let k_seq_len = k.dims()[1];
-                if k_seq_len > MAX_SEQ_LEN {
-                    k = k
-                        .narrow(D::Minus1, k_seq_len - MAX_SEQ_LEN, MAX_SEQ_LEN)?
-                        .contiguous()?
-                }
-                let v_seq_len = v.dims()[1];
-                if v_seq_len > 2 * MAX_SEQ_LEN {
-                    v = v
-                        .narrow(D::Minus1, v_seq_len - MAX_SEQ_LEN, MAX_SEQ_LEN)?
-                        .contiguous()?
-                }
-            }
-            cache[block_idx] = Some((k.clone(), v.clone()))
-        }
+        let dtype = q.dtype();
+        let device = q.device().clone();
+        let attn_output = self.attn.forward(
+            q,
+            k,
+            v,
+            Some(k_cache.clone()),
+            Some(v_cache.clone()),
+            input_metadata,
+            dtype,
+            device,
+        )?;
 
-        let k = self.repeat_kv(k)?;
-        let v = self.repeat_kv(v)?;
-
-        let y = if self.use_flash_attn {
-            // flash-attn expects (b_sz, seq_len, nheads, head_dim)
-            let q = q.transpose(1, 2)?;
-            let k = k.transpose(1, 2)?;
-            let v = v.transpose(1, 2)?;
-            let softmax_scale = 1f32 / (self.head_dim as f32).sqrt();
-            flash_attn(&q, &k, &v, softmax_scale, seq_len > 1)?.transpose(1, 2)?
-        } else {
-            let in_dtype = q.dtype();
-            let q = q.to_dtype(DType::F32)?;
-            let k = k.to_dtype(DType::F32)?;
-            let v = v.to_dtype(DType::F32)?;
-            let att = (q.matmul(&k.t()?)? / (self.head_dim as f64).sqrt())?;
-            let mask = self.cache.mask(seq_len)?.broadcast_as(att.shape())?;
-            let att = masked_fill(&att, &mask, f32::NEG_INFINITY)?;
-            let att = candle_nn::ops::softmax(&att, D::Minus1)?;
-            // Convert to contiguous as matmul doesn't support strided vs for now.
-            att.matmul(&v.contiguous()?)?.to_dtype(in_dtype)?
-        };
-        let y = y.transpose(1, 2)?.reshape(&[b_sz, seq_len, hidden_size])?;
-        let y = self.o_proj.forward(&y)?;
+        let y = self.o_proj.forward(&attn_output).map_err(APIError::from)?;
         Ok(y)
     }
 
-    fn repeat_kv(&self, x: Tensor) -> Result<Tensor> {
-        let n_rep = self.num_attention_heads / self.num_key_value_heads;
-        if n_rep == 1 {
-            Ok(x)
-        } else {
-            let (b_sz, n_kv_head, seq_len, head_dim) = x.dims4()?;
-            let x = x
-                .unsqueeze(2)?
-                .expand((b_sz, n_kv_head, n_rep, seq_len, head_dim))?
-                .reshape((b_sz, n_kv_head * n_rep, seq_len, head_dim))?;
-            Ok(x)
-        }
-    }
-
-    fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> Result<Self> {
+    fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> Result<Self, APIError> {
         let span = tracing::span!(tracing::Level::TRACE, "attn");
         let span_rot = tracing::span!(tracing::Level::TRACE, "attn-rot");
         let size_in = cfg.hidden_size;
         let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
         let size_kv = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads;
-        let q_proj = linear(size_in, size_q, vb.pp("q_proj"))?;
-        let k_proj = linear(size_in, size_kv, vb.pp("k_proj"))?;
-        let v_proj = linear(size_in, size_kv, vb.pp("v_proj"))?;
-        let o_proj = linear(size_q, size_in, vb.pp("o_proj"))?;
+        let q_proj = linear(size_in, size_q, vb.pp("q_proj")).map_err(APIError::from)?;
+        let k_proj = linear(size_in, size_kv, vb.pp("k_proj")).map_err(APIError::from)?;
+        let v_proj = linear(size_in, size_kv, vb.pp("v_proj")).map_err(APIError::from)?;
+        let o_proj = linear(size_q, size_in, vb.pp("o_proj")).map_err(APIError::from)?;
+
+        let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         Ok(Self {
             q_proj,
             k_proj,
@@ -305,25 +253,22 @@ impl CausalSelfAttention {
             o_proj,
             num_attention_heads: cfg.num_attention_heads,
             num_key_value_heads: cfg.num_key_value_heads,
-            head_dim: cfg.hidden_size / cfg.num_attention_heads,
+            head_dim,
             cache: cache.clone(),
-            use_flash_attn: cfg.use_flash_attn,
             span,
             span_rot,
+            attn: PagedAttention::new(
+                cfg.num_attention_heads,
+                head_dim,
+                1. / ((head_dim as f32).sqrt()),
+                Some(cfg.num_key_value_heads),
+                None,
+                vb.device().clone(),
+                None,
+            )
+            .map_err(APIError::from)?,
         })
     }
-
-    fn clear_cache(&mut self, config: &Config) {
-        self.cache.masks = Arc::new(Mutex::new(HashMap::new()));
-        self.cache.kvs = Arc::new(Mutex::new(vec![None; config.num_hidden_layers]));
-    }
-}
-
-fn masked_fill(on_false: &Tensor, mask: &Tensor, on_true: f32) -> Result<Tensor> {
-    let shape = mask.shape();
-    let on_true = Tensor::new(on_true, on_false.device())?.broadcast_as(shape.dims())?;
-    let m = mask.where_cond(&on_true, on_false)?;
-    Ok(m)
 }
 
 struct Mlp {
@@ -334,13 +279,13 @@ struct Mlp {
 }
 
 impl Mlp {
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor) -> candle_core::Result<Tensor> {
         let _enter = self.span.enter();
         let x = (candle_nn::ops::silu(&self.c_fc1.forward(x)?)? * self.c_fc2.forward(x)?)?;
         self.c_proj.forward(&x)
     }
 
-    fn load(vb: VarBuilder, cfg: &Config) -> Result<Self> {
+    fn load(vb: VarBuilder, cfg: &Config) -> candle_core::Result<Self> {
         let span = tracing::span!(tracing::Level::TRACE, "mlp");
         let h_size = cfg.hidden_size;
         let i_size = cfg.intermediate_size;
@@ -365,26 +310,46 @@ struct Block {
 }
 
 impl Block {
-    fn forward(&self, x: &Tensor, index_pos: usize, block_idx: usize) -> Result<Tensor> {
+    fn forward(
+        &mut self,
+        x: &Tensor,
+        index_pos: usize,
+        k_cache: &Tensor,
+        v_cache: &Tensor,
+        input_metadata: &mut InputMetadata,
+    ) -> Result<Tensor, APIError> {
         let _enter = self.span.enter();
         let residual = x;
-        let x = self.rms_1.forward(x)?;
-        let x = (self.attn.forward(&x, index_pos, block_idx)? + residual)?;
+        let x = self.rms_1.forward(x).map_err(APIError::from)?;
+        let x = (self
+            .attn
+            .forward(&x, index_pos, input_metadata, k_cache, v_cache)
+            .map_err(APIError::from)?
+            + residual)
+            .map_err(APIError::from)?;
         let residual = &x;
-        let x = (self.mlp.forward(&self.rms_2.forward(&x)?)? + residual)?;
+        let x = (self
+            .mlp
+            .forward(&self.rms_2.forward(&x).map_err(APIError::from)?)
+            .map_err(APIError::from)?
+            + residual)
+            .map_err(APIError::from)?;
         Ok(x)
     }
 
-    fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> Result<Self> {
+    fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> Result<Self, APIError> {
         let span = tracing::span!(tracing::Level::TRACE, "block");
-        let attn = CausalSelfAttention::load(vb.pp("self_attn"), cache, cfg)?;
-        let mlp = Mlp::load(vb.pp("mlp"), cfg)?;
-        let rms_1 = RmsNorm::load(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
+        let attn =
+            CausalSelfAttention::load(vb.pp("self_attn"), cache, cfg).map_err(APIError::from)?;
+        let mlp = Mlp::load(vb.pp("mlp"), cfg).map_err(APIError::from)?;
+        let rms_1 = RmsNorm::load(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))
+            .map_err(APIError::from)?;
         let rms_2 = RmsNorm::load(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
-        )?;
+        )
+        .map_err(APIError::from)?;
         Ok(Self {
             rms_1,
             attn,
@@ -404,19 +369,25 @@ pub struct Llama {
 }
 
 impl Llama {
-    pub fn forward(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
-        let (_b_sz, seq_len) = x.dims2()?;
-        let mut x = self.wte.forward(x)?;
-        for (block_idx, block) in self.blocks.iter().enumerate() {
-            x = block.forward(&x, index_pos, block_idx)?;
+    pub fn forward(
+        &mut self,
+        x: &Tensor,
+        index_pos: usize,
+        kv_caches: &Vec<(Tensor, Tensor)>,
+        input_metadata: &mut InputMetadata,
+    ) -> Result<Tensor, APIError> {
+        let (_b_sz, seq_len) = x.dims2().map_err(APIError::from)?;
+        let mut x = self.wte.forward(x).map_err(APIError::from)?;
+        for ((k_cache, v_cache), block) in zip(kv_caches, &mut self.blocks) {
+            x = block.forward(&x, index_pos, k_cache, v_cache, input_metadata)?;
         }
-        let x = self.ln_f.forward(&x)?;
-        let x = x.i((.., seq_len - 1, ..))?;
-        let logits = self.lm_head.forward(&x)?;
-        logits.to_dtype(DType::F32)
+        let x = self.ln_f.forward(&x).map_err(APIError::from)?;
+        let x = x.i((.., seq_len - 1, ..)).map_err(APIError::from)?;
+        let logits = self.lm_head.forward(&x).map_err(APIError::from)?;
+        logits.to_dtype(DType::F32).map_err(APIError::from)
     }
 
-    pub fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> candle_core::Result<Self> {
         let wte = embedding(cfg, vb.pp("model.embed_tokens"))?;
         let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
         let ln_f = RmsNorm::load(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
@@ -434,9 +405,7 @@ impl Llama {
     }
 
     pub fn clear_cache(&mut self, config: &Config) {
-        for block in &mut self.blocks {
-            block.attn.clear_cache(config);
-        }
+        unimplemented!();
     }
 
     pub fn get_config(&self) -> &Config {

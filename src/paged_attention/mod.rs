@@ -11,9 +11,10 @@ use crate::{
 use self::input_metadata::InputMetadata;
 mod attn_bias;
 mod bindings;
-mod input_metadata;
+pub(crate) mod input_metadata;
 mod memory_efficient_attention;
 use memory_efficient_attention::_memory_efficient_attention;
+pub(crate) mod cache_engine;
 pub(crate) mod utils;
 
 const _PARTITION_SIZE: usize = 512;

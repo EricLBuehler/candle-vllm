@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf};
 
 use actix_web::web::Bytes;
-use candle_core::{DType, Device};
+use candle_core::{DType, Device, Tensor};
 use tokenizers::Encoding;
 use tokio::sync::mpsc::Sender;
 
@@ -15,6 +15,10 @@ use super::{
 
 pub mod llama;
 pub mod mistral;
+
+fn get_gpu_cache() -> Vec<(Tensor, Tensor)> {
+    todo!()
+}
 
 /// A module pipeline that encompasses the inference pass, tokenizer, and conversation.
 pub trait ModulePipeline<'s>: Send + Sync {

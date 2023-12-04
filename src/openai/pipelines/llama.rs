@@ -1,22 +1,26 @@
 use std::{iter, path::PathBuf};
 
-use crate::openai::{
-    conversation::{
-        default_conversation::{
-            DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
+use crate::{
+    openai::{
+        conversation::{
+            default_conversation::{
+                DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
+            },
+            Conversation,
         },
-        Conversation,
+        models::llama::{Cache, Llama, LlamaConfig},
+        pipelines::get_gpu_cache,
+        requests::StopTokens,
+        responses::{
+            APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
+            StreamingChatCompletionResponse, StreamingChoice, StreamingChoiceData,
+        },
+        sampling_params::SamplingParams,
+        streaming::SenderError,
+        utils::get_created_time_secs,
+        PipelineConfig, TokenizerWrapper,
     },
-    models::llama::{Cache, Llama, LlamaConfig},
-    requests::StopTokens,
-    responses::{
-        APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
-        StreamingChatCompletionResponse, StreamingChoice, StreamingChoiceData,
-    },
-    sampling_params::SamplingParams,
-    streaming::SenderError,
-    utils::get_created_time_secs,
-    PipelineConfig, TokenizerWrapper,
+    paged_attention::input_metadata::InputMetadata,
 };
 use actix_web::web::Bytes;
 use candle_core::{DType, Device, Tensor};
@@ -34,18 +38,12 @@ const SAMPLING_SEED: u64 = 299792458;
 
 #[derive(Debug, Clone)]
 pub struct LlamaSpecificConfig {
-    no_kv_cache: bool,
     repeat_last_n: usize,
-    use_flash_attn: bool,
 }
 
 impl LlamaSpecificConfig {
-    pub fn new(no_kv_cache: bool, repeat_last_n: usize, use_flash_attn: bool) -> Self {
-        Self {
-            no_kv_cache,
-            repeat_last_n,
-            use_flash_attn,
-        }
+    pub fn new(repeat_last_n: usize) -> Self {
+        Self { repeat_last_n }
     }
 }
 
@@ -57,6 +55,8 @@ pub struct LlamaPipeline {
     tokenizer: Tokenizer,
     conversation: DefaultConversation,
     name: String,
+    input_metadata: InputMetadata,
+    gpu_kv_cache: Vec<(Tensor, Tensor)>,
 }
 
 pub struct LlamaLoader {
@@ -139,15 +139,14 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
             &std::fs::read(paths.get_config_filename()).map_err(APIError::from)?,
         )
         .map_err(APIError::from)?;
-        let config = config.into_config(args.use_flash_attn);
+        let config = config.into_config();
 
         println!("Loading {} model.", self.name);
 
         let vb = from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device, false)
             .map_err(APIError::from)?;
 
-        let cache =
-            Cache::new(!args.no_kv_cache, dtype, &config, &device).map_err(APIError::from)?;
+        let cache = Cache::new(dtype, &config, &device).map_err(APIError::from)?;
 
         let llama = Llama::load(vb, &cache, &config).map_err(APIError::from)?;
 
@@ -184,6 +183,8 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                     },
                 ),
                 name: self.name.clone(),
+                input_metadata: InputMetadata::new(todo!(), None, None, None, todo!()),
+                gpu_kv_cache: get_gpu_cache(),
             }),
             pipeline_config,
         ))
@@ -207,10 +208,12 @@ impl LlamaPipeline {
             .map_err(APIError::from)?
             .unsqueeze(0)
             .map_err(APIError::from)?;
-        let logits = self
-            .llama
-            .forward(&input, *index_pos)
-            .map_err(APIError::from)?;
+        let logits = self.llama.forward(
+            &input,
+            *index_pos,
+            &self.gpu_kv_cache,
+            &mut self.input_metadata,
+        )?;
         let logits = logits.squeeze(0).map_err(APIError::from)?;
         let logits = if sampling.repetition_penalty == 1. {
             logits
@@ -293,11 +296,7 @@ impl LlamaPipeline {
                             continue;
                         }
 
-                        let context_size = if self.cache.use_kv_cache && gen.index > 0 {
-                            1
-                        } else {
-                            tokens.len()
-                        };
+                        let context_size = if gen.index > 0 { 1 } else { tokens.len() };
 
                         let next_token = self.generate_token(
                             tokens,
@@ -378,11 +377,7 @@ impl LlamaPipeline {
                 let finish_reason;
 
                 loop {
-                    let context_size = if self.cache.use_kv_cache && index > 0 {
-                        1
-                    } else {
-                        tokens.len()
-                    };
+                    let context_size = if index > 0 { 1 } else { tokens.len() };
 
                     let next_token = self.generate_token(
                         &tokens,

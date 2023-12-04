@@ -5,6 +5,8 @@ use candle_nn::{Activation, VarBuilder};
 use candle_transformers::models::with_tracing::{linear_no_bias, Linear};
 use std::sync::Arc;
 
+use super::ConfigLike;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub(crate) vocab_size: usize,
@@ -19,6 +21,21 @@ pub struct Config {
     pub(crate) rope_theta: f64,
     pub(crate) sliding_window: usize,
     pub(crate) use_flash_attn: bool,
+}
+
+impl ConfigLike for Config {
+    fn get_num_kv_heads(&self) -> usize {
+        self.num_key_value_heads
+    }
+    fn get_hidden_size(&self) -> usize {
+        self.hidden_size
+    }
+    fn get_num_hidden_layers(&self) -> usize {
+        self.num_hidden_layers
+    }
+    fn get_num_attention_heads(&self) -> usize {
+        self.num_attention_heads
+    }
 }
 
 impl Config {
