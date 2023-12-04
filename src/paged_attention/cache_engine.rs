@@ -6,7 +6,7 @@ use crate::openai::{models::ConfigLike, responses::APIError};
 
 const _GB: usize = 1 << 30;
 
-pub(crate) struct CacheConfig {
+pub struct CacheConfig {
     block_size: usize,
     gpu_mem_utilization: f64,
     swap_space_bytes: usize,
@@ -16,7 +16,7 @@ pub(crate) struct CacheConfig {
 }
 
 impl CacheConfig {
-    pub(crate) fn new(
+    pub fn new(
         block_size: usize,
         gpu_mem_utilization: F64Bounded<0, 1, false>,
         swap_space_bytes: usize,
@@ -33,7 +33,7 @@ impl CacheConfig {
     }
 }
 
-pub(crate) struct ParallelConfig {
+pub struct ParallelConfig {
     pipeline_parallel_size: usize,
     tensor_parallel_size: usize,
     worker_use_ray: bool,
@@ -42,7 +42,7 @@ pub(crate) struct ParallelConfig {
 }
 
 impl ParallelConfig {
-    pub(crate) fn new(
+    pub fn new(
         pipeline_parallel_size: usize,
         tensor_parallel_size: usize,
         mut worker_use_ray: bool,
@@ -69,13 +69,13 @@ impl ParallelConfig {
     }
 }
 
-pub(crate) struct ModelConfig {
+pub struct ModelConfig {
     config: Box<dyn ConfigLike>,
     dtype: DType,
 }
 
 impl ModelConfig {
-    pub(crate) fn new(config: Box<dyn ConfigLike>, dtype: DType) -> Self {
+    pub fn new(config: Box<dyn ConfigLike>, dtype: DType) -> Self {
         Self { config, dtype }
     }
 
@@ -92,7 +92,7 @@ impl ModelConfig {
     }
 }
 
-pub(crate) struct CacheEngine {
+pub struct CacheEngine {
     block_size: usize,
     num_gpu_blocks: Option<usize>,
     num_cpu_blocks: Option<usize>,
@@ -117,7 +117,7 @@ struct KeyBlockShape {
 }
 
 impl CacheEngine {
-    pub(crate) fn new(
+    pub fn new(
         cache_config: CacheConfig,
         model_config: ModelConfig,
         parallel_config: ParallelConfig,

@@ -14,8 +14,9 @@ mod bindings;
 pub(crate) mod input_metadata;
 mod memory_efficient_attention;
 use memory_efficient_attention::_memory_efficient_attention;
-pub(crate) mod cache_engine;
+mod cache_engine;
 pub(crate) mod utils;
+mod scheduler;
 
 const _PARTITION_SIZE: usize = 512;
 
