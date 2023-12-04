@@ -803,6 +803,7 @@ dependencies = [
  "half",
  "hf-hub",
  "intel-mkl-src",
+ "range-checked",
  "serde",
  "serde_json",
  "tch",
@@ -2847,6 +2848,11 @@ dependencies = [
  "num-traits",
  "rand",
 ]
+
+[[package]]
+name = "range-checked"
+version = "0.1.0"
+source = "git+https://github.com/EricLBuehler/range-checked.git#c5d6b6ccb77667c4fa2387e8a4f5769f58857183"
 
 [[package]]
 name = "raw-cpuid"

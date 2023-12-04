@@ -1,5 +1,7 @@
 use candle_core::{DType, Device, Tensor};
 
+use range_checked::F64Bounded;
+
 use crate::openai::{models::ConfigLike, responses::APIError};
 
 const _GB: usize = 1 << 30;
@@ -16,24 +18,18 @@ pub(crate) struct CacheConfig {
 impl CacheConfig {
     pub(crate) fn new(
         block_size: usize,
-        gpu_mem_utilization: f64,
+        gpu_mem_utilization: F64Bounded<0, 1, false>,
         swap_space_bytes: usize,
         sliding_window: Option<usize>,
-    ) -> Result<Self, APIError> {
-        if gpu_mem_utilization > 1.0 {
-            return Err(APIError::new(format!(
-                "GPU memory utilization must be less that 1.0. Got {gpu_mem_utilization}"
-            )));
-        }
-
-        Ok(Self {
+    ) -> Self {
+        Self {
             block_size,
-            gpu_mem_utilization,
+            gpu_mem_utilization: *gpu_mem_utilization,
             swap_space_bytes: swap_space_bytes * _GB,
             sliding_window,
             num_gpu_blocks: None,
             num_cpu_blocks: None,
-        })
+        }
     }
 }
 
