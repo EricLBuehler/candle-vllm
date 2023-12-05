@@ -7,12 +7,12 @@ use crate::openai::{models::ConfigLike, responses::APIError};
 const _GB: usize = 1 << 30;
 
 pub struct CacheConfig {
-    block_size: usize,
+    pub(crate) block_size: usize,
     gpu_mem_utilization: f64,
     swap_space_bytes: usize,
-    sliding_window: Option<usize>,
-    num_gpu_blocks: Option<usize>,
-    num_cpu_blocks: Option<usize>,
+    pub(crate) sliding_window: Option<usize>,
+    pub(crate) num_gpu_blocks: Option<usize>,
+    pub(crate) num_cpu_blocks: Option<usize>,
 }
 
 impl CacheConfig {

@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 
-use super::sequence::SequenceGroup;
+use crate::openai::responses::APIError;
+
+use super::{block_manager::BlockSpaceManager, cache_engine::CacheConfig, sequence::SequenceGroup};
 
 pub struct SchedulerOutputs {
     prompt_run: bool,
@@ -43,7 +45,75 @@ impl SchedulerOutputs {
 }
 
 pub struct SchedulerConfig {
+    max_num_batched_tokens: usize,
+    max_num_seqs: usize,
+    max_model_len: usize,
+    max_paddings: usize,
+}
+
+impl SchedulerConfig {
+    pub fn new(
+        max_num_batched_tokens: Option<usize>,
+        max_num_seqs: usize,
+        max_model_len: usize,
+        max_paddings: usize,
+    ) -> Result<Self, APIError> {
+        let max_num_batched_tokens = if let Some(max_num_batched_tokens) = max_num_batched_tokens {
+            max_num_batched_tokens
+        } else {
+            max_model_len.max(2048)
+        };
+        if max_num_batched_tokens < max_model_len {
+            return Err(APIError::new(format!("max_num_batched_tokens ({max_num_batched_tokens}) is smaller than max_model_len ({max_model_len}).\
+            This effectively limits the maximum sequence length to \
+            max_num_batched_tokens and makes candle vLLM reject longer \
+            sequences. Please increase max_num_batched_tokens or \
+            decrease max_model_len.")));
+        }
+        if max_num_batched_tokens < max_num_seqs {
+            return Err(APIError::new(format!("max_num_batched_tokens ({max_num_batched_tokens}) must be greater than or equal to \
+            max_num_seqs ({max_num_seqs})")));
+        }
+
+        Ok(Self {
+            max_num_batched_tokens,
+            max_num_seqs,
+            max_model_len,
+            max_paddings,
+        })
+    }
+}
+
+pub struct Scheduler {
     waiting: VecDeque<SequenceGroup>,
     running: VecDeque<SequenceGroup>,
     swapped: VecDeque<SequenceGroup>,
+    prompt_limit: usize,
+    block_manager: BlockSpaceManager,
+}
+
+impl Scheduler {
+    pub fn new(
+        scheduler_config: SchedulerConfig,
+        cache_config: CacheConfig,
+    ) -> Result<Self, APIError> {
+        let prompt_limit = scheduler_config
+            .max_model_len
+            .min(scheduler_config.max_num_batched_tokens);
+        let block_manager = BlockSpaceManager::new(
+            cache_config.block_size,
+            cache_config.num_gpu_blocks.unwrap(),
+            cache_config.num_cpu_blocks.unwrap(),
+            0.01.try_into().unwrap(),
+            cache_config.sliding_window,
+        )?;
+
+        Ok(Self {
+            waiting: VecDeque::new(),
+            running: VecDeque::new(),
+            swapped: VecDeque::new(),
+            prompt_limit,
+            block_manager,
+        })
+    }
 }
