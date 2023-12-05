@@ -9,7 +9,6 @@ use crate::{
             Conversation,
         },
         models::llama::{Cache, Llama, LlamaConfig},
-        pipelines::get_gpu_cache,
         requests::StopTokens,
         responses::{
             APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
@@ -56,7 +55,6 @@ pub struct LlamaPipeline {
     conversation: DefaultConversation,
     name: String,
     input_metadata: InputMetadata,
-    gpu_kv_cache: Vec<(Tensor, Tensor)>,
 }
 
 pub struct LlamaLoader {
@@ -184,7 +182,6 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                 ),
                 name: self.name.clone(),
                 input_metadata: InputMetadata::new(todo!(), None, None, None, todo!()),
-                gpu_kv_cache: get_gpu_cache(),
             }),
             pipeline_config,
         ))
@@ -208,12 +205,9 @@ impl LlamaPipeline {
             .map_err(APIError::from)?
             .unsqueeze(0)
             .map_err(APIError::from)?;
-        let logits = self.llama.forward(
-            &input,
-            *index_pos,
-            &self.gpu_kv_cache,
-            &mut self.input_metadata,
-        )?;
+        let logits = self
+            .llama
+            .forward(&input, *index_pos, todo!(), &mut self.input_metadata)?;
         let logits = logits.squeeze(0).map_err(APIError::from)?;
         let logits = if sampling.repetition_penalty == 1. {
             logits

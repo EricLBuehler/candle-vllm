@@ -1,6 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{hash_map::Values, HashMap};
 
-use crate::openai::sampling_params::{self, SamplingParams};
+use crate::openai::sampling_params::SamplingParams;
 
 #[derive(Clone)]
 pub struct Sequence {
@@ -53,10 +53,7 @@ impl SequenceGroup {
         }
     }
 
-    pub fn get_seqs(&self) -> Vec<&Sequence> {
-        self.seqs_dict
-            .iter()
-            .map(|(_, seq)| seq)
-            .collect::<Vec<_>>()
+    pub fn get_seqs(&self) -> Values<'_, usize, Sequence> {
+        self.seqs_dict.values()
     }
 }
