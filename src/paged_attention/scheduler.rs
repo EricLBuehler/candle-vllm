@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+
+use super::sequence::SequenceGroup;
 
 pub struct SchedulerOutputs {
     prompt_run: bool,
@@ -40,4 +42,8 @@ impl SchedulerOutputs {
     }
 }
 
-pub struct Scheduler {}
+pub struct SchedulerConfig {
+    waiting: VecDeque<SequenceGroup>,
+    running: VecDeque<SequenceGroup>,
+    swapped: VecDeque<SequenceGroup>,
+}
