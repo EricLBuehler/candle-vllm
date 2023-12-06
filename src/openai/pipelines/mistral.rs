@@ -1,22 +1,25 @@
 use std::{iter, path::PathBuf};
 
-use crate::openai::{
-    conversation::{
-        default_conversation::{
-            DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
+use crate::{
+    openai::{
+        conversation::{
+            default_conversation::{
+                DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
+            },
+            Conversation,
         },
-        Conversation,
+        models::mistral::{Config, Model},
+        requests::StopTokens,
+        responses::{
+            APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
+            StreamingChatCompletionResponse, StreamingChoice, StreamingChoiceData,
+        },
+        sampling_params::SamplingParams,
+        streaming::SenderError,
+        utils::get_created_time_secs,
+        PipelineConfig, TokenizerWrapper,
     },
-    models::mistral::{Config, Model},
-    requests::StopTokens,
-    responses::{
-        APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
-        StreamingChatCompletionResponse, StreamingChoice, StreamingChoiceData,
-    },
-    sampling_params::SamplingParams,
-    streaming::SenderError,
-    utils::get_created_time_secs,
-    PipelineConfig, TokenizerWrapper,
+    paged_attention::{cache_engine::CacheConfig, scheduler::SchedulerConfig},
 };
 use actix_web::web::Bytes;
 use candle_core::{DType, Device, Tensor};
@@ -131,6 +134,8 @@ impl<'a> ModelLoader<'a> for Mistral7BLoader {
         paths: Box<dyn ModelPaths>,
         dtype: DType,
         device: Device,
+        scheduler_config: SchedulerConfig,
+        cache_config: CacheConfig,
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
         let args = self.0.clone();
 

@@ -5,6 +5,8 @@ use candle_core::{DType, Device, Tensor};
 use tokenizers::Encoding;
 use tokio::sync::mpsc::Sender;
 
+use crate::paged_attention::{cache_engine::CacheConfig, scheduler::SchedulerConfig};
+
 use super::{
     conversation::Conversation,
     responses::{APIError, ChatChoice, ChatCompletionUsageResponse},
@@ -15,10 +17,6 @@ use super::{
 
 pub mod llama;
 pub mod mistral;
-
-fn get_gpu_cache() -> Vec<(Tensor, Tensor)> {
-    todo!()
-}
 
 /// A module pipeline that encompasses the inference pass, tokenizer, and conversation.
 pub trait ModulePipeline<'s>: Send + Sync {
@@ -60,5 +58,7 @@ pub trait ModelLoader<'a> {
         paths: Box<dyn ModelPaths>,
         dtype: DType,
         device: Device,
+        scheduler_config: SchedulerConfig,
+        cache_config: CacheConfig,
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError>;
 }

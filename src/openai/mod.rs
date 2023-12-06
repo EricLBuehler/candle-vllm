@@ -43,4 +43,4 @@ pub mod conversation;
 pub mod models;
 pub mod openai_server;
 pub mod pipelines;
-mod utils;
+pub mod utils;

@@ -14,9 +14,11 @@ mod bindings;
 pub(crate) mod input_metadata;
 mod memory_efficient_attention;
 use memory_efficient_attention::_memory_efficient_attention;
+pub(crate) mod block;
 mod block_manager;
-mod cache_engine;
-mod scheduler;
+pub(crate) mod cache_engine;
+pub mod policy;
+pub(crate) mod scheduler;
 mod sequence;
 pub(crate) mod utils;
 

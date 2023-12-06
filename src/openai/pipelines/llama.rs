@@ -19,7 +19,11 @@ use crate::{
         utils::get_created_time_secs,
         PipelineConfig, TokenizerWrapper,
     },
-    paged_attention::input_metadata::InputMetadata,
+    paged_attention::{
+        cache_engine::CacheConfig,
+        input_metadata::InputMetadata,
+        scheduler::{Scheduler, SchedulerConfig},
+    },
 };
 use actix_web::web::Bytes;
 use candle_core::{DType, Device, Tensor};
@@ -50,11 +54,11 @@ impl LlamaSpecificConfig {
 pub struct LlamaPipeline {
     llama: Llama,
     args: LlamaSpecificConfig,
-    cache: Cache,
     tokenizer: Tokenizer,
     conversation: DefaultConversation,
     name: String,
     input_metadata: InputMetadata,
+    scheduler: Scheduler,
 }
 
 pub struct LlamaLoader {
@@ -130,6 +134,8 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         paths: Box<dyn ModelPaths>,
         dtype: DType,
         device: Device,
+        scheduler_config: SchedulerConfig,
+        cache_config: CacheConfig,
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
         let args = self.config.clone();
 
@@ -164,7 +170,6 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
             Box::new(LlamaPipeline {
                 llama,
                 args,
-                cache,
                 tokenizer,
                 conversation: DefaultConversation::new(
                     "llama-2".to_string(),
@@ -182,6 +187,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                 ),
                 name: self.name.clone(),
                 input_metadata: InputMetadata::new(todo!(), None, None, None, todo!()),
+                scheduler: Scheduler::new(scheduler_config, cache_config)?,
             }),
             pipeline_config,
         ))
