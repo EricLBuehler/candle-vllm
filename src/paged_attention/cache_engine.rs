@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc};
+
 use candle_core::{DType, Device, Tensor};
 
 use range_checked::F64Bounded;
@@ -8,8 +10,8 @@ const _GB: usize = 1 << 30;
 
 pub struct CacheConfig {
     pub(crate) block_size: usize,
-    gpu_mem_utilization: f64,
-    swap_space_bytes: usize,
+    pub(crate) gpu_mem_utilization: f64,
+    pub(crate) swap_space_bytes: usize,
     pub(crate) sliding_window: Option<usize>,
     pub(crate) num_gpu_blocks: Option<usize>,
     pub(crate) num_cpu_blocks: Option<usize>,
@@ -83,11 +85,11 @@ impl ModelConfig {
         self.config.get_hidden_size() / self.config.get_num_attention_heads()
     }
 
-    fn get_num_layers(&self, parallel_config: ParallelConfig) -> usize {
+    fn get_num_layers(&self, parallel_config: &ParallelConfig) -> usize {
         self.config.get_num_hidden_layers() / parallel_config.pipeline_parallel_size
     }
 
-    fn get_num_kv_heads(&self, parallel_config: ParallelConfig) -> usize {
+    fn get_num_kv_heads(&self, parallel_config: &ParallelConfig) -> usize {
         (self.config.get_num_kv_heads() / parallel_config.tensor_parallel_size).max(1)
     }
 }
@@ -96,10 +98,11 @@ pub struct CacheEngine {
     block_size: usize,
     num_gpu_blocks: Option<usize>,
     num_cpu_blocks: Option<usize>,
-    gpu_cache: Vec<(Tensor, Tensor)>,
-    cpu_cache: Vec<(Tensor, Tensor)>,
+    gpu_cache: Arc<Vec<(Tensor, Tensor)>>,
+    cpu_cache: Arc<Vec<(Tensor, Tensor)>>,
     value_block_shape: ValueBlockShape,
     dtype: DType,
+    num_layers: usize,
 }
 
 #[derive(Clone)]
@@ -123,7 +126,7 @@ impl CacheEngine {
         parallel_config: ParallelConfig,
     ) -> Result<Self, APIError> {
         let value_block_shape = ValueBlockShape {
-            num_heads: model_config.get_num_kv_heads(parallel_config),
+            num_heads: model_config.get_num_kv_heads(&parallel_config),
             head_size: model_config.get_head_size(),
             block_size: cache_config.block_size,
         };
@@ -131,19 +134,37 @@ impl CacheEngine {
             block_size: cache_config.block_size,
             num_gpu_blocks: cache_config.num_gpu_blocks,
             num_cpu_blocks: cache_config.num_cpu_blocks,
-            gpu_cache: Self::allocate_gpu_cache(
+            gpu_cache: Arc::new(Self::allocate_gpu_cache(
                 &value_block_shape,
                 cache_config.num_gpu_blocks,
                 model_config.dtype,
-            )?,
-            cpu_cache: Self::allocate_cpu_cache(
+            )?),
+            cpu_cache: Arc::new(Self::allocate_cpu_cache(
                 &value_block_shape,
                 cache_config.num_cpu_blocks,
                 model_config.dtype,
-            )?,
+            )?),
             value_block_shape,
             dtype: model_config.dtype,
+            num_layers: model_config.get_num_layers(&parallel_config),
         })
+    }
+
+    pub fn get_cache_block_size(
+        block_size: usize,
+        model_config: &ModelConfig,
+        parallel_config: &ParallelConfig,
+    ) -> usize {
+        let head_size = model_config.get_head_size();
+        let num_heads = model_config.get_num_kv_heads(parallel_config);
+        let num_layers = model_config.get_num_layers(parallel_config);
+
+        let key_cache_block = block_size * num_heads * head_size;
+        let value_cache_block = key_cache_block;
+        let total = num_layers * (key_cache_block + value_cache_block);
+        let dtype_size = model_config.dtype.size_in_bytes();
+
+        dtype_size * total
     }
 
     fn get_value_block_shape(value_block_shape: &ValueBlockShape) -> ValueBlockShape {
@@ -244,5 +265,53 @@ impl CacheEngine {
             cache.push((key_blocks, value_blocks));
         }
         Ok(cache)
+    }
+
+    //TODO_URGENT(EricLBuehler)
+    fn swap_blocks(src: &Tensor, dst: &Tensor, map: HashMap<usize, usize>) {
+        todo!()
+    }
+    fn copy_blocks(
+        key_caches: Vec<&Tensor>,
+        value_caches: Vec<&Tensor>,
+        block_mapping: HashMap<usize, Vec<usize>>,
+    ) {
+        todo!()
+    }
+
+    fn _swap(
+        &self,
+        src: Arc<Vec<(Tensor, Tensor)>>,
+        dst: Arc<Vec<(Tensor, Tensor)>>,
+        src_to_dst: HashMap<usize, usize>,
+    ) {
+        for i in 0..self.num_layers {
+            let (src_key_cache, src_value_cache) = src.get(i).unwrap();
+            let (dst_key_cache, dst_value_cache) = dst.get(i).unwrap();
+            Self::swap_blocks(src_key_cache, dst_key_cache, src_to_dst);
+            Self::swap_blocks(src_value_cache, dst_value_cache, src_to_dst);
+        }
+    }
+
+    pub fn swap_in(&self, src_to_dst: HashMap<usize, usize>) {
+        self._swap(self.cpu_cache, self.gpu_cache, src_to_dst);
+    }
+
+    pub fn swap_out(&self, src_to_dst: HashMap<usize, usize>) {
+        self._swap(self.gpu_cache, self.cpu_cache, src_to_dst);
+    }
+
+    pub fn copy(&self, src_to_dsts: HashMap<usize, Vec<usize>>) {
+        let key_caches = self
+            .gpu_cache
+            .iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>();
+        let value_caches = self
+            .gpu_cache
+            .iter()
+            .map(|(_, value)| value)
+            .collect::<Vec<_>>();
+        Self::copy_blocks(key_caches, value_caches, src_to_dsts);
     }
 }

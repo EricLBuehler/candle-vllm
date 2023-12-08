@@ -37,6 +37,25 @@ pub struct SequenceData {
     pub output_token_ids: Vec<usize>,
 }
 
+impl SequenceData {
+    pub fn get_last_token_id(&self) -> &usize {
+        if self.output_token_ids.is_empty() {
+            self.prompt_token_ids.last().unwrap()
+        } else {
+            self.output_token_ids.last().unwrap()
+        }
+    }
+}
+
+pub struct SequenceOutput {
+    pub parent_seq_id: usize,
+    pub output_token: usize,
+}
+
+pub struct SequenceGroupOutput {
+    pub samples: Vec<SequenceOutput>,
+}
+
 pub struct Sequence {
     pub seq_id: usize,
     pub data: Arc<SequenceData>,
@@ -214,5 +233,5 @@ pub struct SequenceGroupMetadata {
     pub is_prompt: bool,
     pub seq_data: HashMap<usize, Arc<SequenceData>>,
     pub sampling_params: SamplingParams,
-    pub block_tables: HashMap<usize, Vec<usize>>,
+    pub block_tables: Option<HashMap<usize, Vec<usize>>>,
 }

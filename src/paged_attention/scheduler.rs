@@ -59,10 +59,10 @@ impl SchedulerOutputs {
 }
 
 pub struct SchedulerConfig {
-    max_num_batched_tokens: usize,
-    max_num_seqs: usize,
-    max_model_len: usize,
-    max_paddings: usize,
+    pub max_num_batched_tokens: usize,
+    pub max_num_seqs: usize,
+    pub max_model_len: usize,
+    pub max_paddings: usize,
 }
 
 impl SchedulerConfig {
@@ -159,10 +159,18 @@ impl Scheduler {
                 is_prompt: scheduler_outputs.prompt_run,
                 seq_data,
                 sampling_params: seq_group.deref().sampling_params.clone(),
-                block_tables,
+                block_tables: Some(block_tables),
             });
         }
         (seq_group_metadata_list, scheduler_outputs)
+    }
+
+    pub fn get_config(&self) -> &SchedulerConfig {
+        &self.scheduler_config
+    }
+
+    pub fn add_seq_group(&mut self, seq_group: SequenceGroup) {
+        self.waiting.push_back(seq_group);
     }
 
     fn _schedule(&mut self) -> SchedulerOutputs {

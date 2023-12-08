@@ -4,6 +4,7 @@ use candle_nn::{Embedding, Module, VarBuilder};
 use candle_transformers::models::with_tracing::{linear_no_bias as linear, Linear};
 use serde::Deserialize;
 use std::iter::zip;
+use std::sync::Arc;
 
 use crate::openai::responses::APIError;
 use crate::paged_attention::input_metadata::InputMetadata;
@@ -28,7 +29,7 @@ pub struct LlamaConfig {
 
 impl ConfigLike for LlamaConfig {
     fn get_num_kv_heads(&self) -> usize {
-        self.num_key_value_heads.unwrap()
+        self.num_key_value_heads.unwrap_or(self.num_attention_heads)
     }
     fn get_hidden_size(&self) -> usize {
         self.hidden_size
@@ -38,6 +39,12 @@ impl ConfigLike for LlamaConfig {
     }
     fn get_num_attention_heads(&self) -> usize {
         self.num_attention_heads
+    }
+    fn get_vocab_size(&self) -> usize {
+        self.vocab_size
+    }
+    fn get_sliding_window(&self) -> Option<usize> {
+        None
     }
 }
 
@@ -70,6 +77,27 @@ pub struct Config {
     pub num_key_value_heads: usize,
     pub rms_norm_eps: f64,
     pub rope_theta: f32,
+}
+
+impl ConfigLike for Config {
+    fn get_num_kv_heads(&self) -> usize {
+        self.num_key_value_heads
+    }
+    fn get_hidden_size(&self) -> usize {
+        self.hidden_size
+    }
+    fn get_num_hidden_layers(&self) -> usize {
+        self.num_hidden_layers
+    }
+    fn get_num_attention_heads(&self) -> usize {
+        self.num_attention_heads
+    }
+    fn get_vocab_size(&self) -> usize {
+        self.vocab_size
+    }
+    fn get_sliding_window(&self) -> Option<usize> {
+        None
+    }
 }
 
 impl Config {
@@ -185,8 +213,7 @@ impl CausalSelfAttention {
         x: &Tensor,
         index_pos: usize,
         input_metadata: &mut InputMetadata,
-        k_cache: &Tensor,
-        v_cache: &Tensor,
+        cache: Option<(&Tensor, &Tensor)>,
     ) -> Result<Tensor, APIError> {
         let _enter = self.span.enter();
         let (b_sz, seq_len, _) = x.dims3().map_err(APIError::from)?;
@@ -223,8 +250,8 @@ impl CausalSelfAttention {
             q,
             k,
             v,
-            Some(k_cache.clone()),
-            Some(v_cache.clone()),
+            cache.map(|(k, _)| k.clone()),
+            cache.map(|(_, v)| v.clone()),
             input_metadata,
             dtype,
             device,
@@ -314,8 +341,7 @@ impl Block {
         &mut self,
         x: &Tensor,
         index_pos: usize,
-        k_cache: &Tensor,
-        v_cache: &Tensor,
+        cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor, APIError> {
         let _enter = self.span.enter();
@@ -323,7 +349,7 @@ impl Block {
         let x = self.rms_1.forward(x).map_err(APIError::from)?;
         let x = (self
             .attn
-            .forward(&x, index_pos, input_metadata, k_cache, v_cache)
+            .forward(&x, index_pos, input_metadata, cache)
             .map_err(APIError::from)?
             + residual)
             .map_err(APIError::from)?;
@@ -373,13 +399,19 @@ impl Llama {
         &mut self,
         x: &Tensor,
         index_pos: usize,
-        kv_caches: &Vec<(Tensor, Tensor)>,
+        kv_caches: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor, APIError> {
         let (_b_sz, seq_len) = x.dims2().map_err(APIError::from)?;
         let mut x = self.wte.forward(x).map_err(APIError::from)?;
-        for ((k_cache, v_cache), block) in zip(kv_caches, &mut self.blocks) {
-            x = block.forward(&x, index_pos, k_cache, v_cache, input_metadata)?;
+        if let Some(kv_caches) = kv_caches {
+            for ((k_cache, v_cache), block) in zip(kv_caches.iter(), &mut self.blocks) {
+                x = block.forward(&x, index_pos, Some((k_cache, v_cache)), input_metadata)?;
+            }
+        } else {
+            for block in &mut self.blocks {
+                x = block.forward(&x, index_pos, None, input_metadata)?;
+            }
         }
         let x = self.ln_f.forward(&x).map_err(APIError::from)?;
         let x = x.i((.., seq_len - 1, ..)).map_err(APIError::from)?;
@@ -402,10 +434,6 @@ impl Llama {
             lm_head,
             cfg: cfg.clone(),
         })
-    }
-
-    pub fn clear_cache(&mut self, config: &Config) {
-        unimplemented!();
     }
 
     pub fn get_config(&self) -> &Config {

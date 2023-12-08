@@ -14,7 +14,7 @@ pub enum EarlyStoppingCondition {
     CanonicalNoBetterCandidates,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SamplingType {
     BEAM,
     GREEDY,

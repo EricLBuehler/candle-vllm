@@ -19,7 +19,7 @@ mod block_manager;
 pub(crate) mod cache_engine;
 pub mod policy;
 pub(crate) mod scheduler;
-mod sequence;
+pub(crate) mod sequence;
 pub(crate) mod utils;
 
 const _PARTITION_SIZE: usize = 512;
@@ -330,8 +330,8 @@ impl PagedAttention {
             .reshape(((), self.num_key_value_heads, self.head_dim))
             .map_err(APIError::from)?;
         let mut slot_mapping = input_metadata
-            .slot_mappinng
-            .flatten(0, input_metadata.slot_mappinng.dims().len())
+            .slot_mapping
+            .flatten(0, input_metadata.slot_mapping.dims().len())
             .map_err(APIError::from)?;
 
         if key_cache.as_ref().is_some_and(|_| value_cache.is_some()) {

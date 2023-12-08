@@ -7,7 +7,7 @@ pub struct InputMetadata {
     pub max_context_len: Option<usize>,
     pub block_tables: Option<Tensor>,
     pub context_lens: Option<Tensor>,
-    pub slot_mappinng: Tensor,
+    pub slot_mapping: Tensor,
     pub attn_bias: Option<Box<dyn AttentionBiasBlockDiagonal>>,
     pub is_prompt: bool,
 }
@@ -23,7 +23,7 @@ impl InputMetadata {
         max_context_len: Option<usize>,
         block_tables: Option<Tensor>,
         context_lens: Option<Tensor>,
-        slot_mappinng: Tensor,
+        slot_mapping: Tensor,
     ) -> Self {
         let is_prompt = !prompt_lens.is_empty();
         Self {
@@ -31,7 +31,7 @@ impl InputMetadata {
             max_context_len,
             block_tables,
             context_lens,
-            slot_mappinng,
+            slot_mapping,
             attn_bias: None,
             is_prompt,
         }

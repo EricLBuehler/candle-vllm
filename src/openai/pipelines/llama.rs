@@ -1,4 +1,4 @@
-use std::{iter, path::PathBuf};
+use std::{collections::HashMap, iter, path::PathBuf, sync::Arc};
 
 use crate::{
     openai::{
@@ -8,21 +8,25 @@ use crate::{
             },
             Conversation,
         },
-        models::llama::{Cache, Llama, LlamaConfig},
+        models::{
+            llama::{Cache, Config, Llama, LlamaConfig},
+            ConfigLike,
+        },
         requests::StopTokens,
         responses::{
             APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
             StreamingChatCompletionResponse, StreamingChoice, StreamingChoiceData,
         },
-        sampling_params::SamplingParams,
+        sampling_params::{EarlyStoppingCondition, SamplingParams},
         streaming::SenderError,
         utils::get_created_time_secs,
         PipelineConfig, TokenizerWrapper,
     },
     paged_attention::{
-        cache_engine::CacheConfig,
+        cache_engine::{CacheConfig, CacheEngine},
         input_metadata::InputMetadata,
         scheduler::{Scheduler, SchedulerConfig},
+        sequence::{SequenceData, SequenceGroupMetadata},
     },
 };
 use actix_web::web::Bytes;
@@ -59,6 +63,7 @@ pub struct LlamaPipeline {
     name: String,
     input_metadata: InputMetadata,
     scheduler: Scheduler,
+    block_size: Option<usize>,
 }
 
 pub struct LlamaLoader {
@@ -188,6 +193,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                 name: self.name.clone(),
                 input_metadata: InputMetadata::new(todo!(), None, None, None, todo!()),
                 scheduler: Scheduler::new(scheduler_config, cache_config)?,
+                block_size: None,
             }),
             pipeline_config,
         ))
@@ -494,9 +500,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
             }
         }
 
-        let config = self.llama.get_config().clone();
-        self.llama.clear_cache(&config);
-
         Ok((
             Some(choices),
             ChatCompletionUsageResponse {
@@ -517,6 +520,22 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
 
     fn get_conversation(&mut self) -> &mut dyn Conversation {
         &mut self.conversation
+    }
+
+    fn get_scheduler_config(&self) -> &SchedulerConfig {
+        self.scheduler.get_config()
+    }
+
+    fn get_model_config(&self) -> Box<dyn ConfigLike> {
+        Box::new(self.llama.get_config().clone())
+    }
+
+    fn _get_block_size(&self) -> &Option<usize> {
+        &self.block_size
+    }
+
+    fn set_block_size(&mut self, size: usize) {
+        self.block_size = Some(size)
     }
 }
 
