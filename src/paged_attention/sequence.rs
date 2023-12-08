@@ -61,8 +61,9 @@ pub struct Sequence {
     pub data: Arc<SequenceData>,
     prompt: String,
     block_size: usize,
-    status: SequenceStatus,
+    pub status: SequenceStatus,
     pub logical_token_blocks: Vec<LogicalTokenBlock>,
+    pub output_data: String,
 }
 
 impl Sequence {
@@ -82,6 +83,7 @@ impl Sequence {
             block_size,
             status: SequenceStatus::Waiting,
             logical_token_blocks: Vec::new(),
+            output_data: String::new(),
         };
         Sequence::_append_tokens_to_blocks(&mut this, prompt_token_ids);
         this
@@ -187,6 +189,14 @@ impl SequenceGroupInner {
 
     pub fn num_seqs(&self, status: Option<SequenceStatus>) -> usize {
         self.get_seqs(status).len()
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.get_seqs(None).iter().all(|seq| seq.is_finished())
+    }
+
+    pub fn get_prompt(&self) -> String {
+        self.seqs_dict.values().nth(0).unwrap().prompt
     }
 }
 

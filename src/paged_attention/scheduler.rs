@@ -21,10 +21,10 @@ use super::{
 pub struct SchedulerOutputs {
     prompt_run: bool,
     num_batched_tokens: usize,
-    blocks_to_swap_in: HashMap<usize, usize>,
-    blocks_to_swap_out: HashMap<usize, usize>,
-    blocks_to_copy: HashMap<usize, Vec<usize>>,
-    scheduled_seq_groups: Vec<Arc<SequenceGroup>>,
+    pub blocks_to_swap_in: HashMap<usize, usize>,
+    pub blocks_to_swap_out: HashMap<usize, usize>,
+    pub blocks_to_copy: HashMap<usize, Vec<usize>>,
+    pub scheduled_seq_groups: Vec<Arc<SequenceGroup>>,
     ignored_seq_groups: Vec<SequenceGroup>,
 }
 
@@ -139,6 +139,10 @@ impl Scheduler {
             scheduler_config,
             policy: PolicyFactory::get_policy(PolicyType::FirstComeFirstServe),
         })
+    }
+
+    pub fn has_unfinished_request(&self) -> bool {
+        !self.waiting.is_empty() || !self.running.is_empty() || !self.swapped.is_empty()
     }
 
     pub fn schedule(&mut self) -> (Vec<SequenceGroupMetadata>, SchedulerOutputs) {

@@ -34,6 +34,7 @@ use super::{
 pub mod llama;
 pub mod llm_engine;
 pub mod mistral;
+pub mod outputs;
 pub mod sampling_metadata;
 
 const PAD_SLOT_ID: usize = usize::MAX;

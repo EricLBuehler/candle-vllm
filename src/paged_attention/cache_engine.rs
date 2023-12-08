@@ -98,7 +98,7 @@ pub struct CacheEngine {
     block_size: usize,
     num_gpu_blocks: Option<usize>,
     num_cpu_blocks: Option<usize>,
-    gpu_cache: Arc<Vec<(Tensor, Tensor)>>,
+    pub gpu_cache: Arc<Vec<(Tensor, Tensor)>>,
     cpu_cache: Arc<Vec<(Tensor, Tensor)>>,
     value_block_shape: ValueBlockShape,
     dtype: DType,
