@@ -21,7 +21,7 @@ pub(crate) fn apply_triangular(
             xs_tri.push(if cond { 0u8 } else { 1u8 });
         }
     }
-    (xs * Tensor::from_vec(xs_tri, (l, s), device)
+    (xs * Tensor::from_vec(xs_tri, (l * s,), device)
         .map_err(APIError::from)?
         .to_dtype(xs.dtype())
         .map_err(APIError::from)?)

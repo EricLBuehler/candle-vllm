@@ -50,6 +50,7 @@ impl SequenceData {
 pub struct SequenceOutput {
     pub parent_seq_id: usize,
     pub output_token: usize,
+    pub logprobs: HashMap<usize, f64>,
 }
 
 pub struct SequenceGroupOutput {

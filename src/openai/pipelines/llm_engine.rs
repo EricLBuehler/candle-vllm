@@ -123,9 +123,9 @@ impl<'a> LlmEngine<'a> {
         Ok(())
     }
 
-    fn _schedule(&self) -> (Vec<SequenceGroupMetadata>, SchedulerOutputs, ()) {
+    fn _schedule(&self) -> (Vec<SequenceGroupMetadata>, SchedulerOutputs, Vec<RequestOutput>) {
         let (seq_group_metadata_list, scheduler_outputs) = self.scheduler.schedule();
-        (seq_group_metadata_list, scheduler_outputs, ())
+        (seq_group_metadata_list, scheduler_outputs, todo!())
     }
 
     fn _process_model_group_outputs(
@@ -254,6 +254,9 @@ impl<'a> LlmEngine<'a> {
     // Calls execute_model (schedules seqs), called by .generate
     fn step(&mut self) -> Vec<RequestOutput> {
         let (seq_group_metadata_list, scheduler_outputs, ignored) = self._schedule();
+        if scheduler_outputs.is_empty() {
+            return ignored;
+        }
 
         let output = self.execute_model(
             seq_group_metadata_list,

@@ -20,7 +20,7 @@ use crate::{
     },
 };
 
-use self::sampling_metadata::SamplingMetadata;
+use self::{sampler::Sampler, sampling_metadata::SamplingMetadata};
 
 use super::{
     conversation::Conversation,
@@ -32,21 +32,21 @@ use super::{
 };
 
 pub mod llama;
+pub mod llama_sampler;
 pub mod llm_engine;
-pub mod mistral;
 pub mod outputs;
+pub mod sampler;
 pub mod sampling_metadata;
 
 const PAD_SLOT_ID: usize = usize::MAX;
 
-/// A module pipeline that encompasses the inference pass, tokenizer, and conversation.
 pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(
         &mut self,
-        xs: &Encoding,
-        sampling: SamplingParams,
-        device: Device,
-        streamer: Option<Sender<Result<Bytes, SenderError>>>,
+        input_tokens: Tensor,
+        input_positions: Tensor,
+        kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
+        input_metadata: InputMetadata,
     ) -> Result<(Option<Vec<ChatChoice>>, ChatCompletionUsageResponse), APIError>;
 
     fn name(&self) -> &str;
@@ -58,6 +58,10 @@ pub trait ModulePipeline<'s>: Send + Sync {
     fn get_scheduler_config(&self) -> &SchedulerConfig;
 
     fn get_model_config(&self) -> Box<dyn ConfigLike>;
+
+    fn _get_block_size(&self) -> &Option<usize>;
+
+    fn set_block_size(&mut self, size: usize);
 
     fn profile_run(&mut self) -> Result<(), APIError> {
         let vocab_size = self.get_model_config().get_vocab_size();
@@ -106,10 +110,6 @@ pub trait ModulePipeline<'s>: Send + Sync {
         Ok(())
     }
 
-    fn _get_block_size(&self) -> &Option<usize>;
-
-    fn set_block_size(&mut self, size: usize);
-
     // Calls the module pipeline model executer
     fn execute_model(
         &mut self,
@@ -119,12 +119,12 @@ pub trait ModulePipeline<'s>: Send + Sync {
         //https://github.com/vllm-project/vllm/blob/24f60a54f42076e0bfa49fde113756bf4e95f9ef/vllm/worker/model_runner.py#L259
         let (input_tokens, input_positions, input_metadata) =
             if seq_group_metadatas.first().unwrap().is_prompt {
-                self.prepare_decode(seq_group_metadatas)?
+                self.prepare_prompt(seq_group_metadatas)?
             } else {
                 self.prepare_decode(seq_group_metadatas)?
             };
         let sampling_metadata =
-            self.prepare_sample(seq_group_metadatas, input_metadata.prompt_lens);
+            self.prepare_sample(seq_group_metadatas, input_metadata.prompt_lens)?;
 
         todo!()
     }
@@ -381,6 +381,7 @@ pub trait ModulePipeline<'s>: Send + Sync {
     }
 }
 
+// TODO(EricLBuehler): Ensure the padding token matches tokenizer
 fn _make_tensor_with_pad(
     x: Vec<Vec<usize>>,
     max_len: usize,
@@ -402,6 +403,18 @@ fn _make_tensor_with_pad(
 
 pub(crate) fn read_env_var(var: String) -> Result<String, APIError> {
     env::var(var).map_err(APIError::from)
+}
+
+pub(crate) fn logical_or(a: &Tensor, b: &Tensor) -> Result<Tensor, APIError> {
+    (a + b).map_err(APIError::from)
+}
+
+pub(crate) fn logical_not(xs: &Tensor) -> Result<Tensor, APIError> {
+    xs.where_cond(
+        &xs.zeros_like().map_err(APIError::from)?,
+        &xs.ones_like().map_err(APIError::from)?,
+    )
+    .map_err(APIError::from)
 }
 
 pub trait ModelPaths {

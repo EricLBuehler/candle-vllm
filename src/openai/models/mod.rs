@@ -1,5 +1,4 @@
 pub mod llama;
-pub mod mistral;
 
 pub trait ConfigLike {
     fn get_num_kv_heads(&self) -> usize;
