@@ -123,7 +123,13 @@ impl<'a> LlmEngine<'a> {
         Ok(())
     }
 
-    fn _schedule(&self) -> (Vec<SequenceGroupMetadata>, SchedulerOutputs, Vec<RequestOutput>) {
+    fn _schedule(
+        &self,
+    ) -> (
+        Vec<SequenceGroupMetadata>,
+        SchedulerOutputs,
+        Vec<RequestOutput>,
+    ) {
         let (seq_group_metadata_list, scheduler_outputs) = self.scheduler.schedule();
         (seq_group_metadata_list, scheduler_outputs, todo!())
     }
