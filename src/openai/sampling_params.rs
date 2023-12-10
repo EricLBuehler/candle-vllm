@@ -46,10 +46,6 @@ pub struct SamplingParams {
     /// Control the number of top tokens to consider, set -1 to consider all.
     /// rec. default = -1
     pub top_k: isize,
-    /// Float that represents the minimum probability for a token to be
-    /// considered, relative to the probability of the most likely token.
-    /// Must be in [0, 1]. Set to 0 to disable this.
-    pub min_p: f32,
     /// Use beam search instead of sampling.
     /// rec. default = false
     pub use_beam_search: bool,
