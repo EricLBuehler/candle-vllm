@@ -2,11 +2,18 @@ use std::collections::{HashMap, VecDeque};
 
 use super::sequence::Sequence;
 
+type CPUBlockFrom = usize;
+type GPUBlockFrom = usize;
+type CPUBlockTo = usize;
+type GPUBlockTo = usize;
+type SrcBlockFrom = usize;
+type DstBlocksTo = Vec<usize>;
+
 pub struct SchedulerOutput<'a> {
     running: &'a [Sequence],
-    blocks_to_swap_in: HashMap<usize, usize>,
-    blocks_to_swap_out: HashMap<usize, usize>,
-    blocks_to_copy: HashMap<usize, Vec<usize>>,
+    blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
+    blocks_to_swap_out: HashMap<GPUBlockFrom, CPUBlockTo>,
+    blocks_to_copy: HashMap<SrcBlockFrom, DstBlocksTo>,
 }
 
 pub struct Scheduler {
