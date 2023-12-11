@@ -1,11 +1,11 @@
 use std::collections::VecDeque;
 
-use super::sequence::Sequence;
+use super::sequence::SequenceGroup;
 
 pub struct Scheduler {
-    waiting: VecDeque<Sequence>,
-    runing: VecDeque<Sequence>,
-    swapped: VecDeque<Sequence>,
+    waiting: VecDeque<SequenceGroup>,
+    runing: VecDeque<SequenceGroup>,
+    swapped: VecDeque<SequenceGroup>,
 }
 
 impl Scheduler {
@@ -17,7 +17,7 @@ impl Scheduler {
         }
     }
 
-    pub fn add_sequence(&mut self, seq: Sequence) {
+    pub fn add_sequence(&mut self, seq: SequenceGroup) {
         self.waiting.push_back(seq);
     }
 }
