@@ -65,3 +65,4 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
 
 pub mod openai;
 pub mod paged_attention;
+pub mod scheduler;
