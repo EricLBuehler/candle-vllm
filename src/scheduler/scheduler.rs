@@ -19,7 +19,7 @@ pub struct SchedulerOutput<'a> {
 pub struct Scheduler {
     waiting: VecDeque<Sequence>,
     running: VecDeque<Sequence>,
-    swapped: VecDeque<Sequence>,
+    swapped_out: VecDeque<Sequence>,
 }
 
 impl Scheduler {
@@ -27,7 +27,7 @@ impl Scheduler {
         Self {
             waiting: VecDeque::new(),
             running: VecDeque::new(),
-            swapped: VecDeque::new(),
+            swapped_out: VecDeque::new(),
         }
     }
 
@@ -36,6 +36,17 @@ impl Scheduler {
     }
 
     pub fn schedule(&mut self) -> SchedulerOutput<'_> {
+        // If there are no swapped seqs (they have higher priority), add seqs that are in the
+        // waiting queue to the running queue.
+
+        // Preempt lowest priority sequences that are in the running queue, forming a
+        // new running queue that has the actually running sequences. Remember the preempted
+        // sequences, which will be put into the waiting or swapped out state depending on
+        // the preemption method (recompute or swap, repectively).
+
+        // Try to swap in the swapped out sequences and add these to the
+        // running state if possible.
+
         todo!()
     }
 }
