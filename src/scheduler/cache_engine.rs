@@ -97,7 +97,7 @@ impl CacheEngine {
         let value_block_shape =
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut cpu_cache = Vec::new();
-        for _ in 0..Self::get_num_layers(model_config.get_num_hidden_layers()) {
+        for _ in 0..model_config.get_num_hidden_layers() {
             let cuda_device = Device::new_cuda(0).map_err(APIError::from)?;
             let key_blocks = Tensor::zeros(
                 (
