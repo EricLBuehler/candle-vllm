@@ -16,18 +16,24 @@ pub struct SchedulerOutput<'a> {
     blocks_to_copy: HashMap<SrcBlockFrom, DstBlocksTo>,
 }
 
+pub struct SchedulerConfig {
+    pub max_num_seqs: usize,
+}
+
 pub struct Scheduler {
     waiting: VecDeque<Sequence>,
     running: VecDeque<Sequence>,
     swapped_out: VecDeque<Sequence>,
+    config: SchedulerConfig,
 }
 
 impl Scheduler {
-    pub fn new() -> Self {
+    pub fn new(config: SchedulerConfig) -> Self {
         Self {
             waiting: VecDeque::new(),
             running: VecDeque::new(),
             swapped_out: VecDeque::new(),
+            config,
         }
     }
 
@@ -38,7 +44,20 @@ impl Scheduler {
     pub fn schedule(&mut self) -> SchedulerOutput<'_> {
         // If there are no swapped seqs (they have higher priority), add seqs that are in the
         // waiting queue to the running queue.
-        if self.swapped_out.is_empty() {}
+        if self.swapped_out.is_empty() {
+            while !self.waiting.is_empty() {
+                let seq = self.waiting.get(0).unwrap();
+
+                // If adding this seq means we will have too many, stop as no more could be added.
+                if self.config.max_num_seqs == self.running.len() + 1 {
+                    break;
+                }
+
+                // TODO(EricLBuehler): More conditions must be added here, specifically whether it can be allocated!
+
+                self.running.push_back(self.waiting.pop_front().unwrap());
+            }
+        }
 
         // Preempt lowest priority sequences that are in the running queue, forming a
         // new running queue that has the actually running sequences. Remember the preempted
