@@ -38,6 +38,7 @@ impl Scheduler {
     pub fn schedule(&mut self) -> SchedulerOutput<'_> {
         // If there are no swapped seqs (they have higher priority), add seqs that are in the
         // waiting queue to the running queue.
+        if self.swapped_out.is_empty() {}
 
         // Preempt lowest priority sequences that are in the running queue, forming a
         // new running queue that has the actually running sequences. Remember the preempted
