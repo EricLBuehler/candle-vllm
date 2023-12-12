@@ -2,8 +2,6 @@ use candle_core::{DType, Device, Tensor};
 
 use crate::openai::{models::ConfigLike, responses::APIError};
 
-use super::parallel_config::ParallelConfig;
-
 pub struct CacheConfig {
     pub block_size: usize,
     pub num_gpu_blocks: Option<usize>, // Set after profiling init
@@ -37,29 +35,17 @@ impl CacheEngine {
     pub fn new(
         model_config: Box<dyn ConfigLike>,
         cache_config: CacheConfig,
-        parallel_config: ParallelConfig,
         dtype: DType,
     ) -> Result<Self, APIError> {
         Ok(Self {
-            gpu_cache: Self::allocate_gpu_cache(
-                &model_config,
-                &cache_config,
-                &parallel_config,
-                dtype,
-            )?,
-            cpu_cache: Self::allocate_cpu_cache(
-                &model_config,
-                &cache_config,
-                &parallel_config,
-                dtype,
-            )?,
+            gpu_cache: Self::allocate_gpu_cache(&model_config, &cache_config, dtype)?,
+            cpu_cache: Self::allocate_cpu_cache(&model_config, &cache_config, dtype)?,
         })
     }
 
     fn allocate_gpu_cache(
         model_config: &Box<dyn ConfigLike>,
         cache_config: &CacheConfig,
-        parallel_config: &ParallelConfig,
         dtype: DType,
     ) -> Result<Vec<KVCache>, APIError> {
         assert!(cache_config.fully_init);
@@ -69,7 +55,7 @@ impl CacheEngine {
         let value_block_shape =
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut gpu_cache = Vec::new();
-        for _ in 0..Self::get_num_layers(model_config.get_num_hidden_layers(), parallel_config) {
+        for _ in 0..model_config.get_num_hidden_layers() {
             let cuda_device = Device::new_cuda(0).map_err(APIError::from)?;
             let key_blocks = Tensor::zeros(
                 (
@@ -102,7 +88,6 @@ impl CacheEngine {
     fn allocate_cpu_cache(
         model_config: &Box<dyn ConfigLike>,
         cache_config: &CacheConfig,
-        parallel_config: &ParallelConfig,
         dtype: DType,
     ) -> Result<Vec<KVCache>, APIError> {
         assert!(cache_config.fully_init);
@@ -112,7 +97,7 @@ impl CacheEngine {
         let value_block_shape =
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut cpu_cache = Vec::new();
-        for _ in 0..Self::get_num_layers(model_config.get_num_hidden_layers(), parallel_config) {
+        for _ in 0..Self::get_num_layers(model_config.get_num_hidden_layers()) {
             let cuda_device = Device::new_cuda(0).map_err(APIError::from)?;
             let key_blocks = Tensor::zeros(
                 (
@@ -144,10 +129,6 @@ impl CacheEngine {
 }
 
 impl CacheEngine {
-    fn get_num_layers(num_hidden_layers: usize, parallel_config: &ParallelConfig) -> usize {
-        num_hidden_layers / parallel_config.pipeline_parallel_size
-    }
-
     fn calculate_key_block_shape(
         model_config: &Box<dyn ConfigLike>,
         dtype: DType,
