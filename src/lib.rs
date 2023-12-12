@@ -63,6 +63,10 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
     }
 }
 
+pub fn log_warning(message: &str) {
+    eprintln!("Warning at {:?}: '{}'", chrono::offset::Utc::now(), message);
+}
+
 pub mod openai;
 pub mod paged_attention;
 pub mod scheduler;

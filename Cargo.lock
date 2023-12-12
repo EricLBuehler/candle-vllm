@@ -794,6 +794,7 @@ dependencies = [
  "candle-nn",
  "candle-sampling",
  "candle-transformers",
+ "chrono",
  "clap",
  "cudarc",
  "derive_more",

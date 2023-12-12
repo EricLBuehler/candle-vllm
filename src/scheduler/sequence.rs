@@ -2,10 +2,18 @@ use std::cell::{Ref, RefCell, RefMut};
 
 use super::block_engine::LogicalTokenBlock;
 
+pub enum SequenceStatus {
+    FinishedIgnored,
+    Waiting,
+    Running,
+    Swapped,
+}
+
 pub struct SequenceData {
     prompt_token_ids: Vec<usize>,
     output_token_ids: Vec<usize>,
     cumulative_logprob: f32,
+    status: SequenceStatus,
 }
 
 impl SequenceData {
@@ -14,12 +22,17 @@ impl SequenceData {
             prompt_token_ids,
             output_token_ids: Vec::new(),
             cumulative_logprob: 0.,
+            status: SequenceStatus::Waiting,
         }
     }
 
     pub fn append_token_id(&mut self, token_id: usize, logprob: f32) {
         self.output_token_ids.push(token_id);
         self.cumulative_logprob += logprob;
+    }
+
+    pub fn set_status(&mut self, status: SequenceStatus) {
+        self.status = status;
     }
 }
 
@@ -45,6 +58,18 @@ impl Sequence {
     pub fn add_token(&mut self, token: usize, logprob: f32) {
         self.deref_mut().append_token_id(token, logprob);
         self.append_token_to_blocks(token);
+    }
+
+    pub fn get_logical_token_blocks(&self) -> usize {
+        self.logical_token_blocks.len()
+    }
+
+    pub fn get_len(&self) -> usize {
+        self.deref().prompt_token_ids.len()
+    }
+
+    pub fn get_id(&self) -> usize {
+        self.seq_id
     }
 
     fn append_tokens_to_blocks(&mut self, tokens: &[usize]) {
