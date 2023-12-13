@@ -1,4 +1,4 @@
-use std::{collections::HashMap, marker::PhantomData, ops::Deref};
+use std::{collections::HashMap, marker::PhantomData, ops::Deref, rc::Rc};
 
 use super::sequence::Sequence;
 
@@ -155,5 +155,11 @@ impl BlockEngine {
             block_table.push(self.gpu_allocator.allocate());
         }
         self.block_tables.insert(sequence.get_id(), block_table);
+    }
+
+    pub fn can_append_token_to_seq(&self, sequence: &Sequence) -> bool {
+        let free_blocks = self.gpu_allocator.get_num_free_blocks();
+        // Physical blocks = logical blocks
+        sequence.blocks_to_add_new_tok() <= *free_blocks
     }
 }

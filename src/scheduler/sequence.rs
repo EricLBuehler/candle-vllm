@@ -60,6 +60,16 @@ impl Sequence {
         self.append_token_to_blocks(token);
     }
 
+    pub fn blocks_to_add_new_tok(&mut self) -> usize {
+        let last = self.logical_token_blocks.last_mut();
+        if !last.is_some_and(|last| last.is_full()) {
+            // If we have space
+            self.get_logical_token_blocks()
+        } else {
+            self.get_logical_token_blocks() + 1
+        }
+    }
+
     pub fn get_logical_token_blocks(&self) -> usize {
         self.logical_token_blocks.len()
     }

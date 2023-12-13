@@ -104,10 +104,44 @@ impl Scheduler {
             }
         }
 
+        let mut blocks_to_swap_out = HashMap::new();
+
+        // Reserve token slots for the running sequence groups, preempting the lowest (earliest) first.
         // Preempt lowest priority sequences that are in the running queue, forming a
         // new running queue that has the actually running sequences. Remember the preempted
         // sequences, which will be put into the waiting or swapped out state depending on
         // the preemption method (recompute or swap, repectively).
+
+        // Sorts by creation time, in descending order so that earliest are latest (first come first serve).
+        self.sort_running_by_priority_fcfs();
+
+        let mut running = VecDeque::new();
+        let mut preempted = VecDeque::new();
+        while !self.running.is_empty() {
+            let seq = self.running.pop_front().unwrap();
+            let mut finished_with_break = false;
+            while !self.block_engine.can_append_token_to_seq(&seq) {
+                // If we cannot, now we need to preempt some seqs
+                if !self.running.is_empty() {
+                    // There is something to preempt.
+                    let seq_to_preempt = self.running.pop_back().unwrap();
+                    // TODO(EricLBuehler): Actually preempt here.
+                    preempted.push_back(seq_to_preempt);
+                } else {
+                    // Nothing to preempt, preempt ourselves. Also, do not bother looking at anything else.
+                    // TODO(EricLBuehler): Actually preempt here.
+                    preempted.push_back(seq);
+                    finished_with_break = true;
+                    break;
+                }
+            }
+            if !finished_with_break {
+                // If we need to, append a physical block for a new token. We do not need to if there is enough space.
+                // TODO(EricLBuehler): (possibly) Append the slot
+                running.push_back(seq);
+            }
+        }
+        self.running = Rc::new(running);
 
         // Try to swap in the swapped out sequences and add these to the
         // running state if possible.
@@ -117,11 +151,14 @@ impl Scheduler {
 }
 
 impl Scheduler {
-    fn get_running_slice(&self) -> &[Rc<Sequence>] {
-        &*self.running.make_contiguous()
-    }
-
     fn _allocate(&self, seq: &Sequence) {
         self.block_engine.allocate(seq)
+    }
+
+    fn sort_running_by_priority_fcfs(&self) {
+        self.running
+            .make_contiguous()
+            .sort_by_key(|seq| seq.get_id());
+        self.running.make_contiguous().reverse();
     }
 }
