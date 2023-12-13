@@ -40,6 +40,8 @@ impl SequenceData {
     }
 }
 
+/// A Sequence holds information about the data it contains (the tokens), and the logical token blocks
+/// to which it is mapped.
 pub struct Sequence {
     data: RefCell<SequenceData>,
     seq_id: usize,
@@ -131,6 +133,8 @@ impl Sequence {
 
 type SeqID = usize;
 
+/// A SequenceGroup holds the `n` (see SamplingParams) sequences generated from a single prompt.
+/// A SequenceGroup contains only sequences with the same prompt. They will always be scheduled together.
 pub struct SequenceGroup {
     seqs: HashMap<SeqID, Rc<Sequence>>,
     arrival_time: u64,

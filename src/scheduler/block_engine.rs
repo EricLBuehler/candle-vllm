@@ -115,6 +115,10 @@ pub enum AllocStatus {
 
 type SeqID = usize;
 
+/// A BlockEngine maps eachs Sequence (identified by its SeqID), to physical token blocks.
+/// The physical token blocks may not match the logical token blocks because during
+/// scheduling, physical blocks are allocated to accomodate the new tokens generated.
+/// These new tokens will be added to the logical token block for each sequence.
 pub struct BlockEngine {
     block_size: usize,
     num_gpu_blocks: usize,
