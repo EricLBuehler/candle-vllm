@@ -1,6 +1,6 @@
-use std::{collections::HashMap, marker::PhantomData, ops::Deref, rc::Rc};
+use std::{collections::HashMap, marker::PhantomData, ops::Deref};
 
-use super::sequence::Sequence;
+use super::sequence::SequenceGroup;
 
 pub struct LogicalTokenBlock {
     tokens: Vec<usize>,
@@ -136,8 +136,8 @@ impl BlockEngine {
         }
     }
 
-    pub fn can_allocate(&self, sequence: &Sequence) -> AllocStatus {
-        let num_required_blocks = sequence.get_logical_token_blocks();
+    pub fn can_allocate(&self, sequence: &SequenceGroup) -> AllocStatus {
+        let num_required_blocks = sequence.get_total_logical_token_blocks();
         let num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks();
 
         if self.num_gpu_blocks > *num_free_gpu_blocks + num_required_blocks {
@@ -149,17 +149,19 @@ impl BlockEngine {
         }
     }
 
-    pub fn allocate(&mut self, sequence: &Sequence) {
+    pub fn allocate(&mut self, sequence: &SequenceGroup) {
         let mut block_table = Vec::new();
-        for logcical_idx in 0..sequence.get_logical_token_blocks() {
+        for logcical_idx in 0..sequence.get_total_logical_token_blocks() {
             block_table.push(self.gpu_allocator.allocate());
         }
-        self.block_tables.insert(sequence.get_id(), block_table);
+        for (seq_id, _) in sequence.get_seqs() {
+            self.block_tables.insert(*seq_id, block_table);
+        }
     }
 
-    pub fn can_append_token_to_seq(&self, sequence: &Sequence) -> bool {
+    pub fn can_append_token_to_seq(&self, sequence: &SequenceGroup) -> bool {
         let free_blocks = self.gpu_allocator.get_num_free_blocks();
         // Physical blocks = logical blocks
-        sequence.blocks_to_add_new_tok() <= *free_blocks
+        sequence.total_blocks_to_add_new_tok() <= *free_blocks
     }
 }

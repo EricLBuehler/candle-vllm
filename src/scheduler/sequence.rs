@@ -1,4 +1,8 @@
-use std::cell::{Ref, RefCell, RefMut};
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    collections::HashMap,
+    rc::Rc,
+};
 
 use super::block_engine::LogicalTokenBlock;
 
@@ -64,9 +68,9 @@ impl Sequence {
         let last = self.logical_token_blocks.last_mut();
         if !last.is_some_and(|last| last.is_full()) {
             // If we have space
-            self.get_logical_token_blocks()
+            0
         } else {
-            self.get_logical_token_blocks() + 1
+            1
         }
     }
 
@@ -122,5 +126,54 @@ impl Sequence {
                 return res;
             }
         }
+    }
+}
+
+type SeqID = usize;
+
+pub struct SequenceGroup {
+    seqs: HashMap<SeqID, Rc<Sequence>>,
+    arrival_time: u64,
+}
+
+impl SequenceGroup {
+    pub fn new(seqs: &[Rc<Sequence>], arrival_time: u64) -> Self {
+        let mut seq_map = HashMap::new();
+        for seq in seqs {
+            seq_map.insert(seq.get_id(), seq.clone());
+        }
+        Self {
+            seqs: seq_map,
+            arrival_time,
+        }
+    }
+
+    pub fn set_status(&mut self, status: SequenceStatus) {
+        for (_, seq) in self.seqs {
+            seq.deref_mut().set_status(status);
+        }
+    }
+
+    /// Blocks to add one new token to each sequence
+    pub fn total_blocks_to_add_new_tok(&self) -> usize {
+        self.seqs
+            .iter()
+            .map(|(_, seq)| seq.blocks_to_add_new_tok())
+            .sum()
+    }
+
+    pub fn get_prompt_len(&self) -> usize {
+        self.seqs.len()
+    }
+
+    pub fn get_total_logical_token_blocks(&self) -> usize {
+        self.seqs
+            .iter()
+            .map(|(_, seq)| seq.get_logical_token_blocks())
+            .sum()
+    }
+
+    pub fn get_seqs(&self) -> &HashMap<SeqID, Rc<Sequence>> {
+        &self.seqs
     }
 }

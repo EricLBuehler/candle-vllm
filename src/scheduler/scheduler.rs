@@ -8,7 +8,7 @@ use crate::{
     scheduler::{block_engine::AllocStatus, sequence::SequenceStatus},
 };
 
-use super::{block_engine::BlockEngine, cache_engine::CacheConfig, sequence::Sequence};
+use super::{block_engine::BlockEngine, cache_engine::CacheConfig, sequence::SequenceGroup};
 
 type CPUBlockFrom = usize;
 type GPUBlockFrom = usize;
@@ -18,7 +18,7 @@ type SrcBlockFrom = usize;
 type DstBlocksTo = Vec<usize>;
 
 pub struct SchedulerOutput {
-    scheduled: Rc<Vec<Rc<Sequence>>>,
+    scheduled: Rc<Vec<Rc<SequenceGroup>>>,
     blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
     blocks_to_swap_out: HashMap<GPUBlockFrom, CPUBlockTo>,
     blocks_to_copy: HashMap<SrcBlockFrom, DstBlocksTo>,
@@ -29,9 +29,9 @@ pub struct SchedulerConfig {
 }
 
 pub struct Scheduler {
-    waiting: VecDeque<Sequence>,
-    running: Rc<VecDeque<Rc<Sequence>>>,
-    swapped_out: VecDeque<Sequence>,
+    waiting: VecDeque<SequenceGroup>,
+    running: Rc<VecDeque<Rc<SequenceGroup>>>,
+    swapped_out: VecDeque<SequenceGroup>,
     config: SchedulerConfig,
     block_engine: BlockEngine,
 }
@@ -52,7 +52,7 @@ impl Scheduler {
         }
     }
 
-    pub fn add_sequence(&mut self, seq: Sequence) {
+    pub fn add_sequence(&mut self, seq: SequenceGroup) {
         self.waiting.push_back(seq);
     }
 
@@ -63,7 +63,7 @@ impl Scheduler {
             let mut scheduled = Vec::new();
             let mut ignored_seq_groups = Vec::new();
             while !self.waiting.is_empty() {
-                let seq = self.waiting.get(0).unwrap();
+                let seq_group = self.waiting.get(0).unwrap();
 
                 // If adding this seq means we will have too many, stop as no more could be added.
                 if self.config.max_num_seqs == self.running.len() + 1 {
@@ -71,26 +71,26 @@ impl Scheduler {
                 }
 
                 // If we cannot allocate either now or in the future, either do not continue or remove the sequence.
-                let can_allocate = self.block_engine.can_allocate(seq);
+                let can_allocate = self.block_engine.can_allocate(seq_group);
                 match can_allocate {
                     AllocStatus::Later => break, //If we can only allocate later, do not bother iterating over the rest.
                     AllocStatus::Impossible => {
                         log_warning(
                             &format!("Input prompt with length of {} tokens is too long and exceeds capacity of block engine.",
-                            seq.get_len())
+                            seq_group.get_prompt_len())
                         );
-                        seq.deref_mut().set_status(SequenceStatus::FinishedIgnored);
+                        seq_group.set_status(SequenceStatus::FinishedIgnored);
                         ignored_seq_groups.push(self.waiting.pop_front());
                     }
                     _ => {}
                 }
 
-                seq.deref_mut().set_status(SequenceStatus::Running);
-                self._allocate(seq);
+                seq_group.set_status(SequenceStatus::Running);
+                self._allocate(seq_group);
 
-                let seq = Rc::new(self.waiting.pop_front().unwrap());
-                self.running.push_back(seq.clone());
-                scheduled.push(seq);
+                let seq_group = Rc::new(self.waiting.pop_front().unwrap());
+                self.running.push_back(seq_group.clone());
+                scheduled.push(seq_group);
             }
 
             // If we did schedule, or we ignored sequences.
@@ -118,9 +118,9 @@ impl Scheduler {
         let mut running = VecDeque::new();
         let mut preempted = VecDeque::new();
         while !self.running.is_empty() {
-            let seq = self.running.pop_front().unwrap();
+            let seq_group = self.running.pop_front().unwrap();
             let mut finished_with_break = false;
-            while !self.block_engine.can_append_token_to_seq(&seq) {
+            while !self.block_engine.can_append_token_to_seq(&seq_group) {
                 // If we cannot, now we need to preempt some seqs
                 if !self.running.is_empty() {
                     // There is something to preempt.
@@ -130,15 +130,15 @@ impl Scheduler {
                 } else {
                     // Nothing to preempt, preempt ourselves. Also, do not bother looking at anything else.
                     // TODO(EricLBuehler): Actually preempt here.
-                    preempted.push_back(seq);
+                    preempted.push_back(seq_group);
                     finished_with_break = true;
                     break;
                 }
             }
             if !finished_with_break {
-                // If we need to, append a physical block for a new token. We do not need to if there is enough space.
+                // If we need to, append physical blocks for a new token. We do not need to if there is enough space.
                 // TODO(EricLBuehler): (possibly) Append the slot
-                running.push_back(seq);
+                running.push_back(seq_group);
             }
         }
         self.running = Rc::new(running);
@@ -151,14 +151,13 @@ impl Scheduler {
 }
 
 impl Scheduler {
-    fn _allocate(&self, seq: &Sequence) {
+    fn _allocate(&self, seq: &SequenceGroup) {
         self.block_engine.allocate(seq)
     }
 
     fn sort_running_by_priority_fcfs(&self) {
-        self.running
-            .make_contiguous()
-            .sort_by_key(|seq| seq.get_id());
+        // TODO(EricLBuehler): Use arrival time
+        self.running.make_contiguous().sort_by_key(|seq| todo!());
         self.running.make_contiguous().reverse();
     }
 }
