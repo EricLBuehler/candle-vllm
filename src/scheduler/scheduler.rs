@@ -156,8 +156,9 @@ impl Scheduler {
     }
 
     fn sort_running_by_priority_fcfs(&self) {
-        // TODO(EricLBuehler): Use arrival time
-        self.running.make_contiguous().sort_by_key(|seq| todo!());
+        self.running
+            .make_contiguous()
+            .sort_by_key(|seq_group| seq_group.arrival_time());
         self.running.make_contiguous().reverse();
     }
 }

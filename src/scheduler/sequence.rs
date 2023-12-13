@@ -180,4 +180,8 @@ impl SequenceGroup {
     pub fn get_seqs(&self) -> &HashMap<SeqID, Rc<Sequence>> {
         &self.seqs
     }
+
+    pub fn arrival_time(&self) -> &u64 {
+        &self.arrival_time
+    }
 }
