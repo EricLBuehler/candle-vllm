@@ -8,14 +8,10 @@ use crate::{
     scheduler::{block_engine::AllocStatus, sequence::SequenceStatus},
 };
 
-use super::{block_engine::BlockEngine, cache_engine::CacheConfig, sequence::SequenceGroup};
-
-type CPUBlockFrom = usize;
-type GPUBlockFrom = usize;
-type CPUBlockTo = usize;
-type GPUBlockTo = usize;
-type SrcBlockFrom = usize;
-type DstBlocksTo = Vec<usize>;
+use super::{
+    block_engine::BlockEngine, cache_engine::CacheConfig, sequence::SequenceGroup, CPUBlockFrom,
+    CPUBlockTo, DstBlocksTo, GPUBlockFrom, GPUBlockTo, SrcBlockFrom,
+};
 
 pub struct SchedulerOutput {
     scheduled: Rc<VecDeque<Rc<SequenceGroup>>>,
