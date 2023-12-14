@@ -49,8 +49,8 @@ impl Scheduler {
         }
     }
 
-    pub fn add_sequence(&mut self, seq: SequenceGroup) {
-        self.waiting.push_back(Rc::new(seq));
+    pub fn add_sequence(&mut self, seq_group: SequenceGroup) {
+        self.waiting.push_back(Rc::new(seq_group));
     }
 
     pub fn schedule(&mut self) -> SchedulerOutput {

@@ -200,12 +200,14 @@ async fn chat_completions(
         model_res.unwrap()
     };
 
-    Either::Left(Ok(web::Json(ChatCompletionResponse {
+    todo!();
+
+    /*Either::Left(Ok(web::Json(ChatCompletionResponse {
         id: request_id,
         choices: result.0.unwrap(),
         created,
         model: request.model.clone(),
         object: "chat.completion",
         usage: result.1,
-    })))
+    })))*/
 }

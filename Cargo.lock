@@ -799,6 +799,7 @@ dependencies = [
  "cudarc",
  "derive_more",
  "dyn-fmt",
+ "either",
  "env_logger",
  "futures",
  "half",

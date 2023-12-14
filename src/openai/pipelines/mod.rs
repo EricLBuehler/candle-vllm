@@ -1,31 +1,21 @@
-use std::{
-    collections::{HashMap, HashSet},
-    env,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{env, path::PathBuf, sync::Arc};
 
-use actix_web::web::Bytes;
 use candle_core::{DType, Device, Tensor};
-use tokenizers::Encoding;
-use tokio::sync::mpsc::Sender;
+use either::Either;
 
-use crate::{
-    openai::sampling_params::SamplingType, paged_attention::input_metadata::InputMetadata,
-};
+use crate::paged_attention::input_metadata::InputMetadata;
 
 use super::{
-    conversation::Conversation,
-    models::ConfigLike,
-    responses::{APIError, ChatChoice, ChatCompletionUsageResponse},
-    sampling_params::{EarlyStoppingCondition, SamplingParams},
-    streaming::SenderError,
-    PipelineConfig, TokenizerWrapper,
+    conversation::Conversation, models::ConfigLike, responses::APIError, PipelineConfig,
+    TokenizerWrapper,
 };
 
 pub mod llama;
+pub mod llm_engine;
 
 const PAD_SLOT_ID: usize = usize::MAX;
+
+type TokenOrFinishReason = Either<usize, String>;
 
 pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(
@@ -34,7 +24,7 @@ pub trait ModulePipeline<'s>: Send + Sync {
         input_positions: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
-    ) -> Result<(Option<Vec<ChatChoice>>, ChatCompletionUsageResponse), APIError>;
+    ) -> Result<TokenOrFinishReason, APIError>;
 
     fn name(&self) -> &str;
 
@@ -67,18 +57,6 @@ fn _make_tensor_with_pad(
 
 pub(crate) fn read_env_var(var: String) -> Result<String, APIError> {
     env::var(var).map_err(APIError::from)
-}
-
-pub(crate) fn logical_or(a: &Tensor, b: &Tensor) -> Result<Tensor, APIError> {
-    (a + b).map_err(APIError::from)
-}
-
-pub(crate) fn logical_not(xs: &Tensor) -> Result<Tensor, APIError> {
-    xs.where_cond(
-        &xs.zeros_like().map_err(APIError::from)?,
-        &xs.ones_like().map_err(APIError::from)?,
-    )
-    .map_err(APIError::from)
 }
 
 pub trait ModelPaths {

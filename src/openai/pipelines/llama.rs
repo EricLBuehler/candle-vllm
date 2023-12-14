@@ -1,4 +1,4 @@
-use std::{collections::HashMap, iter, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use crate::{
     openai::{
@@ -9,36 +9,20 @@ use crate::{
             Conversation,
         },
         models::{
-            llama::{Cache, Config, Llama, LlamaConfig},
+            llama::{Cache, Llama, LlamaConfig},
             ConfigLike,
         },
-        requests::StopTokens,
-        responses::{
-            APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse,
-            StreamingChatCompletionResponse, StreamingChoice, StreamingChoiceData,
-        },
-        sampling_params::{EarlyStoppingCondition, SamplingParams},
-        streaming::SenderError,
-        utils::get_created_time_secs,
+        responses::APIError,
         PipelineConfig, TokenizerWrapper,
     },
-    paged_attention::{
-        cache_engine::{CacheConfig, CacheEngine},
-        input_metadata::InputMetadata,
-        scheduler::{Scheduler, SchedulerConfig},
-        sequence::{SequenceData, SequenceGroupMetadata},
-    },
+    paged_attention::input_metadata::InputMetadata,
 };
-use actix_web::web::Bytes;
 use candle_core::{DType, Device, Tensor};
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
-use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
-use tokio::sync::mpsc::Sender;
-use uuid::Uuid;
 
-use super::{read_env_var, ModelLoader, ModelPaths, ModulePipeline};
+use super::{read_env_var, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
 
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
@@ -61,8 +45,6 @@ pub struct LlamaPipeline {
     tokenizer: Tokenizer,
     conversation: DefaultConversation,
     name: String,
-    input_metadata: InputMetadata,
-    scheduler: Scheduler,
     block_size: Option<usize>,
 }
 
@@ -139,8 +121,6 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         paths: Box<dyn ModelPaths>,
         dtype: DType,
         device: Device,
-        scheduler_config: SchedulerConfig,
-        cache_config: CacheConfig,
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
         let args = self.config.clone();
 
@@ -191,74 +171,9 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                     },
                 ),
                 name: self.name.clone(),
-                input_metadata: InputMetadata::new(todo!(), None, None, None, todo!()),
-                scheduler: Scheduler::new(scheduler_config, cache_config)?,
                 block_size: None,
             }),
             pipeline_config,
-        ))
-    }
-}
-
-impl LlamaPipeline {
-    #[allow(clippy::too_many_arguments)]
-    fn forward_inner(
-        &mut self,
-        input_tokens: Tensor,
-        _input_positions: Tensor,
-        kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
-        input_metadata: InputMetadata,
-    ) -> Result<(Option<ChatChoice>, ChatCompletionUsageResponse), APIError> {
-        let mut index_pos = 0;
-        let mut index = 0;
-        let mut result = "".to_string();
-        let mut tokens_generated = 0;
-        let finish_reason;
-
-        loop {
-            let context_size = if index > 0 { 1 } else { tokens.len() };
-
-            let logits =
-                self.llama
-                    .forward(&input_tokens, index_pos, kv_cache, &mut self.input_metadata)?;
-
-            tokens.push(next_token);
-
-            if let Some(text) = self.tokenizer.id_to_token(next_token) {
-                let text = text.replace('▁', " ").replace("<0x0A>", "\n");
-                if stop_tokens.contains(&text) {
-                    finish_reason = "stop".to_string();
-                    break;
-                }
-                result.push_str(&text);
-            }
-
-            if &Some(next_token) == eos_token_id {
-                finish_reason = "stop".to_string();
-                break;
-            }
-            if tokens_generated >= sampling.max_tokens {
-                finish_reason = "length".to_string();
-                break;
-            }
-
-            index += 1;
-        }
-
-        Ok((
-            Some(ChatChoice {
-                message: ChatChoiceData {
-                    content: Some(result),
-                    role: self.conversation.get_roles().1.clone(),
-                },
-                finish_reason: Some(finish_reason),
-                index: gen_index,
-            }),
-            ChatCompletionUsageResponse {
-                completion_tokens: tokens_generated,
-                prompt_tokens: tokens.len(),
-                total_tokens: tokens_generated + tokens.len(),
-            },
         ))
     }
 }
@@ -270,7 +185,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         input_positions: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
-    ) -> Result<(Option<Vec<ChatChoice>>, ChatCompletionUsageResponse), APIError> {
+    ) -> Result<TokenOrFinishReason, APIError> {
         todo!()
     }
 
@@ -286,20 +201,8 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         &mut self.conversation
     }
 
-    fn get_scheduler_config(&self) -> &SchedulerConfig {
-        self.scheduler.get_config()
-    }
-
     fn get_model_config(&self) -> Box<dyn ConfigLike> {
         Box::new(self.llama.get_config().clone())
-    }
-
-    fn _get_block_size(&self) -> &Option<usize> {
-        &self.block_size
-    }
-
-    fn set_block_size(&mut self, size: usize) {
-        self.block_size = Some(size)
     }
 }
 
