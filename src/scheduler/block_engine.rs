@@ -297,4 +297,48 @@ impl BlockEngine {
             }
         }
     }
+
+    pub fn can_swap_in_seq_group(&self, seq_group: &SequenceGroup) -> bool {
+        let blocks_required: usize = self
+            .block_tables
+            .iter()
+            .filter(|(id, _)| seq_group.get_seqs().contains_key(id))
+            .map(|(_, table)| table.len())
+            .sum();
+        blocks_required <= self.gpu_allocator.free_blocks.len()
+    }
+
+    /// Update the block table so that the sequence does no longer reserve any CPU
+    /// physical blocks, and only has GPU physical blocks.
+    pub fn swap_in(&self, seq_group: &SequenceGroup) -> HashMap<usize, usize> {
+        // CPU block to a GPU block
+        let mut new_mapping = HashMap::new();
+        for (seq_id, seq) in seq_group.get_seqs() {
+            let mut new_block_table = Vec::new();
+            let block_table = self.block_tables.get(seq_id).unwrap();
+
+            for cpu_block in block_table {
+                let gpu_block = if new_mapping.contains_key(cpu_block) {
+                    // Reuse a block
+                    let mut gpu_block: &Rc<PhysicalTokenBlock> =
+                        new_mapping.get(cpu_block).unwrap();
+                    gpu_block.refcount += 1;
+                    *gpu_block
+                } else {
+                    // Create a new block
+                    let gpu_block = self.cpu_allocator.allocate();
+                    new_mapping.insert(cpu_block.clone(), gpu_block);
+                    gpu_block
+                };
+                new_block_table.push(gpu_block);
+                self.gpu_allocator.free_block(cpu_block.clone());
+            }
+            self.block_tables.insert(*seq_id, new_block_table);
+        }
+
+        new_mapping
+            .iter()
+            .map(|(k, v)| (k.block_id, v.block_id))
+            .collect::<HashMap<_, _>>()
+    }
 }

@@ -18,10 +18,11 @@ type SrcBlockFrom = usize;
 type DstBlocksTo = Vec<usize>;
 
 pub struct SchedulerOutput {
-    scheduled: Rc<Vec<Rc<SequenceGroup>>>,
+    scheduled: Rc<VecDeque<Rc<SequenceGroup>>>,
     blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
     blocks_to_swap_out: HashMap<GPUBlockFrom, CPUBlockTo>,
     blocks_to_copy: HashMap<SrcBlockFrom, DstBlocksTo>,
+    ignored_seq_groups: Rc<VecDeque<Rc<SequenceGroup>>>,
 }
 
 pub struct SchedulerConfig {
@@ -60,10 +61,10 @@ impl Scheduler {
         // If there are no swapped seqs (they have higher priority), add seqs that are in the
         // waiting queue to the running queue.
         if self.swapped_out.is_empty() {
-            let mut scheduled = Vec::new();
-            let mut ignored_seq_groups = Vec::new();
+            let mut scheduled = VecDeque::new();
+            let mut ignored_seq_groups = VecDeque::new();
             while !self.waiting.is_empty() {
-                let seq_group = self.waiting.get(0).unwrap();
+                let seq_group = self.waiting.front().unwrap();
 
                 // If adding this seq means we will have too many, stop as no more could be added.
                 if self.config.max_num_seqs == self.running.len() + 1 {
@@ -80,7 +81,7 @@ impl Scheduler {
                             seq_group.get_prompt_len())
                         );
                         seq_group.set_status(SequenceStatus::FinishedIgnored);
-                        ignored_seq_groups.push(self.waiting.pop_front());
+                        ignored_seq_groups.push_back(self.waiting.pop_front().unwrap());
                     }
                     _ => {}
                 }
@@ -90,7 +91,7 @@ impl Scheduler {
 
                 let seq_group = self.waiting.pop_front().unwrap();
                 self.running.push_back(seq_group.clone());
-                scheduled.push(seq_group);
+                scheduled.push_back(seq_group);
             }
 
             // If we did schedule, or we ignored sequences.
@@ -100,11 +101,13 @@ impl Scheduler {
                     blocks_to_swap_in: HashMap::new(),
                     blocks_to_copy: HashMap::new(),
                     blocks_to_swap_out: HashMap::new(),
+                    ignored_seq_groups: Rc::new(ignored_seq_groups),
                 };
             }
         }
 
         let mut blocks_to_swap_out = HashMap::new();
+        let mut blocks_to_swap_in = HashMap::new();
         let mut blocks_to_copy = HashMap::new();
 
         // Reserve token slots for the running sequence groups, preempting the lowest (earliest) first.
@@ -138,6 +141,7 @@ impl Scheduler {
             }
             if !finished_with_break {
                 // If we need to, append physical blocks for a new token. We do not need to if there is enough space.
+                // If we just got preempted, there is no reason to allocate
                 self._append_token_slot_to_seq_group(&seq_group, &mut blocks_to_copy);
                 running.push_back(seq_group);
             }
@@ -147,7 +151,35 @@ impl Scheduler {
         // Try to swap in the swapped out sequences and add these to the
         // running state if possible.
 
-        todo!()
+        // Sorts by creation time, in descending order so that earliest are latest (first come first serve).
+        self.sort_swapped_out_by_priority_fcfs();
+
+        if preempted.is_empty() {
+            while !self.swapped_out.is_empty() {
+                let seq_group = self.swapped_out.front().unwrap();
+
+                // If the GPU cannot handle the group being swapped in, stop
+                if !self.block_engine.can_swap_in_seq_group(&seq_group) {
+                    break;
+                }
+
+                let seq_group = self.swapped_out.pop_front().unwrap();
+                // Swap in the blocks
+                let to_swap_in = self.block_engine.swap_in(&seq_group);
+                blocks_to_swap_in.extend(to_swap_in);
+                // Reserve a new slot
+                self._append_token_slot_to_seq_group(&seq_group, &mut blocks_to_copy);
+                self.running.push_back(seq_group);
+            }
+        }
+
+        SchedulerOutput {
+            scheduled: self.running.clone(),
+            blocks_to_swap_in,
+            blocks_to_copy,
+            blocks_to_swap_out,
+            ignored_seq_groups: Rc::new(VecDeque::new()),
+        }
     }
 }
 
@@ -210,6 +242,7 @@ impl Scheduler {
         self._free(&seq_group);
     }
 
+    /// Preempt either by recomputation (for single sequence), or by swapping (for multiple).
     fn _preempt(
         &self,
         seq_group: Rc<SequenceGroup>,
@@ -233,7 +266,9 @@ impl Scheduler {
         blocks_to_swap_out: &mut HashMap<usize, usize>,
     ) {
         if !self.block_engine.can_swap_out_seq_group(&seq_group) {
+            // If we cannot swap it out, abort the sequence group.
             self._abort_seq_group(&seq_group);
+            return;
         }
         let new_to_swap = self.block_engine.swap_out(&seq_group);
         blocks_to_swap_out.extend(new_to_swap);
@@ -257,5 +292,12 @@ impl Scheduler {
             .make_contiguous()
             .sort_by_key(|seq_group| seq_group.arrival_time());
         self.running.make_contiguous().reverse();
+    }
+
+    fn sort_swapped_out_by_priority_fcfs(&self) {
+        self.swapped_out
+            .make_contiguous()
+            .sort_by_key(|seq_group| seq_group.arrival_time());
+        self.swapped_out.make_contiguous().reverse();
     }
 }
