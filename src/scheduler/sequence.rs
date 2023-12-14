@@ -11,6 +11,7 @@ pub enum SequenceStatus {
     Waiting,
     Running,
     Swapped,
+    FinishedAborted,
 }
 
 pub struct SequenceData {
@@ -138,10 +139,11 @@ type SeqID = usize;
 pub struct SequenceGroup {
     seqs: HashMap<SeqID, Rc<Sequence>>,
     arrival_time: u64,
+    group_id: usize,
 }
 
 impl SequenceGroup {
-    pub fn new(seqs: &[Rc<Sequence>], arrival_time: u64) -> Self {
+    pub fn new(seqs: &[Rc<Sequence>], arrival_time: u64, group_id: usize) -> Self {
         let mut seq_map = HashMap::new();
         for seq in seqs {
             seq_map.insert(seq.get_id(), seq.clone());
@@ -149,6 +151,7 @@ impl SequenceGroup {
         Self {
             seqs: seq_map,
             arrival_time,
+            group_id,
         }
     }
 
@@ -183,5 +186,9 @@ impl SequenceGroup {
 
     pub fn arrival_time(&self) -> &u64 {
         &self.arrival_time
+    }
+
+    pub fn get_id(&self) -> &usize {
+        &self.group_id
     }
 }

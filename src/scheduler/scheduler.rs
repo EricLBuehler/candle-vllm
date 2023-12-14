@@ -29,9 +29,9 @@ pub struct SchedulerConfig {
 }
 
 pub struct Scheduler {
-    waiting: VecDeque<SequenceGroup>,
+    waiting: VecDeque<Rc<SequenceGroup>>,
     running: Rc<VecDeque<Rc<SequenceGroup>>>,
-    swapped_out: VecDeque<SequenceGroup>,
+    swapped_out: VecDeque<Rc<SequenceGroup>>,
     config: SchedulerConfig,
     block_engine: BlockEngine,
 }
@@ -53,7 +53,7 @@ impl Scheduler {
     }
 
     pub fn add_sequence(&mut self, seq: SequenceGroup) {
-        self.waiting.push_back(seq);
+        self.waiting.push_back(Rc::new(seq));
     }
 
     pub fn schedule(&mut self) -> SchedulerOutput {
@@ -88,7 +88,7 @@ impl Scheduler {
                 seq_group.set_status(SequenceStatus::Running);
                 self._allocate(seq_group);
 
-                let seq_group = Rc::new(self.waiting.pop_front().unwrap());
+                let seq_group = self.waiting.pop_front().unwrap();
                 self.running.push_back(seq_group.clone());
                 scheduled.push(seq_group);
             }
@@ -118,18 +118,18 @@ impl Scheduler {
         let mut running = VecDeque::new();
         let mut preempted = VecDeque::new();
         while !self.running.is_empty() {
-            let seq_group = self.running.pop_front().unwrap();
+            let mut seq_group = self.running.pop_front().unwrap();
             let mut finished_with_break = false;
             while !self.block_engine.can_append_token_to_seq(&seq_group) {
                 // If we cannot, now we need to preempt some seqs
                 if !self.running.is_empty() {
                     // There is something to preempt.
-                    let seq_to_preempt = self.running.pop_back().unwrap();
-                    // TODO(EricLBuehler): Actually preempt here.
+                    let mut seq_to_preempt = self.running.pop_back().unwrap();
+                    self._preempt(seq_to_preempt.clone(), &mut blocks_to_swap_out);
                     preempted.push_back(seq_to_preempt);
                 } else {
                     // Nothing to preempt, preempt ourselves. Also, do not bother looking at anything else.
-                    // TODO(EricLBuehler): Actually preempt here.
+                    self._preempt(seq_group.clone(), &mut blocks_to_swap_out);
                     preempted.push_back(seq_group);
                     finished_with_break = true;
                     break;
@@ -151,8 +151,84 @@ impl Scheduler {
 }
 
 impl Scheduler {
-    fn _allocate(&self, seq: &SequenceGroup) {
-        self.block_engine.allocate(seq)
+    fn _abort_seq_group(&self, seq_group: &SequenceGroup) {
+        // Remove it if it is in waiting
+        match self
+            .waiting
+            .iter()
+            .position(|grp| grp.get_id() == seq_group.get_id())
+        {
+            Some(idx) => {
+                self.waiting.remove(idx);
+            }
+            None => {}
+        };
+        // Remove it if it is in running
+        match self
+            .running
+            .iter()
+            .position(|grp| grp.get_id() == seq_group.get_id())
+        {
+            Some(idx) => {
+                self.running.remove(idx);
+            }
+            None => {}
+        };
+        // Remove it if it is in swapped out
+        match self
+            .swapped_out
+            .iter()
+            .position(|grp| grp.get_id() == seq_group.get_id())
+        {
+            Some(idx) => {
+                self.swapped_out.remove(idx);
+            }
+            None => {}
+        };
+        seq_group.set_status(SequenceStatus::FinishedAborted);
+        self._free(&seq_group);
+    }
+
+    fn _preempt(
+        &self,
+        seq_group: Rc<SequenceGroup>,
+        blocks_to_swap_out: &mut HashMap<usize, usize>,
+    ) {
+        match seq_group.get_seqs().len() {
+            1 => self._preempt_by_recompute(seq_group),
+            _ => self._preempt_by_swap(seq_group, blocks_to_swap_out),
+        }
+    }
+
+    fn _preempt_by_recompute(&self, mut seq_group: Rc<SequenceGroup>) {
+        seq_group.set_status(SequenceStatus::Waiting);
+        self._free(&seq_group);
+        self.waiting.push_front(seq_group);
+    }
+
+    fn _preempt_by_swap(
+        &self,
+        mut seq_group: Rc<SequenceGroup>,
+        blocks_to_swap_out: &mut HashMap<usize, usize>,
+    ) {
+        if !self.block_engine.can_swap_out_seq_group(&seq_group) {
+            self._abort_seq_group(&seq_group);
+        }
+        let new_to_swap = self.block_engine.swap_out(&seq_group);
+        blocks_to_swap_out.extend(new_to_swap);
+        seq_group.set_status(SequenceStatus::Swapped);
+
+        self.swapped_out.push_back(seq_group);
+    }
+
+    fn _allocate(&self, seq_group: &SequenceGroup) {
+        self.block_engine.allocate(seq_group)
+    }
+
+    fn _free(&self, seq_group: &SequenceGroup) {
+        for (_, seq) in seq_group.get_seqs() {
+            self.block_engine.free_sequence(&seq);
+        }
     }
 
     fn sort_running_by_priority_fcfs(&self) {
