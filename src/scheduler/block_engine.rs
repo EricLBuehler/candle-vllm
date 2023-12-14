@@ -270,4 +270,31 @@ impl BlockEngine {
             .map(|(k, v)| (k.block_id, v.block_id))
             .collect::<HashMap<_, _>>()
     }
+
+    // Returns the COW mapping (src, dst).
+    // COW is performed if there are multiple references to the last phyiscal block.
+    pub fn append_token_slot_to_seq(&mut self, sequence: &Sequence) -> Option<(usize, usize)> {
+        let table = self.block_tables.get_mut(&sequence.get_id()).unwrap();
+
+        match sequence.blocks_to_add_new_tok() {
+            1 => {
+                table.push(self.gpu_allocator.allocate());
+                None
+            }
+            0 => {
+                let last_block = table.last_mut().unwrap();
+                assert!(last_block.is_gpu);
+                if last_block.refcount == 1 {
+                    None
+                } else {
+                    // We would be writing into shared, so COW.
+                    let new_block = self.gpu_allocator.allocate();
+                    self.gpu_allocator.free_block(last_block.clone());
+                    let old_number = last_block.block_id;
+                    *last_block = new_block;
+                    Some((old_number, new_block.block_id))
+                }
+            }
+        }
+    }
 }

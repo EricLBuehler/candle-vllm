@@ -105,6 +105,7 @@ impl Scheduler {
         }
 
         let mut blocks_to_swap_out = HashMap::new();
+        let mut blocks_to_copy = HashMap::new();
 
         // Reserve token slots for the running sequence groups, preempting the lowest (earliest) first.
         // Preempt lowest priority sequences that are in the running queue, forming a
@@ -137,7 +138,7 @@ impl Scheduler {
             }
             if !finished_with_break {
                 // If we need to, append physical blocks for a new token. We do not need to if there is enough space.
-                // TODO(EricLBuehler): (possibly) Append the slot
+                self._append_token_slot_to_seq_group(&seq_group, &mut blocks_to_copy);
                 running.push_back(seq_group);
             }
         }
@@ -151,6 +152,26 @@ impl Scheduler {
 }
 
 impl Scheduler {
+    fn _append_token_slot_to_seq_group(
+        &self,
+        seq_group: &SequenceGroup,
+        blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
+    ) {
+        for (_, seq) in seq_group.get_seqs() {
+            let op = self.block_engine.append_token_slot_to_seq(seq);
+            match op {
+                Some((src_block, dst_block)) => {
+                    if blocks_to_copy.contains_key(&src_block) {
+                        blocks_to_copy.get_mut(&src_block).unwrap().push(dst_block);
+                    } else {
+                        blocks_to_copy.insert(src_block, vec![dst_block]);
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
     fn _abort_seq_group(&self, seq_group: &SequenceGroup) {
         // Remove it if it is in waiting
         match self
