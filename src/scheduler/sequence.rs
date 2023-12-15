@@ -93,10 +93,22 @@ impl Sequence {
         self.deref().prompt_token_ids.len()
     }
 
+    pub fn get_len(&self) -> usize {
+        self.deref().prompt_token_ids.len() + self.deref().output_token_ids.len()
+    }
+
     pub fn get_token_ids(&self) -> Vec<usize> {
         let mut res = self.deref().prompt_token_ids.clone();
         res.extend(self.deref().output_token_ids);
         res
+    }
+
+    pub fn get_last_token_id(&self) -> usize {
+        if self.deref().output_token_ids.is_empty() {
+            *self.deref().prompt_token_ids.last().unwrap()
+        } else {
+            *self.deref().output_token_ids.last().unwrap()
+        }
     }
 
     fn append_tokens_to_blocks(&mut self, tokens: &[usize]) {

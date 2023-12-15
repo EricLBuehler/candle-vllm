@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf, sync::Arc};
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, Tensor, WithDType};
 use either::Either;
 
 use crate::paged_attention::input_metadata::InputMetadata;
@@ -37,40 +37,22 @@ pub trait ModulePipeline<'s>: Send + Sync {
 }
 
 // TODO(EricLBuehler): Ensure the padding token matches tokenizer
-fn _make_tensor_with_pad(
-    x: Vec<Vec<usize>>,
+fn _make_tensor_with_pad<D: WithDType>(
+    x: Vec<Vec<D>>,
     max_len: usize,
-    pad: usize,
-    dtype: DType,
+    pad: D,
 ) -> Result<Tensor, APIError> {
     let mut padded_x = Vec::new();
     for mut x_i in x {
         assert!(x_i.len() <= max_len);
         x_i.extend(vec![pad].repeat(max_len - x_i.len()));
-        let x_i = x_i.iter().map(|x| *x as f64).collect::<Vec<_>>();
         padded_x.push(
-            Tensor::new(x_i, &Device::new_cuda(0).map_err(APIError::from)?)
-                .map_err(APIError::from)?,
-        );
-    }
-    Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
-}
-
-// TODO(EricLBuehler): Ensure the padding token matches tokenizer
-fn _make_tensor_with_pad_i64(
-    x: Vec<Vec<i64>>,
-    max_len: usize,
-    pad: i64,
-    dtype: DType,
-) -> Result<Tensor, APIError> {
-    let mut padded_x = Vec::new();
-    for mut x_i in x {
-        assert!(x_i.len() <= max_len);
-        x_i.extend(vec![pad].repeat(max_len - x_i.len()));
-        let x_i = x_i.iter().map(|x| *x as f64).collect::<Vec<_>>();
-        padded_x.push(
-            Tensor::new(x_i, &Device::new_cuda(0).map_err(APIError::from)?)
-                .map_err(APIError::from)?,
+            Tensor::from_vec(
+                x_i,
+                (x_i.len(),),
+                &Device::new_cuda(0).map_err(APIError::from)?,
+            )
+            .map_err(APIError::from)?,
         );
     }
     Tensor::cat(&padded_x[..], 0).map_err(APIError::from)

@@ -3,9 +3,7 @@ use std::{collections::VecDeque, rc::Rc};
 use tokenizers::Encoding;
 
 use crate::{
-    openai::{
-        pipelines::_make_tensor_with_pad_i64, responses::APIError, utils::get_created_time_secs,
-    },
+    openai::{responses::APIError, utils::get_created_time_secs},
     paged_attention::input_metadata::InputMetadata,
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
@@ -16,7 +14,7 @@ use crate::{
 
 use super::{ModulePipeline, _make_tensor_with_pad};
 
-use candle_core::{DType, Tensor};
+use candle_core::{Device, Tensor};
 
 struct PreparedInputs {
     tokens: Tensor,
@@ -75,7 +73,7 @@ impl<'a> LLMEngine<'a> {
         self.scheduler.add_sequence(seq_group);
     }
 
-    pub fn generate(&mut self, prompt: Encoding) {
+    pub fn generate(&mut self, prompt: Encoding) -> Result<(), APIError> {
         self.add_request(prompt);
         while self.scheduler.has_unfinished_sequences() {
             let scheduler_outputs = self.scheduler.schedule();
@@ -84,7 +82,11 @@ impl<'a> LLMEngine<'a> {
             }
             let scheduled = &*scheduler_outputs.scheduled;
 
-            if scheduled
+            let PreparedInputs {
+                tokens,
+                positions,
+                metadata,
+            } = if scheduled
                 .front()
                 .unwrap()
                 .get_seqs()
@@ -93,15 +95,14 @@ impl<'a> LLMEngine<'a> {
                 .unwrap()
                 .is_prompt()
             {
-                self.prepare_prompt(&*scheduled);
+                self.prepare_prompt(&*scheduled)
             } else {
                 // Because of the KV cache, we only need to take
                 // the last token.
-                self.prepare_decode(&*scheduled);
-            }
-
-            todo!()
+                self.prepare_decode(&*scheduled)
+            }?;
         }
+        todo!()
     }
 
     fn prepare_prompt(
@@ -125,6 +126,7 @@ impl<'a> LLMEngine<'a> {
                 if table == None {
                     // Will be None during profiling.
                     slot_mappings.push(vec![_PAD_SLOT_ID].repeat(prompt_len));
+                    continue;
                 }
                 let mut table = table
                     .unwrap()
@@ -155,18 +157,30 @@ impl<'a> LLMEngine<'a> {
         }
 
         let max_prompt_len = prompt_lens.iter().max().unwrap();
-        let input_tokens = _make_tensor_with_pad(input_tokens, *max_prompt_len, 0, DType::I64)?;
-        let input_positions =
-            _make_tensor_with_pad(input_positions, *max_prompt_len, 0, DType::I64)?;
-        let slot_mapping =
-            _make_tensor_with_pad_i64(slot_mappings, *max_prompt_len, _PAD_SLOT_ID, DType::I64)?;
+        let input_tokens = _make_tensor_with_pad(
+            input_tokens
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            *max_prompt_len,
+            0,
+        )?;
+        let input_positions = _make_tensor_with_pad(
+            input_positions
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            *max_prompt_len,
+            0,
+        )?;
+        let slot_mapping = _make_tensor_with_pad(slot_mappings, *max_prompt_len, _PAD_SLOT_ID)?;
 
         Ok(PreparedInputs {
             tokens: input_tokens,
             positions: input_positions,
             metadata: InputMetadata {
-                prompt_lens: prompt_lens,
-                slot_mapping: slot_mapping,
+                prompt_lens,
+                slot_mapping,
                 max_context_len: None,
                 context_lens: None,
                 block_tables: None,
@@ -176,5 +190,106 @@ impl<'a> LLMEngine<'a> {
         })
     }
 
-    fn prepare_decode(&self, groups: &VecDeque<Rc<SequenceGroup>>) {}
+    fn prepare_decode(
+        &self,
+        groups: &VecDeque<Rc<SequenceGroup>>,
+    ) -> Result<PreparedInputs, APIError> {
+        let mut input_tokens = Vec::new();
+        let mut input_positions = Vec::new();
+        let mut context_lens = Vec::new();
+        let mut slot_mappings = Vec::new();
+        let mut block_tables = Vec::new();
+        for group in groups {
+            for (_, seq) in group.get_seqs() {
+                let last_token_id = seq.get_last_token_id();
+                input_tokens.push(vec![last_token_id]);
+
+                let position = seq.get_len() - 1;
+                input_positions.push(vec![position]);
+
+                let context_len = if let Some(sliding_window) = self.sliding_window {
+                    seq.get_len().min(sliding_window)
+                } else {
+                    seq.get_len()
+                };
+                context_lens.push(context_len);
+
+                let table = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.get_id())
+                    .unwrap();
+                let mut table = table.iter().map(|block| block.block_id).collect::<Vec<_>>();
+
+                let block_number = table.get(position / self.cache_config.block_size).unwrap();
+                let block_offset = position % self.cache_config.block_size;
+                let slot = block_number * self.cache_config.block_size + block_offset;
+                let slot = slot.try_into().unwrap();
+                slot_mappings.push(vec![slot]);
+
+                if let Some(sliding_window) = self.sliding_window {
+                    let sliding_window_blocks = sliding_window / self.cache_config.block_size;
+                    block_tables.push(
+                        table
+                            .get(table.len() - sliding_window_blocks..)
+                            .unwrap()
+                            .to_vec(),
+                    );
+                } else {
+                    block_tables.push(table);
+                }
+            }
+        }
+
+        let input_tokens = _make_tensor_with_pad(
+            input_tokens
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            1,
+            0,
+        )?;
+        let input_positions = _make_tensor_with_pad(
+            input_positions
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            1,
+            0,
+        )?;
+        let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID)?;
+
+        let max_context_len = context_lens.iter().max().unwrap();
+        let context_lens = Tensor::from_vec(
+            context_lens.iter().map(|x| *x as i64).collect::<Vec<_>>(),
+            (context_lens.len(),),
+            &Device::new_cuda(0).map_err(APIError::from)?,
+        )
+        .map_err(APIError::from)?;
+
+        let max_block_table_len = block_tables.iter().map(|x| x.len()).max().unwrap();
+        let block_tables = _make_tensor_with_pad(
+            block_tables
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            max_block_table_len,
+            0,
+        )?;
+
+        Ok(PreparedInputs {
+            tokens: input_tokens,
+            positions: input_positions,
+            metadata: InputMetadata {
+                prompt_lens: vec![],
+                slot_mapping,
+                max_context_len: Some(*max_context_len),
+                context_lens: Some(context_lens),
+                block_tables: Some(block_tables),
+                attn_bias: None,
+                is_prompt: false,
+            },
+        })
+    }
 }
