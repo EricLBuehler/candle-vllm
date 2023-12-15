@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use candle_core::{DType, Device, Tensor};
 
 use crate::openai::{models::ConfigLike, responses::APIError};
@@ -27,7 +29,7 @@ impl CacheConfig {
 pub type KVCache = (Tensor, Tensor);
 
 pub struct CacheEngine {
-    gpu_cache: Vec<KVCache>,
+    gpu_cache: Arc<Vec<KVCache>>,
     cpu_cache: Vec<KVCache>,
 }
 
@@ -38,9 +40,17 @@ impl CacheEngine {
         dtype: DType,
     ) -> Result<Self, APIError> {
         Ok(Self {
-            gpu_cache: Self::allocate_gpu_cache(&model_config, &cache_config, dtype)?,
+            gpu_cache: Arc::new(Self::allocate_gpu_cache(
+                &model_config,
+                &cache_config,
+                dtype,
+            )?),
             cpu_cache: Self::allocate_cpu_cache(&model_config, &cache_config, dtype)?,
         })
+    }
+
+    pub fn get_kv_cache(&self) -> Arc<Vec<KVCache>> {
+        self.gpu_cache.clone()
     }
 
     fn allocate_gpu_cache(

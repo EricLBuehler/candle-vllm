@@ -101,6 +101,9 @@ impl<'a> LLMEngine<'a> {
                 // the last token.
                 self.prepare_decode(&*scheduled)
             }?;
+
+            self.pipeline
+                .forward(tokens, Some(self.cache_engine.get_kv_cache()), metadata);
         }
         todo!()
     }
