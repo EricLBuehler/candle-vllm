@@ -182,7 +182,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
     fn forward(
         &mut self,
         input_tokens: Tensor,
-        input_positions: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
     ) -> Result<TokenOrFinishReason, APIError> {
@@ -203,6 +202,10 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
 
     fn get_model_config(&self) -> Box<dyn ConfigLike> {
         Box::new(self.llama.get_config().clone())
+    }
+
+    fn get_dtype(&self) -> DType {
+        todo!()
     }
 }
 

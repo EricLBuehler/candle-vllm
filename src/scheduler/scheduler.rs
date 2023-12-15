@@ -14,11 +14,11 @@ use super::{
 };
 
 pub struct SchedulerOutput {
-    scheduled: Rc<VecDeque<Rc<SequenceGroup>>>,
-    blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
-    blocks_to_swap_out: HashMap<GPUBlockFrom, CPUBlockTo>,
-    blocks_to_copy: HashMap<SrcBlockFrom, DstBlocksTo>,
-    ignored_seq_groups: Rc<VecDeque<Rc<SequenceGroup>>>,
+    pub scheduled: Rc<VecDeque<Rc<SequenceGroup>>>,
+    pub blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
+    pub blocks_to_swap_out: HashMap<GPUBlockFrom, CPUBlockTo>,
+    pub blocks_to_copy: HashMap<SrcBlockFrom, DstBlocksTo>,
+    pub ignored_seq_groups: Rc<VecDeque<Rc<SequenceGroup>>>,
 }
 
 pub struct SchedulerConfig {
@@ -30,7 +30,7 @@ pub struct Scheduler {
     running: Rc<VecDeque<Rc<SequenceGroup>>>,
     swapped_out: VecDeque<Rc<SequenceGroup>>,
     config: SchedulerConfig,
-    block_engine: BlockEngine,
+    pub block_engine: BlockEngine,
 }
 
 impl Scheduler {
@@ -176,6 +176,10 @@ impl Scheduler {
             blocks_to_swap_out,
             ignored_seq_groups: Rc::new(VecDeque::new()),
         }
+    }
+
+    pub fn has_unfinished_sequences(&self) -> bool {
+        !self.running.is_empty()
     }
 }
 

@@ -38,7 +38,7 @@ impl LogicalTokenBlock {
 
 #[derive(Hash, PartialEq, Eq)]
 struct PhysicalTokenBlock {
-    block_id: usize,
+    pub block_id: usize,
     block_size: usize,
     refcount: usize,
     is_gpu: bool,
@@ -168,7 +168,7 @@ pub struct BlockEngine {
     num_cpu_blocks: usize,
     gpu_allocator: Allocator<GPUAllocator>,
     cpu_allocator: Allocator<CPUAllocator>,
-    block_tables: HashMap<SeqID, BlockTable>,
+    pub block_tables: HashMap<SeqID, BlockTable>,
 }
 
 impl BlockEngine {

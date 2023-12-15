@@ -21,7 +21,6 @@ pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(
         &mut self,
         input_tokens: Tensor,
-        input_positions: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
     ) -> Result<TokenOrFinishReason, APIError>;
@@ -33,6 +32,8 @@ pub trait ModulePipeline<'s>: Send + Sync {
     fn get_conversation(&mut self) -> &mut dyn Conversation;
 
     fn get_model_config(&self) -> Box<dyn ConfigLike>;
+
+    fn get_dtype(&self) -> DType;
 }
 
 // TODO(EricLBuehler): Ensure the padding token matches tokenizer
@@ -40,6 +41,26 @@ fn _make_tensor_with_pad(
     x: Vec<Vec<usize>>,
     max_len: usize,
     pad: usize,
+    dtype: DType,
+) -> Result<Tensor, APIError> {
+    let mut padded_x = Vec::new();
+    for mut x_i in x {
+        assert!(x_i.len() <= max_len);
+        x_i.extend(vec![pad].repeat(max_len - x_i.len()));
+        let x_i = x_i.iter().map(|x| *x as f64).collect::<Vec<_>>();
+        padded_x.push(
+            Tensor::new(x_i, &Device::new_cuda(0).map_err(APIError::from)?)
+                .map_err(APIError::from)?,
+        );
+    }
+    Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
+}
+
+// TODO(EricLBuehler): Ensure the padding token matches tokenizer
+fn _make_tensor_with_pad_i64(
+    x: Vec<Vec<i64>>,
+    max_len: usize,
+    pad: i64,
     dtype: DType,
 ) -> Result<Tensor, APIError> {
     let mut padded_x = Vec::new();

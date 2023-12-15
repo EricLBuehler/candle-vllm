@@ -81,12 +81,22 @@ impl Sequence {
         self.logical_token_blocks.len()
     }
 
-    pub fn get_len(&self) -> usize {
+    pub fn get_id(&self) -> usize {
+        self.seq_id
+    }
+
+    pub fn is_prompt(&self) -> bool {
+        self.deref().output_token_ids.is_empty()
+    }
+
+    pub fn get_prompt_len(&self) -> usize {
         self.deref().prompt_token_ids.len()
     }
 
-    pub fn get_id(&self) -> usize {
-        self.seq_id
+    pub fn get_token_ids(&self) -> Vec<usize> {
+        let mut res = self.deref().prompt_token_ids.clone();
+        res.extend(self.deref().output_token_ids);
+        res
     }
 
     fn append_tokens_to_blocks(&mut self, tokens: &[usize]) {
