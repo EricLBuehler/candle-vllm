@@ -15,6 +15,7 @@ where
     E: Into<EncodeInput<'s>>,
 {
     fn tokenize(&self, input: E) -> Result<Encoding, APIError>;
+    fn detokenize(&self, input: &[u32]) -> Result<String, APIError>;
 }
 
 impl<'s, E> TokenizerWrapper<'s, E> for Tokenizer
@@ -22,8 +23,11 @@ where
     E: Into<EncodeInput<'s>>,
 {
     fn tokenize(&self, input: E) -> Result<Encoding, APIError> {
-        self.encode(input, false)
-            .map_err(|x| APIError::new(x.to_string()))
+        self.encode(input, false).map_err(APIError::from)
+    }
+
+    fn detokenize(&self, input: &[u32]) -> Result<String, APIError> {
+        self.decode(input, false).map_err(APIError::from)
     }
 }
 

@@ -1,10 +1,14 @@
-use std::{collections::VecDeque, iter::zip, rc::Rc};
+use std::{cmp::Ordering, collections::VecDeque, iter::zip, rc::Rc};
 
 use either::Either;
 use tokenizers::Encoding;
 
 use crate::{
-    openai::{responses::APIError, utils::get_created_time_secs},
+    openai::{
+        responses::{APIError, ChatChoice, ChatChoiceData},
+        sampling_params::SamplingParams,
+        utils::get_created_time_secs,
+    },
     paged_attention::input_metadata::InputMetadata,
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
@@ -33,6 +37,7 @@ pub struct LLMEngine<'a> {
     group_id: usize,
     cache_engine: CacheEngine,
     sliding_window: Option<usize>,
+    sampling_params: SamplingParams,
 }
 
 impl<'a> LLMEngine<'a> {
@@ -40,6 +45,7 @@ impl<'a> LLMEngine<'a> {
         pipeline: Box<dyn ModulePipeline<'a>>,
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
+        sampling_params: SamplingParams,
     ) -> Result<Self, APIError> {
         Ok(Self {
             pipeline,
@@ -53,6 +59,7 @@ impl<'a> LLMEngine<'a> {
                 pipeline.get_dtype(),
             )?,
             sliding_window: pipeline.get_model_config().get_sliding_window(),
+            sampling_params,
         })
     }
 
@@ -118,11 +125,44 @@ impl<'a> LLMEngine<'a> {
                     Either::Left((token, logprob)) => {
                         seq.add_token(token, logprob);
                     }
-                    Either::Right(finish_reason) => {}
+                    Either::Right(finish_reason) => seq.set_finish_reason(finish_reason),
                 }
             }
 
             self.scheduler.free_finished_sequence_groups();
+
+            for group in scheduler_outputs.scheduled.iter() {
+                if group.is_finished() {
+                    // Create choices from the group
+                    let mut seqs = group.get_seqs().values().collect::<Vec<_>>();
+                    seqs.sort_by(|seq_a, seq_b| {
+                        seq_b
+                            .get_cumulative_logprob()
+                            .partial_cmp(&seq_a.get_cumulative_logprob())
+                            .unwrap()
+                    });
+                    let top_n = seqs.get(0..self.sampling_params.n).unwrap();
+                    let mut choices = Vec::new();
+                    for (index, seq) in top_n.iter().enumerate() {
+                        let data = seq
+                            .get_token_ids()
+                            .iter()
+                            .map(|x| (*x).try_into().unwrap())
+                            .collect::<Vec<_>>();
+                        let data = self.pipeline.tokenizer().detokenize(&data)?;
+                        let choice = ChatChoice {
+                            message: ChatChoiceData {
+                                role: self.pipeline.get_conversation().get_roles().0,
+                                content: Some(data),
+                            },
+                            finish_reason: Some(seq.get_finish_reason().clone()),
+                            index,
+                            logprobs: None, // TODO(EricLBuehler): actually add this
+                        };
+                        choices.push(choice);
+                    }
+                }
+            }
         }
 
         Ok(())

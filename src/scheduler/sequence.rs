@@ -39,6 +39,10 @@ impl SequenceData {
     pub fn set_status(&mut self, status: SequenceStatus) {
         self.status = status;
     }
+
+    fn get_cumulative_logprob(&self) -> f32 {
+        self.cumulative_logprob
+    }
 }
 
 /// A Sequence holds information about the data it contains (the tokens), and the logical token blocks
@@ -48,6 +52,7 @@ pub struct Sequence {
     seq_id: usize,
     logical_token_blocks: Vec<LogicalTokenBlock>,
     block_size: usize,
+    finish_reason: Option<String>,
 }
 
 impl Sequence {
@@ -57,6 +62,7 @@ impl Sequence {
             seq_id,
             logical_token_blocks: Vec::new(),
             block_size,
+            finish_reason: None,
         };
         this.append_tokens_to_blocks(&this.deref().prompt_token_ids[..]);
         this
@@ -116,6 +122,18 @@ impl Sequence {
             SequenceStatus::FinishedAborted | SequenceStatus::FinishedIgnored => true,
             _ => false,
         }
+    }
+
+    pub fn get_cumulative_logprob(&self) -> f32 {
+        self.deref().get_cumulative_logprob()
+    }
+
+    pub fn set_finish_reason(&mut self, finish_reason: String) {
+        self.finish_reason = Some(finish_reason);
+    }
+
+    pub fn get_finish_reason(&self) -> &String {
+        &self.finish_reason
     }
 
     fn append_tokens_to_blocks(&mut self, tokens: &[usize]) {
