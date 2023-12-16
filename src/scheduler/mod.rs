@@ -15,11 +15,3 @@ type DstBlocksTo = Vec<usize>;
 type SrcBlock = usize;
 type DstBlock = usize;
 type DstBlocks = Vec<DstBlock>;
-
-pub fn _swap_blocks(mapping: HashMap<SrcBlock, DstBlock>) {
-    todo!("FFI operations to swap blocks.")
-}
-
-pub fn _copy_blocks(mapping: HashMap<SrcBlock, DstBlocks>) {
-    todo!("FFI operations to copy blocks.")
-}

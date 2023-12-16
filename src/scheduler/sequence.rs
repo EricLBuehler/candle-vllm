@@ -1,7 +1,5 @@
 use std::{
-    cell::{Ref, RefCell, RefMut},
     collections::HashMap,
-    rc::Rc,
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -120,10 +118,10 @@ impl _Sequence {
     }
 
     pub fn is_finished(&self) -> bool {
-        match self.deref().status {
-            SequenceStatus::FinishedAborted | SequenceStatus::FinishedIgnored => true,
-            _ => false,
-        }
+        matches!(
+            self.deref().status,
+            SequenceStatus::FinishedAborted | SequenceStatus::FinishedIgnored
+        )
     }
 
     pub fn get_cumulative_logprob(&self) -> f32 {
@@ -227,7 +225,7 @@ impl SequenceGroup {
     }
 
     pub fn set_status(&self, status: SequenceStatus) {
-        for (_, seq) in &self.seqs {
+        for seq in self.seqs.values() {
             seq.deref_mut().deref().set_status(status);
         }
     }
@@ -235,8 +233,8 @@ impl SequenceGroup {
     /// Blocks to add one new token to each sequence
     pub fn total_blocks_to_add_new_tok(&self) -> usize {
         self.seqs
-            .iter()
-            .map(|(_, seq)| seq.deref_mut().blocks_to_add_new_tok())
+            .values()
+            .map(|seq| seq.deref_mut().blocks_to_add_new_tok())
             .sum()
     }
 
@@ -246,8 +244,8 @@ impl SequenceGroup {
 
     pub fn get_total_logical_token_blocks(&self) -> usize {
         self.seqs
-            .iter()
-            .map(|(_, seq)| seq.deref_mut().get_logical_token_blocks())
+            .values()
+            .map(|seq| seq.deref_mut().get_logical_token_blocks())
             .sum()
     }
 

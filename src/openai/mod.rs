@@ -3,10 +3,7 @@ use std::sync::{Arc, Mutex};
 use candle_core::Device;
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
 
-use self::{
-    pipelines::{llm_engine::LLMEngine, ModulePipeline},
-    responses::APIError,
-};
+use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
 
 pub mod requests;
 pub mod responses;

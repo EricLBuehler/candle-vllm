@@ -156,7 +156,7 @@ async fn chat_completions(
     if sampling_params.is_err() {
         return Either::Left(Err(sampling_params.err().unwrap()));
     }
-    let sampling_params = sampling_params.unwrap();
+    let _sampling_params = sampling_params.unwrap();
 
     let created = get_created_time_secs();
 
@@ -197,8 +197,7 @@ async fn chat_completions(
 
     let choices = result
         .iter()
-        .map(|(choices, _)| choices.clone())
-        .flatten()
+        .flat_map(|(choices, _)| choices.clone())
         .collect::<Vec<_>>();
     let usage = ChatCompletionUsageResponse {
         completion_tokens: result

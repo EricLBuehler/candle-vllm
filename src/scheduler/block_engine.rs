@@ -18,7 +18,7 @@ pub struct LogicalTokenBlock {
 impl LogicalTokenBlock {
     pub fn new(block_id: usize, block_size: usize) -> Self {
         Self {
-            tokens: vec![0].repeat(block_size),
+            tokens: [0].repeat(block_size),
             block_id,
             block_size,
             num_tokens: 0,
@@ -64,13 +64,13 @@ impl PhysicalTokenBlock {
 
 impl PartialEq for PhysicalTokenBlock {
     fn eq(&self, other: &Self) -> bool {
-        *self.deref() == *other.deref()
+        *self.deref_mut() == *other.deref_mut()
     }
 }
 
 impl Hash for PhysicalTokenBlock {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.deref().hash(state)
+        self.deref_mut().hash(state)
     }
 }
 
@@ -107,12 +107,12 @@ struct Allocator<T> {
 
 impl<T> Allocator<T> {
     fn allocate(&mut self) -> Arc<PhysicalTokenBlock> {
-        let mut block = self.free_blocks.pop().unwrap();
+        let block = self.free_blocks.pop().unwrap();
         block.deref_mut().refcount = 1;
         block
     }
 
-    fn free_block(&mut self, mut block: Arc<PhysicalTokenBlock>) {
+    fn free_block(&mut self, block: Arc<PhysicalTokenBlock>) {
         if block.deref_mut().refcount == 0 {
             panic!(
                 "PhysicalTokenBlock with id {} experienced a double free!",
@@ -234,10 +234,10 @@ impl BlockEngine {
 
     pub fn allocate(&mut self, seq_group: &SequenceGroup) {
         let mut block_table = Vec::new();
-        for logcical_idx in 0..seq_group.get_total_logical_token_blocks() {
+        for _logcical_idx in 0..seq_group.get_total_logical_token_blocks() {
             block_table.push(self.gpu_allocator.allocate());
         }
-        for (seq_id, _) in seq_group.get_seqs() {
+        for seq_id in seq_group.get_seqs().keys() {
             self.block_tables.insert(*seq_id, block_table.clone());
         }
     }
@@ -282,14 +282,14 @@ impl BlockEngine {
         // GPU block to a CPU block
         let mut new_mapping: HashMap<Arc<PhysicalTokenBlock>, Arc<PhysicalTokenBlock>> =
             HashMap::new();
-        for (seq_id, seq) in seq_group.get_seqs() {
+        for seq_id in seq_group.get_seqs().keys() {
             let mut new_block_table = Vec::new();
             let block_table = self.block_tables.get(seq_id).unwrap();
 
             for gpu_block in block_table {
                 let cpu_block = if new_mapping.contains_key(gpu_block) {
                     // Reuse a block
-                    let mut cpu_block: Arc<PhysicalTokenBlock> =
+                    let cpu_block: Arc<PhysicalTokenBlock> =
                         new_mapping.get(gpu_block).unwrap().clone();
                     cpu_block.deref_mut().refcount += 1;
                     cpu_block
@@ -361,7 +361,7 @@ impl BlockEngine {
         // CPU block to a GPU block
         let mut new_mapping: HashMap<Arc<PhysicalTokenBlock>, Arc<PhysicalTokenBlock>> =
             HashMap::new();
-        for (seq_id, seq) in seq_group.get_seqs() {
+        for seq_id in seq_group.get_seqs().keys() {
             let mut new_block_table = Vec::new();
             let block_table = self.block_tables.get(seq_id).unwrap();
 

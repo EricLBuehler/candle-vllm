@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use candle_core::{DType, Device, Tensor};
 
@@ -32,6 +32,7 @@ pub type KVCache = (Tensor, Tensor);
 pub struct CacheEngine {
     gpu_cache: Arc<Vec<KVCache>>,
     cpu_cache: Vec<KVCache>,
+    num_layers: usize,
 }
 
 impl CacheEngine {
@@ -47,6 +48,7 @@ impl CacheEngine {
                 dtype,
             )?),
             cpu_cache: Self::allocate_cpu_cache(&model_config, &cache_config, dtype)?,
+            num_layers: model_config.get_num_hidden_layers(),
         })
     }
 
@@ -164,5 +166,73 @@ impl CacheEngine {
             model_config.get_head_size(),
             block_size,
         )
+    }
+}
+
+impl CacheEngine {
+    pub fn swap_in(&self, src_to_dst: HashMap<usize, usize>) {
+        self._swap(&self.cpu_cache, &self.gpu_cache, src_to_dst);
+    }
+    pub fn swap_out(&self, src_to_dst: HashMap<usize, usize>) {
+        self._swap(&self.gpu_cache, &self.cpu_cache, src_to_dst);
+    }
+
+    unsafe fn _swap_blocks(
+        src_cache: Tensor,
+        dst_cache: Tensor,
+        src_to_dst: HashMap<usize, usize>,
+    ) {
+        todo!()
+    }
+
+    fn _swap(
+        &self,
+        src: &Vec<(Tensor, Tensor)>,
+        dst: &Vec<(Tensor, Tensor)>,
+        src_to_dst: HashMap<usize, usize>,
+    ) {
+        for i in 0..self.num_layers {
+            let (src_key_cache, src_value_cache) = src.get(i).unwrap();
+            let (dst_key_cache, dst_value_cache) = dst.get(i).unwrap();
+            // Swap (copy) key blocks
+            unsafe {
+                Self::_swap_blocks(
+                    src_key_cache.clone(),
+                    dst_key_cache.clone(),
+                    src_to_dst.clone(),
+                )
+            };
+            // Swap (copy) key blocks
+            unsafe {
+                Self::_swap_blocks(
+                    src_value_cache.clone(),
+                    dst_value_cache.clone(),
+                    src_to_dst.clone(),
+                )
+            };
+        }
+    }
+
+    unsafe fn _copy_blocks(
+        key_caches: Vec<Tensor>,
+        value_caches: Vec<Tensor>,
+        src_to_dst: HashMap<usize, Vec<usize>>,
+    ) {
+        todo!()
+    }
+
+    pub fn copy(&self, src_to_dst: HashMap<usize, Vec<usize>>) {
+        let key_caches = self
+            .gpu_cache
+            .iter()
+            .map(|(key_cache, _)| key_cache.clone())
+            .collect::<Vec<_>>();
+        let value_caches = self
+            .gpu_cache
+            .iter()
+            .map(|(_, value_cache)| value_cache.clone())
+            .collect::<Vec<_>>();
+        // NOTE(EricLBuehler): from a NOTE(woosuk): This implicitly synchronizes the CPU and GPU
+        unsafe { Self::_copy_blocks(key_caches, value_caches, src_to_dst) };
     }
 }

@@ -181,9 +181,9 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
 impl<'s> ModulePipeline<'s> for LlamaPipeline {
     fn forward(
         &mut self,
-        input_tokens: Tensor,
-        kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
-        input_metadata: InputMetadata,
+        _input_tokens: Tensor,
+        _kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
+        _input_metadata: InputMetadata,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         todo!()
     }

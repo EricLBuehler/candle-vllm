@@ -45,7 +45,7 @@ fn _make_tensor_with_pad<D: WithDType>(
     let mut padded_x = Vec::new();
     for mut x_i in x {
         assert!(x_i.len() <= max_len);
-        x_i.extend(vec![pad].repeat(max_len - x_i.len()));
+        x_i.extend([pad].repeat(max_len - x_i.len()));
         let shape = (x_i.len(),);
         padded_x.push(
             Tensor::from_vec(x_i, shape, &Device::new_cuda(0).map_err(APIError::from)?)

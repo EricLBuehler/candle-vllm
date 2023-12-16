@@ -1,7 +1,5 @@
 #![warn(clippy::cast_lossless)]
 
-use std::sync::Arc;
-
 use clap::Subcommand;
 use openai::pipelines::{
     llama::{LlamaLoader, LlamaSpecificConfig},

@@ -1,7 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
     iter::zip,
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -10,17 +9,14 @@ use tokenizers::Encoding;
 
 use crate::{
     openai::{
-        responses::{
-            APIError, ChatChoice, ChatChoiceData, ChatCompletionResponse,
-            ChatCompletionUsageResponse,
-        },
+        responses::{APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse},
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
     },
     paged_attention::input_metadata::InputMetadata,
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
-        scheduler::{Scheduler, SchedulerConfig},
+        scheduler::{Scheduler, SchedulerConfig, SchedulerOutput},
         sequence::{Sequence, SequenceGroup, _Sequence},
     },
 };
@@ -94,7 +90,7 @@ impl<'a> LLMEngine<'a> {
         ))));
         self.seq_id += 1;
         let seq_group = SequenceGroup::new(
-            &vec![seq],
+            &[seq],
             get_created_time_secs(),
             self.group_id,
             request_id,
@@ -119,17 +115,19 @@ impl<'a> LLMEngine<'a> {
             if !scheduler_outputs.ignored_seq_groups.is_empty() {
                 todo!();
             }
+
+            self.execute_scheduler_ops(&scheduler_outputs);
+
             let scheduled = &*scheduler_outputs.scheduled;
 
             let seqs = scheduled
                 .iter()
-                .map(|group| group.get_seqs())
-                .flatten()
+                .flat_map(|group| group.get_seqs())
                 .collect::<Vec<_>>();
 
             let PreparedInputs {
                 tokens,
-                positions,
+                positions: _,
                 metadata,
             } = if scheduled
                 .front()
@@ -141,11 +139,11 @@ impl<'a> LLMEngine<'a> {
                 .deref_mut()
                 .is_prompt()
             {
-                self.prepare_prompt(&*scheduled)
+                self.prepare_prompt(scheduled)
             } else {
                 // Because of the KV cache, we only need to take
                 // the last token.
-                self.prepare_decode(&*scheduled)
+                self.prepare_decode(scheduled)
             }?;
 
             let result =
@@ -204,12 +202,12 @@ impl<'a> LLMEngine<'a> {
                             .iter()
                             .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
                             .sum(),
-                        prompt_tokens: top_n.iter().nth(0).unwrap().deref_mut().get_prompt_len(),
+                        prompt_tokens: top_n.get(0).unwrap().deref_mut().get_prompt_len(),
                         total_tokens: top_n
                             .iter()
                             .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
                             .sum::<usize>()
-                            + top_n.iter().nth(0).unwrap().deref_mut().get_prompt_len(),
+                            + top_n.get(0).unwrap().deref_mut().get_prompt_len(),
                     };
 
                     responses.insert(*group.get_id(), (choices, usage));
@@ -217,10 +215,16 @@ impl<'a> LLMEngine<'a> {
             }
         }
 
-        Ok(responses
-            .into_iter()
-            .map(|(_, resp)| resp)
-            .collect::<Vec<_>>())
+        Ok(responses.into_values().collect::<Vec<_>>())
+    }
+
+    fn execute_scheduler_ops(&self, scheduler_output: &SchedulerOutput) {
+        self.cache_engine
+            .swap_in(scheduler_output.blocks_to_swap_in.clone());
+        self.cache_engine
+            .swap_out(scheduler_output.blocks_to_swap_out.clone());
+        self.cache_engine
+            .copy(scheduler_output.blocks_to_copy.clone());
     }
 
     fn prepare_prompt(
@@ -245,12 +249,12 @@ impl<'a> LLMEngine<'a> {
                     .block_engine
                     .block_tables
                     .get(&seq.deref_mut().get_id());
-                if table == None {
+                if table.is_none() {
                     // Will be None during profiling.
-                    slot_mappings.push(vec![_PAD_SLOT_ID].repeat(prompt_len));
+                    slot_mappings.push([_PAD_SLOT_ID].repeat(prompt_len));
                     continue;
                 }
-                let mut table = table
+                let table = table
                     .unwrap()
                     .iter()
                     .map(|block| block.deref_mut().block_id)
@@ -322,7 +326,7 @@ impl<'a> LLMEngine<'a> {
         let mut slot_mappings = Vec::new();
         let mut block_tables = Vec::new();
         for group in groups {
-            for (_, seq) in group.get_seqs() {
+            for seq in group.get_seqs().values() {
                 let last_token_id = seq.deref_mut().get_last_token_id();
                 input_tokens.push(vec![last_token_id]);
 
@@ -342,7 +346,7 @@ impl<'a> LLMEngine<'a> {
                     .block_tables
                     .get(&seq.deref_mut().get_id())
                     .unwrap();
-                let mut table = table
+                let table = table
                     .iter()
                     .map(|block| block.deref_mut().block_id)
                     .collect::<Vec<_>>();

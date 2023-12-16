@@ -1,6 +1,5 @@
 use std::{
     collections::{HashMap, VecDeque},
-    rc::Rc,
     sync::Arc,
 };
 
@@ -119,13 +118,13 @@ impl Scheduler {
         let mut running = VecDeque::new();
         let mut preempted = VecDeque::new();
         while !self.running.is_empty() {
-            let mut seq_group = self.running.pop_front().unwrap();
+            let seq_group = self.running.pop_front().unwrap();
             let mut finished_with_break = false;
             while !self.block_engine.can_append_token_to_seq(&seq_group) {
                 // If we cannot, now we need to preempt some seqs
                 if !self.running.is_empty() {
                     // There is something to preempt.
-                    let mut seq_to_preempt = self.running.pop_back().unwrap();
+                    let seq_to_preempt = self.running.pop_back().unwrap();
                     self._preempt(seq_to_preempt.clone(), &mut blocks_to_swap_out);
                     preempted.push_back(seq_to_preempt);
                 } else {
@@ -156,7 +155,7 @@ impl Scheduler {
                 let seq_group = self.swapped_out.front().unwrap();
 
                 // If the GPU cannot handle the group being swapped in, stop
-                if !self.block_engine.can_swap_in_seq_group(&seq_group) {
+                if !self.block_engine.can_swap_in_seq_group(seq_group) {
                     break;
                 }
 
@@ -207,37 +206,28 @@ impl Scheduler {
 impl Scheduler {
     fn remove_seq_group(&mut self, seq_group: &SequenceGroup) {
         // Remove it if it is in waiting
-        match self
+        if let Some(idx) = self
             .waiting
             .iter()
             .position(|grp| grp.get_id() == seq_group.get_id())
         {
-            Some(idx) => {
-                self.waiting.remove(idx);
-            }
-            None => {}
+            self.waiting.remove(idx);
         };
         // Remove it if it is in running
-        match self
+        if let Some(idx) = self
             .running
             .iter()
             .position(|grp| grp.get_id() == seq_group.get_id())
         {
-            Some(idx) => {
-                self.running.remove(idx);
-            }
-            None => {}
+            self.running.remove(idx);
         };
         // Remove it if it is in swapped out
-        match self
+        if let Some(idx) = self
             .swapped_out
             .iter()
             .position(|grp| grp.get_id() == seq_group.get_id())
         {
-            Some(idx) => {
-                self.swapped_out.remove(idx);
-            }
-            None => {}
+            self.swapped_out.remove(idx);
         };
     }
     fn _append_token_slot_to_seq_group(
@@ -245,25 +235,24 @@ impl Scheduler {
         seq_group: &SequenceGroup,
         blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
     ) {
-        for (_, seq) in seq_group.get_seqs() {
+        for seq in seq_group.get_seqs().values() {
             let op = self.block_engine.append_token_slot_to_seq(seq);
-            match op {
-                Some((src_block, dst_block)) => {
-                    if blocks_to_copy.contains_key(&src_block) {
-                        blocks_to_copy.get_mut(&src_block).unwrap().push(dst_block);
-                    } else {
-                        blocks_to_copy.insert(src_block, vec![dst_block]);
-                    }
+            if let Some((src_block, dst_block)) = op {
+                if let std::collections::hash_map::Entry::Vacant(e) =
+                    blocks_to_copy.entry(src_block)
+                {
+                    e.insert(vec![dst_block]);
+                } else {
+                    blocks_to_copy.get_mut(&src_block).unwrap().push(dst_block);
                 }
-                None => {}
             }
         }
     }
 
     fn _abort_seq_group(&mut self, seq_group: &SequenceGroup) {
-        self.remove_seq_group(&seq_group);
+        self.remove_seq_group(seq_group);
         seq_group.set_status(SequenceStatus::FinishedAborted);
-        self._free(&seq_group);
+        self._free(seq_group);
     }
 
     /// Preempt either by recomputation (for single sequence), or by swapping (for multiple).
@@ -278,7 +267,7 @@ impl Scheduler {
         }
     }
 
-    fn _preempt_by_recompute(&mut self, mut seq_group: Arc<SequenceGroup>) {
+    fn _preempt_by_recompute(&mut self, seq_group: Arc<SequenceGroup>) {
         seq_group.set_status(SequenceStatus::Waiting);
         self._free(&seq_group);
         self.waiting.push_front(seq_group);
@@ -286,7 +275,7 @@ impl Scheduler {
 
     fn _preempt_by_swap(
         &mut self,
-        mut seq_group: Arc<SequenceGroup>,
+        seq_group: Arc<SequenceGroup>,
         blocks_to_swap_out: &mut HashMap<usize, usize>,
     ) {
         if !self.block_engine.can_swap_out_seq_group(&seq_group) {
@@ -306,8 +295,8 @@ impl Scheduler {
     }
 
     fn _free(&mut self, seq_group: &SequenceGroup) {
-        for (_, seq) in seq_group.get_seqs() {
-            self.block_engine.free_sequence(&seq);
+        for seq in seq_group.get_seqs().values() {
+            self.block_engine.free_sequence(seq);
         }
     }
 
