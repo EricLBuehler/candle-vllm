@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{hash_map::Entry, HashMap},
     hash::Hash,
     marker::PhantomData,
     ops::Deref,
@@ -257,25 +257,27 @@ impl BlockEngine {
     /// physical blocks, and only has CPU physical blocks.
     pub fn swap_out(&mut self, seq_group: &SequenceGroup) -> HashMap<usize, usize> {
         // GPU block to a CPU block
-        let mut new_mapping: HashMap<Arc<PhysicalTokenBlock>, Arc<PhysicalTokenBlock>> =
-            HashMap::new();
+        let mut new_mapping = HashMap::new();
         for seq_id in seq_group.get_seqs().keys() {
             let mut new_block_table = Vec::new();
             let block_table = self.block_tables.get(seq_id).unwrap();
 
             for gpu_block in block_table {
-                let cpu_block = if new_mapping.contains_key(gpu_block) {
-                    // Reuse a block
-                    let cpu_block: Arc<PhysicalTokenBlock> =
-                        new_mapping.get(gpu_block).unwrap().clone();
-                    cpu_block.deref_mut().refcount += 1;
-                    cpu_block
-                } else {
-                    // Create a new block
-                    let cpu_block = self.cpu_allocator.allocate();
-                    new_mapping.insert(gpu_block.clone(), cpu_block.clone());
-                    cpu_block
-                };
+                let cpu_block =
+                    if let Entry::Vacant(e) = new_mapping.entry(gpu_block.deref_mut().block_id) {
+                        // Create a new block
+                        let cpu_block = self.cpu_allocator.allocate();
+                        e.insert(cpu_block.clone());
+                        cpu_block
+                    } else {
+                        // Reuse a block
+                        let cpu_block = new_mapping
+                            .get(&gpu_block.deref_mut().block_id)
+                            .unwrap()
+                            .clone();
+                        cpu_block.deref_mut().refcount += 1;
+                        cpu_block
+                    };
                 new_block_table.push(cpu_block);
                 self.gpu_allocator.free_block(gpu_block.clone());
             }
@@ -284,7 +286,7 @@ impl BlockEngine {
 
         new_mapping
             .iter()
-            .map(|(k, v)| (k.deref_mut().block_id, v.deref_mut().block_id))
+            .map(|(k, v)| (*k, v.deref_mut().block_id))
             .collect::<HashMap<_, _>>()
     }
 
@@ -336,25 +338,27 @@ impl BlockEngine {
     /// physical blocks, and only has GPU physical blocks.
     pub fn swap_in(&mut self, seq_group: &SequenceGroup) -> HashMap<usize, usize> {
         // CPU block to a GPU block
-        let mut new_mapping: HashMap<Arc<PhysicalTokenBlock>, Arc<PhysicalTokenBlock>> =
-            HashMap::new();
+        let mut new_mapping = HashMap::new();
         for seq_id in seq_group.get_seqs().keys() {
             let mut new_block_table = Vec::new();
             let block_table = self.block_tables.get(seq_id).unwrap();
 
             for cpu_block in block_table {
-                let gpu_block = if new_mapping.contains_key(cpu_block) {
-                    // Reuse a block
-                    let gpu_block: Arc<PhysicalTokenBlock> =
-                        new_mapping.get(cpu_block).unwrap().clone();
-                    gpu_block.deref_mut().refcount += 1;
-                    gpu_block
-                } else {
-                    // Create a new block
-                    let gpu_block = self.cpu_allocator.allocate();
-                    new_mapping.insert(cpu_block.clone(), gpu_block.clone());
-                    gpu_block
-                };
+                let gpu_block =
+                    if let Entry::Vacant(e) = new_mapping.entry(cpu_block.deref_mut().block_id) {
+                        // Create a new block
+                        let gpu_block = self.cpu_allocator.allocate();
+                        e.insert(gpu_block.clone());
+                        gpu_block
+                    } else {
+                        // Reuse a block
+                        let gpu_block = new_mapping
+                            .get(&cpu_block.deref_mut().block_id)
+                            .unwrap()
+                            .clone();
+                        gpu_block.deref_mut().refcount += 1;
+                        gpu_block
+                    };
                 new_block_table.push(gpu_block);
                 self.gpu_allocator.free_block(cpu_block.clone());
             }
@@ -363,7 +367,7 @@ impl BlockEngine {
 
         new_mapping
             .iter()
-            .map(|(k, v)| (k.deref_mut().block_id, v.deref_mut().block_id))
+            .map(|(k, v)| (*k, v.deref_mut().block_id))
             .collect::<HashMap<_, _>>()
     }
 }

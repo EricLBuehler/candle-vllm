@@ -44,7 +44,6 @@ pub struct LLMEngine<'a> {
     group_id: usize,
     cache_engine: CacheEngine,
     sliding_window: Option<usize>,
-    sampling_params: SamplingParams,
 }
 
 impl<'a> LLMEngine<'a> {
@@ -52,7 +51,6 @@ impl<'a> LLMEngine<'a> {
         pipeline: Box<dyn ModulePipeline<'a>>,
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
-        sampling_params: SamplingParams,
     ) -> Result<Self, APIError> {
         let cache_engine = CacheEngine::new(
             pipeline.get_model_config(),
@@ -68,7 +66,6 @@ impl<'a> LLMEngine<'a> {
             group_id: 0,
             cache_engine,
             sliding_window,
-            sampling_params,
         })
     }
 
@@ -109,6 +106,7 @@ impl<'a> LLMEngine<'a> {
         prompt: Encoding,
         request_id: String,
         created: u64,
+        sampling_params: SamplingParams,
     ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
         self.add_request(prompt, request_id, created);
 
@@ -177,7 +175,7 @@ impl<'a> LLMEngine<'a> {
                             .partial_cmp(&seq_a.deref_mut().get_cumulative_logprob())
                             .unwrap()
                     });
-                    let top_n = seqs.get(0..self.sampling_params.n).unwrap();
+                    let top_n = seqs.get(0..sampling_params.n).unwrap();
 
                     let mut choices = Vec::new();
                     for (index, seq) in top_n.iter().enumerate() {

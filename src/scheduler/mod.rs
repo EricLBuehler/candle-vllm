@@ -71,7 +71,14 @@ impl Scheduler {
                 let seq_group = self.waiting.front().unwrap().clone();
 
                 // If adding this seq means we will have too many, stop as no more could be added.
-                if self.config.max_num_seqs == self.running.len() + 1 {
+                if self.config.max_num_seqs
+                    == self
+                        .running
+                        .iter()
+                        .map(|group| group.get_seqs().len())
+                        .sum::<usize>()
+                        + 1
+                {
                     break;
                 }
 

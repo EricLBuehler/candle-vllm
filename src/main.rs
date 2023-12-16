@@ -5,8 +5,11 @@ use actix_web::web::Data;
 use actix_web::{App, HttpServer};
 use candle_core::{DType, Device};
 use candle_vllm::openai::openai_server::chat_completions;
+use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::responses::APIError;
 use candle_vllm::openai::OpenAIServerData;
+use candle_vllm::scheduler::cache_engine::CacheConfig;
+use candle_vllm::scheduler::SchedulerConfig;
 use candle_vllm::{get_model_loader, ModelSelected};
 use clap::Parser;
 
@@ -27,6 +30,14 @@ struct Args {
 
     #[clap(subcommand)]
     command: ModelSelected,
+
+    /// Maximum number of sequences to allow
+    #[arg(long, default_value_t = 256)]
+    max_num_seqs: usize,
+
+    /// Size of a block
+    #[arg(long, default_value_t = 16)]
+    block_size: usize,
 }
 
 #[actix_web::main]
@@ -36,10 +47,22 @@ async fn main() -> Result<(), APIError> {
     let (loader, model_id) = get_model_loader(args.command);
     let paths = loader.download_model(model_id, None, args.hf_token)?;
     let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
+    let llm_engine = LLMEngine::new(
+        model.0,
+        SchedulerConfig {
+            max_num_seqs: args.max_num_seqs,
+        },
+        CacheConfig {
+            block_size: args.block_size,
+            num_gpu_blocks: None,
+            num_cpu_blocks: None,
+            fully_init: false,
+        },
+    )?;
 
     let server_data = OpenAIServerData {
         pipeline_config: model.1,
-        model: Arc::new(Mutex::new(model.0)),
+        model: Arc::new(Mutex::new(llm_engine)),
         device: Device::Cpu,
     };
 
