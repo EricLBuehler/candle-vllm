@@ -1,6 +1,7 @@
 use std::{
     collections::{HashMap, VecDeque},
     rc::Rc,
+    sync::Arc,
 };
 
 use crate::{
@@ -14,11 +15,11 @@ use super::{
 };
 
 pub struct SchedulerOutput {
-    pub scheduled: Rc<VecDeque<Rc<SequenceGroup>>>,
+    pub scheduled: Arc<VecDeque<Arc<SequenceGroup>>>,
     pub blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
     pub blocks_to_swap_out: HashMap<GPUBlockFrom, CPUBlockTo>,
     pub blocks_to_copy: HashMap<SrcBlockFrom, DstBlocksTo>,
-    pub ignored_seq_groups: Rc<VecDeque<Rc<SequenceGroup>>>,
+    pub ignored_seq_groups: Arc<VecDeque<Arc<SequenceGroup>>>,
 }
 
 pub struct SchedulerConfig {
@@ -26,9 +27,9 @@ pub struct SchedulerConfig {
 }
 
 pub struct Scheduler {
-    waiting: VecDeque<Rc<SequenceGroup>>,
-    running: Rc<VecDeque<Rc<SequenceGroup>>>,
-    swapped_out: VecDeque<Rc<SequenceGroup>>,
+    waiting: VecDeque<Arc<SequenceGroup>>,
+    running: VecDeque<Arc<SequenceGroup>>,
+    swapped_out: VecDeque<Arc<SequenceGroup>>,
     config: SchedulerConfig,
     pub block_engine: BlockEngine,
 }
@@ -38,7 +39,7 @@ impl Scheduler {
         assert!(cache_config.fully_init);
         Self {
             waiting: VecDeque::new(),
-            running: Rc::new(VecDeque::new()),
+            running: VecDeque::new(),
             swapped_out: VecDeque::new(),
             config,
             block_engine: BlockEngine::new(
@@ -50,7 +51,7 @@ impl Scheduler {
     }
 
     pub fn add_sequence(&mut self, seq_group: SequenceGroup) {
-        self.waiting.push_back(Rc::new(seq_group));
+        self.waiting.push_back(Arc::new(seq_group));
     }
 
     pub fn schedule(&mut self) -> SchedulerOutput {
@@ -60,7 +61,7 @@ impl Scheduler {
             let mut scheduled = VecDeque::new();
             let mut ignored_seq_groups = VecDeque::new();
             while !self.waiting.is_empty() {
-                let seq_group = self.waiting.front().unwrap();
+                let seq_group = self.waiting.front().unwrap().clone();
 
                 // If adding this seq means we will have too many, stop as no more could be added.
                 if self.config.max_num_seqs == self.running.len() + 1 {
@@ -68,7 +69,7 @@ impl Scheduler {
                 }
 
                 // If we cannot allocate either now or in the future, either do not continue or remove the sequence.
-                let can_allocate = self.block_engine.can_allocate(seq_group);
+                let can_allocate = self.block_engine.can_allocate(&seq_group);
                 match can_allocate {
                     AllocStatus::Later => break, //If we can only allocate later, do not bother iterating over the rest.
                     AllocStatus::Impossible => {
@@ -83,7 +84,7 @@ impl Scheduler {
                 }
 
                 seq_group.set_status(SequenceStatus::Running);
-                self._allocate(seq_group);
+                self._allocate(&seq_group);
 
                 let seq_group = self.waiting.pop_front().unwrap();
                 self.running.push_back(seq_group.clone());
@@ -93,11 +94,11 @@ impl Scheduler {
             // If we did schedule, or we ignored sequences.
             if !scheduled.is_empty() || !ignored_seq_groups.is_empty() {
                 return SchedulerOutput {
-                    scheduled: Rc::new(scheduled),
+                    scheduled: Arc::new(scheduled),
                     blocks_to_swap_in: HashMap::new(),
                     blocks_to_copy: HashMap::new(),
                     blocks_to_swap_out: HashMap::new(),
-                    ignored_seq_groups: Rc::new(ignored_seq_groups),
+                    ignored_seq_groups: Arc::new(ignored_seq_groups),
                 };
             }
         }
@@ -130,7 +131,7 @@ impl Scheduler {
                 } else {
                     // Nothing to preempt, preempt ourselves. Also, do not bother looking at anything else.
                     self._preempt(seq_group.clone(), &mut blocks_to_swap_out);
-                    preempted.push_back(seq_group);
+                    preempted.push_back(seq_group.clone());
                     finished_with_break = true;
                     break;
                 }
@@ -142,7 +143,7 @@ impl Scheduler {
                 running.push_back(seq_group);
             }
         }
-        self.running = Rc::new(running);
+        self.running = running;
 
         // Try to swap in the swapped out sequences and add these to the
         // running state if possible.
@@ -170,11 +171,11 @@ impl Scheduler {
         }
 
         SchedulerOutput {
-            scheduled: self.running.clone(),
+            scheduled: self.running.clone().into(),
             blocks_to_swap_in,
             blocks_to_copy,
             blocks_to_swap_out,
-            ignored_seq_groups: Rc::new(VecDeque::new()),
+            ignored_seq_groups: Arc::new(VecDeque::new()),
         }
     }
 
@@ -182,18 +183,29 @@ impl Scheduler {
         !self.running.is_empty()
     }
 
-    pub fn free_finished_sequence_groups(&self) {
-        for (i, running) in self.running.iter().enumerate().rev() {
-            if running.is_finished() {
-                self.running.remove(i);
-                self._free(&running);
-            }
+    pub fn free_finished_sequence_groups(&mut self) {
+        let mut to_free = Vec::new();
+        let clone = self.running.clone();
+        self.running = clone
+            .iter()
+            .filter(|group| {
+                if group.is_finished() {
+                    to_free.push((*group).clone());
+                    false
+                } else {
+                    true
+                }
+            })
+            .cloned()
+            .collect::<VecDeque<_>>();
+        for group in to_free {
+            self._free(&group);
         }
     }
 }
 
 impl Scheduler {
-    fn remove_seq_group(&self, seq_group: &SequenceGroup) {
+    fn remove_seq_group(&mut self, seq_group: &SequenceGroup) {
         // Remove it if it is in waiting
         match self
             .waiting
@@ -229,7 +241,7 @@ impl Scheduler {
         };
     }
     fn _append_token_slot_to_seq_group(
-        &self,
+        &mut self,
         seq_group: &SequenceGroup,
         blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
     ) {
@@ -248,7 +260,7 @@ impl Scheduler {
         }
     }
 
-    fn _abort_seq_group(&self, seq_group: &SequenceGroup) {
+    fn _abort_seq_group(&mut self, seq_group: &SequenceGroup) {
         self.remove_seq_group(&seq_group);
         seq_group.set_status(SequenceStatus::FinishedAborted);
         self._free(&seq_group);
@@ -256,8 +268,8 @@ impl Scheduler {
 
     /// Preempt either by recomputation (for single sequence), or by swapping (for multiple).
     fn _preempt(
-        &self,
-        seq_group: Rc<SequenceGroup>,
+        &mut self,
+        seq_group: Arc<SequenceGroup>,
         blocks_to_swap_out: &mut HashMap<usize, usize>,
     ) {
         match seq_group.get_seqs().len() {
@@ -266,15 +278,15 @@ impl Scheduler {
         }
     }
 
-    fn _preempt_by_recompute(&self, mut seq_group: Rc<SequenceGroup>) {
+    fn _preempt_by_recompute(&mut self, mut seq_group: Arc<SequenceGroup>) {
         seq_group.set_status(SequenceStatus::Waiting);
         self._free(&seq_group);
         self.waiting.push_front(seq_group);
     }
 
     fn _preempt_by_swap(
-        &self,
-        mut seq_group: Rc<SequenceGroup>,
+        &mut self,
+        mut seq_group: Arc<SequenceGroup>,
         blocks_to_swap_out: &mut HashMap<usize, usize>,
     ) {
         if !self.block_engine.can_swap_out_seq_group(&seq_group) {
@@ -289,24 +301,24 @@ impl Scheduler {
         self.swapped_out.push_back(seq_group);
     }
 
-    fn _allocate(&self, seq_group: &SequenceGroup) {
+    fn _allocate(&mut self, seq_group: &SequenceGroup) {
         self.block_engine.allocate(seq_group)
     }
 
-    fn _free(&self, seq_group: &SequenceGroup) {
+    fn _free(&mut self, seq_group: &SequenceGroup) {
         for (_, seq) in seq_group.get_seqs() {
             self.block_engine.free_sequence(&seq);
         }
     }
 
-    fn sort_running_by_priority_fcfs(&self) {
+    fn sort_running_by_priority_fcfs(&mut self) {
         self.running
             .make_contiguous()
             .sort_by_key(|seq_group| seq_group.arrival_time());
         self.running.make_contiguous().reverse();
     }
 
-    fn sort_swapped_out_by_priority_fcfs(&self) {
+    fn sort_swapped_out_by_priority_fcfs(&mut self) {
         self.swapped_out
             .make_contiguous()
             .sort_by_key(|seq_group| seq_group.arrival_time());

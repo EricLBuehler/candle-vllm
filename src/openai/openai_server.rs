@@ -2,7 +2,7 @@ use std::thread;
 
 use super::requests::ChatCompletionRequest;
 use super::requests::Messages;
-use super::responses::{APIError, ChatCompletionResponse};
+use super::responses::{APIError, ChatCompletionResponse, ChatCompletionUsageResponse};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::new_streaming_conn;
 use super::utils::get_created_time_secs;
@@ -15,7 +15,7 @@ use uuid::Uuid;
 fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
     let current_name = {
         let model = data.model.lock().unwrap();
-        model.name().to_string()
+        model.get_pipeline().name().to_string()
     };
     if &current_name != model_name {
         Err(APIError::new(format!(
@@ -32,7 +32,7 @@ async fn get_gen_prompt(
     request: &web::Json<ChatCompletionRequest>,
 ) -> Result<String, APIError> {
     let mut model = data.model.lock().unwrap();
-    let conversation = model.get_conversation();
+    let conversation = model.get_mut_pipeline().get_conversation();
 
     match &request.messages {
         Messages::Literal(msg) => {
@@ -75,7 +75,7 @@ fn check_length(
 ) -> Result<Encoding, APIError> {
     let token_ids = {
         let model = data.model.lock().unwrap();
-        model.tokenizer().tokenize(prompt)?
+        model.get_pipeline().tokenizer().tokenize(prompt)?
     };
 
     let max_tokens = if let Some(max_toks) = request.max_tokens {
@@ -164,12 +164,7 @@ async fn chat_completions(
         let (sender, receiver) = new_streaming_conn();
         let _ = thread::spawn(move || {
             let mut model = data.model.lock().unwrap();
-            let model_res = model.forward(
-                &token_ids,
-                sampling_params,
-                data.device.clone(),
-                Some(sender.clone()),
-            );
+            let model_res = model.generate(token_ids, request_id, created);
             if model_res.is_err() {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -193,21 +188,33 @@ async fn chat_completions(
 
     let result = {
         let mut model = data.model.lock().unwrap();
-        let model_res = model.forward(&token_ids, sampling_params, data.device.clone(), None);
+        let model_res = model.generate(token_ids, request_id.clone(), created);
         if model_res.is_err() {
             return Either::Left(Err(model_res.err().unwrap()));
         }
         model_res.unwrap()
     };
 
-    todo!();
+    let choices = result
+        .iter()
+        .map(|(choices, _)| choices.clone())
+        .flatten()
+        .collect::<Vec<_>>();
+    let usage = ChatCompletionUsageResponse {
+        completion_tokens: result
+            .iter()
+            .map(|(_, usage)| usage.completion_tokens)
+            .sum(),
+        prompt_tokens: result.iter().map(|(_, usage)| usage.prompt_tokens).sum(),
+        total_tokens: result.iter().map(|(_, usage)| usage.total_tokens).sum(),
+    };
 
-    /*Either::Left(Ok(web::Json(ChatCompletionResponse {
+    Either::Left(Ok(web::Json(ChatCompletionResponse {
         id: request_id,
-        choices: result.0.unwrap(),
+        choices,
         created,
         model: request.model.clone(),
         object: "chat.completion",
-        usage: result.1,
-    })))*/
+        usage,
+    })))
 }

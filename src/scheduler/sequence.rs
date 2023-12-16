@@ -2,10 +2,12 @@ use std::{
     cell::{Ref, RefCell, RefMut},
     collections::HashMap,
     rc::Rc,
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 use super::block_engine::LogicalTokenBlock;
 
+#[derive(Clone, Copy)]
 pub enum SequenceStatus {
     FinishedIgnored,
     Waiting,
@@ -47,24 +49,24 @@ impl SequenceData {
 
 /// A Sequence holds information about the data it contains (the tokens), and the logical token blocks
 /// to which it is mapped.
-pub struct Sequence {
-    data: RefCell<SequenceData>,
+pub struct _Sequence {
+    data: Mutex<SequenceData>,
     seq_id: usize,
     logical_token_blocks: Vec<LogicalTokenBlock>,
     block_size: usize,
     finish_reason: Option<String>,
 }
 
-impl Sequence {
+impl _Sequence {
     pub fn new(prompt_token_ids: Vec<usize>, seq_id: usize, block_size: usize) -> Self {
         let mut this = Self {
-            data: RefCell::new(SequenceData::new(prompt_token_ids)),
+            data: Mutex::new(SequenceData::new(prompt_token_ids.clone())),
             seq_id,
             logical_token_blocks: Vec::new(),
             block_size,
             finish_reason: None,
         };
-        this.append_tokens_to_blocks(&this.deref().prompt_token_ids[..]);
+        this.append_tokens_to_blocks(prompt_token_ids);
         this
     }
 
@@ -105,7 +107,7 @@ impl Sequence {
 
     pub fn get_token_ids(&self) -> Vec<usize> {
         let mut res = self.deref().prompt_token_ids.clone();
-        res.extend(self.deref().output_token_ids);
+        res.extend(self.deref().output_token_ids.clone());
         res
     }
 
@@ -133,18 +135,18 @@ impl Sequence {
     }
 
     pub fn get_finish_reason(&self) -> &String {
-        &self.finish_reason
+        self.finish_reason.as_ref().unwrap()
     }
 
-    fn append_tokens_to_blocks(&mut self, tokens: &[usize]) {
+    fn append_tokens_to_blocks(&mut self, tokens: Vec<usize>) {
         for tok in tokens {
-            self.append_token_to_blocks(*tok);
+            self.append_token_to_blocks(tok);
         }
     }
 
     fn append_token_to_blocks(&mut self, token: usize) {
         let last = self.logical_token_blocks.last_mut();
-        if !last.is_some_and(|last| last.is_full()) {
+        if !last.as_ref().is_some_and(|last| last.is_full()) {
             // If we have space
             let last = last.unwrap();
             last.append_token_id(token);
@@ -161,19 +163,31 @@ impl Sequence {
     }
 }
 
-impl Sequence {
-    pub fn deref(&self) -> Ref<'_, SequenceData> {
+impl _Sequence {
+    pub fn deref(&self) -> MutexGuard<'_, SequenceData> {
         loop {
-            if let Ok(res) = self.data.try_borrow() {
+            if let Ok(res) = self.data.try_lock() {
                 return res;
             }
         }
     }
 
-    pub fn deref_mut(&self) -> RefMut<'_, SequenceData> {
+    pub fn deref_mut(&self) -> MutexGuard<'_, SequenceData> {
         loop {
-            if let Ok(res) = self.data.try_borrow_mut() {
+            if let Ok(res) = self.data.try_lock() {
                 return res;
+            }
+        }
+    }
+}
+
+pub struct Sequence(pub Mutex<_Sequence>);
+
+impl Sequence {
+    pub fn deref_mut(&self) -> MutexGuard<'_, _Sequence> {
+        loop {
+            if let Ok(v) = self.0.try_lock() {
+                return v;
             }
         }
     }
@@ -184,27 +198,37 @@ type SeqID = usize;
 /// A SequenceGroup holds the `n` (see SamplingParams) sequences generated from a single prompt.
 /// A SequenceGroup contains only sequences with the same prompt. They will always be scheduled together.
 pub struct SequenceGroup {
-    seqs: HashMap<SeqID, Rc<Sequence>>,
+    seqs: HashMap<SeqID, Arc<Sequence>>,
     arrival_time: u64,
     group_id: usize,
+    request_id: String,
+    created: u64,
 }
 
 impl SequenceGroup {
-    pub fn new(seqs: &[Rc<Sequence>], arrival_time: u64, group_id: usize) -> Self {
+    pub fn new(
+        seqs: &[Arc<Sequence>],
+        arrival_time: u64,
+        group_id: usize,
+        request_id: String,
+        created: u64,
+    ) -> Self {
         let mut seq_map = HashMap::new();
         for seq in seqs {
-            seq_map.insert(seq.get_id(), seq.clone());
+            seq_map.insert(seq.deref_mut().get_id(), seq.clone());
         }
         Self {
             seqs: seq_map,
             arrival_time,
             group_id,
+            request_id,
+            created,
         }
     }
 
-    pub fn set_status(&mut self, status: SequenceStatus) {
-        for (_, seq) in self.seqs {
-            seq.deref_mut().set_status(status);
+    pub fn set_status(&self, status: SequenceStatus) {
+        for (_, seq) in &self.seqs {
+            seq.deref_mut().deref().set_status(status);
         }
     }
 
@@ -212,7 +236,7 @@ impl SequenceGroup {
     pub fn total_blocks_to_add_new_tok(&self) -> usize {
         self.seqs
             .iter()
-            .map(|(_, seq)| seq.blocks_to_add_new_tok())
+            .map(|(_, seq)| seq.deref_mut().blocks_to_add_new_tok())
             .sum()
     }
 
@@ -223,16 +247,16 @@ impl SequenceGroup {
     pub fn get_total_logical_token_blocks(&self) -> usize {
         self.seqs
             .iter()
-            .map(|(_, seq)| seq.get_logical_token_blocks())
+            .map(|(_, seq)| seq.deref_mut().get_logical_token_blocks())
             .sum()
     }
 
-    pub fn get_seqs(&self) -> &HashMap<SeqID, Rc<Sequence>> {
+    pub fn get_seqs(&self) -> &HashMap<SeqID, Arc<Sequence>> {
         &self.seqs
     }
 
-    pub fn arrival_time(&self) -> &u64 {
-        &self.arrival_time
+    pub fn arrival_time(&self) -> u64 {
+        self.arrival_time
     }
 
     pub fn get_id(&self) -> &usize {
@@ -240,6 +264,14 @@ impl SequenceGroup {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.seqs.iter().all(|(_, x)| x.is_finished())
+        self.seqs.iter().all(|(_, x)| x.deref_mut().is_finished())
+    }
+
+    pub fn get_request_id(&self) -> &String {
+        &self.request_id
+    }
+
+    pub fn get_created_time(&self) -> u64 {
+        self.created
     }
 }

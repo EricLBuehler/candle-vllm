@@ -4,6 +4,7 @@ use candle_core::{DType, Device, Tensor};
 
 use crate::openai::{models::ConfigLike, responses::APIError};
 
+#[derive(Clone)]
 pub struct CacheConfig {
     pub block_size: usize,
     pub num_gpu_blocks: Option<usize>, // Set after profiling init

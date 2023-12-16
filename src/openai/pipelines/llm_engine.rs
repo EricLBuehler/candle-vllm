@@ -1,11 +1,19 @@
-use std::{cmp::Ordering, collections::VecDeque, iter::zip, rc::Rc};
+use std::{
+    collections::{HashMap, VecDeque},
+    iter::zip,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 use either::Either;
 use tokenizers::Encoding;
 
 use crate::{
     openai::{
-        responses::{APIError, ChatChoice, ChatChoiceData},
+        responses::{
+            APIError, ChatChoice, ChatChoiceData, ChatCompletionResponse,
+            ChatCompletionUsageResponse,
+        },
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
     },
@@ -13,7 +21,7 @@ use crate::{
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
         scheduler::{Scheduler, SchedulerConfig},
-        sequence::{Sequence, SequenceGroup},
+        sequence::{Sequence, SequenceGroup, _Sequence},
     },
 };
 
@@ -47,24 +55,34 @@ impl<'a> LLMEngine<'a> {
         cache_config: CacheConfig,
         sampling_params: SamplingParams,
     ) -> Result<Self, APIError> {
+        let cache_engine = CacheEngine::new(
+            pipeline.get_model_config(),
+            cache_config.clone(),
+            pipeline.get_dtype(),
+        )?;
+        let sliding_window = pipeline.get_model_config().get_sliding_window();
         Ok(Self {
             pipeline,
             scheduler: Scheduler::new(scheduler_config, &cache_config),
             seq_id: 0,
             cache_config,
             group_id: 0,
-            cache_engine: CacheEngine::new(
-                pipeline.get_model_config(),
-                cache_config,
-                pipeline.get_dtype(),
-            )?,
-            sliding_window: pipeline.get_model_config().get_sliding_window(),
+            cache_engine,
+            sliding_window,
             sampling_params,
         })
     }
 
-    fn add_request(&mut self, prompt: Encoding) {
-        let seq = Rc::new(Sequence::new(
+    pub fn get_pipeline(&self) -> &Box<dyn ModulePipeline<'a>> {
+        &self.pipeline
+    }
+
+    pub fn get_mut_pipeline(&mut self) -> &mut Box<dyn ModulePipeline<'a>> {
+        &mut self.pipeline
+    }
+
+    fn add_request(&mut self, prompt: Encoding, request_id: String, created: u64) {
+        let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
             prompt
                 .get_ids()
                 .to_vec()
@@ -73,16 +91,29 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             self.seq_id,
             self.cache_config.block_size,
-        ));
+        ))));
         self.seq_id += 1;
-        let seq_group = SequenceGroup::new(&vec![seq], get_created_time_secs(), self.group_id);
+        let seq_group = SequenceGroup::new(
+            &vec![seq],
+            get_created_time_secs(),
+            self.group_id,
+            request_id,
+            created,
+        );
         self.group_id += 1;
 
         self.scheduler.add_sequence(seq_group);
     }
 
-    pub fn generate(&mut self, prompt: Encoding) -> Result<(), APIError> {
-        self.add_request(prompt);
+    pub fn generate(
+        &mut self,
+        prompt: Encoding,
+        request_id: String,
+        created: u64,
+    ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
+        self.add_request(prompt, request_id, created);
+
+        let mut responses = HashMap::new();
         while self.scheduler.has_unfinished_sequences() {
             let scheduler_outputs = self.scheduler.schedule();
             if !scheduler_outputs.ignored_seq_groups.is_empty() {
@@ -107,6 +138,7 @@ impl<'a> LLMEngine<'a> {
                 .values()
                 .nth(0)
                 .unwrap()
+                .deref_mut()
                 .is_prompt()
             {
                 self.prepare_prompt(&*scheduled)
@@ -123,28 +155,33 @@ impl<'a> LLMEngine<'a> {
             for (result, (_, seq)) in zip(result, seqs) {
                 match result {
                     Either::Left((token, logprob)) => {
-                        seq.add_token(token, logprob);
+                        seq.deref_mut().add_token(token, logprob);
                     }
-                    Either::Right(finish_reason) => seq.set_finish_reason(finish_reason),
+                    Either::Right(finish_reason) => {
+                        seq.deref_mut().set_finish_reason(finish_reason)
+                    }
                 }
             }
 
             self.scheduler.free_finished_sequence_groups();
 
             for group in scheduler_outputs.scheduled.iter() {
-                if group.is_finished() {
+                if group.is_finished() && !responses.contains_key(group.get_id()) {
                     // Create choices from the group
                     let mut seqs = group.get_seqs().values().collect::<Vec<_>>();
                     seqs.sort_by(|seq_a, seq_b| {
                         seq_b
+                            .deref_mut()
                             .get_cumulative_logprob()
-                            .partial_cmp(&seq_a.get_cumulative_logprob())
+                            .partial_cmp(&seq_a.deref_mut().get_cumulative_logprob())
                             .unwrap()
                     });
                     let top_n = seqs.get(0..self.sampling_params.n).unwrap();
+
                     let mut choices = Vec::new();
                     for (index, seq) in top_n.iter().enumerate() {
                         let data = seq
+                            .deref_mut()
                             .get_token_ids()
                             .iter()
                             .map(|x| (*x).try_into().unwrap())
@@ -152,25 +189,43 @@ impl<'a> LLMEngine<'a> {
                         let data = self.pipeline.tokenizer().detokenize(&data)?;
                         let choice = ChatChoice {
                             message: ChatChoiceData {
-                                role: self.pipeline.get_conversation().get_roles().0,
+                                role: self.pipeline.get_conversation().get_roles().0.clone(),
                                 content: Some(data),
                             },
-                            finish_reason: Some(seq.get_finish_reason().clone()),
+                            finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
                             index,
                             logprobs: None, // TODO(EricLBuehler): actually add this
                         };
                         choices.push(choice);
                     }
+
+                    let usage = ChatCompletionUsageResponse {
+                        completion_tokens: top_n
+                            .iter()
+                            .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
+                            .sum(),
+                        prompt_tokens: top_n.iter().nth(0).unwrap().deref_mut().get_prompt_len(),
+                        total_tokens: top_n
+                            .iter()
+                            .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
+                            .sum::<usize>()
+                            + top_n.iter().nth(0).unwrap().deref_mut().get_prompt_len(),
+                    };
+
+                    responses.insert(*group.get_id(), (choices, usage));
                 }
             }
         }
 
-        Ok(())
+        Ok(responses
+            .into_iter()
+            .map(|(_, resp)| resp)
+            .collect::<Vec<_>>())
     }
 
     fn prepare_prompt(
         &self,
-        groups: &VecDeque<Rc<SequenceGroup>>,
+        groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<PreparedInputs, APIError> {
         let mut prompt_lens = Vec::new();
         let mut input_tokens = Vec::new();
@@ -178,14 +233,18 @@ impl<'a> LLMEngine<'a> {
         let mut slot_mappings = Vec::new();
         for group in groups {
             for seq in group.get_seqs().values() {
-                let prompt_ids = seq.get_token_ids();
+                let prompt_ids = seq.deref_mut().get_token_ids();
 
                 let prompt_len = prompt_ids.len();
                 prompt_lens.push(prompt_len);
 
                 input_tokens.push(prompt_ids);
                 input_positions.push((0..prompt_len).collect::<Vec<_>>());
-                let table = self.scheduler.block_engine.block_tables.get(&seq.get_id());
+                let table = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.deref_mut().get_id());
                 if table == None {
                     // Will be None during profiling.
                     slot_mappings.push(vec![_PAD_SLOT_ID].repeat(prompt_len));
@@ -194,7 +253,7 @@ impl<'a> LLMEngine<'a> {
                 let mut table = table
                     .unwrap()
                     .iter()
-                    .map(|block| block.block_id)
+                    .map(|block| block.deref_mut().block_id)
                     .collect::<Vec<_>>();
 
                 let start_idx = if let Some(sliding_window) = self.sliding_window {
@@ -255,7 +314,7 @@ impl<'a> LLMEngine<'a> {
 
     fn prepare_decode(
         &self,
-        groups: &VecDeque<Rc<SequenceGroup>>,
+        groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<PreparedInputs, APIError> {
         let mut input_tokens = Vec::new();
         let mut input_positions = Vec::new();
@@ -264,16 +323,16 @@ impl<'a> LLMEngine<'a> {
         let mut block_tables = Vec::new();
         for group in groups {
             for (_, seq) in group.get_seqs() {
-                let last_token_id = seq.get_last_token_id();
+                let last_token_id = seq.deref_mut().get_last_token_id();
                 input_tokens.push(vec![last_token_id]);
 
-                let position = seq.get_len() - 1;
+                let position = seq.deref_mut().get_len() - 1;
                 input_positions.push(vec![position]);
 
                 let context_len = if let Some(sliding_window) = self.sliding_window {
-                    seq.get_len().min(sliding_window)
+                    seq.deref_mut().get_len().min(sliding_window)
                 } else {
-                    seq.get_len()
+                    seq.deref_mut().get_len()
                 };
                 context_lens.push(context_len);
 
@@ -281,9 +340,12 @@ impl<'a> LLMEngine<'a> {
                     .scheduler
                     .block_engine
                     .block_tables
-                    .get(&seq.get_id())
+                    .get(&seq.deref_mut().get_id())
                     .unwrap();
-                let mut table = table.iter().map(|block| block.block_id).collect::<Vec<_>>();
+                let mut table = table
+                    .iter()
+                    .map(|block| block.deref_mut().block_id)
+                    .collect::<Vec<_>>();
 
                 let block_number = table.get(position / self.cache_config.block_size).unwrap();
                 let block_offset = position % self.cache_config.block_size;

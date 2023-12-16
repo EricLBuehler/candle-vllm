@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex};
 use candle_core::Device;
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
 
-use self::{pipelines::ModulePipeline, responses::APIError};
+use self::{
+    pipelines::{llm_engine::LLMEngine, ModulePipeline},
+    responses::APIError,
+};
 
 pub mod requests;
 pub mod responses;
@@ -38,7 +41,7 @@ pub struct PipelineConfig {
 
 #[derive(Clone)]
 pub struct OpenAIServerData<'s> {
-    pub model: Arc<Mutex<Box<dyn ModulePipeline<'s>>>>,
+    pub model: Arc<Mutex<LLMEngine<'s>>>,
     pub pipeline_config: PipelineConfig,
     pub device: Device,
 }
