@@ -16,15 +16,18 @@ use crate::{
     paged_attention::input_metadata::InputMetadata,
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
-        scheduler::{Scheduler, SchedulerConfig, SchedulerOutput},
         sequence::{Sequence, SequenceGroup, _Sequence},
+        SchedulerConfig, SchedulerOutput,
     },
 };
+
+use crate::scheduler::Scheduler;
 
 use super::{ModulePipeline, _make_tensor_with_pad};
 
 use candle_core::{Device, Tensor};
 
+#[allow(dead_code)]
 struct PreparedInputs {
     tokens: Tensor,
     positions: Tensor,
@@ -69,12 +72,12 @@ impl<'a> LLMEngine<'a> {
         })
     }
 
-    pub fn get_pipeline(&self) -> &Box<dyn ModulePipeline<'a>> {
-        &self.pipeline
+    pub fn get_pipeline(&self) -> &dyn ModulePipeline<'a> {
+        &*self.pipeline
     }
 
-    pub fn get_mut_pipeline(&mut self) -> &mut Box<dyn ModulePipeline<'a>> {
-        &mut self.pipeline
+    pub fn get_mut_pipeline(&mut self) -> &mut dyn ModulePipeline<'a> {
+        &mut *self.pipeline
     }
 
     fn add_request(&mut self, prompt: Encoding, request_id: String, created: u64) {

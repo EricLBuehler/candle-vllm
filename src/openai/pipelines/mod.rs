@@ -13,8 +13,6 @@ use super::{
 pub mod llama;
 pub mod llm_engine;
 
-const PAD_SLOT_ID: usize = usize::MAX;
-
 type TokenOrFinishReason = Either<(usize, f32), String>;
 
 pub trait ModulePipeline<'s>: Send + Sync {

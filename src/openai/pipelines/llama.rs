@@ -45,7 +45,6 @@ pub struct LlamaPipeline {
     tokenizer: Tokenizer,
     conversation: DefaultConversation,
     name: String,
-    block_size: Option<usize>,
 }
 
 pub struct LlamaLoader {
@@ -171,7 +170,6 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                     },
                 ),
                 name: self.name.clone(),
-                block_size: None,
             }),
             pipeline_config,
         ))

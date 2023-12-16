@@ -10,16 +10,14 @@ use super::sequence::{Sequence, SequenceGroup};
 
 pub struct LogicalTokenBlock {
     tokens: Vec<usize>,
-    block_id: usize,
     block_size: usize,
     num_tokens: usize,
 }
 
 impl LogicalTokenBlock {
-    pub fn new(block_id: usize, block_size: usize) -> Self {
+    pub fn new(block_size: usize) -> Self {
         Self {
             tokens: [0].repeat(block_size),
-            block_id,
             block_size,
             num_tokens: 0,
         }
@@ -100,7 +98,6 @@ impl Deref for CPUAllocatorWrapper {
 }
 
 struct Allocator<T> {
-    block_size: usize,
     free_blocks: BlockTable,
     _ghost: PhantomData<T>,
 }
@@ -140,7 +137,6 @@ impl Allocator<GPUAllocator> {
             ))))
         }
         Allocator {
-            block_size,
             free_blocks,
             _ghost: PhantomData,
         }
@@ -148,11 +144,6 @@ impl Allocator<GPUAllocator> {
 
     fn get_num_free_blocks(&self) -> GPUAllocatorWrapper {
         GPUAllocatorWrapper(self.free_blocks.len())
-    }
-
-    #[inline(always)]
-    const fn is_gpu(&self) -> bool {
-        true
     }
 }
 
@@ -170,19 +161,9 @@ impl Allocator<CPUAllocator> {
             ))))
         }
         Allocator {
-            block_size,
             free_blocks,
             _ghost: PhantomData,
         }
-    }
-
-    fn get_num_free_blocks(&self) -> CPUAllocatorWrapper {
-        CPUAllocatorWrapper(self.free_blocks.len())
-    }
-
-    #[inline(always)]
-    const fn is_gpu(&self) -> bool {
-        false
     }
 }
 
@@ -199,9 +180,7 @@ type SeqID = usize;
 /// scheduling, physical blocks are allocated to accomodate the new tokens generated.
 /// These new tokens will be added to the logical token block for each sequence.
 pub struct BlockEngine {
-    block_size: usize,
     num_gpu_blocks: usize,
-    num_cpu_blocks: usize,
     gpu_allocator: Allocator<GPUAllocator>,
     cpu_allocator: Allocator<CPUAllocator>,
     pub block_tables: HashMap<SeqID, BlockTable>,
@@ -210,9 +189,7 @@ pub struct BlockEngine {
 impl BlockEngine {
     pub fn new(block_size: usize, num_gpu_blocks: usize, num_cpu_blocks: usize) -> Self {
         Self {
-            block_size,
             num_gpu_blocks,
-            num_cpu_blocks,
             gpu_allocator: Allocator::<GPUAllocator>::new(block_size, num_gpu_blocks),
             cpu_allocator: Allocator::<CPUAllocator>::new(block_size, num_cpu_blocks),
             block_tables: HashMap::new(),

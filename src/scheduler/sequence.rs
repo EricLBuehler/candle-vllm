@@ -149,10 +149,8 @@ impl _Sequence {
             let last = last.unwrap();
             last.append_token_id(token);
         } else {
-            self.logical_token_blocks.push(LogicalTokenBlock::new(
-                self.logical_token_blocks.len(),
-                self.block_size,
-            ));
+            self.logical_token_blocks
+                .push(LogicalTokenBlock::new(self.block_size));
             self.logical_token_blocks
                 .last_mut()
                 .unwrap()

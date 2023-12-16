@@ -43,11 +43,11 @@ impl CacheEngine {
     ) -> Result<Self, APIError> {
         Ok(Self {
             gpu_cache: Arc::new(Self::allocate_gpu_cache(
-                &model_config,
+                &*model_config,
                 &cache_config,
                 dtype,
             )?),
-            cpu_cache: Self::allocate_cpu_cache(&model_config, &cache_config, dtype)?,
+            cpu_cache: Self::allocate_cpu_cache(&*model_config, &cache_config, dtype)?,
             num_layers: model_config.get_num_hidden_layers(),
         })
     }
@@ -57,7 +57,7 @@ impl CacheEngine {
     }
 
     fn allocate_gpu_cache(
-        model_config: &Box<dyn ConfigLike>,
+        model_config: &dyn ConfigLike,
         cache_config: &CacheConfig,
         dtype: DType,
     ) -> Result<Vec<KVCache>, APIError> {
@@ -99,7 +99,7 @@ impl CacheEngine {
     }
 
     fn allocate_cpu_cache(
-        model_config: &Box<dyn ConfigLike>,
+        model_config: &dyn ConfigLike,
         cache_config: &CacheConfig,
         dtype: DType,
     ) -> Result<Vec<KVCache>, APIError> {
@@ -143,7 +143,7 @@ impl CacheEngine {
 
 impl CacheEngine {
     fn calculate_key_block_shape(
-        model_config: &Box<dyn ConfigLike>,
+        model_config: &dyn ConfigLike,
         dtype: DType,
         block_size: usize,
     ) -> (usize, usize, usize, usize) {
@@ -158,7 +158,7 @@ impl CacheEngine {
     }
 
     fn calculate_value_block_shape(
-        model_config: &Box<dyn ConfigLike>,
+        model_config: &dyn ConfigLike,
         block_size: usize,
     ) -> (usize, usize, usize) {
         (
@@ -178,17 +178,17 @@ impl CacheEngine {
     }
 
     unsafe fn _swap_blocks(
-        src_cache: Tensor,
-        dst_cache: Tensor,
-        src_to_dst: HashMap<usize, usize>,
+        _src_cache: Tensor,
+        _dst_cache: Tensor,
+        _src_to_dst: HashMap<usize, usize>,
     ) {
         todo!()
     }
 
     fn _swap(
         &self,
-        src: &Vec<(Tensor, Tensor)>,
-        dst: &Vec<(Tensor, Tensor)>,
+        src: &[(Tensor, Tensor)],
+        dst: &[(Tensor, Tensor)],
         src_to_dst: HashMap<usize, usize>,
     ) {
         for i in 0..self.num_layers {
@@ -214,9 +214,9 @@ impl CacheEngine {
     }
 
     unsafe fn _copy_blocks(
-        key_caches: Vec<Tensor>,
-        value_caches: Vec<Tensor>,
-        src_to_dst: HashMap<usize, Vec<usize>>,
+        _key_caches: Vec<Tensor>,
+        _value_caches: Vec<Tensor>,
+        _src_to_dst: HashMap<usize, Vec<usize>>,
     ) {
         todo!()
     }
