@@ -181,30 +181,19 @@ impl Scheduler {
     pub fn has_unfinished_sequences(&self) -> bool {
         !self.running.is_empty()
     }
-}
 
-impl Scheduler {
-    fn _append_token_slot_to_seq_group(
-        &self,
-        seq_group: &SequenceGroup,
-        blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
-    ) {
-        for (_, seq) in seq_group.get_seqs() {
-            let op = self.block_engine.append_token_slot_to_seq(seq);
-            match op {
-                Some((src_block, dst_block)) => {
-                    if blocks_to_copy.contains_key(&src_block) {
-                        blocks_to_copy.get_mut(&src_block).unwrap().push(dst_block);
-                    } else {
-                        blocks_to_copy.insert(src_block, vec![dst_block]);
-                    }
-                }
-                None => {}
+    pub fn free_finished_sequence_groups(&self) {
+        for (i, running) in self.running.iter().enumerate().rev() {
+            if running.is_finished() {
+                self.running.remove(i);
+                self._free(&running);
             }
         }
     }
+}
 
-    fn _abort_seq_group(&self, seq_group: &SequenceGroup) {
+impl Scheduler {
+    fn remove_seq_group(&self, seq_group: &SequenceGroup) {
         // Remove it if it is in waiting
         match self
             .waiting
@@ -238,6 +227,29 @@ impl Scheduler {
             }
             None => {}
         };
+    }
+    fn _append_token_slot_to_seq_group(
+        &self,
+        seq_group: &SequenceGroup,
+        blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
+    ) {
+        for (_, seq) in seq_group.get_seqs() {
+            let op = self.block_engine.append_token_slot_to_seq(seq);
+            match op {
+                Some((src_block, dst_block)) => {
+                    if blocks_to_copy.contains_key(&src_block) {
+                        blocks_to_copy.get_mut(&src_block).unwrap().push(dst_block);
+                    } else {
+                        blocks_to_copy.insert(src_block, vec![dst_block]);
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    fn _abort_seq_group(&self, seq_group: &SequenceGroup) {
+        self.remove_seq_group(&seq_group);
         seq_group.set_status(SequenceStatus::FinishedAborted);
         self._free(&seq_group);
     }

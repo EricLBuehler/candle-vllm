@@ -111,6 +111,13 @@ impl Sequence {
         }
     }
 
+    pub fn is_finished(&self) -> bool {
+        match self.deref().status {
+            SequenceStatus::FinishedAborted | SequenceStatus::FinishedIgnored => true,
+            _ => false,
+        }
+    }
+
     fn append_tokens_to_blocks(&mut self, tokens: &[usize]) {
         for tok in tokens {
             self.append_token_to_blocks(*tok);
@@ -212,5 +219,9 @@ impl SequenceGroup {
 
     pub fn get_id(&self) -> &usize {
         &self.group_id
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.seqs.iter().all(|(_, x)| x.is_finished())
     }
 }

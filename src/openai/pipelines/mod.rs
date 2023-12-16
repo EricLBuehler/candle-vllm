@@ -15,7 +15,7 @@ pub mod llm_engine;
 
 const PAD_SLOT_ID: usize = usize::MAX;
 
-type TokenOrFinishReason = Either<usize, String>;
+type TokenOrFinishReason = Either<(usize, f32), String>;
 
 pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(
@@ -23,7 +23,7 @@ pub trait ModulePipeline<'s>: Send + Sync {
         input_tokens: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
-    ) -> Result<TokenOrFinishReason, APIError>;
+    ) -> Result<Vec<TokenOrFinishReason>, APIError>;
 
     fn name(&self) -> &str;
 

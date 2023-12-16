@@ -1,5 +1,6 @@
-use std::{collections::VecDeque, rc::Rc};
+use std::{collections::VecDeque, iter::zip, rc::Rc};
 
+use either::Either;
 use tokenizers::Encoding;
 
 use crate::{
@@ -82,6 +83,12 @@ impl<'a> LLMEngine<'a> {
             }
             let scheduled = &*scheduler_outputs.scheduled;
 
+            let seqs = scheduled
+                .iter()
+                .map(|group| group.get_seqs())
+                .flatten()
+                .collect::<Vec<_>>();
+
             let PreparedInputs {
                 tokens,
                 positions,
@@ -102,10 +109,23 @@ impl<'a> LLMEngine<'a> {
                 self.prepare_decode(&*scheduled)
             }?;
 
-            self.pipeline
-                .forward(tokens, Some(self.cache_engine.get_kv_cache()), metadata);
+            let result =
+                self.pipeline
+                    .forward(tokens, Some(self.cache_engine.get_kv_cache()), metadata)?;
+
+            for (result, (_, seq)) in zip(result, seqs) {
+                match result {
+                    Either::Left((token, logprob)) => {
+                        seq.add_token(token, logprob);
+                    }
+                    Either::Right(finish_reason) => {}
+                }
+            }
+
+            self.scheduler.free_finished_sequence_groups();
         }
-        todo!()
+
+        Ok(())
     }
 
     fn prepare_prompt(

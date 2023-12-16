@@ -184,7 +184,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         input_tokens: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
-    ) -> Result<TokenOrFinishReason, APIError> {
+    ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         todo!()
     }
 
