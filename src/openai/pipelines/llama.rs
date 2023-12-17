@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{iter::zip, path::PathBuf, sync::Arc};
 
 use crate::{
     openai::{
@@ -9,16 +9,20 @@ use crate::{
             Conversation,
         },
         models::{
-            llama::{Cache, Llama, LlamaConfig},
+            llama::{Llama, LlamaConfig},
             ConfigLike,
         },
+        requests::StopTokens,
         responses::APIError,
+        sampling_params::SamplingParams,
         PipelineConfig, TokenizerWrapper,
     },
     paged_attention::input_metadata::InputMetadata,
+    scheduler::sequence::Sequence,
 };
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
+use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
 
@@ -134,9 +138,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         let vb = from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device, false)
             .map_err(APIError::from)?;
 
-        let cache = Cache::new(dtype, &config, &device).map_err(APIError::from)?;
-
-        let llama = Llama::load(vb, &cache, &config).map_err(APIError::from)?;
+        let llama = Llama::load(vb, &config, dtype, &device).map_err(APIError::from)?;
 
         let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
             .map_err(|x| APIError::new(x.to_string()))?;
@@ -179,12 +181,87 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
 impl<'s> ModulePipeline<'s> for LlamaPipeline {
     fn forward(
         &mut self,
-        _input_tokens: Tensor,
-        _input_positions: Tensor,
-        _kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
-        _input_metadata: InputMetadata,
+        input_tokens: Tensor,
+        input_positions: Tensor,
+        kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
+        mut input_metadata: InputMetadata,
+    ) -> Result<Tensor, APIError> {
+        self.llama.forward(
+            &input_tokens,
+            &input_positions,
+            kv_cache,
+            &mut input_metadata,
+        )
+    }
+
+    fn sample(
+        &mut self,
+        logits: Tensor,
+        sampling_params: &SamplingParams,
+        seqs: &[(&usize, &Arc<Sequence>)],
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        todo!()
+        let eos_token_id = self.tokenizer.token_to_id(EOS_TOKEN);
+
+        let mut logits_processor = sampling_params.get_logits_processor(SAMPLING_SEED);
+        let stop_tokens = match sampling_params.stop.clone() {
+            Some(stop) => match stop {
+                StopTokens::Multi(multi) => multi,
+                StopTokens::Single(single) => vec![single],
+            },
+
+            None => vec![],
+        };
+
+        let n_seqs = logits.dims()[0];
+
+        let mut result = Vec::new();
+        for (seq_n, (_, seq)) in zip(0..n_seqs, seqs) {
+            let logits = logits
+                .i((seq_n, logits.dim(1).map_err(APIError::from)? - 1))
+                .map_err(APIError::from)?;
+
+            let tokens = seq
+                .deref_mut()
+                .get_token_ids()
+                .iter()
+                .map(|x| *x as u32)
+                .collect::<Vec<_>>();
+            let tokens_generated = seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len();
+
+            let logits = if sampling_params.repetition_penalty == 1. {
+                logits
+            } else {
+                let start_at = tokens.len().saturating_sub(self.args.repeat_last_n);
+                candle_transformers::utils::apply_repeat_penalty(
+                    &logits,
+                    sampling_params.repetition_penalty,
+                    &tokens[start_at..],
+                )
+                .map_err(APIError::from)?
+            };
+
+            let next_token = logits_processor.sample(&logits).map_err(APIError::from)?;
+            if let Some(text) = self.tokenizer.id_to_token(next_token) {
+                let text = text.replace('▁', " ").replace("<0x0A>", "\n");
+                if stop_tokens.contains(&text) {
+                    result.push(Right("stop".to_string()));
+                    continue;
+                }
+            }
+
+            if Some(next_token) == eos_token_id {
+                result.push(Right("stop".to_string()));
+                continue;
+            }
+            if tokens_generated >= sampling_params.max_tokens {
+                result.push(Right("length".to_string()));
+                continue;
+            }
+            // TODO(EricLBuehler): Actually compute logprobs
+            result.push(Left((next_token as usize, 0.)));
+        }
+
+        Ok(result)
     }
 
     fn name(&self) -> &str {

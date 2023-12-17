@@ -3,11 +3,11 @@ use std::{env, path::PathBuf, sync::Arc};
 use candle_core::{DType, Device, Tensor, WithDType};
 use either::Either;
 
-use crate::paged_attention::input_metadata::InputMetadata;
+use crate::{paged_attention::input_metadata::InputMetadata, scheduler::sequence::Sequence};
 
 use super::{
-    conversation::Conversation, models::ConfigLike, responses::APIError, PipelineConfig,
-    TokenizerWrapper,
+    conversation::Conversation, models::ConfigLike, responses::APIError,
+    sampling_params::SamplingParams, PipelineConfig, TokenizerWrapper,
 };
 
 pub mod llama;
@@ -24,6 +24,13 @@ pub trait ModulePipeline<'s>: Send + Sync {
         input_positions: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
+    ) -> Result<Tensor, APIError>;
+
+    fn sample(
+        &mut self,
+        logits: Tensor,
+        sampling_params: &SamplingParams,
+        seqs: &[(&usize, &Arc<Sequence>)],
     ) -> Result<Vec<TokenOrFinishReason>, APIError>;
 
     fn name(&self) -> &str;

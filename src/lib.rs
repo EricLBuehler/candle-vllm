@@ -105,6 +105,7 @@ fn convert_tch_to_ptr(
     (tch.as_mut_ptr(), unsafe { &mut *tch.as_mut_ptr() })
 }
 
+pub mod bindings;
 pub mod openai;
 pub mod paged_attention;
 pub mod scheduler;

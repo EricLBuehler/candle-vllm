@@ -147,12 +147,13 @@ impl<'a> LLMEngine<'a> {
                 self.prepare_decode(scheduled)
             }?;
 
-            let result = self.pipeline.forward(
+            let logits = self.pipeline.forward(
                 tokens,
                 positions,
                 Some(self.cache_engine.get_kv_cache()),
                 metadata,
             )?;
+            let result = self.pipeline.sample(logits, &sampling_params, &seqs)?;
 
             for (result, (_, seq)) in zip(result, seqs) {
                 match result {

@@ -1,16 +1,13 @@
 use candle_core::{DType, Device, Tensor};
 
 use crate::{
+    bindings::{paged_attention_v1, paged_attention_v2, reshape_and_cache, Optional, Storage},
     convert_candle_to_tch, convert_tch_to_ptr,
     openai::responses::APIError,
-    paged_attention::bindings::{
-        paged_attention_v1, paged_attention_v2, reshape_and_cache, Optional, Storage,
-    },
 };
 
 use self::input_metadata::InputMetadata;
 mod attn_bias;
-mod bindings;
 pub(crate) mod input_metadata;
 mod memory_efficient_attention;
 use memory_efficient_attention::_memory_efficient_attention;

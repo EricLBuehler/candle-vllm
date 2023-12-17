@@ -1,5 +1,7 @@
 use std::ops::Range;
 
+use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
+
 use super::{requests::StopTokens, responses::APIError};
 
 const SAMPLING_EPS: f32 = 1e-5;
@@ -130,13 +132,30 @@ impl SamplingParams {
         Ok(this)
     }
 
-    pub fn sampling_type(&self) -> SamplingType {
-        if self.use_beam_search {
-            SamplingType::BEAM
-        } else if self.temperature < SAMPLING_EPS {
-            SamplingType::GREEDY
+    pub fn get_logits_processor(&self, seed: u64) -> LogitsProcessor {
+        if self.top_k == -1 && self.top_p == 1. {
+            // Greedy
+            LogitsProcessor::new(
+                seed,
+                Some(self.temperature.into()),
+                SamplingMethod::Multinomial,
+            )
+        } else if self.top_k > 0 && self.top_p == 1. {
+            // Top-k
+            LogitsProcessor::new(
+                seed,
+                Some(self.temperature.into()),
+                SamplingMethod::TopK(self.top_k.try_into().unwrap()),
+            )
+        } else if self.top_k == -1 && self.top_p != 1. {
+            // Top-p
+            LogitsProcessor::new(
+                seed,
+                Some(self.temperature.into()),
+                SamplingMethod::TopP(self.top_p.into()),
+            )
         } else {
-            SamplingType::RANDOM
+            unreachable!()
         }
     }
 
