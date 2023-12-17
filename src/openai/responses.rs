@@ -43,10 +43,14 @@ pub struct ChatChoiceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Logprobs {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChoice {
     pub message: ChatChoiceData,
     pub finish_reason: Option<String>,
     pub index: usize,
+    pub logprobs: Option<Logprobs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -3,7 +3,6 @@
 use clap::Subcommand;
 use openai::pipelines::{
     llama::{LlamaLoader, LlamaSpecificConfig},
-    mistral::{Mistral7BLoader, Mistral7BSpecificConfig},
     ModelLoader,
 };
 
@@ -26,16 +25,6 @@ pub enum ModelSelected {
         #[arg(long)]
         repeat_last_n: usize,
     },
-
-    /// Select the mistral7b model.
-    Mistral7b {
-        #[arg(long)]
-        repeat_penalty: f32,
-        #[arg(long)]
-        repeat_last_n: usize,
-        #[arg(long)]
-        use_flash_attn: bool,
-    },
 }
 
 impl ToString for ModelSelected {
@@ -44,11 +33,6 @@ impl ToString for ModelSelected {
             ModelSelected::Llama7b { repeat_last_n: _ } => "llama7b".to_string(),
             ModelSelected::Llama13b { repeat_last_n: _ } => "llama13b".to_string(),
             ModelSelected::Llama70b { repeat_last_n: _ } => "llama70b".to_string(),
-            ModelSelected::Mistral7b {
-                repeat_penalty: _,
-                repeat_last_n: _,
-                use_flash_attn: _,
-            } => "mistral7b".to_string(),
         }
     }
 }
@@ -76,20 +60,13 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
             )),
             "meta-llama/Llama-270b-chat-hf".to_string(),
         ),
-        ModelSelected::Mistral7b {
-            repeat_penalty,
-            repeat_last_n,
-            use_flash_attn,
-        } => (
-            Box::new(Mistral7BLoader::new(Mistral7BSpecificConfig::new(
-                repeat_penalty,
-                repeat_last_n,
-                use_flash_attn,
-            ))),
-            "alpindale/mistral-7b-safetensors".to_string(),
-        ),
     }
+}
+
+pub fn log_warning(message: &str) {
+    eprintln!("Warning at {:?}: '{}'", chrono::offset::Utc::now(), message);
 }
 
 pub mod openai;
 pub mod paged_attention;
+pub mod scheduler;

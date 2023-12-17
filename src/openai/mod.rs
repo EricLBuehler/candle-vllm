@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use candle_core::Device;
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
 
-use self::{pipelines::ModulePipeline, responses::APIError};
+use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
 
 pub mod requests;
 pub mod responses;
@@ -15,6 +15,7 @@ where
     E: Into<EncodeInput<'s>>,
 {
     fn tokenize(&self, input: E) -> Result<Encoding, APIError>;
+    fn detokenize(&self, input: &[u32]) -> Result<String, APIError>;
 }
 
 impl<'s, E> TokenizerWrapper<'s, E> for Tokenizer
@@ -22,8 +23,11 @@ where
     E: Into<EncodeInput<'s>>,
 {
     fn tokenize(&self, input: E) -> Result<Encoding, APIError> {
-        self.encode(input, false)
-            .map_err(|x| APIError::new(x.to_string()))
+        self.encode(input, false).map_err(APIError::from)
+    }
+
+    fn detokenize(&self, input: &[u32]) -> Result<String, APIError> {
+        self.decode(input, false).map_err(APIError::from)
     }
 }
 
@@ -34,7 +38,7 @@ pub struct PipelineConfig {
 
 #[derive(Clone)]
 pub struct OpenAIServerData<'s> {
-    pub model: Arc<Mutex<Box<dyn ModulePipeline<'s>>>>,
+    pub model: Arc<Mutex<LLMEngine<'s>>>,
     pub pipeline_config: PipelineConfig,
     pub device: Device,
 }

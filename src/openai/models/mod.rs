@@ -7,4 +7,7 @@ pub trait ConfigLike {
     fn get_num_attention_heads(&self) -> usize;
     fn get_vocab_size(&self) -> usize;
     fn get_sliding_window(&self) -> Option<usize>;
+    fn get_head_size(&self) -> usize {
+        self.get_hidden_size() / self.get_num_attention_heads()
+    }
 }

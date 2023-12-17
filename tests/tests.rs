@@ -8,9 +8,10 @@ use candle_core::{DType, Device};
 use candle_vllm::{
     get_model_loader,
     openai::{
-        self, openai_server::chat_completions, requests::Messages, responses::APIError,
-        OpenAIServerData,
+        self, openai_server::chat_completions, pipelines::llm_engine::LLMEngine,
+        requests::Messages, responses::APIError, OpenAIServerData,
     },
+    scheduler::{cache_engine::CacheConfig, SchedulerConfig},
     ModelSelected,
 };
 
@@ -23,10 +24,20 @@ async fn test_llama() -> Result<(), APIError> {
         Some(std::env::var("TESTS_HF_TOKEN").unwrap()),
     )?;
     let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
+    let llm_engine = LLMEngine::new(
+        model.0,
+        SchedulerConfig { max_num_seqs: 256 },
+        CacheConfig {
+            block_size: 16,
+            num_gpu_blocks: None,
+            num_cpu_blocks: None,
+            fully_init: false,
+        },
+    )?;
 
     let server_data = OpenAIServerData {
         pipeline_config: model.1,
-        model: Arc::new(Mutex::new(model.0)),
+        model: Arc::new(Mutex::new(llm_engine)),
         device: Device::Cpu,
     };
 

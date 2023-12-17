@@ -1,304 +1,425 @@
-use std::{collections::HashMap, iter::zip, sync::Arc};
+use std::{
+    collections::{HashMap, VecDeque},
+    iter::zip,
+    sync::{Arc, Mutex},
+};
 
-use actix_web::body::None;
-use candle_core::{Device, Tensor};
-use futures::future::Either;
+use either::Either;
+use tokenizers::Encoding;
 
 use crate::{
     openai::{
-        responses::APIError,
-        sampling_params::{self, SamplingParams},
+        responses::{APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse},
+        sampling_params::SamplingParams,
         utils::get_created_time_secs,
     },
-    paged_attention::{
-        cache_engine::{CacheConfig, CacheEngine, ModelConfig, ParallelConfig},
-        scheduler::{Scheduler, SchedulerConfig, SchedulerOutputs},
-        sequence::{Sequence, SequenceGroup, SequenceGroupMetadata, SequenceGroupOutput},
+    paged_attention::input_metadata::InputMetadata,
+    scheduler::{
+        cache_engine::{CacheConfig, CacheEngine},
+        sequence::{Sequence, SequenceGroup, _Sequence},
+        SchedulerConfig, SchedulerOutput,
     },
 };
 
-use super::{outputs::RequestOutput, ModulePipeline};
+use crate::scheduler::Scheduler;
 
-pub struct LlmEngine<'a> {
+use super::{ModulePipeline, _make_tensor_with_pad};
+
+use candle_core::{Device, Tensor};
+
+#[allow(dead_code)]
+struct PreparedInputs {
+    tokens: Tensor,
+    positions: Tensor,
+    metadata: InputMetadata,
+}
+
+const _PAD_SLOT_ID: i64 = -1;
+
+pub struct LLMEngine<'a> {
     pipeline: Box<dyn ModulePipeline<'a>>,
-    model_config: ModelConfig,
-    cache_config: CacheConfig,
-    parallel_config: ParallelConfig,
-    cache_engine: Option<CacheEngine>,
     scheduler: Scheduler,
-    seq_counter: usize,
-    request_counter: usize,
+    seq_id: usize,
+    cache_config: CacheConfig,
+    group_id: usize,
+    cache_engine: CacheEngine,
+    sliding_window: Option<usize>,
 }
 
-pub struct ProfiledBlocks {
-    num_gpu_blocks: usize,
-    num_cpu_blocks: usize,
-}
-
-impl<'a> LlmEngine<'a> {
+impl<'a> LLMEngine<'a> {
     pub fn new(
         pipeline: Box<dyn ModulePipeline<'a>>,
-        model_config: ModelConfig,
-        cache_config: CacheConfig,
-        parallel_config: ParallelConfig,
         scheduler_config: SchedulerConfig,
+        cache_config: CacheConfig,
     ) -> Result<Self, APIError> {
-        let mut this = Self {
+        let cache_engine = CacheEngine::new(
+            pipeline.get_model_config(),
+            cache_config.clone(),
+            pipeline.get_dtype(),
+        )?;
+        let sliding_window = pipeline.get_model_config().get_sliding_window();
+        Ok(Self {
             pipeline,
-            model_config,
+            scheduler: Scheduler::new(scheduler_config, &cache_config),
+            seq_id: 0,
             cache_config,
-            parallel_config,
-            cache_engine: None,
-            scheduler: Scheduler::new(scheduler_config, cache_config)?,
-            seq_counter: 0,
-            request_counter: 0,
-        };
-        this._init_cache();
-        Ok(this)
+            group_id: 0,
+            cache_engine,
+            sliding_window,
+        })
     }
 
-    // The following 2 are functions with todo!() internals
-    // TODO_URGENT(EricLBuehler)
-    fn get_peak_memory() -> usize {
-        // Pending on https://github.com/huggingface/candle/pull/1412
-        todo!()
-    }
-    fn total_gpu_memory() -> usize {
-        todo!()
+    pub fn get_pipeline(&self) -> &dyn ModulePipeline<'a> {
+        &*self.pipeline
     }
 
-    fn profile_num_available_blocks(
-        &mut self,
-        block_size: usize,
-        gpu_memory_utilization: f64,
-        cpu_swap_space: usize,
-    ) -> ProfiledBlocks {
-        // Pending on https://github.com/huggingface/candle/pull/1412
-        // reset_peak_memory_stats
-
-        self.pipeline.profile_run();
-
-        let peak_memory: usize = Self::get_peak_memory();
-
-        let total_gpu_memory = Self::total_gpu_memory();
-        let cache_block_size = CacheEngine::get_cache_block_size(
-            block_size,
-            &self.model_config,
-            &self.parallel_config,
-        );
-        let num_gpu_blocks = (total_gpu_memory as f64 * gpu_memory_utilization - peak_memory as f64)
-            as usize
-            / cache_block_size;
-        let num_cpu_blocks = cpu_swap_space / cache_block_size;
-        let num_gpu_blocks = num_gpu_blocks.max(0);
-        let num_cpu_blocks = num_cpu_blocks.max(0);
-
-        ProfiledBlocks {
-            num_gpu_blocks,
-            num_cpu_blocks,
-        }
+    pub fn get_mut_pipeline(&mut self) -> &mut dyn ModulePipeline<'a> {
+        &mut *self.pipeline
     }
 
-    pub fn _init_cache(&mut self) -> Result<(), APIError> {
-        let ProfiledBlocks {
-            num_gpu_blocks,
-            num_cpu_blocks,
-        } = self.profile_num_available_blocks(
+    fn add_request(&mut self, prompt: Encoding, request_id: String, created: u64) {
+        let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
+            prompt
+                .get_ids()
+                .to_vec()
+                .iter()
+                .map(|x| *x as usize)
+                .collect::<Vec<_>>(),
+            self.seq_id,
             self.cache_config.block_size,
-            self.cache_config.gpu_mem_utilization,
-            self.cache_config.swap_space_bytes,
+        ))));
+        self.seq_id += 1;
+        let seq_group = SequenceGroup::new(
+            &[seq],
+            get_created_time_secs(),
+            self.group_id,
+            request_id,
+            created,
         );
-        eprintln!("{num_gpu_blocks} GPU blocks.");
-        eprintln!("{num_cpu_blocks} CPU blocks.");
+        self.group_id += 1;
 
-        if num_gpu_blocks <= 0 {
-            return Err(APIError::new_str("No available memory for the cache blocks. Try increasing `gpu_mem_utilization` when initializing the engine."));
-        }
-
-        self.cache_config.num_cpu_blocks = Some(num_cpu_blocks);
-        self.cache_config.num_gpu_blocks = Some(num_gpu_blocks);
-
-        todo!("init_cache_engine");
-
-        Ok(())
-    }
-
-    fn _schedule(
-        &self,
-    ) -> (
-        Vec<SequenceGroupMetadata>,
-        SchedulerOutputs,
-        Vec<RequestOutput>,
-    ) {
-        let (seq_group_metadata_list, scheduler_outputs) = self.scheduler.schedule();
-        (seq_group_metadata_list, scheduler_outputs, todo!())
-    }
-
-    fn _process_model_group_outputs(
-        &self,
-        seq_group: &Arc<SequenceGroup>,
-        outputs: &SequenceGroupOutput,
-    ) {
-        // https://github.com/vllm-project/vllm/blob/60dc62dc9e53428912953276e0d12a034b353fb6/vllm/engine/llm_engine.py#L368
-        todo!()
-    }
-
-    fn _process_model_outputs(
-        &self,
-        output: &Vec<SequenceGroupOutput>,
-        scheduler_outputs: SchedulerOutputs,
-    ) -> Vec<RequestOutput> {
-        let sched_seq_groups = &scheduler_outputs.scheduled_seq_groups;
-        for (seq_group, outputs) in zip(sched_seq_groups, output) {
-            self._process_model_group_outputs(seq_group, outputs)
-        }
-        todo!()
+        self.scheduler.add_sequence(seq_group);
     }
 
     pub fn generate(
         &mut self,
-        prompts: Either<String, Vec<String>>,
-        sampling_params: Option<SamplingParams>,
-        prompt_token_ids: Option<Vec<Vec<usize>>>,
-    ) -> Result<Vec<RequestOutput>, APIError> {
-        let prompts = match prompts {
-            Either::Left(single) => vec![single],
-            Either::Right(multi) => multi,
-        };
-        let sampling_params = if let Some(params) = sampling_params {
-            params
-        } else {
-            SamplingParams::new(
-                1,
-                Some(1),
-                0.,
-                0.,
-                1.,
-                1.,
-                1.,
-                -1,
-                false,
-                1.,
-                sampling_params::EarlyStoppingCondition::UnlikelyBetterCandidates,
-                None,
-                Vec::new(),
-                false,
-                16,
-                None,
-                None,
-                true,
-            )?
-        };
-        let num_requests = prompts.len();
-        for i in 0..num_requests {
-            let prompt = prompts.get(i).unwrap();
-            let token_ids = if let Some(prompt_token_ids) = &prompt_token_ids {
-                prompt_token_ids.get(i)
-            } else {
-                None
-            };
-            self.add_request(
-                self.request_counter.to_string(),
-                prompt.clone(),
-                token_ids.cloned(),
-                sampling_params,
-            );
-            self.request_counter += 1;
-        }
-        Ok(self._run_engine())
-    }
-
-    fn add_request(
-        &mut self,
+        prompt: Encoding,
         request_id: String,
-        prompt: String,
-        prompt_token_ids: Option<Vec<usize>>,
+        created: u64,
         sampling_params: SamplingParams,
-    ) -> Result<(), APIError> {
-        let prompt_token_ids = if let Some(prompt_token_ids) = prompt_token_ids {
-            prompt_token_ids
-        } else {
-            self.pipeline
-                .tokenizer()
-                .tokenize(prompt)?
-                .get_ids()
+    ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
+        self.add_request(prompt, request_id, created);
+
+        let mut responses = HashMap::new();
+        while self.scheduler.has_unfinished_sequences() {
+            let scheduler_outputs = self.scheduler.schedule();
+            if !scheduler_outputs.ignored_seq_groups.is_empty() {
+                todo!();
+            }
+
+            self.execute_scheduler_ops(&scheduler_outputs);
+
+            let scheduled = &*scheduler_outputs.scheduled;
+
+            let seqs = scheduled
                 .iter()
-                .map(|x| *x as usize)
-                .collect::<Vec<_>>()
-        };
+                .flat_map(|group| group.get_seqs())
+                .collect::<Vec<_>>();
 
-        let block_size = self.cache_config.block_size;
+            let PreparedInputs {
+                tokens,
+                positions: _,
+                metadata,
+            } = if scheduled
+                .front()
+                .unwrap()
+                .get_seqs()
+                .values()
+                .nth(0)
+                .unwrap()
+                .deref_mut()
+                .is_prompt()
+            {
+                self.prepare_prompt(scheduled)
+            } else {
+                // Because of the KV cache, we only need to take
+                // the last token.
+                self.prepare_decode(scheduled)
+            }?;
 
-        let seq_id = self.seq_counter;
-        self.seq_counter += 1;
+            let result =
+                self.pipeline
+                    .forward(tokens, Some(self.cache_engine.get_kv_cache()), metadata)?;
 
-        let seq = Sequence::new(seq_id, prompt, prompt_token_ids, block_size);
-        let seq_group = SequenceGroup::new(
-            request_id,
-            vec![seq],
-            sampling_params,
-            get_created_time_secs(),
-        );
-        self.scheduler.add_seq_group(seq_group);
-        Ok(())
-    }
+            for (result, (_, seq)) in zip(result, seqs) {
+                match result {
+                    Either::Left((token, logprob)) => {
+                        seq.deref_mut().add_token(token, logprob);
+                    }
+                    Either::Right(finish_reason) => {
+                        seq.deref_mut().set_finish_reason(finish_reason)
+                    }
+                }
+            }
 
-    fn _run_engine(&mut self) -> Vec<RequestOutput> {
-        let mut outputs = Vec::new();
-        while self.scheduler.has_unfinished_request() {
-            let step_outputs = self.step();
-            for output in step_outputs {
-                if output.finished {
-                    outputs.push(output);
+            self.scheduler.free_finished_sequence_groups();
+
+            for group in scheduler_outputs.scheduled.iter() {
+                if group.is_finished() && !responses.contains_key(group.get_id()) {
+                    // Create choices from the group
+                    let mut seqs = group.get_seqs().values().collect::<Vec<_>>();
+                    seqs.sort_by(|seq_a, seq_b| {
+                        seq_b
+                            .deref_mut()
+                            .get_cumulative_logprob()
+                            .partial_cmp(&seq_a.deref_mut().get_cumulative_logprob())
+                            .unwrap()
+                    });
+                    let top_n = seqs.get(0..sampling_params.n).unwrap();
+
+                    let mut choices = Vec::new();
+                    for (index, seq) in top_n.iter().enumerate() {
+                        let data = seq
+                            .deref_mut()
+                            .get_token_ids()
+                            .iter()
+                            .map(|x| (*x).try_into().unwrap())
+                            .collect::<Vec<_>>();
+                        let data = self.pipeline.tokenizer().detokenize(&data)?;
+                        let choice = ChatChoice {
+                            message: ChatChoiceData {
+                                role: self.pipeline.get_conversation().get_roles().0.clone(),
+                                content: Some(data),
+                            },
+                            finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
+                            index,
+                            logprobs: None, // TODO(EricLBuehler): actually add this
+                        };
+                        choices.push(choice);
+                    }
+
+                    let usage = ChatCompletionUsageResponse {
+                        completion_tokens: top_n
+                            .iter()
+                            .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
+                            .sum(),
+                        prompt_tokens: top_n.get(0).unwrap().deref_mut().get_prompt_len(),
+                        total_tokens: top_n
+                            .iter()
+                            .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
+                            .sum::<usize>()
+                            + top_n.get(0).unwrap().deref_mut().get_prompt_len(),
+                    };
+
+                    responses.insert(*group.get_id(), (choices, usage));
                 }
             }
         }
-        outputs.sort_by_key(|x| x.request_id.parse::<usize>().unwrap());
-        outputs
+
+        Ok(responses.into_values().collect::<Vec<_>>())
     }
 
-    // Calls execute_model (schedules seqs), called by .generate
-    fn step(&mut self) -> Vec<RequestOutput> {
-        let (seq_group_metadata_list, scheduler_outputs, ignored) = self._schedule();
-        if scheduler_outputs.is_empty() {
-            return ignored;
-        }
-
-        let output = self.execute_model(
-            seq_group_metadata_list,
-            scheduler_outputs.blocks_to_swap_in,
-            scheduler_outputs.blocks_to_swap_out,
-            scheduler_outputs.blocks_to_copy,
-        );
-
-        self._process_model_outputs(&output, scheduler_outputs)
+    fn execute_scheduler_ops(&self, scheduler_output: &SchedulerOutput) {
+        self.cache_engine
+            .swap_in(scheduler_output.blocks_to_swap_in.clone());
+        self.cache_engine
+            .swap_out(scheduler_output.blocks_to_swap_out.clone());
+        self.cache_engine
+            .copy(scheduler_output.blocks_to_copy.clone());
     }
 
-    // Calls the module pipeline model executer, called by .step
-    fn execute_model(
-        &mut self,
-        seq_group_metadatas: Vec<SequenceGroupMetadata>,
-        blocks_to_swap_in: HashMap<usize, usize>,
-        blocks_to_swap_out: HashMap<usize, usize>,
-        blocks_to_copy: HashMap<usize, Vec<usize>>,
-    ) -> Vec<SequenceGroupOutput> {
-        if !blocks_to_swap_in.is_empty() {
-            self.cache_engine.unwrap().swap_in(blocks_to_swap_in);
-        }
-        if !blocks_to_swap_out.is_empty() {
-            self.cache_engine.unwrap().swap_out(blocks_to_swap_out);
-        }
-        if !blocks_to_copy.is_empty() {
-            self.cache_engine.unwrap().copy(blocks_to_copy);
+    fn prepare_prompt(
+        &self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+    ) -> Result<PreparedInputs, APIError> {
+        let mut prompt_lens = Vec::new();
+        let mut input_tokens = Vec::new();
+        let mut input_positions = Vec::new();
+        let mut slot_mappings = Vec::new();
+        for group in groups {
+            for seq in group.get_seqs().values() {
+                let prompt_ids = seq.deref_mut().get_token_ids();
+
+                let prompt_len = prompt_ids.len();
+                prompt_lens.push(prompt_len);
+
+                input_tokens.push(prompt_ids);
+                input_positions.push((0..prompt_len).collect::<Vec<_>>());
+                let table = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.deref_mut().get_id());
+                if table.is_none() {
+                    // Will be None during profiling.
+                    slot_mappings.push([_PAD_SLOT_ID].repeat(prompt_len));
+                    continue;
+                }
+                let table = table
+                    .unwrap()
+                    .iter()
+                    .map(|block| block.deref_mut().block_id)
+                    .collect::<Vec<_>>();
+
+                let start_idx = if let Some(sliding_window) = self.sliding_window {
+                    0.min(prompt_len - sliding_window)
+                } else {
+                    0
+                };
+
+                let mut slot_mapping = Vec::new();
+                for i in 0..prompt_len {
+                    if i < start_idx {
+                        // Pad [0,start_idx) with _PAD_TOKEN_ID
+                        slot_mapping.push(_PAD_SLOT_ID);
+                    }
+
+                    let block_number = table.get(i / self.cache_config.block_size).unwrap();
+                    let block_offset = i % self.cache_config.block_size;
+                    let slot = block_number * self.cache_config.block_size + block_offset;
+                    slot_mapping.push(slot.try_into().unwrap());
+                }
+                slot_mappings.push(slot_mapping);
+            }
         }
 
-        //https://github.com/vllm-project/vllm/blob/05ff90b692a6cdac4d8c06e7a4a4606d1b8fe1d6/vllm/worker/worker.py#L119
+        let max_prompt_len = prompt_lens.iter().max().unwrap();
+        let input_tokens = _make_tensor_with_pad(
+            input_tokens
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            *max_prompt_len,
+            0,
+        )?;
+        let input_positions = _make_tensor_with_pad(
+            input_positions
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            *max_prompt_len,
+            0,
+        )?;
+        let slot_mapping = _make_tensor_with_pad(slot_mappings, *max_prompt_len, _PAD_SLOT_ID)?;
 
-        self.pipeline.execute_model(
-            seq_group_metadatas,
-            Some(self.cache_engine.unwrap().gpu_cache.clone()),
-        );
+        Ok(PreparedInputs {
+            tokens: input_tokens,
+            positions: input_positions,
+            metadata: InputMetadata {
+                prompt_lens,
+                slot_mapping,
+                max_context_len: None,
+                context_lens: None,
+                block_tables: None,
+                attn_bias: None,
+                is_prompt: true,
+            },
+        })
+    }
 
-        todo!();
+    fn prepare_decode(
+        &self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+    ) -> Result<PreparedInputs, APIError> {
+        let mut input_tokens = Vec::new();
+        let mut input_positions = Vec::new();
+        let mut context_lens = Vec::new();
+        let mut slot_mappings = Vec::new();
+        let mut block_tables = Vec::new();
+        for group in groups {
+            for seq in group.get_seqs().values() {
+                let last_token_id = seq.deref_mut().get_last_token_id();
+                input_tokens.push(vec![last_token_id]);
+
+                let position = seq.deref_mut().get_len() - 1;
+                input_positions.push(vec![position]);
+
+                let context_len = if let Some(sliding_window) = self.sliding_window {
+                    seq.deref_mut().get_len().min(sliding_window)
+                } else {
+                    seq.deref_mut().get_len()
+                };
+                context_lens.push(context_len);
+
+                let table = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.deref_mut().get_id())
+                    .unwrap();
+                let table = table
+                    .iter()
+                    .map(|block| block.deref_mut().block_id)
+                    .collect::<Vec<_>>();
+
+                let block_number = table.get(position / self.cache_config.block_size).unwrap();
+                let block_offset = position % self.cache_config.block_size;
+                let slot = block_number * self.cache_config.block_size + block_offset;
+                let slot = slot.try_into().unwrap();
+                slot_mappings.push(vec![slot]);
+
+                if let Some(sliding_window) = self.sliding_window {
+                    let sliding_window_blocks = sliding_window / self.cache_config.block_size;
+                    block_tables.push(
+                        table
+                            .get(table.len() - sliding_window_blocks..)
+                            .unwrap()
+                            .to_vec(),
+                    );
+                } else {
+                    block_tables.push(table);
+                }
+            }
+        }
+
+        let input_tokens = _make_tensor_with_pad(
+            input_tokens
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            1,
+            0,
+        )?;
+        let input_positions = _make_tensor_with_pad(
+            input_positions
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            1,
+            0,
+        )?;
+        let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID)?;
+
+        let max_context_len = context_lens.iter().max().unwrap();
+        let context_lens = Tensor::from_vec(
+            context_lens.iter().map(|x| *x as i64).collect::<Vec<_>>(),
+            (context_lens.len(),),
+            &Device::new_cuda(0).map_err(APIError::from)?,
+        )
+        .map_err(APIError::from)?;
+
+        let max_block_table_len = block_tables.iter().map(|x| x.len()).max().unwrap();
+        let block_tables = _make_tensor_with_pad(
+            block_tables
+                .iter()
+                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            max_block_table_len,
+            0,
+        )?;
+
+        Ok(PreparedInputs {
+            tokens: input_tokens,
+            positions: input_positions,
+            metadata: InputMetadata {
+                prompt_lens: vec![],
+                slot_mapping,
+                max_context_len: Some(*max_context_len),
+                context_lens: Some(context_lens),
+                block_tables: Some(block_tables),
+                attn_bias: None,
+                is_prompt: false,
+            },
+        })
     }
 }
