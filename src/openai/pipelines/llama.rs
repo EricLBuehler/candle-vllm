@@ -180,6 +180,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
     fn forward(
         &mut self,
         _input_tokens: Tensor,
+        _input_positions: Tensor,
         _kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         _input_metadata: InputMetadata,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {

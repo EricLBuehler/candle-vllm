@@ -128,7 +128,7 @@ impl<'a> LLMEngine<'a> {
 
             let PreparedInputs {
                 tokens,
-                positions: _,
+                positions,
                 metadata,
             } = if scheduled
                 .front()
@@ -147,9 +147,12 @@ impl<'a> LLMEngine<'a> {
                 self.prepare_decode(scheduled)
             }?;
 
-            let result =
-                self.pipeline
-                    .forward(tokens, Some(self.cache_engine.get_kv_cache()), metadata)?;
+            let result = self.pipeline.forward(
+                tokens,
+                positions,
+                Some(self.cache_engine.get_kv_cache()),
+                metadata,
+            )?;
 
             for (result, (_, seq)) in zip(result, seqs) {
                 match result {

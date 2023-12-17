@@ -21,6 +21,7 @@ pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(
         &mut self,
         input_tokens: Tensor,
+        input_positions: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
     ) -> Result<Vec<TokenOrFinishReason>, APIError>;
