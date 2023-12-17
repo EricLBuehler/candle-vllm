@@ -11,6 +11,8 @@ use super::{
 };
 
 pub mod llama;
+/// The LLMEngine is effectively a wrapper around a ModulePipeline. It contains a Scheduler and a CacheEngine
+/// which are used to scheduler and manage the cache during generation requests, respectively.
 pub mod llm_engine;
 
 type TokenOrFinishReason = Either<(usize, f32), String>;

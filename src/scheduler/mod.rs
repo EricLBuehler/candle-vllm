@@ -1,4 +1,13 @@
+//! The Scheduler uses a BlockEngine to schedule and automatically batch sequences. The
+//! primary method `schedule` returns the batched sequences as inputs, as well as the
+//! operations to be executed on the cache by the CacheEngine.
+
+/// The higher-level manager of the blocks allocated. Operations performed by the block engine do
+/// not directly change memory.
 pub mod block_engine;
+/// This is the lower-level manager of the cache. It manages swapping and copying the blocks and
+/// actually allocates the KV cache for the CPU and GPU. It is used by the LLMEngine to execute
+/// operations issued by the scheduler.
 pub mod cache_engine;
 pub mod sequence;
 
@@ -125,7 +134,7 @@ impl Scheduler {
         // Preempt lowest priority sequences that are in the running queue, forming a
         // new running queue that has the actually running sequences. Remember the preempted
         // sequences, which will be put into the waiting or swapped out state depending on
-        // the preemption method (recompute or swap, repectively).
+        // the preemption method (recompute or swap, respectively).
 
         // Sorts by creation time, in descending order so that earliest are latest (first come first serve).
         self.sort_running_by_priority_fcfs();

@@ -175,9 +175,9 @@ pub enum AllocStatus {
 
 type SeqID = usize;
 
-/// A BlockEngine maps eachs Sequence (identified by its SeqID), to physical token blocks.
+/// A BlockEngine maps each Sequence (identified by its SeqID), to physical token blocks.
 /// The physical token blocks may not match the logical token blocks because during
-/// scheduling, physical blocks are allocated to accomodate the new tokens generated.
+/// scheduling, physical blocks are allocated to accommodate the new tokens generated.
 /// These new tokens will be added to the logical token block for each sequence.
 pub struct BlockEngine {
     num_gpu_blocks: usize,
@@ -291,7 +291,7 @@ impl BlockEngine {
     }
 
     // Returns the COW mapping (src, dst).
-    // COW is performed if there are multiple references to the last phyiscal block.
+    // COW is performed if there are multiple references to the last physical block.
     pub fn append_token_slot_to_seq(&mut self, sequence: &Sequence) -> Option<(usize, usize)> {
         let table = self
             .block_tables
