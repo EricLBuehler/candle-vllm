@@ -4,6 +4,29 @@ use candle_core::{DType, Device, Tensor};
 
 use crate::openai::{models::ConfigLike, responses::APIError};
 
+use self::ffi::_copy_blocks;
+
+#[cxx::bridge]
+mod ffi {
+
+    struct SwapPair {
+        k: usize,
+        v: usize,
+    }
+    struct CopyPair {
+        k: usize,
+        v: Vec<usize>,
+    }
+    extern "Rust" {}
+
+    unsafe extern "C++" {
+        include!("candle-vllm/src/scheduler/cache_engine.h");
+
+        fn _swap_blocks(_src_to_dst: Vec<SwapPair>);
+        fn _copy_blocks(_src_to_dst: Vec<CopyPair>);
+    }
+}
+
 #[derive(Clone)]
 pub struct CacheConfig {
     pub block_size: usize,
@@ -182,7 +205,15 @@ impl CacheEngine {
         _dst_cache: Tensor,
         _src_to_dst: HashMap<usize, usize>,
     ) {
-        todo!()
+        let mut _src_to_dst_pairs: Vec<ffi::SwapPair> = Vec::new();
+
+        for (key, value) in _src_to_dst.iter() {
+            _src_to_dst_pairs.push(ffi::SwapPair {
+                k: key.clone(),
+                v: value.clone(),
+            });
+        }
+        ffi::_swap_blocks(_src_to_dst_pairs)
     }
 
     fn _swap(
@@ -218,7 +249,15 @@ impl CacheEngine {
         _value_caches: Vec<Tensor>,
         _src_to_dst: HashMap<usize, Vec<usize>>,
     ) {
-        todo!()
+        let mut _src_to_dst_pairs: Vec<ffi::CopyPair> = Vec::new();
+
+        for (key, value) in _src_to_dst.iter() {
+            _src_to_dst_pairs.push(ffi::CopyPair {
+                k: key.clone(),
+                v: value.clone(),
+            });
+        }
+        ffi::_copy_blocks(_src_to_dst_pairs)
     }
 
     pub fn copy(&self, src_to_dst: HashMap<usize, Vec<usize>>) {

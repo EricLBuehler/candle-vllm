@@ -38,6 +38,10 @@ torch-sys = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy
 range-checked = { git = "https://github.com/EricLBuehler/range-checked.git", version = "0.1.0" }
 chrono = { version = "0.4.31", features = ["clock"] }
 either = "1.9.0"
+cxx = "1.0.110"
+
+[build-dependencies]
+cxx-build = "1.0"
 
 [features]
 default = []
