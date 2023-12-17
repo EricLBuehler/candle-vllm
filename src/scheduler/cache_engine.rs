@@ -9,6 +9,10 @@ use self::ffi::_copy_blocks;
 #[cxx::bridge]
 mod ffi {
 
+    struct Tensor {
+        dummy: i64,
+    }
+
     struct SwapPair {
         k: usize,
         v: usize,
@@ -22,8 +26,12 @@ mod ffi {
     unsafe extern "C++" {
         include!("candle-vllm/src/scheduler/cache_engine.h");
 
-        fn _swap_blocks(_src_to_dst: Vec<SwapPair>);
-        fn _copy_blocks(_src_to_dst: Vec<CopyPair>);
+        fn _swap_blocks(src: Tensor, dst: Tensor, _src_to_dst: Vec<SwapPair>);
+        fn _copy_blocks(
+            key_caches: Vec<Tensor>,
+            value_caches: Vec<Tensor>,
+            _src_to_dst: Vec<CopyPair>,
+        );
     }
 }
 
@@ -207,13 +215,15 @@ impl CacheEngine {
     ) {
         let mut _src_to_dst_pairs: Vec<ffi::SwapPair> = Vec::new();
 
+        let src_tensor = ffi::Tensor { dummy: 0 };
+        let dst_tensor = ffi::Tensor { dummy: 0 };
         for (key, value) in _src_to_dst.iter() {
             _src_to_dst_pairs.push(ffi::SwapPair {
                 k: key.clone(),
                 v: value.clone(),
             });
         }
-        ffi::_swap_blocks(_src_to_dst_pairs)
+        ffi::_swap_blocks(src_tensor, dst_tensor, _src_to_dst_pairs)
     }
 
     fn _swap(
@@ -257,7 +267,9 @@ impl CacheEngine {
                 v: value.clone(),
             });
         }
-        ffi::_copy_blocks(_src_to_dst_pairs)
+        let key_caches: Vec<ffi::Tensor> = vec![];
+        let value_caches: Vec<ffi::Tensor> = vec![];
+        ffi::_copy_blocks(key_caches, value_caches, _src_to_dst_pairs)
     }
 
     pub fn copy(&self, src_to_dst: HashMap<usize, Vec<usize>>) {
