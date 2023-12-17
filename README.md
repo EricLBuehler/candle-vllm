@@ -7,9 +7,7 @@
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
 
-**candle-vllm is in active development and not currently stable. Currently, I am redeveloping the Scheduler framework.**
-
-**This Scheduler implementation will conform to the vLLM paper to as strict of an extent as possible.**
+**candle-vllm is in the final stages of active, breaking development. However, it is currently unstable.**
 
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
