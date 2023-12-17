@@ -43,7 +43,19 @@ pub struct ChatChoiceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Logprobs {}
+pub struct TopLogprob {
+    token: usize,
+    logprob: f32,
+    bytes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Logprobs {
+    token: usize,
+    logprob: f32,
+    bytes: String,
+    top_logprobs: Vec<TopLogprob>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChoice {

@@ -17,7 +17,7 @@ pub enum SequenceStatus {
 
 pub struct SequenceData {
     prompt_token_ids: Vec<usize>,
-    output_token_ids: Vec<usize>,
+    output_token_ids: Vec<(usize, f32)>,
     cumulative_logprob: f32,
     status: SequenceStatus,
 }
@@ -33,7 +33,7 @@ impl SequenceData {
     }
 
     pub fn append_token_id(&mut self, token_id: usize, logprob: f32) {
-        self.output_token_ids.push(token_id);
+        self.output_token_ids.push((token_id, logprob));
         self.cumulative_logprob += logprob;
     }
 
@@ -104,7 +104,7 @@ impl _Sequence {
 
     pub fn get_token_ids(&self) -> Vec<usize> {
         let mut res = self.deref().prompt_token_ids.clone();
-        res.extend(self.deref().output_token_ids.clone());
+        res.extend(self.deref().output_token_ids.iter().map(|(x, _)| x).clone());
         res
     }
 
@@ -112,7 +112,7 @@ impl _Sequence {
         if self.deref().output_token_ids.is_empty() {
             *self.deref().prompt_token_ids.last().unwrap()
         } else {
-            *self.deref().output_token_ids.last().unwrap()
+            self.deref().output_token_ids.last().unwrap().0
         }
     }
 
