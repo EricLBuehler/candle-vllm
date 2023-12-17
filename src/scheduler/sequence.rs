@@ -5,13 +5,14 @@ use std::{
 
 use super::block_engine::LogicalTokenBlock;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum SequenceStatus {
     FinishedIgnored,
     Waiting,
     Running,
     Swapped,
     FinishedAborted,
+    Finished(String),
 }
 
 pub struct SequenceData {
@@ -52,7 +53,6 @@ pub struct _Sequence {
     seq_id: usize,
     logical_token_blocks: Vec<LogicalTokenBlock>,
     block_size: usize,
-    finish_reason: Option<String>,
 }
 
 impl _Sequence {
@@ -62,7 +62,6 @@ impl _Sequence {
             seq_id,
             logical_token_blocks: Vec::new(),
             block_size,
-            finish_reason: None,
         };
         this.append_tokens_to_blocks(prompt_token_ids);
         this
@@ -120,7 +119,9 @@ impl _Sequence {
     pub fn is_finished(&self) -> bool {
         matches!(
             self.deref().status,
-            SequenceStatus::FinishedAborted | SequenceStatus::FinishedIgnored
+            SequenceStatus::FinishedAborted
+                | SequenceStatus::FinishedIgnored
+                | SequenceStatus::Finished(_)
         )
     }
 
@@ -129,11 +130,19 @@ impl _Sequence {
     }
 
     pub fn set_finish_reason(&mut self, finish_reason: String) {
-        self.finish_reason = Some(finish_reason);
+        self.deref()
+            .set_status(SequenceStatus::Finished(finish_reason.clone()));
     }
 
-    pub fn get_finish_reason(&self) -> &String {
-        self.finish_reason.as_ref().unwrap()
+    pub fn get_finish_reason(&self) -> String {
+        match &self.deref().status {
+            SequenceStatus::Finished(state) => state.clone(),
+            SequenceStatus::FinishedAborted => "abort".to_string(),
+            SequenceStatus::FinishedIgnored => "length".to_string(),
+            _ => {
+                unreachable!("No finish reason.")
+            }
+        }
     }
 
     fn append_tokens_to_blocks(&mut self, tokens: Vec<usize>) {
@@ -224,7 +233,7 @@ impl SequenceGroup {
 
     pub fn set_status(&self, status: SequenceStatus) {
         for seq in self.seqs.values() {
-            seq.deref_mut().deref().set_status(status);
+            seq.deref_mut().deref().set_status(status.clone());
         }
     }
 
