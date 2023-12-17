@@ -1,10 +1,12 @@
 #![warn(clippy::cast_lossless)]
 
+use candle_core::{DType, Tensor};
 use clap::Subcommand;
 use openai::pipelines::{
     llama::{LlamaLoader, LlamaSpecificConfig},
     ModelLoader,
 };
+use tch::Kind;
 
 #[derive(Debug, Subcommand)]
 pub enum ModelSelected {
@@ -65,6 +67,42 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
 
 pub fn log_warning(message: &str) {
     eprintln!("Warning at {:?}: '{}'", chrono::offset::Utc::now(), message);
+}
+
+fn convert_candle_to_tch(candle: &mut Tensor) -> tch::Tensor {
+    let output_kind = match candle.dtype() {
+        DType::BF16 => Kind::BFloat16,
+        DType::F16 => Kind::Float,
+        DType::F32 => Kind::Float,
+        DType::F64 => Kind::Float,
+        DType::I64 => Kind::Int64,
+        DType::U8 => Kind::Uint8,
+        DType::U32 => Kind::Int,
+    };
+
+    let mut dims = Vec::new();
+    for dim in candle.dims() {
+        dims.push(*dim as i64);
+    }
+
+    tch::Tensor::from_data_size(
+        &candle
+            .to_vec3::<u8>()
+            .unwrap()
+            .iter()
+            .flatten()
+            .flatten()
+            .copied()
+            .collect::<Vec<_>>()[..],
+        &dims[..],
+        output_kind,
+    )
+}
+
+fn convert_tch_to_ptr(
+    tch: &mut tch::Tensor,
+) -> (*mut torch_sys::C_tensor, &mut torch_sys::C_tensor) {
+    (tch.as_mut_ptr(), unsafe { &mut *tch.as_mut_ptr() })
 }
 
 pub mod openai;

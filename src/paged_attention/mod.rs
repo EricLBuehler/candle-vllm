@@ -1,7 +1,7 @@
 use candle_core::{DType, Device, Tensor};
-use tch::Kind;
 
 use crate::{
+    convert_candle_to_tch, convert_tch_to_ptr,
     openai::responses::APIError,
     paged_attention::bindings::{
         paged_attention_v1, paged_attention_v2, reshape_and_cache, Optional, Storage,
@@ -28,42 +28,6 @@ pub struct PagedAttention {
     num_queries_per_kv: usize,
     head_mapping: Tensor,
     alibi_slopes: Option<Tensor>,
-}
-
-fn convert_candle_to_tch(candle: &mut Tensor) -> tch::Tensor {
-    let output_kind = match candle.dtype() {
-        DType::BF16 => Kind::BFloat16,
-        DType::F16 => Kind::Float,
-        DType::F32 => Kind::Float,
-        DType::F64 => Kind::Float,
-        DType::I64 => Kind::Int64,
-        DType::U8 => Kind::Uint8,
-        DType::U32 => Kind::Int,
-    };
-
-    let mut dims = Vec::new();
-    for dim in candle.dims() {
-        dims.push(*dim as i64);
-    }
-
-    tch::Tensor::from_data_size(
-        &candle
-            .to_vec3::<u8>()
-            .unwrap()
-            .iter()
-            .flatten()
-            .flatten()
-            .copied()
-            .collect::<Vec<_>>()[..],
-        &dims[..],
-        output_kind,
-    )
-}
-
-fn convert_tch_to_ptr(
-    tch: &mut tch::Tensor,
-) -> (*mut torch_sys::C_tensor, &mut torch_sys::C_tensor) {
-    (tch.as_mut_ptr(), unsafe { &mut *tch.as_mut_ptr() })
 }
 
 fn convert_option_to_optional(option: Option<Tensor>) -> Optional<torch_sys::C_tensor> {
