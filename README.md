@@ -14,7 +14,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
 - Streaming support in generation.
 - Efficient management of key-value cache with PagedAttention.
-- Continous batching.
+- Continuous batching.
 
 ### Pipelines
 - Llama
