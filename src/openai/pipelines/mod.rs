@@ -1,6 +1,7 @@
 use std::{env, path::PathBuf, sync::Arc};
 
 use candle_core::{DType, Device, Tensor, WithDType};
+use candle_sampling::logits_processor::Logprobs;
 use either::Either;
 
 use crate::{paged_attention::input_metadata::InputMetadata, scheduler::sequence::Sequence};
@@ -15,7 +16,7 @@ pub mod llama;
 /// which are used to scheduler and manage the cache during generation requests, respectively.
 pub mod llm_engine;
 
-type TokenOrFinishReason = Either<(usize, f32), String>;
+type TokenOrFinishReason = Either<Logprobs, String>;
 
 pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(

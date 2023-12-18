@@ -9,7 +9,9 @@ use tokenizers::Encoding;
 
 use crate::{
     openai::{
-        responses::{APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse},
+        responses::{
+            APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse, WrapperLogprobs,
+        },
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
     },
@@ -157,8 +159,8 @@ impl<'a> LLMEngine<'a> {
 
             for (result, (_, seq)) in zip(result, seqs) {
                 match result {
-                    Either::Left((token, logprob)) => {
-                        seq.deref_mut().add_token(token, logprob);
+                    Either::Left(logprobs) => {
+                        seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
                         seq.deref_mut().set_finish_reason(finish_reason)
@@ -183,11 +185,10 @@ impl<'a> LLMEngine<'a> {
 
                     let mut choices = Vec::new();
                     for (index, seq) in top_n.iter().enumerate() {
-                        let data = seq
-                            .deref_mut()
-                            .get_token_ids()
+                        let outputs = seq.deref_mut().get_output_tokens();
+                        let data = outputs
                             .iter()
-                            .map(|x| (*x).try_into().unwrap())
+                            .map(|x| x.token.try_into().unwrap())
                             .collect::<Vec<_>>();
                         let data = self.pipeline.tokenizer().detokenize(&data)?;
                         let choice = ChatChoice {
@@ -197,7 +198,9 @@ impl<'a> LLMEngine<'a> {
                             },
                             finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
                             index,
-                            logprobs: None, // TODO(EricLBuehler): actually add this
+                            logprobs: Some(WrapperLogprobs {
+                                content: seq.deref_mut().get_output_tokens(),
+                            }),
                         };
                         choices.push(choice);
                     }

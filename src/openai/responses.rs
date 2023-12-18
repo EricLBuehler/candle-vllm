@@ -1,4 +1,5 @@
 use actix_web::error;
+use candle_sampling::logits_processor::Logprobs;
 use derive_more::{Display, Error};
 
 use serde::{Deserialize, Serialize};
@@ -43,18 +44,8 @@ pub struct ChatChoiceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TopLogprob {
-    token: usize,
-    logprob: f32,
-    bytes: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Logprobs {
-    token: usize,
-    logprob: f32,
-    bytes: String,
-    top_logprobs: Vec<TopLogprob>,
+pub struct WrapperLogprobs {
+    pub content: Vec<Logprobs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +53,7 @@ pub struct ChatChoice {
     pub message: ChatChoiceData,
     pub finish_reason: Option<String>,
     pub index: usize,
-    pub logprobs: Option<Logprobs>,
+    pub logprobs: Option<WrapperLogprobs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

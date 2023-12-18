@@ -202,7 +202,11 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         let eos_token_id = self.tokenizer.token_to_id(EOS_TOKEN);
 
-        let mut logits_processor = sampling_params.get_logits_processor(SAMPLING_SEED);
+        let mut logits_processor = sampling_params.get_logits_processor(
+            SAMPLING_SEED,
+            &self.tokenizer,
+            sampling_params.logprobs.unwrap_or(1),
+        );
         let stop_tokens = match sampling_params.stop.clone() {
             Some(stop) => match stop {
                 StopTokens::Multi(multi) => multi,
@@ -241,7 +245,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
             };
 
             let next_token = logits_processor.sample(&logits).map_err(APIError::from)?;
-            if let Some(text) = self.tokenizer.id_to_token(next_token) {
+            if let Some(text) = self.tokenizer.id_to_token(next_token.token as u32) {
                 let text = text.replace('▁', " ").replace("<0x0A>", "\n");
                 if stop_tokens.contains(&text) {
                     result.push(Right("stop".to_string()));
@@ -249,7 +253,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 }
             }
 
-            if Some(next_token) == eos_token_id {
+            if Some(next_token.token) == eos_token_id.map(|x| x as usize) {
                 result.push(Right("stop".to_string()));
                 continue;
             }
@@ -257,8 +261,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 result.push(Right("length".to_string()));
                 continue;
             }
-            // TODO(EricLBuehler): Actually compute logprobs
-            result.push(Left((next_token as usize, 0.)));
+            result.push(Left(next_token));
         }
 
         Ok(result)
