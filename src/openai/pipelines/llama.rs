@@ -183,7 +183,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         &mut self,
         input_tokens: Tensor,
         input_positions: Tensor,
-        kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
+        kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         mut input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError> {
         self.llama.forward(

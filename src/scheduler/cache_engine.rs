@@ -1,8 +1,14 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use candle_core::{DType, Device, Tensor};
 
-use crate::openai::{models::ConfigLike, responses::APIError};
+use crate::{
+    backend::{copy_blocks, swap_blocks},
+    openai::{models::ConfigLike, responses::APIError},
+};
 
 #[derive(Clone)]
 pub struct CacheConfig {
@@ -30,7 +36,7 @@ impl CacheConfig {
 pub type KVCache = (Tensor, Tensor);
 
 pub struct CacheEngine {
-    gpu_cache: Arc<Vec<KVCache>>,
+    gpu_cache: Arc<Mutex<Vec<KVCache>>>,
     cpu_cache: Vec<KVCache>,
     num_layers: usize,
 }
@@ -42,17 +48,17 @@ impl CacheEngine {
         dtype: DType,
     ) -> Result<Self, APIError> {
         Ok(Self {
-            gpu_cache: Arc::new(Self::allocate_gpu_cache(
+            gpu_cache: Arc::new(Mutex::new(Self::allocate_gpu_cache(
                 &*model_config,
                 &cache_config,
                 dtype,
-            )?),
+            )?)),
             cpu_cache: Self::allocate_cpu_cache(&*model_config, &cache_config, dtype)?,
             num_layers: model_config.get_num_hidden_layers(),
         })
     }
 
-    pub fn get_kv_cache(&self) -> Arc<Vec<KVCache>> {
+    pub fn get_kv_cache(&self) -> Arc<Mutex<Vec<KVCache>>> {
         self.gpu_cache.clone()
     }
 
@@ -171,68 +177,46 @@ impl CacheEngine {
 
 impl CacheEngine {
     pub fn swap_in(&self, src_to_dst: HashMap<usize, usize>) {
-        self._swap(&self.cpu_cache, &self.gpu_cache, src_to_dst);
-    }
-    pub fn swap_out(&self, src_to_dst: HashMap<usize, usize>) {
-        self._swap(&self.gpu_cache, &self.cpu_cache, src_to_dst);
-    }
-
-    unsafe fn _swap_blocks(
-        _src_cache: Tensor,
-        _dst_cache: Tensor,
-        _src_to_dst: HashMap<usize, usize>,
-    ) {
-        todo!()
-    }
-
-    fn _swap(
-        &self,
-        src: &[(Tensor, Tensor)],
-        dst: &[(Tensor, Tensor)],
-        src_to_dst: HashMap<usize, usize>,
-    ) {
         for i in 0..self.num_layers {
-            let (src_key_cache, src_value_cache) = src.get(i).unwrap();
-            let (dst_key_cache, dst_value_cache) = dst.get(i).unwrap();
+            let (src_key_cache, src_value_cache) = self.cpu_cache.get(i).unwrap();
+            let mut gpu_cache = self.get_mut_gpu_cache();
+            let (dst_key_cache, dst_value_cache) = gpu_cache.get_mut(i).unwrap();
             // Swap (copy) key blocks
-            unsafe {
-                Self::_swap_blocks(
-                    src_key_cache.clone(),
-                    dst_key_cache.clone(),
-                    src_to_dst.clone(),
-                )
-            };
+            swap_blocks(src_key_cache.clone(), dst_key_cache, src_to_dst.clone());
             // Swap (copy) key blocks
-            unsafe {
-                Self::_swap_blocks(
-                    src_value_cache.clone(),
-                    dst_value_cache.clone(),
-                    src_to_dst.clone(),
-                )
-            };
+            swap_blocks(src_value_cache.clone(), dst_value_cache, src_to_dst.clone());
         }
     }
 
-    unsafe fn _copy_blocks(
-        _key_caches: Vec<Tensor>,
-        _value_caches: Vec<Tensor>,
-        _src_to_dst: HashMap<usize, Vec<usize>>,
-    ) {
-        todo!()
+    pub fn swap_out(&mut self, src_to_dst: HashMap<usize, usize>) {
+        for i in 0..self.num_layers {
+            let gpu_cache = self.get_mut_gpu_cache();
+            let (src_key_cache, src_value_cache) = gpu_cache.get(i).unwrap().clone();
+            drop(gpu_cache);
+
+            let (dst_key_cache, dst_value_cache) = self.cpu_cache.get_mut(i).unwrap();
+            // Swap (copy) key blocks
+            swap_blocks(src_key_cache.clone(), dst_key_cache, src_to_dst.clone());
+            // Swap (copy) key blocks
+            swap_blocks(src_value_cache.clone(), dst_value_cache, src_to_dst.clone());
+        }
     }
 
-    pub fn copy(&self, src_to_dst: HashMap<usize, Vec<usize>>) {
-        let key_caches = self
-            .gpu_cache
-            .iter()
-            .map(|(key_cache, _)| key_cache.clone())
-            .collect::<Vec<_>>();
-        let value_caches = self
-            .gpu_cache
-            .iter()
-            .map(|(_, value_cache)| value_cache.clone())
-            .collect::<Vec<_>>();
+    pub fn get_mut_gpu_cache(&self) -> MutexGuard<'_, Vec<KVCache>> {
+        loop {
+            if let Ok(v) = self.gpu_cache.try_lock() {
+                return v;
+            }
+        }
+    }
+
+    pub fn copy(&mut self, src_to_dst: HashMap<usize, Vec<usize>>) {
+        let mut gpu_cache = self.get_mut_gpu_cache();
+        let caches: (Vec<&mut Tensor>, Vec<&mut Tensor>) =
+            gpu_cache.iter_mut().map(|(a, b)| (a, b)).unzip();
+        let (key_caches, value_caches) = caches;
+
         // NOTE(EricLBuehler): from a NOTE(woosuk): This implicitly synchronizes the CPU and GPU
-        unsafe { Self::_copy_blocks(key_caches, value_caches, src_to_dst) };
+        copy_blocks(key_caches, value_caches, src_to_dst);
     }
 }

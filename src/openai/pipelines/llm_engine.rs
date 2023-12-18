@@ -152,7 +152,7 @@ impl<'a> LLMEngine<'a> {
             let logits = self.pipeline.forward(
                 tokens,
                 positions,
-                Some(self.cache_engine.get_kv_cache()),
+                Some(&self.cache_engine.get_mut_gpu_cache()),
                 metadata,
             )?;
             let result = self.pipeline.sample(logits, &sampling_params, &seqs)?;
@@ -224,7 +224,7 @@ impl<'a> LLMEngine<'a> {
         Ok(responses.into_values().collect::<Vec<_>>())
     }
 
-    fn execute_scheduler_ops(&self, scheduler_output: &SchedulerOutput) {
+    fn execute_scheduler_ops(&mut self, scheduler_output: &SchedulerOutput) {
         self.cache_engine
             .swap_in(scheduler_output.blocks_to_swap_in.clone());
         self.cache_engine

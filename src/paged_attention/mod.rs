@@ -1,8 +1,7 @@
 use candle_core::{DType, Device, Tensor};
 
 use crate::{
-    bindings::{paged_attention_v1, paged_attention_v2, reshape_and_cache, Optional, Storage},
-    convert_candle_to_tch, convert_tch_to_ptr,
+    backend::{paged_attention_v1, paged_attention_v2, reshape_and_cache},
     openai::responses::APIError,
 };
 
@@ -25,25 +24,6 @@ pub struct PagedAttention {
     num_queries_per_kv: usize,
     head_mapping: Tensor,
     alibi_slopes: Option<Tensor>,
-}
-
-fn convert_option_to_optional(option: Option<Tensor>) -> Optional<torch_sys::C_tensor> {
-    let storage: Storage<torch_sys::C_tensor> = if let Some(mut value) = option {
-        let mut slopes_tchtensor = convert_candle_to_tch(&mut value);
-        let (_, slopes_ctensor) = convert_tch_to_ptr(&mut slopes_tchtensor);
-        Storage {
-            value_: *slopes_ctensor,
-        }
-    } else {
-        Storage {
-            dummy_: std::os::raw::c_uchar::from(0),
-        }
-    };
-
-    Optional {
-        init_: true,
-        storage_: storage,
-    }
 }
 
 impl PagedAttention {
@@ -94,137 +74,60 @@ impl PagedAttention {
     /// alibi_slopes: shape = [num_heads]
     pub fn _paged_attention(
         &mut self,
-        mut query: Tensor,
-        mut key_cache: Tensor,
-        mut value_cache: Tensor,
+        query: Tensor,
+        key_cache: Tensor,
+        value_cache: Tensor,
         input_metadata: &mut InputMetadata,
         alibi_slopes: Option<Tensor>,
     ) -> Result<Tensor, APIError> {
-        //use Tensor::empty, huggingface/candle#1374
-        let mut output = query.zeros_like().map_err(APIError::from)?;
-
         let block_size = *value_cache.shape().dims().get(3).unwrap();
-        let (num_seqs, num_heads, head_size) = query.shape().dims3().map_err(APIError::from)?;
+        let (num_seqs, num_heads, _head_size) = query.shape().dims3().map_err(APIError::from)?;
         let max_num_partitions =
             (input_metadata.max_context_len.unwrap() + _PARTITION_SIZE - 1) / _PARTITION_SIZE;
 
         let use_v1 = input_metadata.max_context_len.unwrap() <= 8192
             && (max_num_partitions == 1 || num_seqs * num_heads > 512);
-        if use_v1 {
+        let output = if use_v1 {
             //Run PagedAttention V1
-            let mut output_tch = convert_candle_to_tch(&mut output);
-            let (output_ptr, _) = convert_tch_to_ptr(&mut output_tch);
-
-            let mut query_tch = convert_candle_to_tch(&mut query);
-            let (query_ptr, _) = convert_tch_to_ptr(&mut query_tch);
-
-            let mut keycache_tch = convert_candle_to_tch(&mut key_cache);
-            let (keycache_ptr, _) = convert_tch_to_ptr(&mut keycache_tch);
-
-            let mut valuecache_tch = convert_candle_to_tch(&mut value_cache);
-            let (valuecache_ptr, _) = convert_tch_to_ptr(&mut valuecache_tch);
-
-            let mut head_mapping_tch = convert_candle_to_tch(&mut self.head_mapping);
-            let (head_mapping_ptr, _) = convert_tch_to_ptr(&mut head_mapping_tch);
-
-            let mut block_tbl_tch =
-                convert_candle_to_tch(input_metadata.block_tables.as_mut().unwrap());
-            let (block_tbl_ptr, _) = convert_tch_to_ptr(&mut block_tbl_tch);
-
-            let mut ctxt_lens_tch =
-                convert_candle_to_tch(input_metadata.context_lens.as_mut().unwrap());
-            let (ctxt_lens_ptr, _) = convert_tch_to_ptr(&mut ctxt_lens_tch);
-
-            let optional = convert_option_to_optional(alibi_slopes);
-
-            unsafe {
-                paged_attention_v1(
-                    output_ptr,
-                    query_ptr,
-                    keycache_ptr,
-                    valuecache_ptr,
-                    head_mapping_ptr,
-                    self.scale,
-                    block_tbl_ptr,
-                    ctxt_lens_ptr,
-                    block_size.try_into().unwrap(),
-                    input_metadata.max_context_len.unwrap().try_into().unwrap(),
-                    &optional as *const Optional<torch_sys::C_tensor>,
-                )
-            };
+            paged_attention_v1(
+                query,
+                key_cache,
+                value_cache,
+                self.head_mapping.clone(),
+                self.scale,
+                input_metadata.block_tables.as_ref().unwrap().clone(),
+                input_metadata.context_lens.as_ref().unwrap().clone(),
+                block_size,
+                input_metadata.max_context_len.unwrap().try_into().unwrap(),
+                alibi_slopes,
+            )
         } else {
             //Run PagedAttention V2
             assert_eq!(_PARTITION_SIZE % block_size, 0);
 
-            let mut tmp_output = Tensor::zeros(
-                //use Tensor::empty, huggingface/candle#1374
-                (num_seqs, num_heads, max_num_partitions, head_size),
-                output.dtype(),
-                output.device(),
-            )
-            .map_err(APIError::from)?;
-            let mut exp_sums = Tensor::zeros(
-                //use Tensor::empty, huggingface/candle#1374
+            let exp_sums = Tensor::zeros(
                 (num_seqs, num_heads, max_num_partitions),
                 DType::F32,
-                output.device(),
+                query.device(),
             )
             .map_err(APIError::from)?;
-            let mut max_logits = exp_sums.zeros_like().map_err(APIError::from)?; //use Tensor::empty, huggingface/candle#1374
+            let max_logits = exp_sums.zeros_like().map_err(APIError::from)?;
 
-            let mut output_tch = convert_candle_to_tch(&mut output);
-            let (output_ptr, _) = convert_tch_to_ptr(&mut output_tch);
-
-            let mut exp_sums_tch = convert_candle_to_tch(&mut exp_sums);
-            let (exp_sums_ptr, _) = convert_tch_to_ptr(&mut exp_sums_tch);
-
-            let mut max_logits_tch = convert_candle_to_tch(&mut max_logits);
-            let (max_logits_ptr, _) = convert_tch_to_ptr(&mut max_logits_tch);
-
-            let mut tmp_output_tch = convert_candle_to_tch(&mut tmp_output);
-            let (tmp_output_ptr, _) = convert_tch_to_ptr(&mut tmp_output_tch);
-
-            let mut query_tch = convert_candle_to_tch(&mut query);
-            let (query_ptr, _) = convert_tch_to_ptr(&mut query_tch);
-
-            let mut keycache_tch = convert_candle_to_tch(&mut key_cache);
-            let (keycache_ptr, _) = convert_tch_to_ptr(&mut keycache_tch);
-
-            let mut valuecache_tch = convert_candle_to_tch(&mut value_cache);
-            let (valuecache_ptr, _) = convert_tch_to_ptr(&mut valuecache_tch);
-
-            let mut head_mapping_tch = convert_candle_to_tch(&mut self.head_mapping);
-            let (head_mapping_ptr, _) = convert_tch_to_ptr(&mut head_mapping_tch);
-
-            let mut block_tbl_tch =
-                convert_candle_to_tch(input_metadata.block_tables.as_mut().unwrap());
-            let (block_tbl_ptr, _) = convert_tch_to_ptr(&mut block_tbl_tch);
-
-            let mut ctxt_lens_tch =
-                convert_candle_to_tch(input_metadata.context_lens.as_mut().unwrap());
-            let (ctxt_lens_ptr, _) = convert_tch_to_ptr(&mut ctxt_lens_tch);
-
-            let optional = convert_option_to_optional(alibi_slopes);
-
-            unsafe {
-                paged_attention_v2(
-                    output_ptr,
-                    exp_sums_ptr,
-                    max_logits_ptr,
-                    tmp_output_ptr,
-                    query_ptr,
-                    keycache_ptr,
-                    valuecache_ptr,
-                    head_mapping_ptr,
-                    self.scale,
-                    block_tbl_ptr,
-                    ctxt_lens_ptr,
-                    block_size.try_into().unwrap(),
-                    input_metadata.max_context_len.unwrap().try_into().unwrap(),
-                    &optional as *const Optional<torch_sys::C_tensor>,
-                );
-            };
-        }
+            paged_attention_v2(
+                exp_sums,
+                max_logits,
+                query,
+                key_cache,
+                value_cache,
+                self.head_mapping.clone(),
+                self.scale,
+                input_metadata.block_tables.as_ref().unwrap().clone(),
+                input_metadata.context_lens.as_ref().unwrap().clone(),
+                block_size,
+                input_metadata.max_context_len.unwrap(),
+                alibi_slopes,
+            )
+        };
         Ok(output)
     }
 
@@ -278,42 +181,25 @@ impl PagedAttention {
         let query = query
             .reshape(((), self.num_attention_heads, self.head_dim))
             .map_err(APIError::from)?;
-        let mut key = key
+        let key = key
             .reshape(((), self.num_key_value_heads, self.head_dim))
             .map_err(APIError::from)?;
-        let mut value = value
+        let value = value
             .reshape(((), self.num_key_value_heads, self.head_dim))
             .map_err(APIError::from)?;
-        let mut slot_mapping = input_metadata
+        let slot_mapping = input_metadata
             .slot_mapping
             .flatten(0, input_metadata.slot_mapping.dims().len())
             .map_err(APIError::from)?;
 
         if key_cache.as_ref().is_some_and(|_| value_cache.is_some()) {
-            let mut key_tch = convert_candle_to_tch(&mut key);
-            let (key_ptr, _) = convert_tch_to_ptr(&mut key_tch);
-
-            let mut value_tch = convert_candle_to_tch(&mut value);
-            let (value_ptr, _) = convert_tch_to_ptr(&mut value_tch);
-
-            let mut key_cache_tch = convert_candle_to_tch(key_cache.as_mut().unwrap());
-            let (key_cache_ptr, _) = convert_tch_to_ptr(&mut key_cache_tch);
-
-            let mut value_cache_tch = convert_candle_to_tch(value_cache.as_mut().unwrap());
-            let (value_cache_ptr, _) = convert_tch_to_ptr(&mut value_cache_tch);
-
-            let mut slot_mapping_tch = convert_candle_to_tch(&mut slot_mapping);
-            let (slot_mapping_ptr, _) = convert_tch_to_ptr(&mut slot_mapping_tch);
-
-            unsafe {
-                reshape_and_cache(
-                    key_ptr,
-                    value_ptr,
-                    key_cache_ptr,
-                    value_cache_ptr,
-                    slot_mapping_ptr,
-                )
-            };
+            reshape_and_cache(
+                key.clone(),
+                value.clone(),
+                key_cache.as_mut().unwrap(),
+                value_cache.as_mut().unwrap(),
+                slot_mapping,
+            )
         }
 
         let output = if input_metadata.is_prompt {
@@ -330,8 +216,8 @@ impl PagedAttention {
         } else {
             self._paged_attention(
                 query,
-                key_cache.unwrap(),
-                value_cache.unwrap(),
+                key_cache.as_ref().unwrap().clone(),
+                value_cache.as_ref().unwrap().clone(),
                 input_metadata,
                 None,
             )?

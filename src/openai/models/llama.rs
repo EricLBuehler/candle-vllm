@@ -4,13 +4,11 @@ use candle_nn::{Embedding, Module, VarBuilder};
 use candle_transformers::models::with_tracing::{linear_no_bias as linear, Linear};
 use serde::Deserialize;
 use std::iter::zip;
-use std::sync::Arc;
 
-use crate::bindings::rotary_embedding;
+use crate::backend::rotary_embedding;
 use crate::openai::responses::APIError;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::{convert_candle_to_tch, convert_tch_to_ptr};
 
 use super::ConfigLike;
 
@@ -208,29 +206,15 @@ impl CausalSelfAttention {
         Tensor::cat(&[cos, sin], last).map_err(APIError::from)
     }
 
-    fn apply_rotary_emb(&mut self, q: &mut Tensor, k: &mut Tensor, mut positions: Tensor) {
-        let mut q_tch = convert_candle_to_tch(q);
-        let (q_ptr, _) = convert_tch_to_ptr(&mut q_tch);
-
-        let mut k_tch = convert_candle_to_tch(k);
-        let (k_ptr, _) = convert_tch_to_ptr(&mut k_tch);
-
-        let mut pos_tch = convert_candle_to_tch(&mut positions);
-        let (pos_ptr, _) = convert_tch_to_ptr(&mut pos_tch);
-
-        let mut cache_tch = convert_candle_to_tch(&mut self.cos_sin_cache);
-        let (cache_ptr, _) = convert_tch_to_ptr(&mut cache_tch);
-
-        unsafe {
-            rotary_embedding(
-                pos_ptr,
-                q_ptr,
-                k_ptr,
-                self.head_dim.try_into().unwrap(),
-                cache_ptr,
-                false,
-            );
-        }
+    fn apply_rotary_emb(&mut self, q: &mut Tensor, k: &mut Tensor, positions: Tensor) {
+        rotary_embedding(
+            positions,
+            q,
+            k,
+            self.head_dim.try_into().unwrap(),
+            self.cos_sin_cache.clone(),
+            false,
+        );
     }
 
     fn forward(
@@ -414,7 +398,7 @@ impl Llama {
         &mut self,
         x: &Tensor,
         positions: &Tensor,
-        kv_caches: Option<Arc<Vec<(Tensor, Tensor)>>>,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor, APIError> {
         let (_b_sz, seq_len) = x.dims2().map_err(APIError::from)?;
