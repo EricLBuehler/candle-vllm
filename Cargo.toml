@@ -33,8 +33,6 @@ futures = "0.3.29"
 tokio = { version = "1.33.0", features = ["sync"] }
 env_logger = "0.10.1"
 tracing = "0.1.40"
-tch = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy_derive", version = "0.14.0" } # pending on LaurentMazare/tch-rs#823
-torch-sys = { git = "https://github.com/EricLBuehler/tch-rs.git", branch = "copy_derive", version = "0.14.0" } # pending on LaurentMazare/tch-rs#823
 range-checked = { git = "https://github.com/EricLBuehler/range-checked.git", version = "0.1.0" }
 chrono = { version = "0.4.31", features = ["clock"] }
 either = "1.9.0"
