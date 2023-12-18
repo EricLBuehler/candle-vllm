@@ -153,6 +153,8 @@ impl _Sequence {
         }
     }
 
+    #[must_use]
+    /// Clones the internal logprobs.
     pub fn get_output_tokens(&self) -> Vec<Logprobs> {
         self.deref().output_token_ids.clone() // TODO(EricLBuehler): Better way to do this?
     }

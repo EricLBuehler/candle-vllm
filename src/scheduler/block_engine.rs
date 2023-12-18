@@ -187,6 +187,7 @@ pub struct BlockEngine {
 }
 
 impl BlockEngine {
+    #[must_use]
     pub fn new(block_size: usize, num_gpu_blocks: usize, num_cpu_blocks: usize) -> Self {
         Self {
             num_gpu_blocks,
