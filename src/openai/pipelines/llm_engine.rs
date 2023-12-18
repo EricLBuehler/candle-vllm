@@ -198,9 +198,7 @@ impl<'a> LLMEngine<'a> {
                             },
                             finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
                             index,
-                            logprobs: Some(WrapperLogprobs {
-                                content: seq.deref_mut().get_output_tokens(),
-                            }),
+                            logprobs: Some(WrapperLogprobs { content: outputs }),
                         };
                         choices.push(choice);
                     }
