@@ -62,42 +62,41 @@ Installing `candle-vllm` is as simple as the following steps. If you have any pr
 0) Be sure to install Rust here: https://www.rust-lang.org/tools/install
 1) Run `sudo apt install libssl-dev` or equivalent install command
 2) Run `sudo apt install pkg-config` or equivalent install command
-3) Run `sudo apt-get install python3-dev`, `pip install torch==2.1.0` or equivalent install command
-4) Run `sudo find / -name libpython3.so`, taking note of it and adding it to line 2 of `build.rs`.
-5) See the "Compiling PagedAttention CUDA kernels" section.
+3) Run `sudo apt-get install python3-dev` or equivalent install command
+4) Install `torch 2.1.0` with `pip install torch==2.1.0`
+5) Run `sudo find / -name libpython3.so`, taking note of it and adding it to line 2 of `build.rs`.
+6) Install `setuptools >= 49.4.0`: `pip install setuptools==49.4.0`
+7) Run `python3 setup.py build` to compile the vLLM CUDA kernels.
+8) `cp build/lib<TAB>/<TAB>/<TAB> librustbind.so` to extract the compiled CUDA kernels. `<TAB>` will use your terminal's autocomplete.
 
 Go to either the "Install with Pytorch" or "Install with libtorch" section to continue.
 
-### Compiling PagedAttention CUDA kernels
-1) Install `setuptools >= 49.4.0`: `pip install setuptools==49.4.0`
-2) Run `python3 setup.py build` to compile the vLLM CUDA kernels.
-3) `cp build/lib<TAB>/<TAB>/<TAB> librustbind.so` to extract the compiled CUDA kernels. `<TAB>` will use your terminal's autocomplete.
 
 ### Install with Pytorch (recommended)
-6) Run `python3 -c 'import torch;print(torch.__file__.replace("__init__.py", "lib/"))'`
-7) Add the following to `.bashrc` or equivalent:
+9) Run `python3 -c 'import torch;print(torch.__file__.replace("__init__.py", "lib/"))'`
+10) Add the following to `.bashrc` or equivalent:
 ```bash
 # candle-vllm
 export LD_LIBRARY_PATH=/the/path/printed/:$LD_LIBRARY_PATH
 export LIBTORCH_USE_PYTORCH=1
 ```
-8) Either run `source .bashrc` (or equivalent) or reload the terminal.
+11) Either run `source .bashrc` (or equivalent) or reload the terminal.
 
 ### Install with libtorch (manual)
-6) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget` command, ensure the following:
+9) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget` command, ensure the following:
     1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end).
     2) If on Linux, use the link corresponding to the CXX11 ABI.
     3) The correct CUDA version is used (`nvcc --version`).
 
-7) Unzip the directory.
+10) Unzip the directory.
 
-8) Add the following line to your `.bashrc` or equivalent:
+11) Add the following line to your `.bashrc` or equivalent:
 ```bash
 # candle-lora
 export LIBTORCH=/path/to/libtorch
 ```
 
-9) Either run `source .bashrc` (or equivalent) or reload your terminal.
+12) Either run `source .bashrc` (or equivalent) or reload your terminal.
 
 #### Error loading shared libraries
 If you get this error: `error while loading shared libraries: libtorch_cpu.so: cannot open shared object file: No such file or directory`,
