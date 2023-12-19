@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 
+extern "C" {
 void paged_attention_v1(
   torch::Tensor& out,
   torch::Tensor& query,
@@ -36,3 +37,4 @@ void rotary_embedding(
   int head_size,
   torch::Tensor& cos_sin_cache,
   bool is_neox);
+}

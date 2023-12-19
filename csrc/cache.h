@@ -3,6 +3,7 @@
 #include <map>
 #include <vector>
 
+extern "C" {
 void swap_blocks(
   torch::Tensor& src,
   torch::Tensor& dst,
@@ -19,3 +20,4 @@ void reshape_and_cache(
   torch::Tensor& key_cache,
   torch::Tensor& value_cache,
   torch::Tensor& slot_mapping);
+}
