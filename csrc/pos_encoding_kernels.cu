@@ -77,6 +77,7 @@ __global__ void rotary_embedding_kernel(
 
 } // namespace vllm
 
+extern "C" {
 void rotary_embedding(
   torch::Tensor& positions,         // [batch_size, seq_len] or [num_tokens]
   torch::Tensor& query,             // [batch_size, seq_len, num_heads * head_size] or [num_tokens, num_heads * head_size]
@@ -124,4 +125,5 @@ void rotary_embedding(
           head_size);
       }
     });
+}
 }
