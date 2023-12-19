@@ -1,6 +1,9 @@
 use std::{collections::HashMap, mem::ManuallyDrop};
 
-use candle_core::{CudaDevice, Device, Tensor};
+use candle_core::{
+    cuda_backend::cudarc::driver::{result::memcpy_dtod_async, DevicePtr},
+    CudaDevice, Device, Storage, Tensor,
+};
 
 use crate::openai::responses::APIError;
 
@@ -22,36 +25,44 @@ pub fn copy_blocks(
     todo!()
 }
 
-enum SwapDirection<'a> {
-    HtoD(&'a CudaDevice),
-    DtoH(&'a CudaDevice),
-    DtoD {
-        src: &'a CudaDevice,
-        dst: &'a CudaDevice,
-    },
-}
-
 pub fn swap_blocks(
     src: Tensor,
     dst: &mut Tensor,
     block_mapping: HashMap<usize, usize>,
 ) -> Result<(), APIError> {
-    let swap_direction = match (src.device(), dst.device()) {
+    let block_size_in_bytes = src.dtype().size_in_bytes() * src.dims()[0];
+    match (src.device(), dst.device()) {
         (Device::Cuda(src_dev), Device::Cuda(dst_dev)) => {
             if src_dev.ordinal() != dst_dev.ordinal() {
                 return Err(APIError::new(format!("Tensors must be on the same device to copy, got ordinals {} (src) and {} (dst).", src_dev.ordinal(), dst_dev.ordinal())))
             }
-            SwapDirection::DtoD{src: src_dev, dst: dst_dev}
+            let (src_storage, _) = src.storage_and_layout();
+            let (dst_storage, _) = dst.storage_and_layout();
+            assert!(matches!(src_storage, Storage::Cuda(_)));
+            assert!(matches!(dst_storage, Storage::Cuda(_)));
+            let Storage::Cuda(src_storage) = src_storage;
+            let Storage::Cuda(dst_storage) = dst_storage;
+            let src_ptr = src_storage.as_cuda_slice().map_err(APIError::from)?.device_ptr();
+            let dst_ptr = dst_storage.as_cuda_slice().map_err(APIError::from)?.device_ptr();
+            
+            // Same device, this is OK
+            let stream = ManuallyDrop::new(src_dev.cu_stream());
+            for (src_block_number, dst_block_number) in block_mapping {
+                let src_offset = src_block_number * block_size_in_bytes;
+                let dst_offset = dst_block_number * block_size_in_bytes;
+                unsafe { memcpy_dtod_async(dst_ptr + dst_offset, src_ptr + src_offset, block_size_in_bytes, stream) }.map_err(APIError::from)?
+            }
         }
         (Device::Cpu, Device::Cuda(dst_dev)) => {
-            SwapDirection::HtoD(dst_dev)
+            todo!()
         }
         (Device::Cuda(src_dev), Device::Cpu) => {
-            SwapDirection::HtoD(src_dev)
+            todo!()
         }
         (src, dst) => {
             return Err(APIError::new(format!("Tensors must be on either the GPU or CPU to swap,, got {src:?} (src) and {dst:?} (dst).")))
         }
-    };
-    todo!()
+    }
+
+    Ok(())
 }
