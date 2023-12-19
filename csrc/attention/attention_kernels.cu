@@ -668,6 +668,7 @@ void paged_attention_v1_launcher(
       break;                                                        \
   }
 
+extern "C" {
 void paged_attention_v1(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]
   torch::Tensor& query,           // [num_seqs, num_heads, head_size]
@@ -689,6 +690,7 @@ void paged_attention_v1(
   } else {
     TORCH_CHECK(false, "Unsupported data type: ", query.dtype());
   }
+}
 }
 
 #define LAUNCH_PAGED_ATTENTION_V2(HEAD_SIZE)                                                  \
@@ -840,6 +842,7 @@ void paged_attention_v2_launcher(
       break;                                                        \
   }
 
+extern "C" {
 void paged_attention_v2(
   torch::Tensor& out,             // [num_seqs, num_heads, head_size]
   torch::Tensor& exp_sums,        // [num_seqs, num_heads, max_num_partitions]
@@ -864,6 +867,7 @@ void paged_attention_v2(
   } else {
     TORCH_CHECK(false, "Unsupported data type: ", query.dtype());
   }
+}
 }
 
 #undef WARP_SIZE

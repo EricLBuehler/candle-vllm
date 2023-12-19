@@ -188,6 +188,7 @@ __global__ void reshape_and_cache_kernel(
 
 } // namespace vllm
 
+extern "C" {
 void reshape_and_cache(
   torch::Tensor& key,           // [num_tokens, num_heads, head_size]
   torch::Tensor& value,         // [num_tokens, num_heads, head_size]
@@ -224,6 +225,7 @@ void reshape_and_cache(
         block_size,
         x);
     });
+}
 }
 
 namespace vllm {
