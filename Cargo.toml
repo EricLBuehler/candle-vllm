@@ -38,7 +38,7 @@ chrono = { version = "0.4.31", features = ["clock"] }
 either = "1.9.0"
 
 [features]
-default = []
+default = ["cuda"]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:candle-flash-attn"]
 cudnn = ["candle-core/cudnn"]
