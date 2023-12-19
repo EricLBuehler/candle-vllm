@@ -7,7 +7,8 @@
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
 
-**candle-vllm is in the final stages of active, breaking development. However, it is currently unstable.**
+**Development status: candle-vllm is currently unable to compile as the CUDA kernels are being developed.**
+**See the `cudarc_backend` branch for an implementation from scratch, and the `master` branch, which links to the vLLM kernels.**
 
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
