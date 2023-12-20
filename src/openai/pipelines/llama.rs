@@ -19,6 +19,7 @@ use crate::{
     },
     paged_attention::input_metadata::InputMetadata,
     scheduler::sequence::Sequence,
+    try_api,
 };
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
@@ -87,28 +88,25 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         revision: Option<String>,
         hf_token: Option<String>,
     ) -> Result<Box<dyn ModelPaths>, APIError> {
-        let api = ApiBuilder::new()
+        let api = try_api!(ApiBuilder::new()
             .with_progress(true)
             .with_token(Some(read_env_var(hf_token.unwrap())?))
-            .build()
-            .map_err(APIError::from)?;
+            .build());
         let revision = revision.unwrap_or("main".to_string());
         let api = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
 
-        let tokenizer_filename = api.get("tokenizer.json").map_err(APIError::from)?;
+        let tokenizer_filename = try_api!(api.get("tokenizer.json"));
 
-        let config_filename = api.get("config.json").map_err(APIError::from)?;
+        let config_filename = try_api!(api.get("config.json"));
 
         let mut filenames = vec![];
-        for rfilename in api
-            .info()
-            .map_err(APIError::from)?
+        for rfilename in try_api!(api.info())
             .siblings
             .iter()
             .map(|x| x.rfilename.clone())
             .filter(|x| x.ends_with(".safetensors"))
         {
-            let filename = api.get(&rfilename).map_err(APIError::from)?;
+            let filename = try_api!(api.get(&rfilename));
             filenames.push(filename);
         }
 
@@ -127,18 +125,21 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
         let args = self.config.clone();
 
-        let config: LlamaConfig = serde_json::from_slice(
-            &std::fs::read(paths.get_config_filename()).map_err(APIError::from)?,
-        )
-        .map_err(APIError::from)?;
+        let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
+            paths.get_config_filename()
+        )),));
         let config = config.into_config();
 
         println!("Loading {} model.", self.name);
 
-        let vb = from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device, false)
-            .map_err(APIError::from)?;
+        let vb = try_api!(from_mmaped_safetensors(
+            paths.get_weight_filenames(),
+            dtype,
+            &device,
+            false
+        ));
 
-        let llama = Llama::load(vb, &config, dtype, &device).map_err(APIError::from)?;
+        let llama = try_api!(Llama::load(vb, &config, dtype, &device));
 
         let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
             .map_err(|x| APIError::new(x.to_string()))?;
@@ -220,9 +221,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
 
         let mut result = Vec::new();
         for (seq_n, (_, seq)) in zip(0..n_seqs, seqs) {
-            let logits = logits
-                .i((seq_n, logits.dim(1).map_err(APIError::from)? - 1))
-                .map_err(APIError::from)?;
+            let logits = try_api!(logits.i((seq_n, try_api!(logits.dim(1)) - 1)));
 
             let tokens = seq
                 .deref_mut()
@@ -236,15 +235,14 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 logits
             } else {
                 let start_at = tokens.len().saturating_sub(self.args.repeat_last_n);
-                candle_transformers::utils::apply_repeat_penalty(
+                try_api!(candle_transformers::utils::apply_repeat_penalty(
                     &logits,
                     sampling_params.repetition_penalty,
                     &tokens[start_at..],
-                )
-                .map_err(APIError::from)?
+                ))
             };
 
-            let next_token = logits_processor.sample(&logits).map_err(APIError::from)?;
+            let next_token = try_api!(logits_processor.sample(&logits));
             if let Some(text) = self.tokenizer.id_to_token(next_token.token as u32) {
                 let text = text.replace('▁', " ").replace("<0x0A>", "\n");
                 if stop_tokens.contains(&text) {

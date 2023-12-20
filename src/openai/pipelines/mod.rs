@@ -4,7 +4,9 @@ use candle_core::{DType, Device, Tensor, WithDType};
 use candle_sampling::logits_processor::Logprobs;
 use either::Either;
 
-use crate::{paged_attention::input_metadata::InputMetadata, scheduler::sequence::Sequence};
+use crate::{
+    paged_attention::input_metadata::InputMetadata, scheduler::sequence::Sequence, try_api,
+};
 
 use super::{
     conversation::Conversation, models::ConfigLike, responses::APIError,
@@ -56,10 +58,11 @@ fn _make_tensor_with_pad<D: WithDType>(
         assert!(x_i.len() <= max_len);
         x_i.extend([pad].repeat(max_len - x_i.len()));
         let shape = (x_i.len(),);
-        padded_x.push(
-            Tensor::from_vec(x_i, shape, &Device::new_cuda(0).map_err(APIError::from)?)
-                .map_err(APIError::from)?,
-        );
+        padded_x.push(try_api!(Tensor::from_vec(
+            x_i,
+            shape,
+            &try_api!(Device::new_cuda(0))
+        )));
     }
     Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
 }

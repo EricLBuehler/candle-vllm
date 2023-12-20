@@ -4,6 +4,7 @@ use crate::{
     bindings::{paged_attention_v1, paged_attention_v2, reshape_and_cache, Optional, Storage},
     convert_candle_to_tch, convert_tch_to_ptr,
     openai::responses::APIError,
+    try_api,
 };
 
 use self::input_metadata::InputMetadata;
@@ -59,7 +60,7 @@ impl PagedAttention {
         let num_key_value_heads = num_key_value_heads.unwrap_or(num_attention_heads);
         let num_queries_per_kv = num_attention_heads / num_key_value_heads;
         let alibi_slopes = if let Some(alibi_slopes) = alibi_slopes {
-            Some(Tensor::new(alibi_slopes, &device).map_err(APIError::from)?)
+            Some(try_api!(Tensor::new(alibi_slopes, &device)))
         } else {
             None
         };
@@ -70,10 +71,12 @@ impl PagedAttention {
             scale,
             sliding_window,
             num_queries_per_kv,
-            head_mapping: Tensor::arange(0u32, num_key_value_heads as u32, &device)
-                .map_err(APIError::from)?
-                .repeat(num_queries_per_kv)
-                .map_err(APIError::from)?,
+            head_mapping: try_api!(try_api!(Tensor::arange(
+                0u32,
+                num_key_value_heads as u32,
+                &device
+            ))
+            .repeat(num_queries_per_kv)),
             alibi_slopes,
         })
     }
@@ -100,10 +103,10 @@ impl PagedAttention {
         input_metadata: &mut InputMetadata,
         alibi_slopes: Option<Tensor>,
     ) -> Result<Tensor, APIError> {
-        let mut output = query.zeros_like().map_err(APIError::from)?;
+        let mut output = try_api!(query.zeros_like());
 
         let block_size = *value_cache.shape().dims().get(3).unwrap();
-        let (num_seqs, num_heads, head_size) = query.shape().dims3().map_err(APIError::from)?;
+        let (num_seqs, num_heads, head_size) = try_api!(query.shape().dims3());
         let max_num_partitions =
             (input_metadata.max_context_len.unwrap() + _PARTITION_SIZE - 1) / _PARTITION_SIZE;
 
@@ -155,19 +158,17 @@ impl PagedAttention {
             //Run PagedAttention V2
             assert_eq!(_PARTITION_SIZE % block_size, 0);
 
-            let mut tmp_output = Tensor::zeros(
+            let mut tmp_output = try_api!(Tensor::zeros(
                 (num_seqs, num_heads, max_num_partitions, head_size),
                 output.dtype(),
                 output.device(),
-            )
-            .map_err(APIError::from)?;
-            let mut exp_sums = Tensor::zeros(
+            ));
+            let mut exp_sums = try_api!(Tensor::zeros(
                 (num_seqs, num_heads, max_num_partitions),
                 DType::F32,
                 output.device(),
-            )
-            .map_err(APIError::from)?;
-            let mut max_logits = exp_sums.zeros_like().map_err(APIError::from)?;
+            ));
+            let mut max_logits = try_api!(exp_sums.zeros_like());
 
             let mut output_tch = convert_candle_to_tch(&mut output);
             let (output_ptr, _) = convert_tch_to_ptr(&mut output_tch);
@@ -271,20 +272,13 @@ impl PagedAttention {
         dtype: DType,
         device: Device,
     ) -> Result<Tensor, APIError> {
-        let (batch_size, seq_len, hidden_size) = query.shape().dims3().map_err(APIError::from)?;
-        let query = query
-            .reshape(((), self.num_attention_heads, self.head_dim))
-            .map_err(APIError::from)?;
-        let mut key = key
-            .reshape(((), self.num_key_value_heads, self.head_dim))
-            .map_err(APIError::from)?;
-        let mut value = value
-            .reshape(((), self.num_key_value_heads, self.head_dim))
-            .map_err(APIError::from)?;
-        let mut slot_mapping = input_metadata
+        let (batch_size, seq_len, hidden_size) = try_api!(query.shape().dims3());
+        let query = try_api!(query.reshape(((), self.num_attention_heads, self.head_dim)));
+        let mut key = try_api!(key.reshape(((), self.num_key_value_heads, self.head_dim)));
+        let mut value = try_api!(value.reshape(((), self.num_key_value_heads, self.head_dim)));
+        let mut slot_mapping = try_api!(input_metadata
             .slot_mapping
-            .flatten(0, input_metadata.slot_mapping.dims().len())
-            .map_err(APIError::from)?;
+            .flatten(0, input_metadata.slot_mapping.dims().len()));
 
         if key_cache.as_ref().is_some_and(|_| value_cache.is_some()) {
             let mut key_tch = convert_candle_to_tch(&mut key);

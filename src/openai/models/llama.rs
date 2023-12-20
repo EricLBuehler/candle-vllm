@@ -10,7 +10,7 @@ use crate::bindings::rotary_embedding;
 use crate::openai::responses::APIError;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::{convert_candle_to_tch, convert_tch_to_ptr};
+use crate::{convert_candle_to_tch, convert_tch_to_ptr, try_api};
 
 use super::ConfigLike;
 
@@ -177,33 +177,18 @@ impl CausalSelfAttention {
             .step_by(2)
             .map(|i| 1f32 / config.rope_theta.powf(i as f32 / n_elem as f32))
             .collect();
-        let theta = Tensor::new(theta.as_slice(), device).map_err(APIError::from)?;
-        let idx_theta = Tensor::arange(0, MAX_SEQ_LEN as u32, device)
-            .map_err(APIError::from)?
-            .to_dtype(DType::F32)
-            .map_err(APIError::from)?
-            .reshape((MAX_SEQ_LEN, 1))
-            .map_err(APIError::from)?
-            .matmul(
-                &theta
-                    .reshape((1, theta.elem_count()))
-                    .map_err(APIError::from)?,
+        let theta = try_api!(Tensor::new(theta.as_slice(), device));
+        let idx_theta =
+            try_api!(try_api!(try_api!(
+                try_api!(Tensor::arange(0, MAX_SEQ_LEN as u32, device)).to_dtype(DType::F32)
             )
-            .map_err(APIError::from)?;
+            .reshape((MAX_SEQ_LEN, 1)))
+            .matmul(&try_api!(theta.reshape((1, theta.elem_count())))));
         // This is different from the paper, see:
         // https://github.com/huggingface/transformers/blob/6112b1c6442aaf7affd2b0676a1cd4eee30c45cf/src/transformers/models/llama/modeling_llama.py#L112
-        let idx_theta =
-            Tensor::cat(&[&idx_theta, &idx_theta], D::Minus1).map_err(APIError::from)?;
-        let cos = idx_theta
-            .cos()
-            .map_err(APIError::from)?
-            .to_dtype(dtype)
-            .map_err(APIError::from)?;
-        let sin = idx_theta
-            .sin()
-            .map_err(APIError::from)?
-            .to_dtype(dtype)
-            .map_err(APIError::from)?;
+        let idx_theta = try_api!(Tensor::cat(&[&idx_theta, &idx_theta], D::Minus1));
+        let cos = try_api!(try_api!(idx_theta.cos()).to_dtype(dtype));
+        let sin = try_api!(try_api!(idx_theta.sin()).to_dtype(dtype));
         let last = cos.dims().len() - 1;
         Tensor::cat(&[cos, sin], last).map_err(APIError::from)
     }
@@ -240,26 +225,26 @@ impl CausalSelfAttention {
         input_metadata: &mut InputMetadata,
         cache: Option<(&Tensor, &Tensor)>,
     ) -> Result<Tensor, APIError> {
-        let (b_sz, seq_len, _) = x.dims3().map_err(APIError::from)?;
-        let q = self.q_proj.forward(x).map_err(APIError::from)?;
-        let k = self.k_proj.forward(x).map_err(APIError::from)?;
-        let v = self.v_proj.forward(x).map_err(APIError::from)?;
+        let (b_sz, seq_len, _) = try_api!(x.dims3());
+        let q = try_api!(self.q_proj.forward(x));
+        let k = try_api!(self.k_proj.forward(x));
+        let v = try_api!(self.v_proj.forward(x));
 
-        let mut q = q
-            .reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim))
-            .map_err(APIError::from)?
-            .transpose(1, 2)
-            .map_err(APIError::from)?;
-        let mut k = k
-            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))
-            .map_err(APIError::from)?
-            .transpose(1, 2)
-            .map_err(APIError::from)?;
-        let v = v
-            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))
-            .map_err(APIError::from)?
-            .transpose(1, 2)
-            .map_err(APIError::from)?;
+        let mut q =
+            try_api!(
+                try_api!(q.reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim)))
+                    .transpose(1, 2)
+            );
+        let mut k =
+            try_api!(
+                try_api!(k.reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim)))
+                    .transpose(1, 2)
+            );
+        let v =
+            try_api!(
+                try_api!(v.reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim)))
+                    .transpose(1, 2)
+            );
 
         self.apply_rotary_emb(&mut q, &mut k, positions.clone());
 
@@ -276,18 +261,18 @@ impl CausalSelfAttention {
             device,
         )?;
 
-        let y = self.o_proj.forward(&attn_output).map_err(APIError::from)?;
-        Ok(y)
+        let y = self.o_proj.forward(&attn_output).map_err(APIError::from);
+        y
     }
 
     fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self, APIError> {
         let size_in = cfg.hidden_size;
         let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
         let size_kv = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads;
-        let q_proj = linear(size_in, size_q, vb.pp("q_proj")).map_err(APIError::from)?;
-        let k_proj = linear(size_in, size_kv, vb.pp("k_proj")).map_err(APIError::from)?;
-        let v_proj = linear(size_in, size_kv, vb.pp("v_proj")).map_err(APIError::from)?;
-        let o_proj = linear(size_q, size_in, vb.pp("o_proj")).map_err(APIError::from)?;
+        let q_proj = try_api!(linear(size_in, size_q, vb.pp("q_proj")));
+        let k_proj = try_api!(linear(size_in, size_kv, vb.pp("k_proj")));
+        let v_proj = try_api!(linear(size_in, size_kv, vb.pp("v_proj")));
+        let o_proj = try_api!(linear(size_q, size_in, vb.pp("o_proj")));
 
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         Ok(Self {
@@ -361,36 +346,35 @@ impl Block {
     ) -> Result<Tensor, APIError> {
         let _enter = self.span.enter();
         let residual = x;
-        let x = self.rms_1.forward(x).map_err(APIError::from)?;
-        let x = (self
-            .attn
-            .forward(&x, positions, input_metadata, cache)
-            .map_err(APIError::from)?
-            + residual)
-            .map_err(APIError::from)?;
+        let x = try_api!(self.rms_1.forward(x));
+        let x = try_api!(
+            (try_api!(self.attn.forward(&x, positions, input_metadata, cache)) + residual)
+        );
         let residual = &x;
-        let x = (self
-            .mlp
-            .forward(&self.rms_2.forward(&x).map_err(APIError::from)?)
-            .map_err(APIError::from)?
-            + residual)
-            .map_err(APIError::from)?;
+        let x =
+            try_api!((try_api!(self.mlp.forward(&try_api!(self.rms_2.forward(&x))))) + residual);
         Ok(x)
     }
 
     fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self, APIError> {
         let span = tracing::span!(tracing::Level::TRACE, "block");
-        let attn = CausalSelfAttention::load(vb.pp("self_attn"), cfg, dtype, device)
-            .map_err(APIError::from)?;
-        let mlp = Mlp::load(vb.pp("mlp"), cfg).map_err(APIError::from)?;
-        let rms_1 = RmsNorm::load(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))
-            .map_err(APIError::from)?;
-        let rms_2 = RmsNorm::load(
+        let attn = try_api!(CausalSelfAttention::load(
+            vb.pp("self_attn"),
+            cfg,
+            dtype,
+            device
+        ));
+        let mlp = try_api!(Mlp::load(vb.pp("mlp"), cfg));
+        let rms_1 = try_api!(RmsNorm::load(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb.pp("input_layernorm")
+        ));
+        let rms_2 = try_api!(RmsNorm::load(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
-        )
-        .map_err(APIError::from)?;
+        ));
         Ok(Self {
             rms_1,
             attn,
@@ -417,8 +401,8 @@ impl Llama {
         kv_caches: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor, APIError> {
-        let (_b_sz, seq_len) = x.dims2().map_err(APIError::from)?;
-        let mut x = self.wte.forward(x).map_err(APIError::from)?;
+        let (_b_sz, seq_len) = try_api!(x.dims2());
+        let mut x = try_api!(self.wte.forward(x));
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), block) in zip(kv_caches.iter(), &mut self.blocks) {
                 x = block.forward(&x, positions, Some((k_cache, v_cache)), input_metadata)?;
@@ -428,9 +412,9 @@ impl Llama {
                 x = block.forward(&x, positions, None, input_metadata)?;
             }
         }
-        let x = self.ln_f.forward(&x).map_err(APIError::from)?;
-        let x = x.i((.., seq_len - 1, ..)).map_err(APIError::from)?;
-        let logits = self.lm_head.forward(&x).map_err(APIError::from)?;
+        let x = try_api!(self.ln_f.forward(&x));
+        let x = try_api!(x.i((.., seq_len - 1, ..)));
+        let logits = try_api!(self.lm_head.forward(&x));
         logits.to_dtype(DType::F32).map_err(APIError::from)
     }
 
