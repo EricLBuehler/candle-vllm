@@ -81,7 +81,6 @@ pub fn _memory_efficient_attention(
             .map_err(APIError::from)?;
 
             let padded_len = ((seq_len + 7) / 8) * 8;
-            //use Tensor::empty, huggingface/candle#1374
             let mut bias_new = Tensor::zeros(
                 (
                     batch_size,
