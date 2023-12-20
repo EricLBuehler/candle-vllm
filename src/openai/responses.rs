@@ -29,6 +29,18 @@ impl APIError {
     }
 }
 
+#[macro_export]
+macro_rules! try_api {
+    ($candle_result:expr) => {
+        match $candle_result {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(APIError::from(e));
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionUsageResponse {
     pub completion_tokens: usize,

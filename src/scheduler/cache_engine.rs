@@ -6,8 +6,8 @@ use std::{
 use candle_core::{DType, Device, Tensor};
 
 use crate::{
-    backend::{copy_blocks, swap_blocks},
     openai::{models::ConfigLike, responses::APIError},
+    try_api,
 };
 
 #[derive(Clone)]
@@ -75,8 +75,8 @@ impl CacheEngine {
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut gpu_cache = Vec::new();
         for _ in 0..model_config.get_num_hidden_layers() {
-            let cuda_device = Device::new_cuda(0).map_err(APIError::from)?;
-            let key_blocks = Tensor::zeros(
+            let cuda_device = try_api!(Device::new_cuda(0));
+            let key_blocks = try_api!(Tensor::zeros(
                 (
                     cache_config.num_gpu_blocks.unwrap(),
                     key_block_shape.0,
@@ -86,9 +86,8 @@ impl CacheEngine {
                 ),
                 dtype,
                 &cuda_device,
-            )
-            .map_err(APIError::from)?;
-            let value_blocks = Tensor::zeros(
+            ));
+            let value_blocks = try_api!(Tensor::zeros(
                 (
                     cache_config.num_gpu_blocks.unwrap(),
                     value_block_shape.0,
@@ -97,8 +96,7 @@ impl CacheEngine {
                 ),
                 dtype,
                 &cuda_device,
-            )
-            .map_err(APIError::from)?;
+            ));
             gpu_cache.push((key_blocks, value_blocks));
         }
         Ok(gpu_cache)
@@ -117,8 +115,8 @@ impl CacheEngine {
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut cpu_cache = Vec::new();
         for _ in 0..model_config.get_num_hidden_layers() {
-            let cuda_device = Device::new_cuda(0).map_err(APIError::from)?;
-            let key_blocks = Tensor::zeros(
+            let cuda_device = try_api!(Device::new_cuda(0));
+            let key_blocks = try_api!(Tensor::zeros(
                 (
                     cache_config.num_cpu_blocks.unwrap(),
                     key_block_shape.0,
@@ -128,9 +126,8 @@ impl CacheEngine {
                 ),
                 dtype,
                 &cuda_device,
-            )
-            .map_err(APIError::from)?;
-            let value_blocks = Tensor::zeros(
+            ));
+            let value_blocks = try_api!(Tensor::zeros(
                 (
                     cache_config.num_cpu_blocks.unwrap(),
                     value_block_shape.0,
@@ -139,8 +136,7 @@ impl CacheEngine {
                 ),
                 dtype,
                 &cuda_device,
-            )
-            .map_err(APIError::from)?;
+            ));
             cpu_cache.push((key_blocks, value_blocks));
         }
         Ok(cpu_cache)

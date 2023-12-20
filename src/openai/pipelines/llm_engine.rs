@@ -21,6 +21,7 @@ use crate::{
         sequence::{Sequence, SequenceGroup, _Sequence},
         SchedulerConfig, SchedulerOutput,
     },
+    try_api,
 };
 
 use crate::scheduler::Scheduler;
@@ -396,12 +397,11 @@ impl<'a> LLMEngine<'a> {
         let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID)?;
 
         let max_context_len = context_lens.iter().max().unwrap();
-        let context_lens = Tensor::from_vec(
+        let context_lens = try_api!(Tensor::from_vec(
             context_lens.iter().map(|x| *x as i64).collect::<Vec<_>>(),
             (context_lens.len(),),
-            &Device::new_cuda(0).map_err(APIError::from)?,
-        )
-        .map_err(APIError::from)?;
+            &try_api!(Device::new_cuda(0)),
+        ));
 
         let max_block_table_len = block_tables.iter().map(|x| x.len()).max().unwrap();
         let block_tables = _make_tensor_with_pad(

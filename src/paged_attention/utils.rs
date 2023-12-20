@@ -1,6 +1,6 @@
 use candle_core::{DType, Device, Shape, Tensor};
 
-use crate::openai::responses::APIError;
+use crate::{openai::responses::APIError, try_api};
 
 // https://github.com/mokeyish/candle-ext/blob/main/src/triangular.rs
 pub(crate) fn apply_triangular(
@@ -9,7 +9,7 @@ pub(crate) fn apply_triangular(
     upper: bool,
 ) -> Result<Tensor, APIError> {
     let device = xs.device();
-    let (l, s) = xs.dims2().map_err(APIError::from)?;
+    let (l, s) = try_api!(xs.dims2());
     let mut xs_tri = vec![];
     for i in 0..l.try_into().unwrap() {
         for j in 0..s.try_into().unwrap() {
@@ -21,11 +21,8 @@ pub(crate) fn apply_triangular(
             xs_tri.push(if cond { 0u8 } else { 1u8 });
         }
     }
-    (xs * Tensor::from_vec(xs_tri, (l * s,), device)
-        .map_err(APIError::from)?
-        .to_dtype(xs.dtype())
-        .map_err(APIError::from)?)
-    .map_err(APIError::from)
+    (xs * try_api!(try_api!(Tensor::from_vec(xs_tri, (l * s,), device)).to_dtype(xs.dtype())))
+        .map_err(APIError::from)
 }
 
 pub(crate) fn materialize_causal_mask(
@@ -40,7 +37,7 @@ pub(crate) fn materialize_causal_mask(
     } else {
         DType::F32
     };
-    let tensor = Tensor::ones(shape, create_as, device).map_err(APIError::from)?;
+    let tensor = try_api!(Tensor::ones(shape, create_as, device));
 
     let mut shift = 0usize;
     if from_bottomright {
@@ -49,14 +46,13 @@ pub(crate) fn materialize_causal_mask(
         shift = num_keys - num_queries;
     }
 
-    let mut mask =
-        apply_triangular(&tensor, shift.try_into().unwrap(), false).map_err(APIError::from)?;
+    let mut mask = try_api!(apply_triangular(&tensor, shift.try_into().unwrap(), false));
     if let Some(window_size) = window_size {
-        mask = apply_triangular(&mask, (shift - window_size + 1).try_into().unwrap(), false)
-            .map_err(APIError::from)?;
+        mask = try_api!(apply_triangular(
+            &mask,
+            (shift - window_size + 1).try_into().unwrap(),
+            false
+        ));
     }
-    mask.log()
-        .map_err(APIError::from)?
-        .to_dtype(dtype)
-        .map_err(APIError::from)
+    try_api!(mask.log()).to_dtype(dtype).map_err(APIError::from)
 }
