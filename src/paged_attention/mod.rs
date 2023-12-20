@@ -100,7 +100,6 @@ impl PagedAttention {
         input_metadata: &mut InputMetadata,
         alibi_slopes: Option<Tensor>,
     ) -> Result<Tensor, APIError> {
-        //use Tensor::empty, huggingface/candle#1374
         let mut output = query.zeros_like().map_err(APIError::from)?;
 
         let block_size = *value_cache.shape().dims().get(3).unwrap();
@@ -157,20 +156,18 @@ impl PagedAttention {
             assert_eq!(_PARTITION_SIZE % block_size, 0);
 
             let mut tmp_output = Tensor::zeros(
-                //use Tensor::empty, huggingface/candle#1374
                 (num_seqs, num_heads, max_num_partitions, head_size),
                 output.dtype(),
                 output.device(),
             )
             .map_err(APIError::from)?;
             let mut exp_sums = Tensor::zeros(
-                //use Tensor::empty, huggingface/candle#1374
                 (num_seqs, num_heads, max_num_partitions),
                 DType::F32,
                 output.device(),
             )
             .map_err(APIError::from)?;
-            let mut max_logits = exp_sums.zeros_like().map_err(APIError::from)?; //use Tensor::empty, huggingface/candle#1374
+            let mut max_logits = exp_sums.zeros_like().map_err(APIError::from)?;
 
             let mut output_tch = convert_candle_to_tch(&mut output);
             let (output_ptr, _) = convert_tch_to_ptr(&mut output_tch);

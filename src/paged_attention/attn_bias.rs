@@ -19,8 +19,7 @@ pub trait AttentionBiasBlockDiagonal {
         dtype: DType,
         device: &Device,
     ) -> Result<Tensor, APIError> {
-        //use Tensor::empty, huggingface/candle#1374
-        let mut mask = Tensor::new(
+        let mut mask = Tensor::zeros(
             &shape
                 .dims()
                 .iter()
