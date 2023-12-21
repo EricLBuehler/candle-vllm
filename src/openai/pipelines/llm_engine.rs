@@ -80,30 +80,6 @@ impl<'a> LLMEngine<'a> {
         &mut *self.pipeline
     }
 
-    fn add_request(&mut self, prompt: Encoding, request_id: String, created: u64) {
-        let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
-            prompt
-                .get_ids()
-                .to_vec()
-                .iter()
-                .map(|x| *x as usize)
-                .collect::<Vec<_>>(),
-            self.seq_id,
-            self.cache_config.block_size,
-        ))));
-        self.seq_id += 1;
-        let seq_group = SequenceGroup::new(
-            &[seq],
-            get_created_time_secs(),
-            self.group_id,
-            request_id,
-            created,
-        );
-        self.group_id += 1;
-
-        self.scheduler.add_sequence(seq_group);
-    }
-
     pub fn generate(
         &mut self,
         prompt: Encoding,
@@ -153,7 +129,7 @@ impl<'a> LLMEngine<'a> {
             let logits = self.pipeline.forward(
                 tokens,
                 positions,
-                Some(&self.cache_engine.get_mut_gpu_cache()),
+                Some(self.cache_engine.get_kv_cache()),
                 metadata,
             )?;
             let result = self.pipeline.sample(logits, &sampling_params, &seqs)?;
@@ -224,8 +200,10 @@ impl<'a> LLMEngine<'a> {
 
         Ok(responses.into_values().collect::<Vec<_>>())
     }
+}
 
-    fn execute_scheduler_ops(&mut self, scheduler_output: &SchedulerOutput) {
+impl<'a> LLMEngine<'a> {
+    fn execute_scheduler_ops(&self, scheduler_output: &SchedulerOutput) {
         self.cache_engine
             .swap_in(scheduler_output.blocks_to_swap_in.clone());
         self.cache_engine
@@ -426,5 +404,29 @@ impl<'a> LLMEngine<'a> {
                 is_prompt: false,
             },
         })
+    }
+
+    fn add_request(&mut self, prompt: Encoding, request_id: String, created: u64) {
+        let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
+            prompt
+                .get_ids()
+                .to_vec()
+                .iter()
+                .map(|x| *x as usize)
+                .collect::<Vec<_>>(),
+            self.seq_id,
+            self.cache_config.block_size,
+        ))));
+        self.seq_id += 1;
+        let seq_group = SequenceGroup::new(
+            &[seq],
+            get_created_time_secs(),
+            self.group_id,
+            request_id,
+            created,
+        );
+        self.group_id += 1;
+
+        self.scheduler.add_sequence(seq_group);
     }
 }
