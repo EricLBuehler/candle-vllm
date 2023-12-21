@@ -261,8 +261,7 @@ impl CausalSelfAttention {
             device,
         )?;
 
-        let y = self.o_proj.forward(&attn_output).map_err(APIError::from);
-        y
+        self.o_proj.forward(&attn_output).map_err(APIError::from)
     }
 
     fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self, APIError> {

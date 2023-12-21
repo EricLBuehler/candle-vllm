@@ -87,7 +87,7 @@ impl<'a> LLMEngine<'a> {
         created: u64,
         sampling_params: SamplingParams,
     ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
-        self.add_request(prompt, request_id, created);
+        self.add_request(prompt, request_id, created, &sampling_params);
 
         let mut responses = HashMap::new();
         while self.scheduler.has_unfinished_sequences() {
@@ -406,20 +406,30 @@ impl<'a> LLMEngine<'a> {
         })
     }
 
-    fn add_request(&mut self, prompt: Encoding, request_id: String, created: u64) {
-        let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
-            prompt
-                .get_ids()
-                .to_vec()
-                .iter()
-                .map(|x| *x as usize)
-                .collect::<Vec<_>>(),
-            self.seq_id,
-            self.cache_config.block_size,
-        ))));
-        self.seq_id += 1;
+    fn add_request(
+        &mut self,
+        prompt: Encoding,
+        request_id: String,
+        created: u64,
+        sampling_params: &SamplingParams,
+    ) {
+        let mut seqs = Vec::new();
+        for _ in 0..sampling_params.n {
+            let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
+                prompt
+                    .get_ids()
+                    .to_vec()
+                    .iter()
+                    .map(|x| *x as usize)
+                    .collect::<Vec<_>>(),
+                self.seq_id,
+                self.cache_config.block_size,
+            ))));
+            self.seq_id += 1;
+            seqs.push(seq);
+        }
         let seq_group = SequenceGroup::new(
-            &[seq],
+            &seqs,
             get_created_time_secs(),
             self.group_id,
             request_id,

@@ -21,7 +21,7 @@ pub trait AttentionBiasBlockDiagonal {
         device: &Device,
     ) -> Result<Tensor, APIError> {
         let mut mask = try_api!(try_api!(Tensor::zeros(
-            &shape.dims().iter().map(|x| *x).collect::<Vec<_>>()[2..],
+            &shape.dims().to_vec()[2..],
             dtype,
             device,
         ))
