@@ -22,11 +22,11 @@ impl CacheConfig {
         }
         self.num_gpu_blocks = Some(num_gpu_blocks);
     }
-    pub fn set_num_cpu_blocks(&mut self, num_gpu_blocks: usize) {
+    pub fn set_num_cpu_blocks(&mut self, num_cpu_blocks: usize) {
         if self.num_gpu_blocks.is_some() {
             self.fully_init = true;
         }
-        self.num_gpu_blocks = Some(num_gpu_blocks);
+        self.num_cpu_blocks = Some(num_cpu_blocks);
     }
 }
 
