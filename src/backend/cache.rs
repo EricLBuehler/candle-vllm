@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use candle_core::{
     cuda_backend::cudarc::driver::{CudaSlice, DevicePtr},
-    Device, Storage, Tensor,
+    DType, Device, Storage, Tensor,
 };
 
 use crate::{
-    backend::{COPY_BLOCKS_KERNEL_F32, COPY_BLOCKS_PTX},
+    backend::{get_or_load_func, COPY_BLOCKS_KERNEL, COPY_BLOCKS_PTX},
     openai::responses::APIError,
     try_api,
 };
@@ -31,7 +31,12 @@ pub fn copy_blocks(
         panic!("Expected the key caches to be on a CUDA device.")
     };
 
-    let kernel = try_api!(dev.get_or_load_func(COPY_BLOCKS_KERNEL_F32, COPY_BLOCKS_PTX));
+    let kernel = try_api!(get_or_load_func(
+        COPY_BLOCKS_PTX,
+        COPY_BLOCKS_KERNEL,
+        DType::F32,
+        dev
+    ));
 
     todo!()
 }
@@ -55,14 +60,14 @@ pub fn swap_blocks(
             let Storage::Cuda(dst_storage) = &*dst_storage else { unreachable!() };
             let src_ptr = src_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(src_layout.start_offset()).unwrap();
             let dst_ptr = dst_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
-            
+
             for (src_block_number, dst_block_number) in block_mapping {
                 let src_offset: u64 = (src_block_number * block_size_in_bytes).try_into().unwrap();
                 let dst_offset: u64 = (dst_block_number * block_size_in_bytes).try_into().unwrap();
                 // u8s because we copy by bytes
                 let src_slice: CudaSlice<u8> = unsafe { src_dev.upgrade_device_ptr(src_ptr+src_offset, block_size_in_bytes) };
                 let mut dst_slice = unsafe { dst_dev.upgrade_device_ptr(dst_ptr+dst_offset, block_size_in_bytes) };
-                
+
                 try_api!(src_dev.dtod_copy(&src_slice, &mut dst_slice));
             }
         }
@@ -81,7 +86,7 @@ pub fn swap_blocks(
                 let dst_offset: u64 = (dst_block_number * block_size_in_bytes).try_into().unwrap();
                 // u8s because we copy by bytes
                 let mut dst_slice: CudaSlice<u8> = unsafe { dst_dev.upgrade_device_ptr(dst_ptr+dst_offset, block_size_in_bytes) };
-                
+
                 try_api!(dst_dev.htod_sync_copy_into(&src_slice[src_offset..src_offset+block_size_in_bytes], &mut dst_slice));
             }
         }

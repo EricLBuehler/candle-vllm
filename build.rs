@@ -9,7 +9,7 @@ fn main() {
         .filter(|file| {
             file.path()
                 .extension()
-                .expect(&format!("No valid extension for {file:?}."))
+                .unwrap_or_else(|| panic!("No valid extension for {file:?}."))
                 == "cu"
         })
         .map(|file| {
@@ -27,8 +27,10 @@ fn main() {
             .args(["--default-stream", "per-thread"])
             .args(["--output-directory", "kernels/"]);
         command.arg(&format!("kernels/{file}"));
-        let mut res = command.spawn().expect(&format!("nvcc failed for {file}."));
-        let res = res.wait().expect(&format!("nvcc failed."));
+        let mut res = command
+            .spawn()
+            .unwrap_or_else(|_| panic!("nvcc failed for {file}."));
+        let res = res.wait().unwrap_or_else(|_| panic!("nvcc failed."));
         if !res.success() {
             panic!("{command:?} failed with exit code {res}");
         }
@@ -61,7 +63,7 @@ fn compute_cap() -> Result<usize, Box<dyn Error>> {
             .replace('.', "");
         let cap = cap
             .parse::<usize>()
-            .expect(&format!("cannot parse as int {cap}"));
+            .unwrap_or_else(|_| panic!("cannot parse as int {cap}"));
         println!("cargo:rustc-env=CUDA_COMPUTE_CAP={cap}");
         cap
     };
