@@ -30,7 +30,6 @@ __device__ void copy_blocks_internal_kernel(
 }
 
 // Monomorphize the generics ourselves
-// Unsupported currently: DType::F16, DType::BF16. TODO(EricLBuehler): Add support
 extern "C" __global__ void copy_blocks_kernel_u8(int64_t* key_cache_ptrs,
   int64_t* value_cache_ptrs,
   const int64_t* __restrict__ block_mapping,
