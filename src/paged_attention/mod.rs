@@ -108,12 +108,12 @@ impl PagedAttention {
             //Run PagedAttention V2
             assert_eq!(_PARTITION_SIZE % block_size, 0);
 
-            let mut exp_sums = try_api!(Tensor::zeros(
+            let exp_sums = try_api!(Tensor::zeros(
                 (num_seqs, num_heads, max_num_partitions),
                 DType::F32,
                 query.device(),
             ));
-            let mut max_logits = try_api!(exp_sums.zeros_like());
+            let max_logits = try_api!(exp_sums.zeros_like());
 
             paged_attention_v2(
                 exp_sums,

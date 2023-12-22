@@ -194,8 +194,8 @@ pub fn scaled_dot_product_attention(
     query: &Tensor,
     key: &Tensor,
     value: &Tensor,
-    attn_bias: &Tensor,
-    dropout_p: Option<f32>,
+    _attn_bias: &Tensor,
+    _dropout_p: Option<f32>,
     scale_factor: f32,
 ) -> Result<Tensor, APIError> {
     candle_flash_attn::flash_attn(query, key, value, scale_factor, false).map_err(APIError::from)

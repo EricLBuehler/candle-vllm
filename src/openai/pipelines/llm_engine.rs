@@ -96,7 +96,7 @@ impl<'a> LLMEngine<'a> {
                 todo!();
             }
 
-            self.execute_scheduler_ops(&scheduler_outputs);
+            try_api!(self.execute_scheduler_ops(&scheduler_outputs));
 
             let scheduled = &*scheduler_outputs.scheduled;
 
@@ -129,7 +129,7 @@ impl<'a> LLMEngine<'a> {
             let logits = self.pipeline.forward(
                 tokens,
                 positions,
-                Some(self.cache_engine.get_kv_cache()),
+                Some(&*self.cache_engine.get_kv_cache()),
                 metadata,
             )?;
             let result = self.pipeline.sample(logits, &sampling_params, &seqs)?;
@@ -203,13 +203,19 @@ impl<'a> LLMEngine<'a> {
 }
 
 impl<'a> LLMEngine<'a> {
-    fn execute_scheduler_ops(&self, scheduler_output: &SchedulerOutput) {
-        self.cache_engine
-            .swap_in(scheduler_output.blocks_to_swap_in.clone());
-        self.cache_engine
-            .swap_out(scheduler_output.blocks_to_swap_out.clone());
+    fn execute_scheduler_ops(
+        &mut self,
+        scheduler_output: &SchedulerOutput,
+    ) -> Result<(), APIError> {
+        try_api!(self
+            .cache_engine
+            .swap_in(scheduler_output.blocks_to_swap_in.clone()));
+        try_api!(self
+            .cache_engine
+            .swap_out(scheduler_output.blocks_to_swap_out.clone()));
         self.cache_engine
             .copy(scheduler_output.blocks_to_copy.clone());
+        Ok(())
     }
 
     fn prepare_prompt(
