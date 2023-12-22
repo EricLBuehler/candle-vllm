@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, iter::zip};
 
 use candle_core::{
     cuda_backend::cudarc::driver::{CudaSlice, DevicePtr},
@@ -30,13 +30,23 @@ pub fn copy_blocks(
     let Device::Cuda(dev) = dev else {
         panic!("Expected the key caches to be on a CUDA device.")
     };
+    let num_layers = key_caches.len();
 
-    let kernel = try_api!(get_or_load_func(
-        COPY_BLOCKS_PTX,
-        COPY_BLOCKS_KERNEL,
-        DType::F32,
-        dev
-    ));
+    let mut key_cache_ptrs = Vec::new();
+    key_cache_ptrs.reserve(num_layers);
+    let mut value_cache_ptrs = Vec::new();
+    value_cache_ptrs.reserve(num_layers);
+    for (key_cache, value_cache) in zip(&key_caches, &value_caches) {
+        let key_offset = key_cache.storage_and_layout().1.start_offset();
+        let Storage::Cuda(key_storage) = &*key_cache.storage_and_layout().0 else {unreachable!()};
+        let key_ptr = *try_api!(key_storage.as_cuda_slice::<u8>()).device_ptr();
+        key_cache_ptrs.push(key_ptr as usize + key_offset);
+        
+        let value_offset = value_cache.storage_and_layout().1.start_offset();
+        let Storage::Cuda(value_storage) = &*value_cache.storage_and_layout().0 else {unreachable!()};
+        let value_ptr = *try_api!(value_storage.as_cuda_slice::<u8>()).device_ptr();
+        value_cache_ptrs.push(value_ptr as usize + value_offset);
+    }
 
     todo!()
 }
