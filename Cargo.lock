@@ -1118,7 +1118,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "scratch",
- "syn 2.0.39",
+ "syn 2.0.41",
 ]
 
 [[package]]
@@ -1135,7 +1135,7 @@ checksum = "587663dd5fb3d10932c8aecfe7c844db1bcf0aee93eeab08fac13dc1212c2e7f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.39",
+ "syn 2.0.41",
 ]
 
 [[package]]
