@@ -5,7 +5,11 @@ use candle_core::{
     Device, Storage, Tensor,
 };
 
-use crate::{backend::COPY_BLOCKS_KERNEL, openai::responses::APIError, try_api};
+use crate::{
+    backend::{COPY_BLOCKS_KERNEL_F32, COPY_BLOCKS_PTX},
+    openai::responses::APIError,
+    try_api,
+};
 
 pub fn reshape_and_cache(
     _key: Tensor,
@@ -27,8 +31,7 @@ pub fn copy_blocks(
         panic!("Expected the key caches to be on a CUDA device.")
     };
 
-    let kernel =
-        try_api!(dev.get_or_load_func(COPY_BLOCKS_KERNEL.function, COPY_BLOCKS_KERNEL.ptx));
+    let kernel = try_api!(dev.get_or_load_func(COPY_BLOCKS_KERNEL_F32, COPY_BLOCKS_PTX));
 
     todo!()
 }
