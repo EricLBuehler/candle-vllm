@@ -1,12 +1,6 @@
 use std::{collections::HashMap, mem::ManuallyDrop};
 
-use candle_core::{
-    cuda_backend::cudarc::driver::{
-        result::{memcpy_dtod_async, memcpy_dtoh_async, memcpy_htod_async},
-        DevicePtr,
-    },
-    CudaDevice, Device, Storage, Tensor,
-};
+use candle_core::{cuda_backend::cudarc::driver::CudaSlice, Device, Storage, Tensor};
 
 use crate::openai::responses::APIError;
 
@@ -41,52 +35,29 @@ pub fn swap_blocks(
             }
             let (src_storage, _) = src.storage_and_layout();
             let (dst_storage, _) = dst.storage_and_layout();
-            assert!(matches!(src_storage, Storage::Cuda(_)));
-            assert!(matches!(dst_storage, Storage::Cuda(_)));
-            let Storage::Cuda(src_storage) = src_storage;
-            let Storage::Cuda(dst_storage) = dst_storage;
-            let src_ptr = src_storage.as_cuda_slice().map_err(APIError::from)?.device_ptr();
-            let dst_ptr = dst_storage.as_cuda_slice().map_err(APIError::from)?.device_ptr();
+            assert!(matches!(&*src_storage, Storage::Cuda(_)));
+            assert!(matches!(&*dst_storage, Storage::Cuda(_)));
+            let Storage::Cuda(src_storage) = &*src_storage;
+            let Storage::Cuda(dst_storage) = &*dst_storage;
+            // u8s because we copy by bytes
+            let src_slice: &CudaSlice<u8> = src_storage.as_cuda_slice().map_err(APIError::from)?;
+            let dst_slice: &CudaSlice<u8> = dst_storage.as_cuda_slice().map_err(APIError::from)?;
             
-            // Same device, this is OK
             let stream = ManuallyDrop::new(src_dev.cu_stream());
             for (src_block_number, dst_block_number) in block_mapping {
                 let src_offset = src_block_number * block_size_in_bytes;
                 let dst_offset = dst_block_number * block_size_in_bytes;
-                unsafe { memcpy_dtod_async(dst_ptr + dst_offset, src_ptr + src_offset, block_size_in_bytes, stream) }.map_err(APIError::from)?
+                let src_slice = src_slice.slice(src_offset..src_offset+block_size_in_bytes);
+                let mut dst_slice = dst_slice.slice_mut(dst_offset..dst_offset+block_size_in_bytes);
+                
+                src_dev.dtod_copy(&src_slice, &mut dst_slice);
             }
         }
         (Device::Cpu, Device::Cuda(dst_dev)) => {
-            let (src_storage, _) = src.storage_and_layout();
-            let (dst_storage, _) = dst.storage_and_layout();
-            assert!(matches!(src_storage, Storage::Cpu));
-            assert!(matches!(dst_storage, Storage::Cuda(_)));
-            let Storage::Cpu(src_storage) = src_storage;
-            let Storage::Cuda(dst_storage) = dst_storage;
-            let src_slice = src_storage.as_slice().map_err(APIError::from)?;
-            let dst_ptr = dst_storage.as_cuda_slice().map_err(APIError::from)?.device_ptr();
             
-            let stream = ManuallyDrop::new(src_dev.cu_stream());
-            for (src_block_number, dst_block_number) in block_mapping {
-                let dst_offset = dst_block_number * block_size_in_bytes;
-                unsafe { memcpy_htod_async(dst_ptr + dst_offset, src_slice[src_block_number], stream) }.map_err(APIError::from)?
-            }
         }
         (Device::Cuda(src_dev), Device::Cpu) => {
-            let (src_storage, _) = src.storage_and_layout();
-            let (dst_storage, _) = dst.storage_and_layout();
-            assert!(matches!(src_storage, Storage::Cuda(_)));
-            assert!(matches!(dst_storage, Storage::Cpu));
-            let Storage::Cuda(src_storage) = src_storage;
-            let Storage::Cpu(dst_storage) = dst_storage;
-            let src_ptr = src_storage.as_cuda_slice().map_err(APIError::from)?.device_ptr();
-            let dst_slice = dst_storage.as_slice().map_err(APIError::from)?;
             
-            let stream = ManuallyDrop::new(src_dev.cu_stream());
-            for (src_block_number, dst_block_number) in block_mapping {
-                let src_offset = src_block_number * block_size_in_bytes;
-                unsafe { memcpy_dtoh_async(src_ptr + src_offset, dst_slice[dst_block_number], stream) }.map_err(APIError::from)?
-            }
         }
         (src, dst) => {
             return Err(APIError::new(format!("Tensors must be on either the GPU or CPU to swap,, got {src:?} (src) and {dst:?} (dst).")))

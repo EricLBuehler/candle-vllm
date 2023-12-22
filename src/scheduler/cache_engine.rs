@@ -6,6 +6,7 @@ use std::{
 use candle_core::{DType, Device, Tensor};
 
 use crate::{
+    backend::{copy_blocks, swap_blocks},
     openai::{models::ConfigLike, responses::APIError},
     try_api,
 };
@@ -212,7 +213,7 @@ impl CacheEngine {
             gpu_cache.iter_mut().map(|(a, b)| (a, b)).unzip();
         let (key_caches, value_caches) = caches;
 
-        // NOTE(EricLBuehler): from a NOTE(woosuk): This implicitly synchronizes the CPU and GPU
+        // NOTE(EricLBuehler): This may synchronize the CPU and GPU
         copy_blocks(key_caches, value_caches, src_to_dst);
     }
 }

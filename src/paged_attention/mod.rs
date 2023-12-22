@@ -111,7 +111,7 @@ impl PagedAttention {
             let mut exp_sums = try_api!(Tensor::zeros(
                 (num_seqs, num_heads, max_num_partitions),
                 DType::F32,
-                output.device(),
+                query.device(),
             ));
             let mut max_logits = try_api!(exp_sums.zeros_like());
 
