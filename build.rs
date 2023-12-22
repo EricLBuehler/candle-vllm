@@ -1,4 +1,4 @@
-use std::{error::Error, fs, thread,};
+use std::{error::Error, fs, thread};
 
 const OPT_LEVEL: usize = 2;
 const CPP_STD: usize = 17;
@@ -31,7 +31,7 @@ fn main() {
         return;
     }
 
-    let chunked_files = files.chunks(files.len()/WORKERS);
+    let chunked_files = files.chunks(files.len() / WORKERS);
     let mut handles = Vec::new();
     for files in chunked_files {
         let files = files.to_vec();
@@ -40,9 +40,9 @@ fn main() {
         });
         handles.push(handle);
     }
-    
+
     // Wait for all to finish
-    while !handles.iter().all(|handle| handle.is_finished()) { }
+    while !handles.iter().all(|handle| handle.is_finished()) {}
 }
 
 fn compile_files(files: Vec<String>, compute_cap: usize) {
