@@ -37,13 +37,27 @@ pub fn copy_blocks(
     let mut value_cache_ptrs = Vec::new();
     value_cache_ptrs.reserve(num_layers);
     for (key_cache, value_cache) in zip(&key_caches, &value_caches) {
-        let key_offset: u64 = key_cache.storage_and_layout().1.start_offset().try_into().unwrap();
-        let Storage::Cuda(key_storage) = &*key_cache.storage_and_layout().0 else {unreachable!()};
+        let key_offset: u64 = key_cache
+            .storage_and_layout()
+            .1
+            .start_offset()
+            .try_into()
+            .unwrap();
+        let Storage::Cuda(key_storage) = &*key_cache.storage_and_layout().0 else {
+            unreachable!()
+        };
         let key_ptr = *try_api!(key_storage.as_cuda_slice::<u8>()).device_ptr();
         key_cache_ptrs.push(key_ptr + key_offset);
-        
-        let value_offset: u64 = value_cache.storage_and_layout().1.start_offset().try_into().unwrap();
-        let Storage::Cuda(value_storage) = &*value_cache.storage_and_layout().0 else {unreachable!()};
+
+        let value_offset: u64 = value_cache
+            .storage_and_layout()
+            .1
+            .start_offset()
+            .try_into()
+            .unwrap();
+        let Storage::Cuda(value_storage) = &*value_cache.storage_and_layout().0 else {
+            unreachable!()
+        };
         let value_ptr = *try_api!(value_storage.as_cuda_slice::<u8>()).device_ptr();
         value_cache_ptrs.push(value_ptr + value_offset);
     }
