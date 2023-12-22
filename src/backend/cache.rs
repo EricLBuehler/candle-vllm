@@ -1,7 +1,10 @@
 use std::{collections::HashMap, slice};
 
 use candle_core::{
-    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr},
+    cuda_backend::cudarc::{
+        driver::{CudaSlice, DevicePtr},
+        nvrtc::compile_ptx,
+    },
     Device, Storage, Tensor,
 };
 
@@ -18,10 +21,19 @@ pub fn reshape_and_cache(
 }
 
 pub fn copy_blocks(
-    _key_caches: Vec<&mut Tensor>,
-    _value_caches: Vec<&mut Tensor>,
-    _block_mapping: HashMap<usize, Vec<usize>>,
-) {
+    key_caches: Vec<&mut Tensor>,
+    value_caches: Vec<&mut Tensor>,
+    block_mapping: HashMap<usize, Vec<usize>>,
+) -> Result<(), APIError> {
+    let dev = key_caches.first().unwrap().device();
+    let Device::Cuda(dev) = dev else {
+        panic!("Expected the key caches to be on a CUDA device.")
+    };
+
+    let kernel_src = include_str!("copy_blocks_kernel.cu");
+    let ptx = compile_ptx(kernel_src).unwrap();
+    try_api!(dev.load_ptx(ptx, "candle-vllm", &["copy_blocks_kernel"]));
+
     todo!()
 }
 
