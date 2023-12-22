@@ -1,8 +1,8 @@
 use std::{collections::HashMap, iter::zip};
 
 use candle_core::{
-    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr},
-    DType, Device, Storage, Tensor,
+    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchConfig},
+    DType, Device, IndexOp, Storage, Tensor,
 };
 
 use crate::{
@@ -30,7 +30,7 @@ pub fn copy_blocks(
     let Device::Cuda(dev) = dev else {
         panic!("Expected the key caches to be on a CUDA device.")
     };
-    let num_layers = key_caches.len();
+    let num_layers: u32 = key_caches.len().try_into().unwrap();
 
     let mut key_cache_ptrs = Vec::new();
     key_cache_ptrs.reserve(num_layers);
@@ -61,6 +61,33 @@ pub fn copy_blocks(
         let value_ptr = *try_api!(value_storage.as_cuda_slice::<u8>()).device_ptr();
         value_cache_ptrs.push(value_ptr + value_offset);
     }
+
+    let mut block_mapping_vec: Vec<i64> = Vec::new();
+    for (src_block_number, dst_blocks) in block_mapping {
+        for dst_block_number in dst_blocks {
+            block_mapping_vec.push(src_block_number.try_into().unwrap());
+            block_mapping_vec.push(dst_block_number.try_into().unwrap());
+        }
+    }
+    /// Safety: Drop block_mapping_array before block_mapping_vec
+    let block_mapping_array = block_mapping_vec.as_ptr();
+    let num_pairs: u32 = (block_mapping_vec.len() / 2).try_into().unwrap();
+
+    // TODO(EricLBuehler): vLLM creates non contiguous tensors here which then has its data pointer accessed. We should
+    // just pass the array of pointers to the kernel instead.
+
+    let numel_per_block = try_api!(key_caches.first().unwrap().i(0))
+        .shape()
+        .dims()
+        .iter()
+        .product::<u32>();
+    let launch_conf = LaunchConfig {
+        grid_dim: (num_layers, num_pairs, 1u32),
+        block_dim: (numel_per_block.min(1024), 1u32, 1u32),
+        shared_mem_bytes: 0,
+    };
+
+    // TODO(EricLBuehler): Launch the kernel
 
     todo!()
 }
