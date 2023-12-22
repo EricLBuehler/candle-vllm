@@ -27,7 +27,11 @@ fn main() {
             .args(["--default-stream", "per-thread"])
             .args(["--output-directory", "kernels/"]);
         command.arg(&format!("kernels/{file}"));
-        command.spawn().expect(&format!("nvcc failed for {file}."));
+        let mut res = command.spawn().expect(&format!("nvcc failed for {file}."));
+        let res = res.wait().expect(&format!("nvcc failed."));
+        if !res.success() {
+            panic!("{command:?} failed with exit code {res}");
+        }
     }
 }
 

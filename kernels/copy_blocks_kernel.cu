@@ -1,3 +1,5 @@
+#include <stdint.h>
+
 // Grid: (num_layers, num_pairs)
 template<typename scalar_t>
 __device__ void copy_blocks_internal_kernel(
@@ -27,9 +29,55 @@ __device__ void copy_blocks_internal_kernel(
   }
 }
 
-extern "C" __global__ void copy_blocks_kernel_i32(int64_t* key_cache_ptrs,
+// Monomorphize the generics ourselves
+// Unsupported currently: DType::F16, DType::BF16. TODO(EricLBuehler): Add support
+extern "C" __global__ void copy_blocks_kernel_u8(int64_t* key_cache_ptrs,
   int64_t* value_cache_ptrs,
   const int64_t* __restrict__ block_mapping,
   const int numel_per_block) {
-  copy_blocks_internal_kernel<int>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
+  copy_blocks_internal_kernel<uint8_t>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
+}
+
+extern "C" __global__ void copy_blocks_kernel_u32(int64_t* key_cache_ptrs,
+  int64_t* value_cache_ptrs,
+  const int64_t* __restrict__ block_mapping,
+  const int numel_per_block) {
+  copy_blocks_internal_kernel<uint32_t>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
+}
+
+extern "C" __global__ void copy_blocks_kernel_i64(int64_t* key_cache_ptrs,
+  int64_t* value_cache_ptrs,
+  const int64_t* __restrict__ block_mapping,
+  const int numel_per_block) {
+  copy_blocks_internal_kernel<int64_t>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
+}
+
+extern "C" __global__ void copy_blocks_kernel_f32(int64_t* key_cache_ptrs,
+  int64_t* value_cache_ptrs,
+  const int64_t* __restrict__ block_mapping,
+  const int numel_per_block) {
+  copy_blocks_internal_kernel<float>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
+}
+
+extern "C" __global__ void copy_blocks_kernel_f64(int64_t* key_cache_ptrs,
+  int64_t* value_cache_ptrs,
+  const int64_t* __restrict__ block_mapping,
+  const int numel_per_block) {
+  copy_blocks_internal_kernel<double>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
+}
+
+// f16, bf16 are special cases: We use a 16-bit integer to simulate the bit width. 
+// SAFETY: This is technically UB due to aliasing, but it is OK because the width is compatible.
+extern "C" __global__ void copy_blocks_kernel_f16(int64_t* key_cache_ptrs,
+  int64_t* value_cache_ptrs,
+  const int64_t* __restrict__ block_mapping,
+  const int numel_per_block) {
+  copy_blocks_internal_kernel<int16_t>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
+}
+
+extern "C" __global__ void copy_blocks_kernel_bf16(int64_t* key_cache_ptrs,
+  int64_t* value_cache_ptrs,
+  const int64_t* __restrict__ block_mapping,
+  const int numel_per_block) {
+  copy_blocks_internal_kernel<int16_t>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
 }
