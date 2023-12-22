@@ -6,9 +6,11 @@ use serde::Deserialize;
 use std::iter::zip;
 use std::sync::Arc;
 
+use crate::bindings::rotary_embedding;
 use crate::openai::responses::APIError;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
+use crate::{convert_candle_to_tch, convert_tch_to_ptr, try_api};
 
 use super::ConfigLike;
 
@@ -128,34 +130,6 @@ impl Config {
     }
 }
 
-#[derive(Clone)]
-pub struct Cache {
-    cos: Tensor,
-    sin: Tensor,
-}
-
-impl Cache {
-    pub fn new(dtype: DType, config: &Config, device: &Device) -> candle_core::Result<Self> {
-        // precompute freqs_cis
-        let n_elem = config.hidden_size / config.num_attention_heads;
-        let theta: Vec<_> = (0..n_elem)
-            .step_by(2)
-            .map(|i| 1f32 / config.rope_theta.powf(i as f32 / n_elem as f32))
-            .collect();
-        let theta = Tensor::new(theta.as_slice(), device)?;
-        let idx_theta = Tensor::arange(0, MAX_SEQ_LEN as u32, device)?
-            .to_dtype(DType::F32)?
-            .reshape((MAX_SEQ_LEN, 1))?
-            .matmul(&theta.reshape((1, theta.elem_count()))?)?;
-        // This is different from the paper, see:
-        // https://github.com/huggingface/transformers/blob/6112b1c6442aaf7affd2b0676a1cd4eee30c45cf/src/transformers/models/llama/modeling_llama.py#L112
-        let idx_theta = Tensor::cat(&[&idx_theta, &idx_theta], D::Minus1)?;
-        let cos = idx_theta.cos()?.to_dtype(dtype)?;
-        let sin = idx_theta.sin()?.to_dtype(dtype)?;
-        Ok(Self { cos, sin })
-    }
-}
-
 fn embedding(cfg: &Config, vb: VarBuilder) -> candle_core::Result<Embedding> {
     let embeddings = vb.get((cfg.vocab_size, cfg.hidden_size), "weight")?;
     Ok(Embedding::new(embeddings, cfg.hidden_size))
@@ -187,62 +161,92 @@ struct CausalSelfAttention {
     num_attention_heads: usize,
     num_key_value_heads: usize,
     head_dim: usize,
-    cache: Cache,
-    span: tracing::Span,
-    span_rot: tracing::Span,
     attn: PagedAttention,
+    cos_sin_cache: Tensor,
 }
 
 impl CausalSelfAttention {
-    fn apply_rotary_emb(&self, x: &Tensor, index_pos: usize) -> candle_core::Result<Tensor> {
-        let _enter = self.span_rot.enter();
-        let (b_sz, _, seq_len, hidden_size) = x.dims4()?;
-        let cos = self.cache.cos.narrow(0, index_pos, seq_len)?;
-        let sin = self.cache.sin.narrow(0, index_pos, seq_len)?;
-        let cos = cos.broadcast_as((b_sz, 1, seq_len, hidden_size))?;
-        let sin = sin.broadcast_as((b_sz, 1, seq_len, hidden_size))?;
-        let x1 = x.narrow(D::Minus1, 0, hidden_size / 2)?;
-        let x2 = x.narrow(D::Minus1, hidden_size / 2, hidden_size / 2)?;
-        let rotate_x = Tensor::cat(&[&x2.neg()?, &x1], D::Minus1)?;
-        let rope = (x.broadcast_mul(&cos)? + rotate_x.broadcast_mul(&sin)?)?;
-        Ok(rope)
+    fn compute_cos_sin_cache(
+        config: &Config,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Tensor, APIError> {
+        // precompute freqs_cis
+        let n_elem = config.hidden_size / config.num_attention_heads;
+        let theta: Vec<_> = (0..n_elem)
+            .step_by(2)
+            .map(|i| 1f32 / config.rope_theta.powf(i as f32 / n_elem as f32))
+            .collect();
+        let theta = try_api!(Tensor::new(theta.as_slice(), device));
+        let idx_theta =
+            try_api!(try_api!(try_api!(
+                try_api!(Tensor::arange(0, MAX_SEQ_LEN as u32, device)).to_dtype(DType::F32)
+            )
+            .reshape((MAX_SEQ_LEN, 1)))
+            .matmul(&try_api!(theta.reshape((1, theta.elem_count())))));
+        // This is different from the paper, see:
+        // https://github.com/huggingface/transformers/blob/6112b1c6442aaf7affd2b0676a1cd4eee30c45cf/src/transformers/models/llama/modeling_llama.py#L112
+        let idx_theta = try_api!(Tensor::cat(&[&idx_theta, &idx_theta], D::Minus1));
+        let cos = try_api!(try_api!(idx_theta.cos()).to_dtype(dtype));
+        let sin = try_api!(try_api!(idx_theta.sin()).to_dtype(dtype));
+        let last = cos.dims().len() - 1;
+        Tensor::cat(&[cos, sin], last).map_err(APIError::from)
+    }
+
+    fn apply_rotary_emb(&mut self, q: &mut Tensor, k: &mut Tensor, mut positions: Tensor) {
+        let mut q_tch = convert_candle_to_tch(q);
+        let (q_ptr, _) = convert_tch_to_ptr(&mut q_tch);
+
+        let mut k_tch = convert_candle_to_tch(k);
+        let (k_ptr, _) = convert_tch_to_ptr(&mut k_tch);
+
+        let mut pos_tch = convert_candle_to_tch(&mut positions);
+        let (pos_ptr, _) = convert_tch_to_ptr(&mut pos_tch);
+
+        let mut cache_tch = convert_candle_to_tch(&mut self.cos_sin_cache);
+        let (cache_ptr, _) = convert_tch_to_ptr(&mut cache_tch);
+
+        unsafe {
+            rotary_embedding(
+                pos_ptr,
+                q_ptr,
+                k_ptr,
+                self.head_dim.try_into().unwrap(),
+                cache_ptr,
+                false,
+            );
+        }
     }
 
     fn forward(
         &mut self,
         x: &Tensor,
-        index_pos: usize,
+        positions: &Tensor,
         input_metadata: &mut InputMetadata,
         cache: Option<(&Tensor, &Tensor)>,
     ) -> Result<Tensor, APIError> {
-        let _enter = self.span.enter();
-        let (b_sz, seq_len, _) = x.dims3().map_err(APIError::from)?;
-        let q = self.q_proj.forward(x).map_err(APIError::from)?;
-        let k = self.k_proj.forward(x).map_err(APIError::from)?;
-        let v = self.v_proj.forward(x).map_err(APIError::from)?;
+        let (b_sz, seq_len, _) = try_api!(x.dims3());
+        let q = try_api!(self.q_proj.forward(x));
+        let k = try_api!(self.k_proj.forward(x));
+        let v = try_api!(self.v_proj.forward(x));
 
-        let q = q
-            .reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim))
-            .map_err(APIError::from)?
-            .transpose(1, 2)
-            .map_err(APIError::from)?;
-        let k = k
-            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))
-            .map_err(APIError::from)?
-            .transpose(1, 2)
-            .map_err(APIError::from)?;
-        let v = v
-            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))
-            .map_err(APIError::from)?
-            .transpose(1, 2)
-            .map_err(APIError::from)?;
+        let mut q =
+            try_api!(
+                try_api!(q.reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim)))
+                    .transpose(1, 2)
+            );
+        let mut k =
+            try_api!(
+                try_api!(k.reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim)))
+                    .transpose(1, 2)
+            );
+        let v =
+            try_api!(
+                try_api!(v.reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim)))
+                    .transpose(1, 2)
+            );
 
-        let q = self
-            .apply_rotary_emb(&q, index_pos)
-            .map_err(APIError::from)?;
-        let k = self
-            .apply_rotary_emb(&k, index_pos)
-            .map_err(APIError::from)?;
+        self.apply_rotary_emb(&mut q, &mut k, positions.clone());
 
         let dtype = q.dtype();
         let device = q.device().clone();
@@ -257,20 +261,17 @@ impl CausalSelfAttention {
             device,
         )?;
 
-        let y = self.o_proj.forward(&attn_output).map_err(APIError::from)?;
-        Ok(y)
+        self.o_proj.forward(&attn_output).map_err(APIError::from)
     }
 
-    fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> Result<Self, APIError> {
-        let span = tracing::span!(tracing::Level::TRACE, "attn");
-        let span_rot = tracing::span!(tracing::Level::TRACE, "attn-rot");
+    fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self, APIError> {
         let size_in = cfg.hidden_size;
         let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
         let size_kv = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads;
-        let q_proj = linear(size_in, size_q, vb.pp("q_proj")).map_err(APIError::from)?;
-        let k_proj = linear(size_in, size_kv, vb.pp("k_proj")).map_err(APIError::from)?;
-        let v_proj = linear(size_in, size_kv, vb.pp("v_proj")).map_err(APIError::from)?;
-        let o_proj = linear(size_q, size_in, vb.pp("o_proj")).map_err(APIError::from)?;
+        let q_proj = try_api!(linear(size_in, size_q, vb.pp("q_proj")));
+        let k_proj = try_api!(linear(size_in, size_kv, vb.pp("k_proj")));
+        let v_proj = try_api!(linear(size_in, size_kv, vb.pp("v_proj")));
+        let o_proj = try_api!(linear(size_q, size_in, vb.pp("o_proj")));
 
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         Ok(Self {
@@ -281,9 +282,6 @@ impl CausalSelfAttention {
             num_attention_heads: cfg.num_attention_heads,
             num_key_value_heads: cfg.num_key_value_heads,
             head_dim,
-            cache: cache.clone(),
-            span,
-            span_rot,
             attn: PagedAttention::new(
                 cfg.num_attention_heads,
                 head_dim,
@@ -294,6 +292,7 @@ impl CausalSelfAttention {
                 None,
             )
             .map_err(APIError::from)?,
+            cos_sin_cache: Self::compute_cos_sin_cache(cfg, device, dtype)?,
         })
     }
 }
@@ -340,42 +339,41 @@ impl Block {
     fn forward(
         &mut self,
         x: &Tensor,
-        index_pos: usize,
+        positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor, APIError> {
         let _enter = self.span.enter();
         let residual = x;
-        let x = self.rms_1.forward(x).map_err(APIError::from)?;
-        let x = (self
-            .attn
-            .forward(&x, index_pos, input_metadata, cache)
-            .map_err(APIError::from)?
-            + residual)
-            .map_err(APIError::from)?;
+        let x = try_api!(self.rms_1.forward(x));
+        let x = try_api!(
+            (try_api!(self.attn.forward(&x, positions, input_metadata, cache)) + residual)
+        );
         let residual = &x;
-        let x = (self
-            .mlp
-            .forward(&self.rms_2.forward(&x).map_err(APIError::from)?)
-            .map_err(APIError::from)?
-            + residual)
-            .map_err(APIError::from)?;
+        let x =
+            try_api!((try_api!(self.mlp.forward(&try_api!(self.rms_2.forward(&x))))) + residual);
         Ok(x)
     }
 
-    fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> Result<Self, APIError> {
+    fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self, APIError> {
         let span = tracing::span!(tracing::Level::TRACE, "block");
-        let attn =
-            CausalSelfAttention::load(vb.pp("self_attn"), cache, cfg).map_err(APIError::from)?;
-        let mlp = Mlp::load(vb.pp("mlp"), cfg).map_err(APIError::from)?;
-        let rms_1 = RmsNorm::load(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))
-            .map_err(APIError::from)?;
-        let rms_2 = RmsNorm::load(
+        let attn = try_api!(CausalSelfAttention::load(
+            vb.pp("self_attn"),
+            cfg,
+            dtype,
+            device
+        ));
+        let mlp = try_api!(Mlp::load(vb.pp("mlp"), cfg));
+        let rms_1 = try_api!(RmsNorm::load(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb.pp("input_layernorm")
+        ));
+        let rms_2 = try_api!(RmsNorm::load(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
-        )
-        .map_err(APIError::from)?;
+        ));
         Ok(Self {
             rms_1,
             attn,
@@ -398,33 +396,38 @@ impl Llama {
     pub fn forward(
         &mut self,
         x: &Tensor,
-        index_pos: usize,
+        positions: &Tensor,
         kv_caches: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor, APIError> {
-        let (_b_sz, seq_len) = x.dims2().map_err(APIError::from)?;
-        let mut x = self.wte.forward(x).map_err(APIError::from)?;
+        let (_b_sz, seq_len) = try_api!(x.dims2());
+        let mut x = try_api!(self.wte.forward(x));
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), block) in zip(kv_caches.iter(), &mut self.blocks) {
-                x = block.forward(&x, index_pos, Some((k_cache, v_cache)), input_metadata)?;
+                x = block.forward(&x, positions, Some((k_cache, v_cache)), input_metadata)?;
             }
         } else {
             for block in &mut self.blocks {
-                x = block.forward(&x, index_pos, None, input_metadata)?;
+                x = block.forward(&x, positions, None, input_metadata)?;
             }
         }
-        let x = self.ln_f.forward(&x).map_err(APIError::from)?;
-        let x = x.i((.., seq_len - 1, ..)).map_err(APIError::from)?;
-        let logits = self.lm_head.forward(&x).map_err(APIError::from)?;
+        let x = try_api!(self.ln_f.forward(&x));
+        let x = try_api!(x.i((.., seq_len - 1, ..)));
+        let logits = try_api!(self.lm_head.forward(&x));
         logits.to_dtype(DType::F32).map_err(APIError::from)
     }
 
-    pub fn load(vb: VarBuilder, cache: &Cache, cfg: &Config) -> candle_core::Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+    ) -> candle_core::Result<Self> {
         let wte = embedding(cfg, vb.pp("model.embed_tokens"))?;
         let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
         let ln_f = RmsNorm::load(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
         let blocks: Vec<_> = (0..cfg.num_hidden_layers)
-            .map(|i| Block::load(vb.pp(&format!("model.layers.{i}")), cache, cfg).unwrap())
+            .map(|i| Block::load(vb.pp(&format!("model.layers.{i}")), cfg, dtype, device).unwrap())
             .collect();
 
         Ok(Self {

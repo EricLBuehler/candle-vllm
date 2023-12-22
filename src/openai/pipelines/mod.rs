@@ -1,13 +1,16 @@
 use std::{env, path::PathBuf, sync::Arc};
 
 use candle_core::{DType, Device, Tensor, WithDType};
+use candle_sampling::logits_processor::Logprobs;
 use either::Either;
 
-use crate::paged_attention::input_metadata::InputMetadata;
+use crate::{
+    paged_attention::input_metadata::InputMetadata, scheduler::sequence::Sequence, try_api,
+};
 
 use super::{
-    conversation::Conversation, models::ConfigLike, responses::APIError, PipelineConfig,
-    TokenizerWrapper,
+    conversation::Conversation, models::ConfigLike, responses::APIError,
+    sampling_params::SamplingParams, PipelineConfig, TokenizerWrapper,
 };
 
 pub mod llama;
@@ -15,7 +18,7 @@ pub mod llama;
 /// which are used to scheduler and manage the cache during generation requests, respectively.
 pub mod llm_engine;
 
-type TokenOrFinishReason = Either<(usize, f32), String>;
+type TokenOrFinishReason = Either<Logprobs, String>;
 
 pub trait ModulePipeline<'s>: Send + Sync {
     fn forward(
@@ -24,6 +27,13 @@ pub trait ModulePipeline<'s>: Send + Sync {
         input_positions: Tensor,
         kv_cache: Option<Arc<Vec<(Tensor, Tensor)>>>,
         input_metadata: InputMetadata,
+    ) -> Result<Tensor, APIError>;
+
+    fn sample(
+        &mut self,
+        logits: Tensor,
+        sampling_params: &SamplingParams,
+        seqs: &[(&usize, &Arc<Sequence>)],
     ) -> Result<Vec<TokenOrFinishReason>, APIError>;
 
     fn name(&self) -> &str;
@@ -48,10 +58,11 @@ fn _make_tensor_with_pad<D: WithDType>(
         assert!(x_i.len() <= max_len);
         x_i.extend([pad].repeat(max_len - x_i.len()));
         let shape = (x_i.len(),);
-        padded_x.push(
-            Tensor::from_vec(x_i, shape, &Device::new_cuda(0).map_err(APIError::from)?)
-                .map_err(APIError::from)?,
-        );
+        padded_x.push(try_api!(Tensor::from_vec(
+            x_i,
+            shape,
+            &try_api!(Device::new_cuda(0))
+        )));
     }
     Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
 }

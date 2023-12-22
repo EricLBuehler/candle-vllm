@@ -1,5 +1,6 @@
 #include <torch/extension.h>
 
+extern "C" {
 void paged_attention_v1(
   torch::Tensor& out,
   torch::Tensor& query,
@@ -29,18 +30,6 @@ void paged_attention_v2(
   int max_context_len,
   const c10::optional<torch::Tensor>& alibi_slopes);
 
-void rms_norm(
-  torch::Tensor& out,
-  torch::Tensor& input,
-  torch::Tensor& weight,
-  float epsilon);
-
-void fused_add_rms_norm(
-  torch::Tensor& input,
-  torch::Tensor& residual,
-  torch::Tensor& weight,
-  float epsilon);
-
 void rotary_embedding(
   torch::Tensor& positions,
   torch::Tensor& query,
@@ -48,28 +37,4 @@ void rotary_embedding(
   int head_size,
   torch::Tensor& cos_sin_cache,
   bool is_neox);
-
-void silu_and_mul(
-  torch::Tensor& out,
-  torch::Tensor& input);
-
-void gelu_new(
-  torch::Tensor& out,
-  torch::Tensor& input);
-
-void gelu_fast(
-  torch::Tensor& out,
-  torch::Tensor& input);
-
-torch::Tensor awq_gemm(
-  torch::Tensor _in_feats,
-  torch::Tensor _kernel,
-  torch::Tensor _scaling_factors,
-  torch::Tensor _zeros,
-  int split_k_iters);
-
-void squeezellm_gemm(
-  torch::Tensor vec,
-  torch::Tensor mat,
-  torch::Tensor mul,
-  torch::Tensor lookup_table);
+}

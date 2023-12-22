@@ -1,4 +1,5 @@
 use actix_web::error;
+use candle_sampling::logits_processor::Logprobs;
 use derive_more::{Display, Error};
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,18 @@ impl APIError {
     }
 }
 
+#[macro_export]
+macro_rules! try_api {
+    ($candle_result:expr) => {
+        match $candle_result {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(APIError::from(e));
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionUsageResponse {
     pub completion_tokens: usize,
@@ -43,14 +56,16 @@ pub struct ChatChoiceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Logprobs {}
+pub struct WrapperLogprobs {
+    pub content: Vec<Logprobs>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChoice {
     pub message: ChatChoiceData,
     pub finish_reason: Option<String>,
     pub index: usize,
-    pub logprobs: Option<Logprobs>,
+    pub logprobs: Option<WrapperLogprobs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

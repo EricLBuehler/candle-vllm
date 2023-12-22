@@ -7,6 +7,7 @@ use candle_core::{DType, Device, Shape, Tensor};
 use crate::openai::responses::APIError;
 
 use crate::paged_attention::utils;
+use crate::try_api;
 
 pub trait AttentionBiasBlockDiagonal {
     /// Queries and Keys are each divided into the same number of blocks.
@@ -19,18 +20,11 @@ pub trait AttentionBiasBlockDiagonal {
         dtype: DType,
         device: &Device,
     ) -> Result<Tensor, APIError> {
-        //use Tensor::empty, huggingface/candle#1374
-        let mut mask = Tensor::new(
-            &shape
-                .dims()
-                .iter()
-                .map(|x| (*x).try_into().unwrap())
-                .collect::<Vec<u32>>()[2..],
-            device,
-        )
-        .map_err(APIError::from)?
-        .to_dtype(dtype)
-        .map_err(APIError::from)?;
+        let mut mask =
+            try_api!(
+                try_api!(Tensor::zeros(&shape.dims().to_vec()[2..], dtype, device,))
+                    .to_dtype(dtype)
+            );
 
         for (_, ((q_start, q_end), (k_start, k_end))) in zip(
             self.get_q_seqinfo().intervals(),
@@ -38,7 +32,7 @@ pub trait AttentionBiasBlockDiagonal {
         )
         .enumerate()
         {
-            mask.slice_assign(
+            try_api!(mask.slice_assign(
                 &[
                     q_start as usize..q_end as usize,
                     k_start as usize..k_end as usize,
@@ -48,12 +42,11 @@ pub trait AttentionBiasBlockDiagonal {
                     dtype,
                     device,
                 )?,
-            )
-            .map_err(APIError::from)?;
+            ));
         }
 
         for _ in 0..shape.dims().len() - 2 {
-            mask = mask.unsqueeze(0).map_err(APIError::from)?;
+            mask = try_api!(mask.unsqueeze(0));
         }
         mask.expand(shape).map_err(APIError::from)
     }
@@ -123,11 +116,11 @@ impl BlockDiagonalCausalMask {
         kv_seqlen: Option<Vec<u32>>,
     ) -> Result<Box<dyn AttentionBiasBlockDiagonal>, APIError> {
         assert!(kv_seqlen.is_none() || q_seqlen.len() == kv_seqlen.as_ref().unwrap().len());
-        let q_seqinfo = SeqLenInfo::from_seqlens(q_seqlen.iter()).map_err(APIError::from)?;
+        let q_seqinfo = try_api!(SeqLenInfo::from_seqlens(q_seqlen.iter()));
         let k_seqinfo = if kv_seqlen.is_none() || &q_seqlen == kv_seqlen.as_ref().unwrap() {
             q_seqinfo.clone()
         } else {
-            SeqLenInfo::from_seqlens(kv_seqlen.unwrap().iter()).map_err(APIError::from)?
+            try_api!(SeqLenInfo::from_seqlens(kv_seqlen.unwrap().iter()))
         };
         Ok(Box::new(Self::new(q_seqinfo, k_seqinfo, None)))
     }
@@ -223,9 +216,9 @@ impl AttentionBiasBlockDiagonal for LowerTriangularMaskWithTensorBias {
         dtype: DType,
         device: &Device,
     ) -> Result<Tensor, APIError> {
-        (utils::materialize_causal_mask(shape, dtype, device, None, false)
-            .map_err(APIError::from)?
-            + &self.bias)
+        (try_api!(utils::materialize_causal_mask(
+            shape, dtype, device, None, false
+        )) + &self.bias)
             .map_err(APIError::from)
     }
     fn _create_block_mask(

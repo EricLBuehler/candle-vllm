@@ -7,7 +7,8 @@
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
 
-**candle-vllm is in the final stages of active, breaking development. However, it is currently unstable.**
+**Development status: candle-vllm is currently unable to compile as the CUDA kernels are being developed.**
+**See the `cudarc_backend` branch for an implementation from scratch, and the `master` branch, which links to the vLLM kernels.**
 
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
@@ -61,42 +62,41 @@ Installing `candle-vllm` is as simple as the following steps. If you have any pr
 0) Be sure to install Rust here: https://www.rust-lang.org/tools/install
 1) Run `sudo apt install libssl-dev` or equivalent install command
 2) Run `sudo apt install pkg-config` or equivalent install command
-3) See the "Compiling PagedAttention CUDA kernels" section.
+3) Run `sudo apt-get install python3-dev` or equivalent install command
+4) Install `torch 2.1.0` with `pip install torch==2.1.0`
+5) Run `sudo find / -name libpython3.so`, taking note of it and adding it to line 2 of `build.rs`.
+6) Install `setuptools >= 49.4.0`: `pip install setuptools==49.4.0`
+7) Run `python3 setup.py build` to compile the vLLM CUDA kernels.
+8) `cp build/lib<TAB>/<TAB>/<TAB> librustbind.so` to extract the compiled CUDA kernels. `<TAB>` will use your terminal's autocomplete.
 
 Go to either the "Install with Pytorch" or "Install with libtorch" section to continue.
 
-### Compiling PagedAttention CUDA kernels
-1) Install `setuptools >= 49.4.0`: `pip install setuptools==49.4.0`
-2) Run `python3 setup.py build` to compile the PagedAttention CUDA headers.
-3) `todo!()`
 
 ### Install with Pytorch (recommended)
-4) Run `sudo find / -name libtorch_cpu.so`, taking note of the paths returned.
-5) Install Pytorch 2.1.0 from https://pytorch.org/get-started/previous-versions/. Be sure that the correct CUDA version is used (`nvcc --version`).
-6) Run `sudo find / -name libtorch_cpu.so` again. Take note of the new path (not including the filename).
-7) Add the following to `.bashrc` or equivalent:
+9) Run `python3 -c 'import torch;print(torch.__file__.replace("__init__.py", "lib/"))'`
+10) Add the following to `.bashrc` or equivalent:
 ```bash
 # candle-vllm
-export LD_LIBRARY_PATH=/the/new/path/:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/the/path/printed/:$LD_LIBRARY_PATH
 export LIBTORCH_USE_PYTORCH=1
 ```
-8) Either run `source .bashrc` (or equivalent) or reload the terminal.
+11) Either run `source .bashrc` (or equivalent) or reload the terminal.
 
 ### Install with libtorch (manual)
-4) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget` command, ensure the following:
+9) Download libtorch, the Pytorch C++ library, from https://pytorch.org/get-started/locally/. Before executing the `wget` command, ensure the following:
     1) Be sure that you are downloading Pytorch 2.1.0 instead of Pytorch 2.1.1 (change the link, the number is near the end).
     2) If on Linux, use the link corresponding to the CXX11 ABI.
     3) The correct CUDA version is used (`nvcc --version`).
 
-5) Unzip the directory.
+10) Unzip the directory.
 
-6) Add the following line to your `.bashrc` or equivalent:
+11) Add the following line to your `.bashrc` or equivalent:
 ```bash
 # candle-lora
 export LIBTORCH=/path/to/libtorch
 ```
 
-7) Either run `source .bashrc` (or equivalent) or reload your terminal.
+12) Either run `source .bashrc` (or equivalent) or reload your terminal.
 
 #### Error loading shared libraries
 If you get this error: `error while loading shared libraries: libtorch_cpu.so: cannot open shared object file: No such file or directory`,

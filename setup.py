@@ -145,16 +145,19 @@ ext_modules = []
 vllm_extension = CUDAExtension(
     name="candle_vllm._C",
     sources=[
-        # "csrc/cache_kernels.cu",
+        "csrc/cache_kernels.cu",
         "csrc/attention/attention_kernels.cu",
-        # "csrc/pos_encoding_kernels.cu",
-        # "csrc/activation_kernels.cu",
-        # "csrc/layernorm_kernels.cu",
-        # "csrc/quantization/awq/gemm_kernels.cu",
-        # "csrc/quantization/squeezellm/quant_cuda_kernel.cu",
-        # "csrc/cuda_utils_kernels.cu",
-        "csrc/ops.h",
-        "csrc/cache.h",
+        "csrc/pos_encoding_kernels.cu",
+        #"csrc/activation_kernels.cu",
+        #"csrc/layernorm_kernels.cu",
+        #"csrc/quantization/awq/gemm_kernels.cu",
+        #"csrc/quantization/squeezellm/quant_cuda_kernel.cu",
+        #"csrc/cuda_utils_kernels.cu",
+        
+        #"csrc/ops.h",
+        #"csrc/cache.h",
+
+        "csrc/rustbind.cpp"
     ],
     extra_compile_args={
         "cxx": CXX_FLAGS,

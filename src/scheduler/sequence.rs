@@ -3,20 +3,23 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use candle_sampling::logits_processor::Logprobs;
+
 use super::block_engine::LogicalTokenBlock;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum SequenceStatus {
     FinishedIgnored,
     Waiting,
     Running,
     Swapped,
     FinishedAborted,
+    Finished(String),
 }
 
 pub struct SequenceData {
     prompt_token_ids: Vec<usize>,
-    output_token_ids: Vec<usize>,
+    output_token_ids: Vec<Logprobs>,
     cumulative_logprob: f32,
     status: SequenceStatus,
 }
@@ -31,9 +34,9 @@ impl SequenceData {
         }
     }
 
-    pub fn append_token_id(&mut self, token_id: usize, logprob: f32) {
-        self.output_token_ids.push(token_id);
-        self.cumulative_logprob += logprob;
+    pub fn append_token_id(&mut self, logprobs: Logprobs) {
+        self.cumulative_logprob += logprobs.logprob;
+        self.output_token_ids.push(logprobs);
     }
 
     pub fn set_status(&mut self, status: SequenceStatus) {
@@ -52,7 +55,6 @@ pub struct _Sequence {
     seq_id: usize,
     logical_token_blocks: Vec<LogicalTokenBlock>,
     block_size: usize,
-    finish_reason: Option<String>,
 }
 
 impl _Sequence {
@@ -62,15 +64,14 @@ impl _Sequence {
             seq_id,
             logical_token_blocks: Vec::new(),
             block_size,
-            finish_reason: None,
         };
         this.append_tokens_to_blocks(prompt_token_ids);
         this
     }
 
-    pub fn add_token(&mut self, token: usize, logprob: f32) {
-        self.deref_mut().append_token_id(token, logprob);
-        self.append_token_to_blocks(token);
+    pub fn add_token(&mut self, logprobs: Logprobs) {
+        self.append_token_to_blocks(logprobs.token);
+        self.deref_mut().append_token_id(logprobs);
     }
 
     pub fn blocks_to_add_new_tok(&mut self) -> usize {
@@ -105,7 +106,13 @@ impl _Sequence {
 
     pub fn get_token_ids(&self) -> Vec<usize> {
         let mut res = self.deref().prompt_token_ids.clone();
-        res.extend(self.deref().output_token_ids.clone());
+        res.extend(
+            self.deref()
+                .output_token_ids
+                .iter()
+                .map(|logprobs| logprobs.token)
+                .clone(),
+        );
         res
     }
 
@@ -113,14 +120,16 @@ impl _Sequence {
         if self.deref().output_token_ids.is_empty() {
             *self.deref().prompt_token_ids.last().unwrap()
         } else {
-            *self.deref().output_token_ids.last().unwrap()
+            self.deref().output_token_ids.last().unwrap().token
         }
     }
 
     pub fn is_finished(&self) -> bool {
         matches!(
             self.deref().status,
-            SequenceStatus::FinishedAborted | SequenceStatus::FinishedIgnored
+            SequenceStatus::FinishedAborted
+                | SequenceStatus::FinishedIgnored
+                | SequenceStatus::Finished(_)
         )
     }
 
@@ -129,11 +138,25 @@ impl _Sequence {
     }
 
     pub fn set_finish_reason(&mut self, finish_reason: String) {
-        self.finish_reason = Some(finish_reason);
+        self.deref()
+            .set_status(SequenceStatus::Finished(finish_reason.clone()));
     }
 
-    pub fn get_finish_reason(&self) -> &String {
-        self.finish_reason.as_ref().unwrap()
+    pub fn get_finish_reason(&self) -> String {
+        match &self.deref().status {
+            SequenceStatus::Finished(state) => state.clone(),
+            SequenceStatus::FinishedAborted => "abort".to_string(),
+            SequenceStatus::FinishedIgnored => "length".to_string(),
+            _ => {
+                unreachable!("No finish reason.")
+            }
+        }
+    }
+
+    #[must_use]
+    /// Clones the internal logprobs.
+    pub fn get_output_tokens(&self) -> Vec<Logprobs> {
+        self.deref().output_token_ids.clone() // TODO(EricLBuehler): Better way to do this?
     }
 
     fn append_tokens_to_blocks(&mut self, tokens: Vec<usize>) {
@@ -224,7 +247,7 @@ impl SequenceGroup {
 
     pub fn set_status(&self, status: SequenceStatus) {
         for seq in self.seqs.values() {
-            seq.deref_mut().deref().set_status(status);
+            seq.deref_mut().deref().set_status(status.clone());
         }
     }
 

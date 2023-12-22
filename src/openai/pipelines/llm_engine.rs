@@ -9,7 +9,9 @@ use tokenizers::Encoding;
 
 use crate::{
     openai::{
-        responses::{APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse},
+        responses::{
+            APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse, WrapperLogprobs,
+        },
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
     },
@@ -19,6 +21,7 @@ use crate::{
         sequence::{Sequence, SequenceGroup, _Sequence},
         SchedulerConfig, SchedulerOutput,
     },
+    try_api,
 };
 
 use crate::scheduler::Scheduler;
@@ -77,30 +80,6 @@ impl<'a> LLMEngine<'a> {
         &mut *self.pipeline
     }
 
-    fn add_request(&mut self, prompt: Encoding, request_id: String, created: u64) {
-        let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
-            prompt
-                .get_ids()
-                .to_vec()
-                .iter()
-                .map(|x| *x as usize)
-                .collect::<Vec<_>>(),
-            self.seq_id,
-            self.cache_config.block_size,
-        ))));
-        self.seq_id += 1;
-        let seq_group = SequenceGroup::new(
-            &[seq],
-            get_created_time_secs(),
-            self.group_id,
-            request_id,
-            created,
-        );
-        self.group_id += 1;
-
-        self.scheduler.add_sequence(seq_group);
-    }
-
     pub fn generate(
         &mut self,
         prompt: Encoding,
@@ -108,7 +87,7 @@ impl<'a> LLMEngine<'a> {
         created: u64,
         sampling_params: SamplingParams,
     ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
-        self.add_request(prompt, request_id, created);
+        self.add_request(prompt, request_id, created, &sampling_params);
 
         let mut responses = HashMap::new();
         while self.scheduler.has_unfinished_sequences() {
@@ -147,17 +126,18 @@ impl<'a> LLMEngine<'a> {
                 self.prepare_decode(scheduled)
             }?;
 
-            let result = self.pipeline.forward(
+            let logits = self.pipeline.forward(
                 tokens,
                 positions,
                 Some(self.cache_engine.get_kv_cache()),
                 metadata,
             )?;
+            let result = self.pipeline.sample(logits, &sampling_params, &seqs)?;
 
             for (result, (_, seq)) in zip(result, seqs) {
                 match result {
-                    Either::Left((token, logprob)) => {
-                        seq.deref_mut().add_token(token, logprob);
+                    Either::Left(logprobs) => {
+                        seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
                         seq.deref_mut().set_finish_reason(finish_reason)
@@ -182,11 +162,10 @@ impl<'a> LLMEngine<'a> {
 
                     let mut choices = Vec::new();
                     for (index, seq) in top_n.iter().enumerate() {
-                        let data = seq
-                            .deref_mut()
-                            .get_token_ids()
+                        let outputs = seq.deref_mut().get_output_tokens();
+                        let data = outputs
                             .iter()
-                            .map(|x| (*x).try_into().unwrap())
+                            .map(|x| x.token.try_into().unwrap())
                             .collect::<Vec<_>>();
                         let data = self.pipeline.tokenizer().detokenize(&data)?;
                         let choice = ChatChoice {
@@ -196,7 +175,7 @@ impl<'a> LLMEngine<'a> {
                             },
                             finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
                             index,
-                            logprobs: None, // TODO(EricLBuehler): actually add this
+                            logprobs: Some(WrapperLogprobs { content: outputs }),
                         };
                         choices.push(choice);
                     }
@@ -221,7 +200,9 @@ impl<'a> LLMEngine<'a> {
 
         Ok(responses.into_values().collect::<Vec<_>>())
     }
+}
 
+impl<'a> LLMEngine<'a> {
     fn execute_scheduler_ops(&self, scheduler_output: &SchedulerOutput) {
         self.cache_engine
             .swap_in(scheduler_output.blocks_to_swap_in.clone());
@@ -394,12 +375,11 @@ impl<'a> LLMEngine<'a> {
         let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID)?;
 
         let max_context_len = context_lens.iter().max().unwrap();
-        let context_lens = Tensor::from_vec(
+        let context_lens = try_api!(Tensor::from_vec(
             context_lens.iter().map(|x| *x as i64).collect::<Vec<_>>(),
             (context_lens.len(),),
-            &Device::new_cuda(0).map_err(APIError::from)?,
-        )
-        .map_err(APIError::from)?;
+            &try_api!(Device::new_cuda(0)),
+        ));
 
         let max_block_table_len = block_tables.iter().map(|x| x.len()).max().unwrap();
         let block_tables = _make_tensor_with_pad(
@@ -424,5 +404,39 @@ impl<'a> LLMEngine<'a> {
                 is_prompt: false,
             },
         })
+    }
+
+    fn add_request(
+        &mut self,
+        prompt: Encoding,
+        request_id: String,
+        created: u64,
+        sampling_params: &SamplingParams,
+    ) {
+        let mut seqs = Vec::new();
+        for _ in 0..sampling_params.n {
+            let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
+                prompt
+                    .get_ids()
+                    .to_vec()
+                    .iter()
+                    .map(|x| *x as usize)
+                    .collect::<Vec<_>>(),
+                self.seq_id,
+                self.cache_config.block_size,
+            ))));
+            self.seq_id += 1;
+            seqs.push(seq);
+        }
+        let seq_group = SequenceGroup::new(
+            &seqs,
+            get_created_time_secs(),
+            self.group_id,
+            request_id,
+            created,
+        );
+        self.group_id += 1;
+
+        self.scheduler.add_sequence(seq_group);
     }
 }

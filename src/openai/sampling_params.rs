@@ -1,5 +1,8 @@
 use std::ops::Range;
 
+use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
+use tokenizers::Tokenizer;
+
 use super::{requests::StopTokens, responses::APIError};
 
 const SAMPLING_EPS: f32 = 1e-5;
@@ -62,10 +65,11 @@ pub struct SamplingParams {
     /// Whether to ignore EOS token.
     pub ignore_eos: bool,
     /// Max number of toks to gen per output seq.
-    ///rec. default = 16
+    /// rec. default = 16
     pub max_tokens: usize,
     /// Num of log probs to return per output token. Follows OpenAI API, return result include the log probabilities on the `logprobs` most likely tokens.
     /// will always return the log prob of the sampled token, so there may be up to `logprobs+1` elements in the response.
+    /// Default = 1
     pub logprobs: Option<usize>,
     /// Num of log probs to return per prompt token.
     pub prompt_logprobs: Option<usize>,
@@ -130,13 +134,41 @@ impl SamplingParams {
         Ok(this)
     }
 
-    pub fn sampling_type(&self) -> SamplingType {
-        if self.use_beam_search {
-            SamplingType::BEAM
-        } else if self.temperature < SAMPLING_EPS {
-            SamplingType::GREEDY
+    pub fn get_logits_processor<'a>(
+        &self,
+        seed: u64,
+        tokenizer: &'a Tokenizer,
+        top_n_logprobs: usize,
+    ) -> LogitsProcessor<'a> {
+        if self.top_k == -1 && self.top_p == 1. {
+            // Greedy
+            LogitsProcessor::new(
+                seed,
+                Some(self.temperature.into()),
+                SamplingMethod::Multinomial,
+                top_n_logprobs,
+                tokenizer,
+            )
+        } else if self.top_k > 0 && self.top_p == 1. {
+            // Top-k
+            LogitsProcessor::new(
+                seed,
+                Some(self.temperature.into()),
+                SamplingMethod::TopK(self.top_k.try_into().unwrap()),
+                top_n_logprobs,
+                tokenizer,
+            )
+        } else if self.top_k == -1 && self.top_p != 1. {
+            // Top-p
+            LogitsProcessor::new(
+                seed,
+                Some(self.temperature.into()),
+                SamplingMethod::TopP(self.top_p.into()),
+                top_n_logprobs,
+                tokenizer,
+            )
         } else {
-            SamplingType::RANDOM
+            unreachable!()
         }
     }
 
