@@ -8,19 +8,19 @@ use candle_core::{
 use crate::{openai::responses::APIError, try_api};
 
 pub fn reshape_and_cache(
-    key: Tensor,
-    value: Tensor,
-    key_cache: &mut Tensor,
-    value_cache: &mut Tensor,
-    slot_mapping: Tensor,
+    _key: Tensor,
+    _value: Tensor,
+    _key_cache: &mut Tensor,
+    _value_cache: &mut Tensor,
+    _slot_mapping: Tensor,
 ) {
     todo!()
 }
 
 pub fn copy_blocks(
-    key_caches: Vec<&mut Tensor>,
-    value_caches: Vec<&mut Tensor>,
-    block_mapping: HashMap<usize, Vec<usize>>,
+    _key_caches: Vec<&mut Tensor>,
+    _value_caches: Vec<&mut Tensor>,
+    _block_mapping: HashMap<usize, Vec<usize>>,
 ) {
     todo!()
 }
@@ -55,10 +55,10 @@ pub fn swap_blocks(
                 try_api!(src_dev.dtod_copy(&src_slice, &mut dst_slice));
             }
         }
-        (Device::Cpu, Device::Cuda(dst_dev)) => {
+        (Device::Cpu, Device::Cuda(_dst_dev)) => {
             
         }
-        (Device::Cuda(src_dev), Device::Cpu) => {
+        (Device::Cuda(_src_dev), Device::Cpu) => {
             
         }
         (src, dst) => {

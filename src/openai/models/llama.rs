@@ -197,7 +197,7 @@ impl CausalSelfAttention {
             positions,
             q,
             k,
-            self.head_dim.try_into().unwrap(),
+            self.head_dim,
             self.cos_sin_cache.clone(),
             false,
         );
@@ -246,8 +246,7 @@ impl CausalSelfAttention {
             device,
         )?;
 
-        let y = self.o_proj.forward(&attn_output).map_err(APIError::from);
-        y
+        self.o_proj.forward(&attn_output).map_err(APIError::from)
     }
 
     fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self, APIError> {

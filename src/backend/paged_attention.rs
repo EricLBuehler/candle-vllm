@@ -1,33 +1,35 @@
 use candle_core::Tensor;
 
+#[allow(clippy::too_many_arguments)]
 pub fn paged_attention_v1(
-    query: Tensor,
-    key_cache: Tensor,
-    value_cache: Tensor,
-    head_mapping: Tensor,
-    scale: f32,
-    block_tables: Tensor,
-    context_lens: Tensor,
-    block_size: usize,
-    max_context_len: usize,
-    alibi_slopes: Option<Tensor>,
+    _query: Tensor,
+    _key_cache: Tensor,
+    _value_cache: Tensor,
+    _head_mapping: Tensor,
+    _scale: f32,
+    _block_tables: Tensor,
+    _context_lens: Tensor,
+    _block_size: usize,
+    _max_context_len: usize,
+    _alibi_slopes: Option<Tensor>,
 ) -> Tensor {
     todo!()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn paged_attention_v2(
-    exp_sums: Tensor,
-    max_logits: Tensor,
-    query: Tensor,
-    key_cache: Tensor,
-    value_cache: Tensor,
-    head_mapping: Tensor,
-    scale: f32,
-    block_tables: Tensor,
-    context_lens: Tensor,
-    block_size: usize,
-    max_context_len: usize,
-    alibi_slopes: Option<Tensor>,
+    _exp_sums: Tensor,
+    _max_logits: Tensor,
+    _query: Tensor,
+    _key_cache: Tensor,
+    _value_cache: Tensor,
+    _head_mapping: Tensor,
+    _scale: f32,
+    _block_tables: Tensor,
+    _context_lens: Tensor,
+    _block_size: usize,
+    _max_context_len: usize,
+    _alibi_slopes: Option<Tensor>,
 ) -> Tensor {
     todo!()
 }

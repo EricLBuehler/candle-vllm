@@ -101,7 +101,7 @@ impl PagedAttention {
                 input_metadata.block_tables.as_ref().unwrap().clone(),
                 input_metadata.context_lens.as_ref().unwrap().clone(),
                 block_size,
-                input_metadata.max_context_len.unwrap().try_into().unwrap(),
+                input_metadata.max_context_len.unwrap(),
                 alibi_slopes,
             )
         } else {

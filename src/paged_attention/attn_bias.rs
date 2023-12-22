@@ -20,12 +20,11 @@ pub trait AttentionBiasBlockDiagonal {
         dtype: DType,
         device: &Device,
     ) -> Result<Tensor, APIError> {
-        let mut mask = try_api!(try_api!(Tensor::zeros(
-            &shape.dims().iter().map(|x| *x).collect::<Vec<_>>()[2..],
-            dtype,
-            device,
-        ))
-        .to_dtype(dtype));
+        let mut mask =
+            try_api!(
+                try_api!(Tensor::zeros(&shape.dims().to_vec()[2..], dtype, device,))
+                    .to_dtype(dtype)
+            );
 
         for (_, ((q_start, q_end), (k_start, k_end))) in zip(
             self.get_q_seqinfo().intervals(),
