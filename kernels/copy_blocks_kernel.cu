@@ -1,6 +1,6 @@
 // Grid: (num_layers, num_pairs)
 template<typename scalar_t>
-__global__ void copy_blocks_kernel(
+__device__ void copy_blocks_internal_kernel(
   int64_t* key_cache_ptrs,
   int64_t* value_cache_ptrs,
   const int64_t* __restrict__ block_mapping,
@@ -25,4 +25,11 @@ __global__ void copy_blocks_kernel(
     int64_t dst_offset = dst_block_offset + i;
     value_cache[dst_offset] = value_cache[src_offset];
   }
+}
+
+extern "C" __global__ void copy_blocks_kernel_i32(int64_t* key_cache_ptrs,
+  int64_t* value_cache_ptrs,
+  const int64_t* __restrict__ block_mapping,
+  const int numel_per_block) {
+  copy_blocks_internal_kernel<int>(key_cache_ptrs, value_cache_ptrs, block_mapping, numel_per_block);
 }

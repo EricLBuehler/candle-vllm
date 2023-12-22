@@ -221,13 +221,15 @@ impl CacheEngine {
         Ok(())
     }
 
-    pub fn copy(&mut self, src_to_dst: HashMap<usize, Vec<usize>>) {
+    pub fn copy(&mut self, src_to_dst: HashMap<usize, Vec<usize>>) -> Result<(), APIError> {
         let mut gpu_cache = self.get_kv_cache();
         let caches: (Vec<&mut Tensor>, Vec<&mut Tensor>) =
             gpu_cache.iter_mut().map(|(a, b)| (a, b)).unzip();
         let (key_caches, value_caches) = caches;
 
         // NOTE(EricLBuehler): This may synchronize the CPU and GPU
-        copy_blocks(key_caches, value_caches, src_to_dst);
+        try_api!(copy_blocks(key_caches, value_caches, src_to_dst));
+
+        Ok(())
     }
 }

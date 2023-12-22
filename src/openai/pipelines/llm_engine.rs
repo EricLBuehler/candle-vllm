@@ -213,8 +213,9 @@ impl<'a> LLMEngine<'a> {
         try_api!(self
             .cache_engine
             .swap_out(scheduler_output.blocks_to_swap_out.clone()));
-        self.cache_engine
-            .copy(scheduler_output.blocks_to_copy.clone());
+        try_api!(self
+            .cache_engine
+            .copy(scheduler_output.blocks_to_copy.clone()));
         Ok(())
     }
 

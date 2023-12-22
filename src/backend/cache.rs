@@ -1,14 +1,11 @@
-use std::{collections::HashMap, slice};
+use std::collections::HashMap;
 
 use candle_core::{
-    cuda_backend::cudarc::{
-        driver::{CudaSlice, DevicePtr},
-        nvrtc::compile_ptx,
-    },
+    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr},
     Device, Storage, Tensor,
 };
 
-use crate::{openai::responses::APIError, try_api};
+use crate::{backend::COPY_BLOCKS_KERNEL, openai::responses::APIError, try_api};
 
 pub fn reshape_and_cache(
     _key: Tensor,
@@ -30,9 +27,8 @@ pub fn copy_blocks(
         panic!("Expected the key caches to be on a CUDA device.")
     };
 
-    let kernel_src = include_str!("copy_blocks_kernel.cu");
-    let ptx = compile_ptx(kernel_src).unwrap();
-    try_api!(dev.load_ptx(ptx, "candle-vllm", &["copy_blocks_kernel"]));
+    let kernel =
+        try_api!(dev.get_or_load_func(COPY_BLOCKS_KERNEL.function, COPY_BLOCKS_KERNEL.ptx));
 
     todo!()
 }
@@ -87,8 +83,9 @@ pub fn swap_blocks(
             }
         }
         (Device::Cuda(src_dev), Device::Cpu) => {
-            let (src_storage, src_layout) = src.storage_and_layout();
+            todo!();
             // Pending on huggingface/candle#1467
+            /*let (src_storage, src_layout) = src.storage_and_layout();
             let (dst_storage, dst_layout) = dst.storage_mut_and_layout();
             assert!(matches!(&*src_storage, Storage::Cuda(_)));
             assert!(matches!(&*dst_storage, Storage::Cpu(_)));
@@ -107,7 +104,7 @@ pub fn swap_blocks(
                 let src_slice: CudaSlice<u8> = unsafe { src_dev.upgrade_device_ptr(src_ptr+src_offset, block_size_in_bytes) };
                 
                 try_api!(src_dev.dtoh_sync_copy_into(&src_slice, dst_slice));
-            }
+            }*/
         }
         (src, dst) => {
             return Err(APIError::new(format!("Tensors must be on either the GPU or CPU to swap,, got {src:?} (src) and {dst:?} (dst).")))
