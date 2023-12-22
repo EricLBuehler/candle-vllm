@@ -1,7 +1,14 @@
-use std::{error::Error, fs};
+use std::{error::Error, fs, thread,};
+
+const OPT_LEVEL: usize = 2;
+const CPP_STD: usize = 17;
+const WORKERS: usize = 4;
 
 fn main() {
     let compute_cap = compute_cap().unwrap();
+    if compute_cap < 70 {
+        panic!("GPUs with runtime capability below 7.0 (70) are not supported. Got {compute_cap}.");
+    }
 
     let files = fs::read_dir("./kernels")
         .unwrap()
@@ -19,11 +26,34 @@ fn main() {
         })
         .collect::<Vec<_>>();
 
+    if files.len() <= WORKERS {
+        compile_files(files, compute_cap);
+        return;
+    }
+
+    let chunked_files = files.chunks(files.len()/WORKERS);
+    let mut handles = Vec::new();
+    for files in chunked_files {
+        let files = files.to_vec();
+        let handle = thread::spawn(move || {
+            compile_files(files, compute_cap);
+        });
+        handles.push(handle);
+    }
+    
+    // Wait for all to finish
+    while !handles.iter().all(|handle| handle.is_finished()) { }
+}
+
+fn compile_files(files: Vec<String>, compute_cap: usize) {
     for file in files {
         let mut command = std::process::Command::new("nvcc");
         command
             .arg(format!("--gpu-architecture=sm_{compute_cap}"))
             .arg("--ptx")
+            .arg("--use_fast_math")
+            .arg(&format!("-std=c++{CPP_STD}"))
+            .args(["-O", &OPT_LEVEL.to_string()])
             .args(["--default-stream", "per-thread"])
             .args(["--output-directory", "kernels/"]);
         command.arg(&format!("kernels/{file}"));
