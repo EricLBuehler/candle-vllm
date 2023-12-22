@@ -71,6 +71,7 @@ Installing `candle-vllm` is as simple as the following steps. If you have any pr
 
 Go to either the "Install with Pytorch" or "Install with libtorch" section to continue.
 
+https://stackoverflow.com/a/3891372
 
 ### Install with Pytorch (recommended)
 9) Run `python3 -c 'import torch;print(torch.__file__.replace("__init__.py", "lib/"))'`
