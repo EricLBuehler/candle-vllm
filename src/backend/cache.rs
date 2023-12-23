@@ -1,15 +1,11 @@
-use std::{collections::HashMap, iter::zip};
+use std::{collections::HashMap, iter::zip, ptr::NonNull};
 
 use candle_core::{
     cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchConfig},
-    DType, Device, IndexOp, Storage, Tensor,
+    Device, IndexOp, Storage, Tensor,
 };
 
-use crate::{
-    backend::{get_or_load_func, COPY_BLOCKS_KERNEL, COPY_BLOCKS_PTX},
-    openai::responses::APIError,
-    try_api,
-};
+use crate::{backend::Conjoined, openai::responses::APIError, try_api};
 
 pub fn reshape_and_cache(
     _key: Tensor,
@@ -27,15 +23,15 @@ pub fn copy_blocks(
     block_mapping: HashMap<usize, Vec<usize>>,
 ) -> Result<(), APIError> {
     let dev = key_caches.first().unwrap().device();
-    let Device::Cuda(dev) = dev else {
+    let Device::Cuda(_) = dev else {
         panic!("Expected the key caches to be on a CUDA device.")
     };
     let num_layers: u32 = key_caches.len().try_into().unwrap();
 
     let mut key_cache_ptrs = Vec::new();
-    key_cache_ptrs.reserve(num_layers);
+    key_cache_ptrs.reserve_exact(num_layers as usize);
     let mut value_cache_ptrs = Vec::new();
-    value_cache_ptrs.reserve(num_layers);
+    value_cache_ptrs.reserve_exact(num_layers as usize);
     for (key_cache, value_cache) in zip(&key_caches, &value_caches) {
         let key_offset: u64 = key_cache
             .storage_and_layout()
@@ -69,18 +65,32 @@ pub fn copy_blocks(
             block_mapping_vec.push(dst_block_number.try_into().unwrap());
         }
     }
-    /// Safety: Drop block_mapping_array before block_mapping_vec
-    let block_mapping_array = block_mapping_vec.as_ptr();
+    // Safety: Drop block_mapping_array before block_mapping_vec
+    let block_mapping_ptr = Conjoined {
+        raw: NonNull::new(block_mapping_vec.as_mut_ptr()).unwrap(),
+        _ref: &mut block_mapping_vec,
+    };
     let num_pairs: u32 = (block_mapping_vec.len() / 2).try_into().unwrap();
+
+    let key_cache_ptr = Conjoined {
+        raw: NonNull::new(key_cache_ptrs.as_mut_ptr()).unwrap(),
+        _ref: &mut key_cache_ptrs,
+    };
+    let value_cache_ptr = Conjoined {
+        raw: NonNull::new(value_cache_ptrs.as_mut_ptr()).unwrap(),
+        _ref: &mut value_cache_ptrs,
+    };
 
     // TODO(EricLBuehler): vLLM creates non contiguous tensors here which then has its data pointer accessed. We should
     // just pass the array of pointers to the kernel instead.
 
-    let numel_per_block = try_api!(key_caches.first().unwrap().i(0))
+    let numel_per_block: u32 = try_api!(key_caches.first().unwrap().i(0))
         .shape()
         .dims()
         .iter()
-        .product::<u32>();
+        .product::<usize>()
+        .try_into()
+        .unwrap();
     let launch_conf = LaunchConfig {
         grid_dim: (num_layers, num_pairs, 1u32),
         block_dim: (numel_per_block.min(1024), 1u32, 1u32),

@@ -27,9 +27,23 @@ pub fn get_or_load_func(
         .map_err(APIError::from)
 }
 
+struct Conjoined<'a, T, R> {
+    raw: NonNull<T>,
+    _ref: &'a mut R,
+}
+
+impl<'a, T, R> Deref for Conjoined<'a, T, R> {
+    type Target = NonNull<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.raw
+    }
+}
+
 pub use cache::*;
 use candle_core::{cuda_backend::cudarc::driver::CudaFunction, CudaDevice, DType};
 pub use layers::*;
 pub use paged_attention::*;
+pub use std::ops::Deref;
+use std::ptr::NonNull;
 
 use crate::openai::responses::APIError;
