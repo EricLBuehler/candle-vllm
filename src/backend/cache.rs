@@ -1,11 +1,15 @@
 use std::{collections::HashMap, iter::zip, ptr::NonNull};
 
 use candle_core::{
-    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchConfig, LaunchAsync},
+    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchAsync, LaunchConfig},
     Device, IndexOp, Storage, Tensor,
 };
 
-use crate::{backend::{Conjoined, get_or_load_func, COPY_BLOCKS_PTX, COPY_BLOCKS_KERNEL}, openai::responses::APIError, try_api};
+use crate::{
+    backend::{get_or_load_func, Conjoined, COPY_BLOCKS_KERNEL, COPY_BLOCKS_PTX},
+    openai::responses::APIError,
+    try_api,
+};
 
 pub fn reshape_and_cache(
     _key: Tensor,
@@ -23,11 +27,15 @@ pub fn copy_blocks(
     block_mapping: HashMap<usize, Vec<usize>>,
 ) -> Result<(), APIError> {
     let candle_dev = key_caches.first().unwrap().device();
-    let Device::Cuda(dev) = dev else {
+    let Device::Cuda(dev) = candle_dev else {
         panic!("Expected the key caches to be on a CUDA device.")
     };
     if key_caches.first().unwrap().dtype() != value_caches.first().unwrap().dtype() {
-        return Err(APIError::new(format!("Key and value caches have different types, got {} and {}.", key_caches.first().unwrap().dtype(), value_caches.first().unwrap().dtype())));
+        return Err(APIError::new(format!(
+            "Key and value caches have different types, got {:?} and {:?}.",
+            key_caches.first().unwrap().dtype(),
+            value_caches.first().unwrap().dtype()
+        )));
     }
     let num_layers: u32 = key_caches.len().try_into().unwrap();
 
@@ -68,12 +76,11 @@ pub fn copy_blocks(
             block_mapping_vec.push(dst_block_number.try_into().unwrap());
         }
     }
-    // Safety: Drop block_mapping_array before block_mapping_vec
+    let num_pairs: u32 = (block_mapping_vec.len() / 2).try_into().unwrap();
     let block_mapping_ptr = Conjoined::new(
         NonNull::new(block_mapping_vec.as_mut_ptr()).unwrap(),
         &mut block_mapping_vec,
     );
-    let num_pairs: u32 = (block_mapping_vec.len() / 2).try_into().unwrap();
 
     let key_cache_ptr = Conjoined::new(
         NonNull::new(key_cache_ptrs.as_mut_ptr()).unwrap(),
@@ -98,11 +105,22 @@ pub fn copy_blocks(
     };
     let stream = try_api!(dev.fork_default_stream());
 
-    let kernel = try_api!(get_or_load_func(COPY_BLOCKS_PTX, COPY_BLOCKS_KERNEL, key_caches.first().unwrap().dtype(), candle_dev));
+    let kernel = try_api!(get_or_load_func(
+        COPY_BLOCKS_PTX,
+        COPY_BLOCKS_KERNEL,
+        key_caches.first().unwrap().dtype(),
+        dev,
+    ));
 
-    unsafe { kernel.launch_on_stream(&stream, launch_conf, (key_cache_ptr, value_cache_ptr, block_mapping_ptr)) };
+    try_api!(unsafe {
+        kernel.launch_on_stream(
+            &stream,
+            launch_conf,
+            (key_cache_ptr, value_cache_ptr, block_mapping_ptr),
+        )
+    });
 
-    todo!()
+    Ok(())
 }
 
 pub fn swap_blocks(
