@@ -5,7 +5,7 @@ use candle_core::{
     Device, IndexOp, Storage, Tensor,
 };
 
-use crate::{backend::Conjoined, openai::responses::APIError, try_api};
+use crate::{backend::{Conjoined, get_or_load_func, COPY_BLOCKS_PTX, COPY_BLOCKS_KERNEL}, openai::responses::APIError, try_api};
 
 pub fn reshape_and_cache(
     _key: Tensor,
@@ -22,10 +22,13 @@ pub fn copy_blocks(
     value_caches: Vec<&mut Tensor>,
     block_mapping: HashMap<usize, Vec<usize>>,
 ) -> Result<(), APIError> {
-    let dev = key_caches.first().unwrap().device();
-    let Device::Cuda(_) = dev else {
+    let candle_dev = key_caches.first().unwrap().device();
+    let Device::Cuda(dev) = dev else {
         panic!("Expected the key caches to be on a CUDA device.")
     };
+    if key_caches.first().unwrap().dtype() != value_caches.first().unwrap().dtype() {
+        return Err(APIError::new(format!("Key and value caches have different types, got {} and {}.", key_caches.first().unwrap().dtype(), value_caches.first().unwrap().dtype())));
+    }
     let num_layers: u32 = key_caches.len().try_into().unwrap();
 
     let mut key_cache_ptrs = Vec::new();
@@ -81,9 +84,6 @@ pub fn copy_blocks(
         &mut value_cache_ptrs,
     );
 
-    // TODO(EricLBuehler): vLLM creates non contiguous tensors here which then has its data pointer accessed. We should
-    // just pass the array of pointers to the kernel instead.
-
     let numel_per_block: u32 = try_api!(key_caches.first().unwrap().i(0))
         .shape()
         .dims()
@@ -96,7 +96,9 @@ pub fn copy_blocks(
         block_dim: (numel_per_block.min(1024), 1u32, 1u32),
         shared_mem_bytes: 0,
     };
+    let stream = try_api!(dev.fork_default_stream());
 
+    let kernel = try_api!(get_or_load_func(COPY_BLOCKS_PTX, COPY_BLOCKS_KERNEL, key_caches.first().unwrap().dtype(), candle_dev));
     // TODO(EricLBuehler): Launch the kernel
 
     todo!()
