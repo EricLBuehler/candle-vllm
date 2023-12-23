@@ -27,23 +27,44 @@ pub fn get_or_load_func(
         .map_err(APIError::from)
 }
 
+#[repr(transparent)]
 struct Conjoined<'a, T, R> {
-    raw: NonNull<T>,
-    _ref: &'a mut R,
+    raw: *mut T,
+    _ref: PhantomData<&'a mut R>,
 }
 
-impl<'a, T, R> Deref for Conjoined<'a, T, R> {
-    type Target = NonNull<T>;
-    fn deref(&self) -> &Self::Target {
-        &self.raw
+impl<'a, T, R: IntoIterator<Item = T>> Conjoined<'a, T, R> {
+    fn new(raw: NonNull<T>, _ref: &'a mut R) -> Self {
+        Self {
+            raw: raw.as_ptr(),
+            _ref: PhantomData,
+        }
+    }
+}
+
+/// According to the docs: https://docs.nvidia.com/cuda/cuda-driver-api/group__CUDA__EXEC.html#group__CUDA__EXEC_1gb8f3dc3031b40da29d5f9a7139e52e15
+/// Each of the kernel params (*mut c_void) "must point to a region of memory from which the actual kernel parameter will be copied".
+/// This means that we must return a pointer to our pointer.
+///
+/// ## Safety
+/// - The returned pointer **must not** outlive the &self reference. Otherwise, a dangling pointer is created.
+unsafe impl<'a, T, R: IntoIterator<Item = T>> DeviceRepr for Conjoined<'a, T, R> {
+    fn as_kernel_param(&self) -> *mut std::ffi::c_void {
+        addr_of!(self.raw) as *mut _
     }
 }
 
 pub use cache::*;
-use candle_core::{cuda_backend::cudarc::driver::CudaFunction, CudaDevice, DType};
+use candle_core::{
+    cuda_backend::cudarc::driver::{CudaFunction, DeviceRepr},
+    CudaDevice, DType,
+};
 pub use layers::*;
 pub use paged_attention::*;
 pub use std::ops::Deref;
-use std::ptr::NonNull;
+use std::{
+    marker::PhantomData,
+    ptr::{addr_of, NonNull},
+};
 
 use crate::openai::responses::APIError;

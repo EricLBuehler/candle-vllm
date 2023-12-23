@@ -66,20 +66,20 @@ pub fn copy_blocks(
         }
     }
     // Safety: Drop block_mapping_array before block_mapping_vec
-    let block_mapping_ptr = Conjoined {
-        raw: NonNull::new(block_mapping_vec.as_mut_ptr()).unwrap(),
-        _ref: &mut block_mapping_vec,
-    };
+    let block_mapping_ptr = Conjoined::new(
+        NonNull::new(block_mapping_vec.as_mut_ptr()).unwrap(),
+        &mut block_mapping_vec,
+    );
     let num_pairs: u32 = (block_mapping_vec.len() / 2).try_into().unwrap();
 
-    let key_cache_ptr = Conjoined {
-        raw: NonNull::new(key_cache_ptrs.as_mut_ptr()).unwrap(),
-        _ref: &mut key_cache_ptrs,
-    };
-    let value_cache_ptr = Conjoined {
-        raw: NonNull::new(value_cache_ptrs.as_mut_ptr()).unwrap(),
-        _ref: &mut value_cache_ptrs,
-    };
+    let key_cache_ptr = Conjoined::new(
+        NonNull::new(key_cache_ptrs.as_mut_ptr()).unwrap(),
+        &mut key_cache_ptrs,
+    );
+    let value_cache_ptr = Conjoined::new(
+        NonNull::new(value_cache_ptrs.as_mut_ptr()).unwrap(),
+        &mut value_cache_ptrs,
+    );
 
     // TODO(EricLBuehler): vLLM creates non contiguous tensors here which then has its data pointer accessed. We should
     // just pass the array of pointers to the kernel instead.
