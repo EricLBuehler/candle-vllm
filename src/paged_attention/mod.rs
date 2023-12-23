@@ -188,13 +188,13 @@ impl PagedAttention {
             .flatten(0, input_metadata.slot_mapping.dims().len()));
 
         if key_cache.as_ref().is_some_and(|_| value_cache.is_some()) {
-            reshape_and_cache(
+            try_api!(reshape_and_cache(
                 key.clone(),
                 value.clone(),
                 key_cache.as_mut().unwrap(),
                 value_cache.as_mut().unwrap(),
                 slot_mapping,
-            )
+            ));
         }
 
         let output = if input_metadata.is_prompt {

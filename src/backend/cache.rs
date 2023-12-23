@@ -1,9 +1,13 @@
 use std::{collections::HashMap, iter::zip, ptr::NonNull};
 
 use candle_core::{
-    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchAsync, LaunchConfig},
-    Device, IndexOp, Storage, Tensor,
+    cuda_backend::{
+        cudarc::driver::{CudaSlice, DevicePtr, LaunchAsync, LaunchConfig},
+        CudaDType,
+    },
+    DType, Device, IndexOp, Storage, Tensor,
 };
+use half::{bf16, f16};
 
 use crate::{
     backend::{get_or_load_func, Conjoined, COPY_BLOCKS_KERNEL, COPY_BLOCKS_PTX},
@@ -11,14 +15,154 @@ use crate::{
     try_api,
 };
 
+use super::{RESHAPE_AND_CACHE_KERNEL, RESHAPE_AND_CACHE_PTX};
+
 pub fn reshape_and_cache(
-    _key: Tensor,
-    _value: Tensor,
-    _key_cache: &mut Tensor,
-    _value_cache: &mut Tensor,
-    _slot_mapping: Tensor,
-) {
-    todo!()
+    key: Tensor,              // [num_tokens, num_heads, head_size]
+    value: Tensor,            // [num_tokens, num_heads, head_size]
+    key_cache: &mut Tensor,   // [num_blocks, num_heads, head_size/x, block_size, x]
+    value_cache: &mut Tensor, // [num_blocks, num_heads, head_size, block_size]
+    slot_mapping: Tensor,     // [num_tokens]
+) -> Result<(), APIError> {
+    let cache_dev = key.device();
+    let Device::Cuda(dev) = cache_dev else {
+        panic!("Expected the key to be on a CUDA device.")
+    };
+
+    if slot_mapping.dtype() != DType::I64 {
+        return Err(APIError::new(format!(
+            "`slot_mapping` has {:?} type, expected I64 type.",
+            slot_mapping.dtype()
+        )));
+    }
+
+    if key.dtype() != value.dtype() {
+        return Err(APIError::new(format!(
+            "`key` and `value` have different data types, got {:?} and {:?} respectively.",
+            key.dtype(),
+            value.dtype()
+        )));
+    }
+
+    if key.dtype() != key_cache.dtype() {
+        return Err(APIError::new(format!(
+            "`key` and `key_cache` have different data types, got {:?} and {:?} respectively.",
+            key.dtype(),
+            key_cache.dtype()
+        )));
+    }
+
+    if key.dtype() != value_cache.dtype() {
+        return Err(APIError::new(format!(
+            "`key` and `value_cache` have different data types, got {:?} and {:?} respectively.",
+            key.dtype(),
+            value_cache.dtype()
+        )));
+    }
+
+    if !key.device().is_cuda() {
+        return Err(APIError::new(format!(
+            "`key` must be on a CUDA device, got {:?}.",
+            key.device()
+        )));
+    }
+
+    if !key.device().same_device(value.device()) {
+        return Err(APIError::new(format!(
+            "`key` and `value` have different devices, got {:?} and {:?} respectively.",
+            key.device(),
+            value.device()
+        )));
+    }
+
+    if !key.device().same_device(key_cache.device()) {
+        return Err(APIError::new(format!(
+            "`key` and `key_cache` have different devices, got {:?} and {:?} respectively.",
+            key.device(),
+            key_cache.device()
+        )));
+    }
+
+    if !key.device().same_device(value_cache.device()) {
+        return Err(APIError::new(format!(
+            "`key` and `value_cache` have different devices, got {:?} and {:?} respectively.",
+            key.device(),
+            value_cache.device()
+        )));
+    }
+
+    let num_tokens = key.dims()[0];
+    let num_heads = key.dims()[1];
+    let head_size = key.dims()[2];
+    let block_size = key_cache.dims()[3];
+    let x = key_cache.dims()[4];
+
+    let key_stride = key.stride()[0];
+    let value_stride = value.stride()[0];
+
+    let stream = try_api!(dev.fork_default_stream());
+
+    let launch_conf = LaunchConfig {
+        grid_dim: (num_tokens.try_into().unwrap(), 1u32, 1u32),
+        block_dim: (
+            512.min((num_heads * head_size).try_into().unwrap()),
+            1u32,
+            1u32,
+        ),
+        shared_mem_bytes: 0,
+    };
+
+    let kernel = try_api!(get_or_load_func(
+        RESHAPE_AND_CACHE_PTX,
+        RESHAPE_AND_CACHE_KERNEL,
+        key.dtype(),
+        dev
+    ));
+
+    let key_ptr = dispatch_get_cuda_pointer(key);
+    let value_ptr = dispatch_get_cuda_pointer(value);
+    let key_cache_ptr = dispatch_get_cuda_pointer(key_cache.clone());
+    let value_cache_ptr = dispatch_get_cuda_pointer(value_cache.clone());
+
+    try_api!(unsafe {
+        kernel.launch_on_stream(
+            &stream,
+            launch_conf,
+            (
+                key_ptr,
+                value_ptr,
+                key_cache_ptr,
+                value_cache_ptr,
+                key_stride,
+                value_stride,
+                num_heads,
+                head_size,
+                block_size,
+                x,
+            ),
+        )
+    });
+
+    Ok(())
+}
+
+fn dispatch_get_cuda_pointer(tensor: Tensor) -> u64 {
+    match tensor.dtype() {
+        DType::BF16 => get_cuda_pointer::<bf16>(tensor),
+        DType::F16 => get_cuda_pointer::<f16>(tensor),
+        DType::U8 => get_cuda_pointer::<u8>(tensor),
+        DType::U32 => get_cuda_pointer::<u32>(tensor),
+        DType::I64 => get_cuda_pointer::<i64>(tensor),
+        DType::F32 => get_cuda_pointer::<f32>(tensor),
+        DType::F64 => get_cuda_pointer::<f64>(tensor),
+    }
+}
+
+fn get_cuda_pointer<T: CudaDType>(tensor: Tensor) -> u64 {
+    match &*tensor.storage_and_layout().0 {
+        Storage::Cuda(cuda_storage) => *cuda_storage.as_cuda_slice::<T>().unwrap().device_ptr(),
+        other => panic!("Unsupported storage `{:?}`", other),
+    }
 }
 
 pub fn copy_blocks(
@@ -26,8 +170,8 @@ pub fn copy_blocks(
     value_caches: Vec<&mut Tensor>,
     block_mapping: HashMap<usize, Vec<usize>>,
 ) -> Result<(), APIError> {
-    let candle_dev = key_caches.first().unwrap().device();
-    let Device::Cuda(dev) = candle_dev else {
+    let cache_dev = key_caches.first().unwrap().device();
+    let Device::Cuda(dev) = cache_dev else {
         panic!("Expected the key caches to be on a CUDA device.")
     };
     if key_caches.first().unwrap().dtype() != value_caches.first().unwrap().dtype() {
@@ -44,6 +188,9 @@ pub fn copy_blocks(
     let mut value_cache_ptrs = Vec::new();
     value_cache_ptrs.reserve_exact(num_layers as usize);
     for (key_cache, value_cache) in zip(&key_caches, &value_caches) {
+        try_api!(key_cache.to_device(cache_dev));
+        try_api!(value_cache.to_device(cache_dev));
+
         let key_offset: u64 = key_cache
             .storage_and_layout()
             .1
@@ -173,8 +320,8 @@ pub fn swap_blocks(
             }
         }
         (Device::Cuda(src_dev), Device::Cpu) => {
-            todo!();
             // Pending on huggingface/candle#1467
+            todo!();
             /*let (src_storage, src_layout) = src.storage_and_layout();
             let (dst_storage, dst_layout) = dst.storage_mut_and_layout();
             assert!(matches!(&*src_storage, Storage::Cuda(_)));

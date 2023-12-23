@@ -6,6 +6,10 @@ const COPY_BLOCKS_PTX: &str = "kernels/copy_blocks_kernel.ptx";
 
 const COPY_BLOCKS_KERNEL: &str = "copy_blocks_kernel";
 
+const RESHAPE_AND_CACHE_PTX: &str = "kernels/reshape_and_cache_kernel.ptx";
+
+const RESHAPE_AND_CACHE_KERNEL: &str = "reshape_and_cache_kernel";
+
 pub fn get_or_load_func(
     ptx_file: &'static str,
     kernel_base: &str,
@@ -33,7 +37,7 @@ struct Conjoined<'a, T, R> {
     _ref: PhantomData<&'a mut R>,
 }
 
-impl<'a, T, R: IntoIterator<Item = T>> Conjoined<'a, T, R> {
+impl<'a, T, R> Conjoined<'a, T, R> {
     fn new(raw: NonNull<T>, _ref: &'a mut R) -> Self {
         Self {
             raw: raw.as_ptr(),
@@ -48,7 +52,7 @@ impl<'a, T, R: IntoIterator<Item = T>> Conjoined<'a, T, R> {
 ///
 /// ## Safety
 /// - The returned pointer **must not** outlive the &self reference. Otherwise, a dangling pointer is created.
-unsafe impl<'a, T, R: IntoIterator<Item = T>> DeviceRepr for Conjoined<'a, T, R> {
+unsafe impl<'a, T, R> DeviceRepr for Conjoined<'a, T, R> {
     fn as_kernel_param(&self) -> *mut std::ffi::c_void {
         addr_of!(self.raw) as *mut _
     }
