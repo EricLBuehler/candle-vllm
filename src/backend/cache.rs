@@ -1,7 +1,7 @@
 use std::{collections::HashMap, iter::zip, ptr::NonNull};
 
 use candle_core::{
-    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchConfig},
+    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchConfig, LaunchAsync},
     Device, IndexOp, Storage, Tensor,
 };
 
@@ -99,7 +99,8 @@ pub fn copy_blocks(
     let stream = try_api!(dev.fork_default_stream());
 
     let kernel = try_api!(get_or_load_func(COPY_BLOCKS_PTX, COPY_BLOCKS_KERNEL, key_caches.first().unwrap().dtype(), candle_dev));
-    // TODO(EricLBuehler): Launch the kernel
+
+    unsafe { kernel.launch_on_stream(&stream, launch_conf, (key_cache_ptr, value_cache_ptr, block_mapping_ptr)) };
 
     todo!()
 }
