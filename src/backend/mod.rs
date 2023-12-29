@@ -1,5 +1,4 @@
 mod cache;
-mod layers;
 mod paged_attention;
 
 const COPY_BLOCKS_PTX: &str = "kernels/copy_blocks_kernel.ptx";

@@ -192,15 +192,18 @@ impl CausalSelfAttention {
         Tensor::cat(&[cos, sin], last).map_err(APIError::from)
     }
 
-    fn apply_rotary_emb(&mut self, q: &mut Tensor, k: &mut Tensor, positions: Tensor) {
-        rotary_embedding(
-            positions,
-            q,
-            k,
-            self.head_dim,
-            self.cos_sin_cache.clone(),
-            false,
-        );
+    fn apply_rotary_emb(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+        let _enter = self.span_rot.enter();
+        let (b_sz, _, seq_len, hidden_size) = x.dims4()?;
+        let cos = self.cache.cos.narrow(0, index_pos, seq_len)?;
+        let sin = self.cache.sin.narrow(0, index_pos, seq_len)?;
+        let cos = cos.broadcast_as((b_sz, 1, seq_len, hidden_size))?;
+        let sin = sin.broadcast_as((b_sz, 1, seq_len, hidden_size))?;
+        let x1 = x.narrow(D::Minus1, 0, hidden_size / 2)?;
+        let x2 = x.narrow(D::Minus1, hidden_size / 2, hidden_size / 2)?;
+        let rotate_x = Tensor::cat(&[&x2.neg()?, &x1], D::Minus1)?;
+        let rope = (x.broadcast_mul(&cos)? + rotate_x.broadcast_mul(&sin)?)?;
+        Ok(rope)
     }
 
     fn forward(
@@ -215,12 +218,12 @@ impl CausalSelfAttention {
         let k = try_api!(self.k_proj.forward(x));
         let v = try_api!(self.v_proj.forward(x));
 
-        let mut q =
+        let q =
             try_api!(
                 try_api!(q.reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim)))
                     .transpose(1, 2)
             );
-        let mut k =
+        let k =
             try_api!(
                 try_api!(k.reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim)))
                     .transpose(1, 2)
@@ -231,7 +234,8 @@ impl CausalSelfAttention {
                     .transpose(1, 2)
             );
 
-        self.apply_rotary_emb(&mut q, &mut k, positions.clone());
+        let q = try_api!(self.apply_rotary_emb(&q, index_pos));
+        let mut k = try_api!(self.apply_rotary_emb(&k, index_pos));
 
         let dtype = q.dtype();
         let device = q.device().clone();
