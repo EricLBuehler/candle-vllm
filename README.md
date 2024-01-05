@@ -3,7 +3,7 @@
 </p>
 
 [![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
-[![Discord server](https://dcbadge.vercel.app/api/server/Fp47vVj6)](https://discord.gg/Fp47vVj6)
+[![Discord server](https://dcbadge.vercel.app/api/server/FAeJRRJ8)](https://discord.gg/FAeJRRJ8)
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
 
