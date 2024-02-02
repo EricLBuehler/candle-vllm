@@ -84,10 +84,14 @@ fn get_cuda_pointer<T: CudaDType>(tensor: Tensor) -> u64 {
 
 pub use cache::*;
 use candle_core::{
-    cuda_backend::cudarc::driver::{CudaFunction, DeviceRepr},
-    CudaDevice, DType,
+    cuda_backend::{
+        cudarc::driver::{CudaFunction, DeviceRepr},
+        CudaDType,
+    },
+    CudaDevice, DType, Storage, Tensor,
 };
 use either::Either;
+use half::{bf16, f16};
 pub use layers::*;
 pub use paged_attention::*;
 pub use std::ops::Deref;
