@@ -158,6 +158,13 @@ pub fn copy_blocks(
     let Device::Cuda(dev) = cache_dev else {
         panic!("Expected the key caches to be on a CUDA device.")
     };
+    if !cache_dev.same_device(value_caches.first().unwrap().device()) {
+        return Err(APIError::new(format!(
+            "`key` and `value` caches have different devices, got {:?} and {:?} respectively.",
+            cache_dev,
+            value_caches.first().unwrap().device()
+        )));
+    }
     if key_caches.first().unwrap().dtype() != value_caches.first().unwrap().dtype() {
         return Err(APIError::new(format!(
             "Key and value caches have different types, got {:?} and {:?}.",
