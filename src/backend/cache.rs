@@ -7,6 +7,7 @@ use candle_core::{
     },
     DType, Device, IndexOp, Storage, Tensor,
 };
+use either::Either;
 use half::{bf16, f16};
 
 use crate::{
@@ -117,7 +118,7 @@ pub fn reshape_and_cache(
     let kernel = try_api!(get_or_load_func(
         RESHAPE_AND_CACHE_PTX,
         RESHAPE_AND_CACHE_KERNEL,
-        key.dtype(),
+        Either::Left(key.dtype()),
         dev
     ));
 
@@ -165,6 +166,9 @@ pub fn copy_blocks(
         )));
     }
     let num_layers: u32 = key_caches.len().try_into().unwrap();
+    if num_layers == 0 {
+        return Ok(());
+    }
 
     let mut key_cache_ptrs = Vec::new();
     key_cache_ptrs.reserve_exact(num_layers as usize);
@@ -238,7 +242,7 @@ pub fn copy_blocks(
     let kernel = try_api!(get_or_load_func(
         COPY_BLOCKS_PTX,
         COPY_BLOCKS_KERNEL,
-        key_caches.first().unwrap().dtype(),
+        Either::Left(key_caches.first().unwrap().dtype()),
         dev,
     ));
 

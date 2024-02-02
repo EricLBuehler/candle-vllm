@@ -10,20 +10,25 @@ const RESHAPE_AND_CACHE_PTX: &str = "kernels/reshape_and_cache_kernel.ptx";
 
 const RESHAPE_AND_CACHE_KERNEL: &str = "reshape_and_cache_kernel";
 
+const ROTARY_EMBDEDDING_PTX: &str = "kernels/rotary_embedding_kernel.ptx";
+
+const ROTARY_EMBDEDDING_KERNEL: &str = "rotary_embedding_kernel";
+
 pub fn get_or_load_func(
     ptx_file: &'static str,
     kernel_base: &str,
-    dtype: DType,
+    suffix: Either<DType, &str>,
     device: &CudaDevice,
 ) -> Result<CudaFunction, APIError> {
-    let suffix = match dtype {
-        DType::U8 => "_u8",
-        DType::U32 => "_u32",
-        DType::I64 => "_i64",
-        DType::BF16 => "_bf16",
-        DType::F16 => "_f16",
-        DType::F32 => "_f32",
-        DType::F64 => "_f64",
+    let suffix = match suffix {
+        Either::Left(DType::U8) => "_u8",
+        Either::Left(DType::U32) => "_u32",
+        Either::Left(DType::I64) => "_i64",
+        Either::Left(DType::BF16) => "_bf16",
+        Either::Left(DType::F16) => "_f16",
+        Either::Left(DType::F32) => "_f32",
+        Either::Left(DType::F64) => "_f64",
+        Either::Right(data) => data,
     };
     let kernel = kernel_base.to_owned() + suffix;
     device
@@ -82,6 +87,7 @@ use candle_core::{
     cuda_backend::cudarc::driver::{CudaFunction, DeviceRepr},
     CudaDevice, DType,
 };
+use either::Either;
 pub use layers::*;
 pub use paged_attention::*;
 pub use std::ops::Deref;
