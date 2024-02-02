@@ -10,7 +10,9 @@ use candle_core::{
 use half::{bf16, f16};
 
 use crate::{
-    backend::{get_or_load_func, Conjoined, COPY_BLOCKS_KERNEL, COPY_BLOCKS_PTX},
+    backend::{
+        dispatch_get_cuda_pointer, get_or_load_func, Conjoined, COPY_BLOCKS_KERNEL, COPY_BLOCKS_PTX,
+    },
     openai::responses::APIError,
     try_api,
 };
@@ -144,25 +146,6 @@ pub fn reshape_and_cache(
     });
 
     Ok(())
-}
-
-fn dispatch_get_cuda_pointer(tensor: Tensor) -> u64 {
-    match tensor.dtype() {
-        DType::BF16 => get_cuda_pointer::<bf16>(tensor),
-        DType::F16 => get_cuda_pointer::<f16>(tensor),
-        DType::U8 => get_cuda_pointer::<u8>(tensor),
-        DType::U32 => get_cuda_pointer::<u32>(tensor),
-        DType::I64 => get_cuda_pointer::<i64>(tensor),
-        DType::F32 => get_cuda_pointer::<f32>(tensor),
-        DType::F64 => get_cuda_pointer::<f64>(tensor),
-    }
-}
-
-fn get_cuda_pointer<T: CudaDType>(tensor: Tensor) -> u64 {
-    match &*tensor.storage_and_layout().0 {
-        Storage::Cuda(cuda_storage) => *cuda_storage.as_cuda_slice::<T>().unwrap().device_ptr(),
-        other => panic!("Unsupported storage `{:?}`", other),
-    }
 }
 
 pub fn copy_blocks(
