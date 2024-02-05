@@ -17,10 +17,11 @@ const ROTARY_EMBDEDDING_KERNEL: &str = "rotary_embedding_kernel";
 pub fn get_or_load_func(
     ptx_file: &'static str,
     kernel_base: &str,
-    suffix: Either<DType, &str>,
+    dtype: DType,
+    suffix: Option<&str>,
     device: &CudaDevice,
 ) -> Result<CudaFunction, APIError> {
-    let suffix = match suffix {
+    let spec = match dtype {
         Either::Left(DType::U8) => "_u8",
         Either::Left(DType::U32) => "_u32",
         Either::Left(DType::I64) => "_i64",
@@ -30,7 +31,10 @@ pub fn get_or_load_func(
         Either::Left(DType::F64) => "_f64",
         Either::Right(data) => data,
     };
-    let kernel = kernel_base.to_owned() + suffix;
+    if let Some(suffix) = suffix {
+        spec = spec + suffix;
+    }
+    let kernel = kernel_base.to_owned() + spec;
     device
         .get_or_load_func(&kernel, ptx_file)
         .map_err(APIError::from)

@@ -21,6 +21,13 @@ pub fn rotary_embedding(
         panic!("Expected the positions to be on a CUDA device.")
     };
 
+    if positions.dtype() != DType::I64 {
+        return Err(APIError::new(format!(
+            "`positions` has {:?} type, expected I64 type.",
+            positions.dtype()
+        )));
+    }
+
     if !query.device().same_device(positions.device()) {
         return Err(APIError::new(format!(
             "`query` and `positions` have different devices, got {:?} and {:?} respectively.",
@@ -73,14 +80,16 @@ pub fn rotary_embedding(
         try_api!(get_or_load_func(
             ROTARY_EMBDEDDING_PTX,
             ROTARY_EMBDEDDING_KERNEL,
-            Either::Right("_neox"),
+            query.dtype(),
+            Some("_neox"),
             dev
         ))
     } else {
         try_api!(get_or_load_func(
             ROTARY_EMBDEDDING_PTX,
             ROTARY_EMBDEDDING_KERNEL,
-            Either::Right("_normal"),
+            query.dtype(),
+            None,
             dev
         ))
     };
@@ -103,38 +112,4 @@ pub fn rotary_embedding(
             ),
         )
     });
-
-    /*
-    const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
-    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    VLLM_DISPATCH_FLOATING_TYPES(
-      query.scalar_type(),
-      "rotary_embedding",
-      [&] {
-        if (is_neox) {
-          vllm::rotary_embedding_kernel<scalar_t, true><<<grid, block, 0, stream>>>(
-            positions.data_ptr<int64_t>(),
-            query.data_ptr<scalar_t>(),
-            key.data_ptr<scalar_t>(),
-            cos_sin_cache.data_ptr<scalar_t>(),
-            rot_dim,
-            query_stride,
-            key_stride,
-            num_heads,
-            num_kv_heads,
-            head_size);
-        } else {
-          vllm::rotary_embedding_kernel<scalar_t, false><<<grid, block, 0, stream>>>(
-            positions.data_ptr<int64_t>(),
-            query.data_ptr<scalar_t>(),
-            key.data_ptr<scalar_t>(),
-            cos_sin_cache.data_ptr<scalar_t>(),
-            rot_dim,
-            query_stride,
-            key_stride,
-            num_heads,
-            num_kv_heads,
-            head_size);
-        }
-      });*/
 }
