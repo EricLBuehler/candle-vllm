@@ -21,7 +21,7 @@ pub fn get_or_load_func(
     suffix: Option<&str>,
     device: &CudaDevice,
 ) -> Result<CudaFunction, APIError> {
-    let spec = match dtype {
+    let mut spec = match dtype {
         Either::Left(DType::U8) => "_u8",
         Either::Left(DType::U32) => "_u32",
         Either::Left(DType::I64) => "_i64",
