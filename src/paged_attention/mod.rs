@@ -23,7 +23,6 @@ pub struct PagedAttention {
     scale: f32,
     sliding_window: Option<usize>,
     num_queries_per_kv: usize,
-    head_mapping: Tensor,
     alibi_slopes: Option<Tensor>,
 }
 
@@ -51,12 +50,6 @@ impl PagedAttention {
             scale,
             sliding_window,
             num_queries_per_kv,
-            head_mapping: try_api!(try_api!(Tensor::arange(
-                0u32,
-                num_key_value_heads as u32,
-                &device
-            ))
-            .repeat(num_queries_per_kv)),
             alibi_slopes,
         })
     }
@@ -96,7 +89,7 @@ impl PagedAttention {
                 query,
                 key_cache,
                 value_cache,
-                self.head_mapping.clone(),
+                self.num_key_value_heads,
                 self.scale,
                 input_metadata.block_tables.as_ref().unwrap().clone(),
                 input_metadata.context_lens.as_ref().unwrap().clone(),
