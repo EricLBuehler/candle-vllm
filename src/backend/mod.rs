@@ -95,7 +95,6 @@ use candle_core::{
     },
     CudaDevice, DType, Storage, Tensor,
 };
-use either::Either;
 use half::{bf16, f16};
 pub use layers::*;
 pub use paged_attention::*;

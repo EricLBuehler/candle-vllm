@@ -1,13 +1,9 @@
 use std::{collections::HashMap, iter::zip, ptr::NonNull};
 
 use candle_core::{
-    cuda_backend::{
-        cudarc::driver::{CudaSlice, DevicePtr, LaunchAsync, LaunchConfig},
-        CudaDType,
-    },
+    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchAsync, LaunchConfig},
     DType, Device, IndexOp, Storage, Tensor,
 };
-use either::Either;
 
 use crate::{
     backend::{

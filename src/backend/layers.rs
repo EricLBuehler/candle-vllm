@@ -18,7 +18,7 @@ pub fn rotary_embedding(
     head_size: usize,
     cos_sin_cache: Tensor,
     is_neox: bool,
-) {
+) -> Result<(), APIError> {
     let positions_dev = positions.device();
     let Device::Cuda(dev) = positions_dev else {
         panic!("Expected the positions to be on a CUDA device.")
@@ -111,8 +111,10 @@ pub fn rotary_embedding(
                 key_stride,
                 num_heads,
                 num_kv_heads,
-                head_size,
+                *head_size,
             ),
         )
     });
+
+    Ok(())
 }
