@@ -8,7 +8,6 @@ use candle_core::{
     DType, Device, IndexOp, Storage, Tensor,
 };
 use either::Either;
-use half::{bf16, f16};
 
 use crate::{
     backend::{
@@ -118,8 +117,8 @@ pub fn reshape_and_cache(
     let kernel = try_api!(get_or_load_func(
         RESHAPE_AND_CACHE_PTX,
         RESHAPE_AND_CACHE_KERNEL,
-        None,
         key.dtype(),
+        None,
         dev
     ));
 
@@ -250,8 +249,8 @@ pub fn copy_blocks(
     let kernel = try_api!(get_or_load_func(
         COPY_BLOCKS_PTX,
         COPY_BLOCKS_KERNEL,
-        None,
         key_caches.first().unwrap().dtype(),
+        None,
         dev,
     ));
 

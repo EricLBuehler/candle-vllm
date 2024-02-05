@@ -22,19 +22,20 @@ pub fn get_or_load_func(
     device: &CudaDevice,
 ) -> Result<CudaFunction, APIError> {
     let mut spec = match dtype {
-        Either::Left(DType::U8) => "_u8",
-        Either::Left(DType::U32) => "_u32",
-        Either::Left(DType::I64) => "_i64",
-        Either::Left(DType::BF16) => "_bf16",
-        Either::Left(DType::F16) => "_f16",
-        Either::Left(DType::F32) => "_f32",
-        Either::Left(DType::F64) => "_f64",
-        Either::Right(data) => data,
+        DType::U8 => "_u8",
+        DType::U32 => "_u32",
+        DType::I64 => "_i64",
+        DType::BF16 => "_bf16",
+        DType::F16 => "_f16",
+        DType::F32 => "_f32",
+        DType::F64 => "_f64",
     };
-    if let Some(suffix) = suffix {
-        spec = spec + suffix;
-    }
-    let kernel = kernel_base.to_owned() + spec;
+    let spec = if let Some(suffix) = suffix {
+        spec.to_owned() + suffix
+    } else {
+        spec.to_owned()
+    };
+    let kernel = kernel_base.to_owned() + &spec;
     device
         .get_or_load_func(&kernel, ptx_file)
         .map_err(APIError::from)
@@ -89,7 +90,7 @@ fn get_cuda_pointer<T: CudaDType>(tensor: Tensor) -> u64 {
 pub use cache::*;
 use candle_core::{
     cuda_backend::{
-        cudarc::driver::{CudaFunction, DeviceRepr},
+        cudarc::driver::{CudaFunction, DevicePtr, DeviceRepr},
         CudaDType,
     },
     CudaDevice, DType, Storage, Tensor,

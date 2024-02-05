@@ -2,17 +2,18 @@ use candle_core::Tensor;
 
 #[allow(clippy::too_many_arguments)]
 pub fn paged_attention_v1(
-    query: Tensor,            // [num_seqs, num_heads, head_size]
-    key_cache: Tensor,        // [num_blocks, num_heads, head_size/x, block_size, x]
-    value_cache: Tensor,      // [num_blocks, num_heads, head_size, block_size]
-    num_key_value_heads: i32, // [num_heads]
-    scale: f32,
-    block_tables: Tensor, // [num_seqs, max_num_blocks_per_seq]
-    context_lens: Tensor, // [num_seqs]
-    block_size: usize,
-    max_context_len: usize,
-    alibi_slopes: Option<Tensor>,
+    _query: Tensor,            // [num_seqs, num_heads, head_size]
+    _key_cache: Tensor,        // [num_blocks, num_heads, head_size/x, block_size, x]
+    _value_cache: Tensor,      // [num_blocks, num_heads, head_size, block_size]
+    _num_key_value_heads: i32, // [num_heads]
+    _scale: f32,
+    _block_tables: Tensor, // [num_seqs, max_num_blocks_per_seq]
+    _context_lens: Tensor, // [num_seqs]
+    _block_size: usize,
+    _max_context_len: usize,
+    _alibi_slopes: Option<Tensor>,
 ) -> Tensor {
+    todo!();
     /* if (kv_cache_dtype == "auto") {
       if (query.dtype() == at::ScalarType::Float) {
         CALL_V1_LAUNCHER_BLOCK_SIZE(float, float, false);
@@ -45,7 +46,7 @@ pub fn paged_attention_v2(
     _query: Tensor,
     _key_cache: Tensor,
     _value_cache: Tensor,
-    _head_mapping: Tensor,
+    _num_key_value_heads: i32,
     _scale: f32,
     _block_tables: Tensor,
     _context_lens: Tensor,

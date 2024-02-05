@@ -1,8 +1,11 @@
-use candle_core::Tensor;
-use either::Either;
+use candle_core::{
+    cuda_backend::cudarc::driver::{LaunchAsync, LaunchConfig},
+    DType, Device, Tensor,
+};
 
 use crate::{
     backend::{get_or_load_func, ROTARY_EMBDEDDING_KERNEL, ROTARY_EMBDEDDING_PTX},
+    openai::responses::APIError,
     try_api,
 };
 
@@ -70,8 +73,8 @@ pub fn rotary_embedding(
     };
 
     let positions_ptr = dispatch_get_cuda_pointer(positions);
-    let key_ptr = dispatch_get_cuda_pointer(key);
-    let query_ptr = dispatch_get_cuda_pointer(query);
+    let key_ptr = dispatch_get_cuda_pointer(key.clone());
+    let query_ptr = dispatch_get_cuda_pointer(query.clone());
     let cos_sin_cache_ptr = dispatch_get_cuda_pointer(cos_sin_cache);
 
     let stream = try_api!(dev.fork_default_stream());
