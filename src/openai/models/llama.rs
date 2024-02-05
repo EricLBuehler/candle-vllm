@@ -192,7 +192,12 @@ impl CausalSelfAttention {
         Tensor::cat(&[cos, sin], last).map_err(APIError::from)
     }
 
-    fn apply_rotary_emb(&mut self, q: &mut Tensor, k: &mut Tensor, positions: Tensor) {
+    fn apply_rotary_emb(
+        &mut self,
+        q: &mut Tensor,
+        k: &mut Tensor,
+        positions: Tensor,
+    ) -> Result<(), APIError> {
         rotary_embedding(
             positions,
             q,
@@ -200,7 +205,7 @@ impl CausalSelfAttention {
             self.head_dim,
             self.cos_sin_cache.clone(),
             false,
-        );
+        )
     }
 
     fn forward(
@@ -231,7 +236,7 @@ impl CausalSelfAttention {
                     .transpose(1, 2)
             );
 
-        self.apply_rotary_emb(&mut q, &mut k, positions.clone());
+        self.apply_rotary_emb(&mut q, &mut k, positions.clone())?;
 
         let dtype = q.dtype();
         let device = q.device().clone();
