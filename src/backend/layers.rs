@@ -106,12 +106,12 @@ pub fn rotary_embedding(
                 query_ptr,
                 key_ptr,
                 cos_sin_cache_ptr,
-                rot_dim,
-                query_stride,
-                key_stride,
+                *rot_dim,
+                *query_stride,
+                *key_stride,
                 num_heads,
                 num_kv_heads,
-                *head_size,
+                head_size,
             ),
         )
     });
