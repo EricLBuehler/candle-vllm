@@ -36,46 +36,6 @@ inline __device__ void apply_rotary_embedding(
   arr[y_index] = y * cos + x * sin;
 }
 
-template<typename scalar_t, bool IS_NEOX>
-__global__ void rotary_embedding_kernel(
-  const int64_t* __restrict__ positions,        // [batch_size, seq_len] or [num_tokens]
-  scalar_t* __restrict__ query,                 // [batch_size, seq_len, num_heads, head_size] or [num_tokens, num_heads, head_size]
-  scalar_t* __restrict__ key,                   // [batch_size, seq_len, num_kv_heads, head_size] or [num_tokens, num_kv_heads, head_size]
-  const scalar_t* __restrict__ cos_sin_cache,   // [max_position, 2, rot_dim // 2]
-  const int rot_dim,
-  const int64_t query_stride,
-  const int64_t key_stride,
-  const int num_heads,
-  const int num_kv_heads,
-  const int head_size) {
-  // Each thread block is responsible for one token.
-  const int token_idx = blockIdx.x;
-  int64_t pos = positions[token_idx];
-  const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
-
-  const int embed_dim = rot_dim / 2;
-  const scalar_t* cos_ptr = cache_ptr;
-  const scalar_t* sin_ptr = cache_ptr + embed_dim;
-
-  const int nq = num_heads * embed_dim;
-  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
-    const int head_idx = i / embed_dim;
-    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
-    const int rot_offset = i % embed_dim;
-    apply_rotary_embedding<scalar_t, IS_NEOX>(query + token_head, cos_ptr,
-                                              sin_ptr, rot_offset, embed_dim);
-  }
-
-  const int nk = num_kv_heads * embed_dim;
-  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
-    const int head_idx = i / embed_dim;
-    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
-    const int rot_offset = i % embed_dim;
-    apply_rotary_embedding<scalar_t, IS_NEOX>(key + token_head, cos_ptr,
-                                              sin_ptr, rot_offset, embed_dim);
-  }
-}
-
 // Without neox
 extern "C" __global__ void rotary_embedding_kernel_u8(
   const int64_t* __restrict__ positions,        // [batch_size, seq_len] or [num_tokens]
@@ -88,7 +48,32 @@ extern "C" __global__ void rotary_embedding_kernel_u8(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<uint8_t, false>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const uint8_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const uint8_t* cos_ptr = cache_ptr;
+  const uint8_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<uint8_t, false>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<uint8_t, false>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_u32(
@@ -102,7 +87,32 @@ extern "C" __global__ void rotary_embedding_kernel_u32(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<uint32_t, false>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const uint32_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const uint32_t* cos_ptr = cache_ptr;
+  const uint32_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<uint32_t, false>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<uint32_t, false>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_i64(
@@ -116,7 +126,32 @@ extern "C" __global__ void rotary_embedding_kernel_i64(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<int64_t, false>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const int64_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const int64_t* cos_ptr = cache_ptr;
+  const int64_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int64_t, false>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int64_t, false>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_f32(
@@ -130,7 +165,32 @@ extern "C" __global__ void rotary_embedding_kernel_f32(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<float, false>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const float* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const float* cos_ptr = cache_ptr;
+  const float* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<float, false>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<float, false>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_f64(
@@ -144,7 +204,32 @@ extern "C" __global__ void rotary_embedding_kernel_f64(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<double, false>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const double* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const double* cos_ptr = cache_ptr;
+  const double* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<double, false>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<double, false>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_f16(
@@ -158,7 +243,32 @@ extern "C" __global__ void rotary_embedding_kernel_f16(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<int16_t, false>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const int16_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const int16_t* cos_ptr = cache_ptr;
+  const int16_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int16_t, false>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int16_t, false>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_bf16(
@@ -172,7 +282,32 @@ extern "C" __global__ void rotary_embedding_kernel_bf16(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<int16_t, false>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const int16_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const int16_t* cos_ptr = cache_ptr;
+  const int16_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int16_t, false>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int16_t, false>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 // With neox
@@ -187,7 +322,32 @@ extern "C" __global__ void rotary_embedding_kernel_u8_neox(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<uint8_t, true>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const uint8_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const uint8_t* cos_ptr = cache_ptr;
+  const uint8_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<uint8_t, true>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<uint8_t, true>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_u32_neox(
@@ -201,7 +361,32 @@ extern "C" __global__ void rotary_embedding_kernel_u32_neox(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<uint32_t, true>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const uint32_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const uint32_t* cos_ptr = cache_ptr;
+  const uint32_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<uint32_t, true>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<uint32_t, true>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_i64_neox(
@@ -215,7 +400,32 @@ extern "C" __global__ void rotary_embedding_kernel_i64_neox(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<int64_t, true>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const int64_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const int64_t* cos_ptr = cache_ptr;
+  const int64_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int64_t, true>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int64_t, true>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_f32_neox(
@@ -229,7 +439,32 @@ extern "C" __global__ void rotary_embedding_kernel_f32_neox(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<float, true>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const float* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const float* cos_ptr = cache_ptr;
+  const float* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<float, true>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<float, true>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_f64_neox(
@@ -243,7 +478,32 @@ extern "C" __global__ void rotary_embedding_kernel_f64_neox(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<double, true>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const double* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const double* cos_ptr = cache_ptr;
+  const double* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<double, true>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<double, true>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_f16_neox(
@@ -257,7 +517,32 @@ extern "C" __global__ void rotary_embedding_kernel_f16_neox(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<int16_t, true>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const int16_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const int16_t* cos_ptr = cache_ptr;
+  const int16_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int16_t, true>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int16_t, true>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
 
 extern "C" __global__ void rotary_embedding_kernel_bf16_neox(
@@ -271,5 +556,30 @@ extern "C" __global__ void rotary_embedding_kernel_bf16_neox(
   const int num_heads,
   const int num_kv_heads,
   const int head_size) {
-  rotary_embedding_kernel<int16_t, true>(positions, query, key, cos_sin_cache, rot_dim, query_stride, key_stride, num_heads, num_kv_heads, head_size);
+  // Each thread block is responsible for one token.
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const int16_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+  const int embed_dim = rot_dim / 2;
+  const int16_t* cos_ptr = cache_ptr;
+  const int16_t* sin_ptr = cache_ptr + embed_dim;
+
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * query_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int16_t, true>(query + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
+
+  const int nk = num_kv_heads * embed_dim;
+  for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+    const int head_idx = i / embed_dim;
+    const int64_t token_head = token_idx * key_stride + head_idx * head_size;
+    const int rot_offset = i % embed_dim;
+    apply_rotary_embedding<int16_t, true>(key + token_head, cos_ptr,
+                                              sin_ptr, rot_offset, embed_dim);
+  }
 }
