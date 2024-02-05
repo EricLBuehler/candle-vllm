@@ -19,7 +19,7 @@ pub fn rotary_embedding(
     cos_sin_cache: Tensor,
     is_neox: bool,
 ) -> Result<(), APIError> {
-    let positions_dev = positions.device();
+    let positions_dev = positions.device().clone();
     let Device::Cuda(dev) = positions_dev else {
         panic!("Expected the positions to be on a CUDA device.")
     };
@@ -56,7 +56,7 @@ pub fn rotary_embedding(
     }
 
     let num_tokens = query.shape().elem_count() / query.shape().dims().last().unwrap();
-    let rot_dim = cos_sin_cache.shape().dims().get(1).unwrap();
+    let rot_dim = cos_sin_cache.shape().clone().dims().get(1).unwrap();
     let num_heads = query.shape().dims().last().unwrap() / head_size;
     let num_kv_heads = key.shape().dims().last().unwrap() / head_size;
     let query_stride = query.stride().get(key.stride().len() - 2).unwrap();
@@ -85,7 +85,7 @@ pub fn rotary_embedding(
             ROTARY_EMBDEDDING_KERNEL,
             query.dtype(),
             Some("_neox"),
-            dev
+            &dev
         ))
     } else {
         try_api!(get_or_load_func(
@@ -93,7 +93,7 @@ pub fn rotary_embedding(
             ROTARY_EMBDEDDING_KERNEL,
             query.dtype(),
             None,
-            dev
+            &dev
         ))
     };
 
