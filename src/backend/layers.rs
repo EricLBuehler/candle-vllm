@@ -11,7 +11,7 @@ use crate::{
 
 use super::dispatch_get_cuda_pointer;
 
-pub fn rotary_embedding(
+pub unsafe fn rotary_embedding(
     positions: Tensor,
     query: &mut Tensor,
     key: &mut Tensor,

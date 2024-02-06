@@ -198,14 +198,16 @@ impl CausalSelfAttention {
         k: &mut Tensor,
         positions: Tensor,
     ) -> Result<(), APIError> {
-        rotary_embedding(
-            positions,
-            q,
-            k,
-            self.head_dim,
-            self.cos_sin_cache.clone(),
-            false,
-        )
+        unsafe {
+            rotary_embedding(
+                positions,
+                q,
+                k,
+                self.head_dim,
+                self.cos_sin_cache.clone(),
+                false,
+            )
+        }
     }
 
     fn forward(

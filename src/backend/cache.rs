@@ -15,7 +15,7 @@ use crate::{
 
 use super::{RESHAPE_AND_CACHE_KERNEL, RESHAPE_AND_CACHE_PTX};
 
-pub fn reshape_and_cache(
+pub unsafe fn reshape_and_cache(
     key: Tensor,              // [num_tokens, num_heads, head_size]
     value: Tensor,            // [num_tokens, num_heads, head_size]
     key_cache: &mut Tensor,   // [num_blocks, num_heads, head_size/x, block_size, x]
@@ -145,7 +145,7 @@ pub fn reshape_and_cache(
     Ok(())
 }
 
-pub fn copy_blocks(
+pub unsafe fn copy_blocks(
     key_caches: Vec<&mut Tensor>,
     value_caches: Vec<&mut Tensor>,
     block_mapping: HashMap<usize, Vec<usize>>,
