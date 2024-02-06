@@ -2,6 +2,7 @@ use candle_core::{DType, Tensor};
 
 use crate::openai::responses::APIError;
 
+#[allow(clippy::too_many_arguments)]
 fn paged_attention_v1_launcher(
     query: Tensor,            // [num_seqs, num_heads, head_size]
     key_cache: Tensor,        // [num_blocks, num_heads, head_size/x, block_size, x]
