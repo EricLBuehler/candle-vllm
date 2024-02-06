@@ -22,6 +22,7 @@ async fn test_llama() -> Result<(), APIError> {
         model_id,
         None,
         Some(std::env::var("TESTS_HF_TOKEN").unwrap()),
+        None
     )?;
     let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
     let llm_engine = LLMEngine::new(
