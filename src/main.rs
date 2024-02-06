@@ -16,9 +16,14 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Huggingface token environment variable (optional)
+    /// Huggingface token environment variable (optional). If not specified, load using hf_token_path.
     #[arg(long)]
     hf_token: Option<String>,
+
+    /// Huggingface token file (optional). If neither `hf_token` or `hf_token_path` are specified this is used with the value
+    /// of `~/.cache/huggingface/token`
+    #[arg(long)]
+    hf_token_path: Option<String>,
 
     /// Port to serve on (localhost:port)
     #[arg(long)]
@@ -45,7 +50,7 @@ async fn main() -> Result<(), APIError> {
     let args = Args::parse();
 
     let (loader, model_id) = get_model_loader(args.command);
-    let paths = loader.download_model(model_id, None, args.hf_token)?;
+    let paths = loader.download_model(model_id, None, args.hf_token, args.hf_token_path)?;
     let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
     let llm_engine = LLMEngine::new(
         model.0,

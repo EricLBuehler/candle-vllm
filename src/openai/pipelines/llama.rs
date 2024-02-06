@@ -1,4 +1,4 @@
-use std::{iter::zip, path::PathBuf, sync::Arc};
+use std::{env, fs, iter::zip, path::PathBuf, sync::Arc};
 
 use crate::{
     openai::{
@@ -27,7 +27,7 @@ use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
 
-use super::{read_env_var, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
+use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
 
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
@@ -87,10 +87,11 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         model_id: String,
         revision: Option<String>,
         hf_token: Option<String>,
+        hf_token_path: Option<String>,
     ) -> Result<Box<dyn ModelPaths>, APIError> {
         let api = try_api!(ApiBuilder::new()
             .with_progress(true)
-            .with_token(Some(read_env_var(hf_token.unwrap())?))
+            .with_token(Some(get_token(hf_token, hf_token_path)?))
             .build());
         let revision = revision.unwrap_or("main".to_string());
         let api = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));

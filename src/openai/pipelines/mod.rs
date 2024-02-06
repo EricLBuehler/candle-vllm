@@ -67,8 +67,20 @@ fn _make_tensor_with_pad<D: WithDType>(
     Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
 }
 
-pub(crate) fn read_env_var(var: String) -> Result<String, APIError> {
-    env::var(var).map_err(APIError::from)
+pub(crate) fn get_token(
+    hf_token: Option<String>,
+    hf_token_path: Option<String>,
+) -> Result<String, APIError> {
+    Ok(match (hf_token, hf_token_path) {
+        (Some(envvar), None) => try_api!(env::var(var)),
+        (None, Some(path)) => try_api!(fs::read_to_string(path)),
+        (None, None) => "~/.cache/huggingface/token".to_string(),
+        _ => {
+            return Err(APIError::new_str(
+                "Do not specify `hf_token` and `hf_token_path` at the same time.",
+            ))
+        }
+    })
 }
 
 pub trait ModelPaths {
@@ -83,6 +95,7 @@ pub trait ModelLoader<'a> {
         model_id: String,
         revision: Option<String>,
         hf_token: Option<String>,
+        hf_token_path: Option<String>,
     ) -> Result<Box<dyn ModelPaths>, APIError>;
 
     fn load_model(
