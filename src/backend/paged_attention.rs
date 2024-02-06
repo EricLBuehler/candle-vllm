@@ -1,6 +1,10 @@
-use candle_core::{DType, Tensor};
+use candle_core::{cuda_backend::cudarc::driver::CudaFunction, DType, Tensor};
 
 use crate::openai::responses::APIError;
+
+fn set_max_dynamic_shared_memory_size(_func: CudaFunction, _size: usize) {
+    todo!()
+}
 
 #[allow(clippy::too_many_arguments)]
 fn paged_attention_v1_launcher(
