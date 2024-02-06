@@ -271,9 +271,9 @@ dependencies = [
 
 [[package]]
 name = "anstyle"
-version = "1.0.5"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2faccea4cc4ab4a667ce676a30e8ec13922a692c99bb8f5b11f1502c72e04220"
+checksum = "8901269c6307e8d93993578286ac0edf7f195079ffff5ebdeea6a59ffb7e36bc"
 
 [[package]]
 name = "anstyle-parse"
@@ -450,9 +450,9 @@ checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
 
 [[package]]
 name = "bindgen_cuda"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcb349f499c53ad8d7b98e9657c61d6225c2812bac84504a97373e3884ca9bac"
+checksum = "853f25ad4724e82569cc7dd3b08048d21bd15950208f8b0ceeab6ac062b33c1f"
 dependencies = [
  "glob",
  "num_cpus",
@@ -551,7 +551,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.4.0"
-source = "git+https://github.com/huggingface/candle.git#a83ca2ece05269ad3afd7744e7a5145de891705e"
+source = "git+https://github.com/huggingface/candle.git#b75e8945bc7c67106be6288b9f357efa8068e62e"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -576,7 +576,7 @@ dependencies = [
 [[package]]
 name = "candle-datasets"
 version = "0.4.0"
-source = "git+https://github.com/huggingface/candle.git#a83ca2ece05269ad3afd7744e7a5145de891705e"
+source = "git+https://github.com/huggingface/candle.git#b75e8945bc7c67106be6288b9f357efa8068e62e"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -593,7 +593,7 @@ dependencies = [
 [[package]]
 name = "candle-examples"
 version = "0.4.0"
-source = "git+https://github.com/huggingface/candle.git#a83ca2ece05269ad3afd7744e7a5145de891705e"
+source = "git+https://github.com/huggingface/candle.git#b75e8945bc7c67106be6288b9f357efa8068e62e"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -615,7 +615,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn"
 version = "0.4.0"
-source = "git+https://github.com/huggingface/candle.git#a83ca2ece05269ad3afd7744e7a5145de891705e"
+source = "git+https://github.com/huggingface/candle.git#b75e8945bc7c67106be6288b9f357efa8068e62e"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
@@ -626,7 +626,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.4.0"
-source = "git+https://github.com/huggingface/candle.git#a83ca2ece05269ad3afd7744e7a5145de891705e"
+source = "git+https://github.com/huggingface/candle.git#b75e8945bc7c67106be6288b9f357efa8068e62e"
 dependencies = [
  "bindgen_cuda",
 ]
@@ -634,7 +634,7 @@ dependencies = [
 [[package]]
 name = "candle-lora"
 version = "0.2.0"
-source = "git+https://github.com/EricLBuehler/candle-lora.git#7fed136805b7299f234ac8805438300e0e095f96"
+source = "git+https://github.com/EricLBuehler/candle-lora.git#232d8bda780223692f9478db52f8465a8ecfbdd5"
 dependencies = [
  "candle-core",
  "candle-nn",
@@ -646,7 +646,7 @@ dependencies = [
 [[package]]
 name = "candle-lora-macro"
 version = "0.2.0"
-source = "git+https://github.com/EricLBuehler/candle-lora.git#7fed136805b7299f234ac8805438300e0e095f96"
+source = "git+https://github.com/EricLBuehler/candle-lora.git#232d8bda780223692f9478db52f8465a8ecfbdd5"
 dependencies = [
  "candle-core",
  "candle-lora",
@@ -660,7 +660,7 @@ dependencies = [
 [[package]]
 name = "candle-lora-transformers"
 version = "0.2.0"
-source = "git+https://github.com/EricLBuehler/candle-lora.git#7fed136805b7299f234ac8805438300e0e095f96"
+source = "git+https://github.com/EricLBuehler/candle-lora.git#232d8bda780223692f9478db52f8465a8ecfbdd5"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -685,7 +685,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.4.0"
-source = "git+https://github.com/huggingface/candle.git#a83ca2ece05269ad3afd7744e7a5145de891705e"
+source = "git+https://github.com/huggingface/candle.git#b75e8945bc7c67106be6288b9f357efa8068e62e"
 dependencies = [
  "accelerate-src",
  "candle-core",
@@ -713,7 +713,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.4.0"
-source = "git+https://github.com/huggingface/candle.git#a83ca2ece05269ad3afd7744e7a5145de891705e"
+source = "git+https://github.com/huggingface/candle.git#b75e8945bc7c67106be6288b9f357efa8068e62e"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -1670,9 +1670,9 @@ checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 
 [[package]]
 name = "hermit-abi"
-version = "0.3.4"
+version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d3d0e0f38255e7fa3cf31335b3a56f05febd18025f4db5ef7a0cfb4f8da651f"
+checksum = "d0c62115964e08cb8039170eb33c1d0e2388a256930279edca206fff675f82c3"
 
 [[package]]
 name = "hf-hub"
@@ -1934,9 +1934,9 @@ checksum = "f5d4a7da358eff58addd2877a45865158f0d78c911d43a5784ceb7bbf52833b0"
 
 [[package]]
 name = "js-sys"
-version = "0.3.67"
+version = "0.3.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a1d36f1235bc969acba30b7f5990b864423a6068a10f7c90ae8f0112e3a59d1"
+checksum = "406cda4b368d531c842222cf9d2600a9a4acce8d29423695379c6868a143a9ee"
 dependencies = [
  "wasm-bindgen",
 ]
@@ -3447,13 +3447,12 @@ dependencies = [
 
 [[package]]
 name = "tempfile"
-version = "3.9.0"
+version = "3.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "01ce4141aa927a6d1bd34a041795abd0db1cccba5d5f24b009f694bdf3a1f3fa"
+checksum = "a365e8cd18e44762ef95d87f284f4b5cd04107fec2ff3052bd6a3e6069669e67"
 dependencies = [
  "cfg-if",
  "fastrand",
- "redox_syscall",
  "rustix",
  "windows-sys 0.52.0",
 ]
@@ -3747,9 +3746,13 @@ dependencies = [
 
 [[package]]
 name = "trc"
-version = "1.2.3"
+version = "1.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e25efa7aa1857b433b805840bfeeccc5d1f60bbcc46bcb894f9f7909b74e81de"
+checksum = "91dd8e922a6b95b816407eb8c37e17a409512f759561ac48ec2b7281b395a3c6"
+dependencies = [
+ "serde",
+ "stable_deref_trait",
+]
 
 [[package]]
 name = "try-lock"
@@ -3917,9 +3920,9 @@ checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.90"
+version = "0.2.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1223296a201415c7fad14792dbefaace9bd52b62d33453ade1c5b5f07555406"
+checksum = "c1e124130aee3fb58c5bdd6b639a0509486b0338acaaae0c84a5124b0f588b7f"
 dependencies = [
  "cfg-if",
  "wasm-bindgen-macro",
@@ -3927,9 +3930,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-backend"
-version = "0.2.90"
+version = "0.2.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fcdc935b63408d58a32f8cc9738a0bffd8f05cc7c002086c6ef20b7312ad9dcd"
+checksum = "c9e7e1900c352b609c8488ad12639a311045f40a35491fb69ba8c12f758af70b"
 dependencies = [
  "bumpalo",
  "log",
@@ -3942,9 +3945,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.40"
+version = "0.4.41"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde2032aeb86bdfaecc8b261eef3cba735cc426c1f3a3416d1e0791be95fc461"
+checksum = "877b9c3f61ceea0e56331985743b13f3d25c406a7098d45180fb5f09bc19ed97"
 dependencies = [
  "cfg-if",
  "js-sys",
@@ -3954,9 +3957,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.90"
+version = "0.2.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e4c238561b2d428924c49815533a8b9121c664599558a5d9ec51f8a1740a999"
+checksum = "b30af9e2d358182b5c7449424f017eba305ed32a7010509ede96cdc4696c46ed"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -3964,9 +3967,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.90"
+version = "0.2.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bae1abb6806dc1ad9e560ed242107c0f6c84335f1749dd4e8ddb012ebd5e25a7"
+checksum = "642f325be6301eb8107a83d12a8ac6c1e1c54345a7ef1a9261962dfefda09e66"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3977,15 +3980,15 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.90"
+version = "0.2.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d91413b1c31d7539ba5ef2451af3f0b833a005eb27a631cec32bc0635a8602b"
+checksum = "4f186bd2dcf04330886ce82d6f33dd75a7bfcf69ecf5763b89fcde53b6ac9838"
 
 [[package]]
 name = "web-sys"
-version = "0.3.67"
+version = "0.3.68"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58cd2333b6e0be7a39605f0e255892fd7418a682d8da8fe042fe25128794d2ed"
+checksum = "96565907687f7aceb35bc5fc03770a8a0471d82e479f25832f54a0e3f4b28446"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

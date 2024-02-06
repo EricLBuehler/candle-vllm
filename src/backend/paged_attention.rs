@@ -6,6 +6,8 @@ fn set_max_dynamic_shared_memory_size(_func: CudaFunction, _size: usize) {
     todo!()
 }
 
+const WARP_SIZE: usize = 32;
+
 #[allow(clippy::too_many_arguments)]
 fn paged_attention_v1_launcher(
     query: Tensor,            // [num_seqs, num_heads, head_size]
@@ -21,7 +23,17 @@ fn paged_attention_v1_launcher(
     dtype: DType,
     is_fp8_e5m2_kv_cache: bool,
 ) -> Tensor {
-    todo!()
+    let num_seqs = query.shape().dims()[0];
+    let num_heads = query.shape().dims()[1];
+    let head_size = query.shape().dims()[2];
+    let max_num_blocks_per_seq = block_tables.shape().dims()[1];
+    let q_stride = query.stride()[0];
+    let kv_block_stride = key_cache.stride()[0];
+    let kv_head_stride = key_cache.stride()[1];
+
+    let thread_group_size = 1.max(WARP_SIZE / block_size);
+    debug_assert_eq!(head_size%thread_group_size, 0);
+    todo!();
 }
 
 #[allow(clippy::too_many_arguments)]
