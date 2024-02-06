@@ -32,7 +32,7 @@ fn paged_attention_v1_launcher(
     let kv_head_stride = key_cache.stride()[1];
 
     let thread_group_size = 1.max(WARP_SIZE / block_size);
-    debug_assert_eq!(head_size%thread_group_size, 0);
+    debug_assert_eq!(head_size % thread_group_size, 0);
     todo!();
 }
 
