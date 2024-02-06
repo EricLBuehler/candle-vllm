@@ -1,4 +1,4 @@
-use std::{env, fs, iter::zip, path::PathBuf, sync::Arc};
+use std::{iter::zip, path::PathBuf, sync::Arc};
 
 use crate::{
     openai::{

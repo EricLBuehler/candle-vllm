@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf, sync::Arc};
+use std::{env, fs, path::PathBuf, sync::Arc};
 
 use candle_core::{DType, Device, Tensor, WithDType};
 use candle_sampling::logits_processor::Logprobs;
@@ -72,7 +72,7 @@ pub(crate) fn get_token(
     hf_token_path: Option<String>,
 ) -> Result<String, APIError> {
     Ok(match (hf_token, hf_token_path) {
-        (Some(envvar), None) => try_api!(env::var(var)),
+        (Some(envvar), None) => try_api!(env::var(envvar)),
         (None, Some(path)) => try_api!(fs::read_to_string(path)),
         (None, None) => "~/.cache/huggingface/token".to_string(),
         _ => {
