@@ -228,7 +228,7 @@ impl CacheEngine {
         let (key_caches, value_caches) = caches;
 
         // NOTE(EricLBuehler): This may synchronize the CPU and GPU
-        try_api!(copy_blocks(key_caches, value_caches, src_to_dst));
+        try_api!(unsafe { copy_blocks(key_caches,value_caches,src_to_dst) });
 
         Ok(())
     }
