@@ -50,7 +50,7 @@ completion = openai.chat.completions.create(
 )
 print(completion.choices[0].message.content)
 ```
-Next, launch a `candle-vllm` instance by running `HF_TOKEN=... cargo run --release -- --hf-token HF_TOKEN --port 2000 llama7b --repeat-last-n 64`.
+Next, launch a `candle-vllm` instance by running `cargo run --release -- --port 2000 llama7b --repeat-last-n 64`.
 
 After the `candle-vllm` instance is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 
