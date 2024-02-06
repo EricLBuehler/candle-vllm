@@ -223,6 +223,7 @@ impl CacheEngine {
 
     pub fn copy(&mut self, src_to_dst: HashMap<usize, Vec<usize>>) -> Result<(), APIError> {
         let mut gpu_cache = self.get_kv_cache();
+        #[allow(clippy::map_identity)]
         let caches: (Vec<&mut Tensor>, Vec<&mut Tensor>) =
             gpu_cache.iter_mut().map(|(a, b)| (a, b)).unzip();
         let (key_caches, value_caches) = caches;

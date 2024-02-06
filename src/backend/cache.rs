@@ -15,6 +15,8 @@ use crate::{
 
 use super::{RESHAPE_AND_CACHE_KERNEL, RESHAPE_AND_CACHE_PTX};
 
+/// # Safety
+/// Unsafe due to passing pointers
 pub unsafe fn reshape_and_cache(
     key: Tensor,              // [num_tokens, num_heads, head_size]
     value: Tensor,            // [num_tokens, num_heads, head_size]
@@ -145,6 +147,8 @@ pub unsafe fn reshape_and_cache(
     Ok(())
 }
 
+/// # Safety
+/// Unsafe due to passing pointers
 pub unsafe fn copy_blocks(
     key_caches: Vec<&mut Tensor>,
     value_caches: Vec<&mut Tensor>,

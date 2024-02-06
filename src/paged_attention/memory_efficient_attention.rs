@@ -56,10 +56,7 @@ pub fn _memory_efficient_attention(
             //make alibi bias
             let bias = try_api!(try_api!(Tensor::arange(
                 0f64,
-                TryInto::<i32>::try_into(seq_len)
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
+                TryInto::<i32>::try_into(seq_len).unwrap().into(),
                 device,
             ))
             .to_dtype(dtype));

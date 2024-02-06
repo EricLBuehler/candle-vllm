@@ -11,6 +11,8 @@ use crate::{
 
 use super::dispatch_get_cuda_pointer;
 
+/// # Safety
+/// Unsafe due to passing pointers
 pub unsafe fn rotary_embedding(
     positions: Tensor,
     query: &mut Tensor,

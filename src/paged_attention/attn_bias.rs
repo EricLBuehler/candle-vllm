@@ -26,12 +26,10 @@ pub trait AttentionBiasBlockDiagonal {
                     .to_dtype(dtype)
             );
 
-        for (_, ((q_start, q_end), (k_start, k_end))) in zip(
+        for ((q_start, q_end), (k_start, k_end)) in zip(
             self.get_q_seqinfo().intervals(),
             self.get_k_seqinfo().intervals(),
-        )
-        .enumerate()
-        {
+        ) {
             try_api!(mask.slice_assign(
                 &[
                     q_start as usize..q_end as usize,

@@ -185,12 +185,12 @@ impl<'a> LLMEngine<'a> {
                             .iter()
                             .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
                             .sum(),
-                        prompt_tokens: top_n.get(0).unwrap().deref_mut().get_prompt_len(),
+                        prompt_tokens: top_n.first().unwrap().deref_mut().get_prompt_len(),
                         total_tokens: top_n
                             .iter()
                             .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
                             .sum::<usize>()
-                            + top_n.get(0).unwrap().deref_mut().get_prompt_len(),
+                            + top_n.first().unwrap().deref_mut().get_prompt_len(),
                     };
 
                     responses.insert(*group.get_id(), (choices, usage));
