@@ -96,7 +96,8 @@ impl PagedAttention {
                 block_size,
                 input_metadata.max_context_len.unwrap(),
                 alibi_slopes,
-            )
+                &input_metadata.kv_cache_dtype,
+            )?
         } else {
             //Run PagedAttention V2
             assert_eq!(_PARTITION_SIZE % block_size, 0);

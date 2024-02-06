@@ -304,6 +304,7 @@ impl<'a> LLMEngine<'a> {
                 block_tables: None,
                 attn_bias: None,
                 is_prompt: true,
+                kv_cache_dtype: "auto".to_string(), // TODO(EricLBuehler): specialize for models
             },
         })
     }
@@ -409,6 +410,7 @@ impl<'a> LLMEngine<'a> {
                 block_tables: Some(block_tables),
                 attn_bias: None,
                 is_prompt: false,
+                kv_cache_dtype: "auto".to_string(), // TODO(EricLBuehler): specialize for models
             },
         })
     }

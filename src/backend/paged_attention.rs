@@ -1,42 +1,87 @@
-use candle_core::Tensor;
+use candle_core::{DType, Tensor};
+
+use crate::openai::responses::APIError;
+
+fn paged_attention_v1_launcher(
+    query: Tensor,            // [num_seqs, num_heads, head_size]
+    key_cache: Tensor,        // [num_blocks, num_heads, head_size/x, block_size, x]
+    value_cache: Tensor,      // [num_blocks, num_heads, head_size, block_size]
+    num_key_value_heads: i32, // [num_heads]
+    scale: f32,
+    block_tables: Tensor, // [num_seqs, max_num_blocks_per_seq]
+    context_lens: Tensor, // [num_seqs]
+    block_size: usize,
+    max_context_len: usize,
+    alibi_slopes: Option<Tensor>,
+    dtype: DType,
+    is_fp8_e5m2_kv_cache: bool,
+) -> Tensor {
+    todo!()
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn paged_attention_v1(
-    _query: Tensor,            // [num_seqs, num_heads, head_size]
-    _key_cache: Tensor,        // [num_blocks, num_heads, head_size/x, block_size, x]
-    _value_cache: Tensor,      // [num_blocks, num_heads, head_size, block_size]
-    _num_key_value_heads: i32, // [num_heads]
-    _scale: f32,
-    _block_tables: Tensor, // [num_seqs, max_num_blocks_per_seq]
-    _context_lens: Tensor, // [num_seqs]
-    _block_size: usize,
-    _max_context_len: usize,
-    _alibi_slopes: Option<Tensor>,
-) -> Tensor {
-    todo!();
-    /* if (kv_cache_dtype == "auto") {
-      if (query.dtype() == at::ScalarType::Float) {
-        CALL_V1_LAUNCHER_BLOCK_SIZE(float, float, false);
-      } else if (query.dtype() == at::ScalarType::Half) {
-        CALL_V1_LAUNCHER_BLOCK_SIZE(uint16_t, uint16_t, false);
-      } else if (query.dtype() == at::ScalarType::BFloat16) {
-        CALL_V1_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, __nv_bfloat16, false);
-      } else {
-        TORCH_CHECK(false, "Unsupported data type: ", query.dtype());
-      }
-    } else if (kv_cache_dtype == "fp8_e5m2") {
-      if (query.dtype() == at::ScalarType::Float) {
-        CALL_V1_LAUNCHER_BLOCK_SIZE(float, uint8_t, true);
-      } else if (query.dtype() == at::ScalarType::Half) {
-        CALL_V1_LAUNCHER_BLOCK_SIZE(uint16_t, uint8_t, true);
-      } else if (query.dtype() == at::ScalarType::BFloat16) {
-        CALL_V1_LAUNCHER_BLOCK_SIZE(__nv_bfloat16, uint8_t, true);
-      } else {
-        TORCH_CHECK(false, "Unsupported data type: ", query.dtype());
-      }
+    query: Tensor,            // [num_seqs, num_heads, head_size]
+    key_cache: Tensor,        // [num_blocks, num_heads, head_size/x, block_size, x]
+    value_cache: Tensor,      // [num_blocks, num_heads, head_size, block_size]
+    num_key_value_heads: i32, // [num_heads]
+    scale: f32,
+    block_tables: Tensor, // [num_seqs, max_num_blocks_per_seq]
+    context_lens: Tensor, // [num_seqs]
+    block_size: usize,
+    max_context_len: usize,
+    alibi_slopes: Option<Tensor>,
+    kv_cache_dtype: &str,
+) -> Result<Tensor, APIError> {
+    let query_dtype = query.dtype();
+    if kv_cache_dtype == "auto" {
+        match query_dtype {
+            DType::F32 | DType::F16 | DType::BF16 => Ok(paged_attention_v1_launcher(
+                query,
+                key_cache,
+                value_cache,
+                num_key_value_heads,
+                scale,
+                block_tables,
+                context_lens,
+                block_size,
+                max_context_len,
+                alibi_slopes,
+                query_dtype,
+                false,
+            )),
+            _ => Err(APIError::new(format!(
+                "Unsupported data type {:?}",
+                query_dtype
+            ))),
+        }
+    } else if kv_cache_dtype == "fp8_e5m2" {
+        match query_dtype {
+            DType::F32 | DType::F16 | DType::BF16 => Ok(paged_attention_v1_launcher(
+                query,
+                key_cache,
+                value_cache,
+                num_key_value_heads,
+                scale,
+                block_tables,
+                context_lens,
+                block_size,
+                max_context_len,
+                alibi_slopes,
+                query_dtype,
+                true,
+            )),
+            _ => Err(APIError::new(format!(
+                "Unsupported data type {:?}",
+                query_dtype
+            ))),
+        }
     } else {
-      TORCH_CHECK(false, "Unsupported data type of kv cache: ", kv_cache_dtype);
-    }*/
+        Err(APIError::new(format!(
+            "Unsupported data type {:?}",
+            query_dtype
+        )))
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
