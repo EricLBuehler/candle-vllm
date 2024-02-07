@@ -59,7 +59,7 @@ jobs:
           toolchain: ${{ matrix.rust }}
           override: true
       - uses: Swatinem/rust-cache@v2
-      - run: apt-get update -y && apt-get install -y libssl-dev pkg-config
+      - run: sudo apt-get update -y && sudo apt-get install -y libssl-dev pkg-config
       - uses: Jimver/cuda-toolkit@v0.2.14
         id: cuda-toolkit
         with:
