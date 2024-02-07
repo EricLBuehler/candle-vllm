@@ -1,8 +1,8 @@
-use std::{env, fs, path::PathBuf, sync::Arc};
-
 use candle_core::{DType, Device, Tensor, WithDType};
 use candle_sampling::logits_processor::Logprobs;
+use dirs;
 use either::Either;
+use std::{env, fs, path::PathBuf, sync::Arc};
 
 use crate::{
     paged_attention::input_metadata::InputMetadata, scheduler::sequence::Sequence, try_api,
@@ -74,7 +74,10 @@ pub(crate) fn get_token(
     Ok(match (hf_token, hf_token_path) {
         (Some(envvar), None) => try_api!(env::var(envvar)),
         (None, Some(path)) => try_api!(fs::read_to_string(path)),
-        (None, None) => try_api!(fs::read_to_string("~/.cache/huggingface/token".to_string())),
+        (None, None) => try_api!(fs::read_to_string(format!(
+            "{}/.cache/huggingface/token",
+            dirs::home_dir()
+        ))),
         _ => {
             return Err(APIError::new_str(
                 "Do not specify `hf_token` and `hf_token_path` at the same time.",

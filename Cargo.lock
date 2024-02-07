@@ -750,6 +750,7 @@ dependencies = [
  "clap",
  "cudarc 0.9.15",
  "derive_more",
+ "dirs",
  "dyn-fmt",
  "either",
  "env_logger",

@@ -36,6 +36,7 @@ tracing = "0.1.40"
 range-checked = { git = "https://github.com/EricLBuehler/range-checked.git", version = "0.1.0" }
 chrono = { version = "0.4.31", features = ["clock"] }
 either = "1.9.0"
+dirs = "5.0.1"
 
 [features]
 default = ["cuda"]

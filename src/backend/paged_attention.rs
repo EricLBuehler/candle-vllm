@@ -1,9 +1,12 @@
 use candle_core::{cuda_backend::cudarc::driver::CudaFunction, DType, Tensor};
 
+use candle_core::cuda_backend::cudarc::driver::sys as cudarc_sys;
+
 use crate::openai::responses::APIError;
 
-fn set_max_dynamic_shared_memory_size(_func: CudaFunction, _size: usize) {
-    todo!()
+fn set_max_dynamic_shared_memory_size(func: CudaFunction, size: usize) {
+    // let attr = cudarc_sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES;
+    // unsafe { cudarc_sys::cuFuncSetAttribute(func.cu_function, attr, size.try_into().unwrap()) }
 }
 
 const WARP_SIZE: usize = 32;
