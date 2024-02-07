@@ -76,7 +76,7 @@ pub(crate) fn get_token(
         (None, Some(path)) => try_api!(fs::read_to_string(path)),
         (None, None) => try_api!(fs::read_to_string(format!(
             "{}/.cache/huggingface/token",
-            try_api!(dirs::home_dir())
+            dirs::home_dir().map_err(APIError::from)?
         ))),
         _ => {
             return Err(APIError::new_str(
