@@ -64,8 +64,8 @@ jobs:
         id: cuda-toolkit
         with:
           cuda: '12.2.2'
-      - run: echo "Installed cuda version is: ${{steps.cuda-toolkit.outputs.cuda}}"
-      - run: echo "Cuda install location: ${{steps.cuda-toolkit.outputs.CUDA_PATH}}"
+      # - run: echo "Installed cuda version is: ${{steps.cuda-toolkit.outputs.cuda}}"
+      # - run: echo "Cuda install location: ${{steps.cuda-toolkit.outputs.CUDA_PATH}}"
       - run: CUDA_COMPUTE_CAP=86 cargo build --features cuda,cudnn,flash-attn,nccl
   
   clippy:
