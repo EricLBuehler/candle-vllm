@@ -74,7 +74,7 @@ pub(crate) fn get_token(
     Ok(match (hf_token, hf_token_path) {
         (Some(envvar), None) => try_api!(env::var(envvar)),
         (None, Some(path)) => try_api!(fs::read_to_string(path)),
-        (None, None) => "~/.cache/huggingface/token".to_string(),
+        (None, None) => try_api!(fs::read_to_string("~/.cache/huggingface/token".to_string())),
         _ => {
             return Err(APIError::new_str(
                 "Do not specify `hf_token` and `hf_token_path` at the same time.",
