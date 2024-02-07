@@ -54,6 +54,11 @@ Next, launch a `candle-vllm` instance by running `cargo run --release -- --port 
 
 After the `candle-vllm` instance is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 
+## Usage Help
+For general configuration help, run `cargo run -- --help`.
+
+For model-specific help, run `cargo run -- --port 1234 <MODEL NAME> --help`
+
 ## Installation
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
 [issue](https://github.com/EricLBuehler/candle-lora/issues).

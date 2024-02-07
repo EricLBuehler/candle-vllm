@@ -10,18 +10,21 @@ use openai::pipelines::{
 pub enum ModelSelected {
     /// Select the llama7b model.
     Llama7b {
+        /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: usize,
     },
 
     /// Select the llama13b model.
     Llama13b {
+        /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: usize,
     },
 
     /// Select the llama70b model.
     Llama70b {
+        /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: usize,
     },
