@@ -76,7 +76,9 @@ pub(crate) fn get_token(
         (None, Some(path)) => try_api!(fs::read_to_string(path)),
         (None, None) => try_api!(fs::read_to_string(format!(
             "{}/.cache/huggingface/token",
-            dirs::home_dir().ok_or(APIError::new_str("No home directory"))?
+            dirs::home_dir()
+                .ok_or(APIError::new_str("No home directory"))?
+                .display()
         ))),
         _ => {
             return Err(APIError::new_str(
