@@ -7,7 +7,9 @@
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
 
-**candle-vllm is in active, breaking development and as such is currently unstable.**
+PPlease see [mistral.rs](https://github.com/EricLBuehler/mistral.rs), efficient inference platform for many models, including quantized support. Additionally, it implements X-LoRA, recently released method [here](https://github.com/EricLBuehler/xlora). X-LoRA introduces a MoE inspired method to densely gate LoRA adapters powered by a model self-reflection forward pass.
+
+**candle-vllm is flux, in breaking development and as such is currently unstable.**
 
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
