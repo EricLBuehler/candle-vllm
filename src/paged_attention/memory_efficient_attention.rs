@@ -187,6 +187,7 @@ pub fn _memory_efficient_attention(
 /// * `v` - Value tensor with shape `(batch, seq_len_kv, num_heads_kv, head_size)`.
 ///
 /// The resulting tensor has dimensions `(batch, seq_len_q, num_heads_q, head_size)`.
+#[cfg(feature = "flash-attn")]
 pub fn scaled_dot_product_attention(
     query: &Tensor,
     key: &Tensor,
@@ -198,7 +199,7 @@ pub fn scaled_dot_product_attention(
     candle_flash_attn::flash_attn(query, key, value, scale_factor, false).map_err(APIError::from)
 }
 
-#[cfg(not(feature = "cuda"))]
+#[cfg(not(feature = "flash-attn"))]
 // https://github.com/mokeyish/candle-ext/blob/main/src/scaled_dot_product_attention.rs
 
 /// Computes scaled dot product attention on query, key and value tensors,

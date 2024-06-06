@@ -167,7 +167,7 @@ impl _Sequence {
 
     fn append_token_to_blocks(&mut self, token: usize) {
         let last = self.logical_token_blocks.last_mut();
-        if !last.as_ref().is_some_and(|last| last.is_full()) {
+        if last.is_some() && !last.as_ref().is_some_and(|last| last.is_full()) {
             // If we have space
             let last = last.unwrap();
             last.append_token_id(token);

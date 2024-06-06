@@ -41,7 +41,7 @@ dirs = "5.0.1"
 [features]
 default = ["cuda"]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:candle-flash-attn"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 cudnn = ["candle-core/cudnn"]
 flash-attn = ["cuda", "candle-transformers/flash-attn"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]

@@ -22,6 +22,7 @@ use crate::{
     try_api,
 };
 use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_nn::VarBuilder;
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
@@ -50,6 +51,7 @@ pub struct LlamaPipeline {
     tokenizer: Tokenizer,
     conversation: DefaultConversation,
     name: String,
+    dtype: DType,
 }
 
 pub struct LlamaLoader {
@@ -58,9 +60,9 @@ pub struct LlamaLoader {
 }
 
 pub struct LlamaModelPaths<P> {
-    tokenizer_filename: P,
-    config_filename: P,
-    filenames: Vec<P>,
+    pub tokenizer_filename: P,
+    pub config_filename: P,
+    pub filenames: Vec<P>,
 }
 
 impl ModelPaths for LlamaModelPaths<PathBuf> {
@@ -133,12 +135,17 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
 
         println!("Loading {} model.", self.name);
 
-        let vb = try_api!(from_mmaped_safetensors(
-            paths.get_weight_filenames(),
-            dtype,
-            &device,
-            false
-        ));
+        // let vb = try_api!(from_mmaped_safetensors(
+        //     paths.get_weight_filenames(),
+        //     dtype,
+        //     &device,
+        //     false
+        // ));
+        
+        let vb = match unsafe { VarBuilder::from_mmaped_safetensors(&paths.get_weight_filenames(), dtype, &device) } {
+            Ok(vb_) => { vb_}
+            _=> panic!("Load model weights failed!")
+        };
 
         let llama = try_api!(Llama::load(vb, &config, dtype, &device));
 
@@ -174,6 +181,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                     },
                 ),
                 name: self.name.clone(),
+                dtype,
             }),
             pipeline_config,
         ))
@@ -283,7 +291,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
     }
 
     fn get_dtype(&self) -> DType {
-        todo!()
+        self.dtype
     }
 }
 
