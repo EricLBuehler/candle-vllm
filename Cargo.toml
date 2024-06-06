@@ -37,6 +37,7 @@ range-checked = { git = "https://github.com/EricLBuehler/range-checked.git", ver
 chrono = { version = "0.4.31", features = ["clock"] }
 either = "1.9.0"
 dirs = "5.0.1"
+kernels = {path = "./kernels", version="0.1.0"}
 
 [features]
 default = ["cuda"]

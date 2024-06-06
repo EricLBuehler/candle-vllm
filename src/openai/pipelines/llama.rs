@@ -27,8 +27,10 @@ use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
-
+use candle_sampling::logits_processor::{Logprobs, TopLogprob};
 use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
+use candle_transformers::generation::LogitsProcessor;
+use candle_examples::token_output_stream::TokenOutputStream;
 
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
@@ -48,10 +50,12 @@ impl LlamaSpecificConfig {
 pub struct LlamaPipeline {
     llama: Llama,
     args: LlamaSpecificConfig,
-    tokenizer: Tokenizer,
+    tokenizer: TokenOutputStream,
+    logits_processor: LogitsProcessor,
     conversation: DefaultConversation,
     name: String,
     dtype: DType,
+    device: Device,
 }
 
 pub struct LlamaLoader {
@@ -149,8 +153,10 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
 
         let llama = try_api!(Llama::load(vb, &config, dtype, &device));
 
-        let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
+        let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
             .map_err(|x| APIError::new(x.to_string()))?;
+
+        let tokenizer = candle_examples::token_output_stream::TokenOutputStream::new(tokenizer_);
 
         println!("Done loading.");
 
@@ -166,6 +172,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                 llama,
                 args,
                 tokenizer,
+                logits_processor: LogitsProcessor::new(SAMPLING_SEED, None, None),
                 conversation: DefaultConversation::new(
                     "llama-2".to_string(),
                     "[INST] <<SYS>>\n{}\n<</SYS>>\n\n".to_string(),
@@ -182,6 +189,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                 ),
                 name: self.name.clone(),
                 dtype,
+                device: device.clone(),
             }),
             pipeline_config,
         ))
@@ -197,7 +205,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         mut input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError> {
         self.llama.forward(
-            &input_tokens,
+            &input_tokens.reshape((1, input_tokens.shape().dims()[0])).unwrap(),
             &input_positions,
             kv_cache,
             &mut input_metadata,
@@ -210,13 +218,13 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         sampling_params: &SamplingParams,
         seqs: &[(&usize, &Arc<Sequence>)],
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        let eos_token_id = self.tokenizer.token_to_id(EOS_TOKEN);
+        let eos_token_id = self.tokenizer().tokenizer().token_to_id(EOS_TOKEN);
 
-        let mut logits_processor = sampling_params.get_logits_processor(
-            SAMPLING_SEED,
-            &self.tokenizer,
-            sampling_params.logprobs.unwrap_or(1),
-        );
+        // let mut logits_processor = sampling_params.get_logits_processor(
+        //     SAMPLING_SEED,
+        //     &self.tokenizer,
+        //     sampling_params.logprobs.unwrap_or(1),
+        // );
         let stop_tokens = match sampling_params.stop.clone() {
             Some(stop) => match stop {
                 StopTokens::Multi(multi) => multi,
@@ -230,15 +238,14 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
 
         let mut result = Vec::new();
         for (seq_n, (_, seq)) in zip(0..n_seqs, seqs) {
-            let logits = try_api!(logits.i((seq_n, try_api!(logits.dim(1)) - 1)));
-
-            let tokens = seq
-                .deref_mut()
+            let logits = logits.squeeze(0).unwrap();
+            let sq = seq.deref_mut();
+            let tokens = sq
                 .get_token_ids()
                 .iter()
                 .map(|x| *x as u32)
                 .collect::<Vec<_>>();
-            let tokens_generated = seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len();
+            // let tokens_generated = sq.get_len() - sq.get_prompt_len();
 
             let logits = if sampling_params.repetition_penalty == 1. {
                 logits
@@ -251,24 +258,35 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 ))
             };
 
-            let next_token = try_api!(logits_processor.sample(&logits));
-            if let Some(text) = self.tokenizer.id_to_token(next_token.token as u32) {
-                let text = text.replace('▁', " ").replace("<0x0A>", "\n");
-                if stop_tokens.contains(&text) {
-                    result.push(Right("stop".to_string()));
-                    continue;
+            let next_token = try_api!(self.logits_processor.sample(&logits));
+            match self.tokenizer.next_token(next_token) {
+                Ok(Some(text)) => {
+                    let text = text.replace('▁', " ").replace("<0x0A>", "\n");
+                    if stop_tokens.contains(&text) {
+                        result.push(Right("stop".to_string()));
+                        continue;
+                    }
+                    let logprob = Logprobs {
+                        token: next_token as usize,
+                        logprob: 0.0,
+                        top_logprobs: Vec::<TopLogprob>::new(),
+                        bytes: text,
+                    };
+        
+                    result.push(Left(logprob));
                 }
+                _=> {}
             }
 
-            if Some(next_token.token) == eos_token_id.map(|x| x as usize) {
+            if Some(next_token) == eos_token_id.map(|x| x as u32) {
                 result.push(Right("stop".to_string()));
                 continue;
             }
-            if tokens_generated >= sampling_params.max_tokens {
-                result.push(Right("length".to_string()));
-                continue;
-            }
-            result.push(Left(next_token));
+            // if tokens_generated >= sampling_params.max_tokens {
+            //     result.push(Right("length".to_string()));
+            //     continue;
+            // }
+  
         }
 
         Ok(result)
@@ -278,7 +296,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         &self.name
     }
 
-    fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String> {
+    fn tokenizer(&self) -> &TokenOutputStream {
         &self.tokenizer
     }
 
@@ -292,6 +310,10 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
 
     fn get_dtype(&self) -> DType {
         self.dtype
+    }
+
+    fn device(&self) -> &Device {
+        &self.device
     }
 }
 

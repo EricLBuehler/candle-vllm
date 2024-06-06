@@ -75,7 +75,7 @@ fn check_length(
 ) -> Result<Encoding, APIError> {
     let token_ids = {
         let model = data.model.lock().unwrap();
-        model.get_pipeline().tokenizer().tokenize(prompt)?
+        model.get_pipeline().tokenizer().tokenizer().encode(prompt, false).map_err(APIError::from)?
     };
 
     let max_tokens = if let Some(max_toks) = request.max_tokens {

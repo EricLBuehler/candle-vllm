@@ -240,6 +240,9 @@ impl CausalSelfAttention {
 
         self.apply_rotary_emb(&mut q, &mut k, positions.clone())?;
 
+        let q = try_api!(q.transpose(1, 2));
+        let k = try_api!(k.transpose(1, 2));
+        let v = try_api!(v.transpose(1, 2));
         let dtype = q.dtype();
         let device = q.device().clone();
         let attn_output = self.attn.forward(
@@ -250,7 +253,7 @@ impl CausalSelfAttention {
             cache.map(|(_, v)| v.clone()),
             input_metadata,
             dtype,
-            device,
+            &device,
         )?;
 
         self.o_proj.forward(&attn_output).map_err(APIError::from)

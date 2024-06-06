@@ -12,7 +12,7 @@ use super::{
     conversation::Conversation, models::ConfigLike, responses::APIError,
     sampling_params::SamplingParams, PipelineConfig, TokenizerWrapper,
 };
-
+use candle_examples::token_output_stream::TokenOutputStream;
 pub mod llama;
 /// The LLMEngine is effectively a wrapper around a ModulePipeline. It contains a Scheduler and a CacheEngine
 /// which are used to scheduler and manage the cache during generation requests, respectively.
@@ -38,13 +38,15 @@ pub trait ModulePipeline<'s>: Send + Sync {
 
     fn name(&self) -> &str;
 
-    fn tokenizer(&self) -> &dyn TokenizerWrapper<'s, String>;
+    fn tokenizer(&self) -> &TokenOutputStream;
 
     fn get_conversation(&mut self) -> &mut dyn Conversation;
 
     fn get_model_config(&self) -> Box<dyn ConfigLike>;
 
     fn get_dtype(&self) -> DType;
+
+    fn device(&self) -> &Device;
 }
 
 // TODO(EricLBuehler): Ensure the padding token matches tokenizer
@@ -52,6 +54,7 @@ fn _make_tensor_with_pad<D: WithDType>(
     x: Vec<Vec<D>>,
     max_len: usize,
     pad: D,
+    device: &Device
 ) -> Result<Tensor, APIError> {
     let mut padded_x = Vec::new();
     for mut x_i in x {
@@ -61,7 +64,7 @@ fn _make_tensor_with_pad<D: WithDType>(
         padded_x.push(try_api!(Tensor::from_vec(
             x_i,
             shape,
-            &try_api!(Device::new_cuda(0))
+            device
         )));
     }
     Tensor::cat(&padded_x[..], 0).map_err(APIError::from)

@@ -2,17 +2,9 @@ mod cache;
 mod layers;
 mod paged_attention;
 
-const COPY_BLOCKS_PTX: &str = "kernels/copy_blocks_kernel.ptx";
-
-const COPY_BLOCKS_KERNEL: &str = "copy_blocks_kernel";
-
-const RESHAPE_AND_CACHE_PTX: &str = "kernels/reshape_and_cache_kernel.ptx";
-
-const RESHAPE_AND_CACHE_KERNEL: &str = "reshape_and_cache_kernel";
-
-const ROTARY_EMBDEDDING_PTX: &str = "kernels/rotary_embedding_kernel.ptx";
-
-const ROTARY_EMBDEDDING_KERNEL: &str = "rotary_embedding_kernel";
+const COPY_BLOCKS_KERNEL_NAME: &str = "copy_blocks_kernel";
+const RESHAPE_AND_CACHE_KERNEL_NAME: &str = "reshape_and_cache_kernel";
+const ROTARY_EMBDEDDING_KERNEL_NAME: &str = "rotary_embedding_kernel";
 
 pub fn get_or_load_func(
     ptx_file: &'static str,

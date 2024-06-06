@@ -758,6 +758,7 @@ dependencies = [
  "half",
  "hf-hub",
  "intel-mkl-src",
+ "kernels",
  "range-checked",
  "serde",
  "serde_json",
@@ -1940,6 +1941,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "406cda4b368d531c842222cf9d2600a9a4acce8d29423695379c6868a143a9ee"
 dependencies = [
  "wasm-bindgen",
+]
+
+[[package]]
+name = "kernels"
+version = "0.1.0"
+dependencies = [
+ "bindgen_cuda",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@ use std::{
 
 use either::Either;
 use tokenizers::Encoding;
+use tokio::sync::RwLock;
 
 use crate::{
     openai::{
@@ -59,6 +60,7 @@ impl<'a> LLMEngine<'a> {
             pipeline.get_model_config(),
             cache_config.clone(),
             pipeline.get_dtype(),
+            &pipeline.device(),
         )?;
         let sliding_window = pipeline.get_model_config().get_sliding_window();
         Ok(Self {
@@ -167,7 +169,7 @@ impl<'a> LLMEngine<'a> {
                             .iter()
                             .map(|x| x.token.try_into().unwrap())
                             .collect::<Vec<_>>();
-                        let data = self.pipeline.tokenizer().detokenize(&data)?;
+                        let data = self.pipeline.tokenizer().tokenizer().decode(&data, false).map_err(APIError::from)?;
                         let choice = ChatChoice {
                             message: ChatChoiceData {
                                 role: self.pipeline.get_conversation().get_roles().0.clone(),
@@ -207,15 +209,21 @@ impl<'a> LLMEngine<'a> {
         &mut self,
         scheduler_output: &SchedulerOutput,
     ) -> Result<(), APIError> {
-        try_api!(self
-            .cache_engine
-            .swap_in(scheduler_output.blocks_to_swap_in.clone()));
-        try_api!(self
-            .cache_engine
-            .swap_out(scheduler_output.blocks_to_swap_out.clone()));
-        try_api!(self
-            .cache_engine
-            .copy(scheduler_output.blocks_to_copy.clone()));
+        if scheduler_output.blocks_to_swap_in.len() > 0 {
+            try_api!(self
+                .cache_engine
+                .swap_in(scheduler_output.blocks_to_swap_in.clone()));
+        }
+        if scheduler_output.blocks_to_swap_out.len() > 0 {
+            try_api!(self
+                .cache_engine
+                .swap_out(scheduler_output.blocks_to_swap_out.clone()));
+        }
+        if scheduler_output.blocks_to_copy.len() > 0 {
+            try_api!(self
+                .cache_engine
+                .copy(scheduler_output.blocks_to_copy.clone()));
+        }
         Ok(())
     }
 
@@ -282,6 +290,7 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             *max_prompt_len,
             0,
+            &self.pipeline.device()
         )?;
         let input_positions = _make_tensor_with_pad(
             input_positions
@@ -290,8 +299,9 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             *max_prompt_len,
             0,
+            &self.pipeline.device()
         )?;
-        let slot_mapping = _make_tensor_with_pad(slot_mappings, *max_prompt_len, _PAD_SLOT_ID)?;
+        let slot_mapping = _make_tensor_with_pad(slot_mappings, *max_prompt_len, _PAD_SLOT_ID, &self.pipeline.device())?;
 
         Ok(PreparedInputs {
             tokens: input_tokens,
@@ -371,6 +381,7 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             1,
             0,
+            &self.pipeline.device()
         )?;
         let input_positions = _make_tensor_with_pad(
             input_positions
@@ -379,14 +390,15 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             1,
             0,
+            &self.pipeline.device()
         )?;
-        let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID)?;
+        let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID, &self.pipeline.device())?;
 
         let max_context_len = context_lens.iter().max().unwrap();
         let context_lens = try_api!(Tensor::from_vec(
             context_lens.iter().map(|x| *x as i64).collect::<Vec<_>>(),
             (context_lens.len(),),
-            &try_api!(Device::new_cuda(0)),
+            &self.pipeline.device(),
         ));
 
         let max_block_table_len = block_tables.iter().map(|x| x.len()).max().unwrap();
@@ -397,6 +409,7 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             max_block_table_len,
             0,
+            &self.pipeline.device()
         )?;
 
         Ok(PreparedInputs {
@@ -416,7 +429,7 @@ impl<'a> LLMEngine<'a> {
     }
 
     fn add_request(&mut self, prompt: Encoding, request_id: String, created: u64) {
-        let seq = Arc::new(Sequence(Mutex::new(_Sequence::new(
+        let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
             prompt
                 .get_ids()
                 .to_vec()

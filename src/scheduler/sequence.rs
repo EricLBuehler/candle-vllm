@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use candle_sampling::logits_processor::Logprobs;
@@ -51,7 +51,7 @@ impl SequenceData {
 /// A Sequence holds information about the data it contains (the tokens), and the logical token blocks
 /// to which it is mapped.
 pub struct _Sequence {
-    data: Mutex<SequenceData>,
+    data: RwLock<SequenceData>,
     seq_id: usize,
     logical_token_blocks: Vec<LogicalTokenBlock>,
     block_size: usize,
@@ -60,7 +60,7 @@ pub struct _Sequence {
 impl _Sequence {
     pub fn new(prompt_token_ids: Vec<usize>, seq_id: usize, block_size: usize) -> Self {
         let mut this = Self {
-            data: Mutex::new(SequenceData::new(prompt_token_ids.clone())),
+            data: RwLock::new(SequenceData::new(prompt_token_ids.clone())),
             seq_id,
             logical_token_blocks: Vec::new(),
             block_size,
@@ -74,8 +74,8 @@ impl _Sequence {
         self.deref_mut().append_token_id(logprobs);
     }
 
-    pub fn blocks_to_add_new_tok(&mut self) -> usize {
-        let last = self.logical_token_blocks.last_mut();
+    pub fn blocks_to_add_new_tok(&self) -> usize {
+        let last = self.logical_token_blocks.last();
         if !last.is_some_and(|last| last.is_full()) {
             // If we have space
             0
@@ -101,7 +101,8 @@ impl _Sequence {
     }
 
     pub fn get_len(&self) -> usize {
-        self.deref().prompt_token_ids.len() + self.deref().output_token_ids.len()
+        let dref = self.deref();
+        dref.prompt_token_ids.len() + dref.output_token_ids.len()
     }
 
     pub fn get_token_ids(&self) -> Vec<usize> {
@@ -138,7 +139,7 @@ impl _Sequence {
     }
 
     pub fn set_finish_reason(&mut self, finish_reason: String) {
-        self.deref()
+        self.deref_mut()
             .set_status(SequenceStatus::Finished(finish_reason.clone()));
     }
 
@@ -183,32 +184,39 @@ impl _Sequence {
 }
 
 impl _Sequence {
-    pub fn deref(&self) -> MutexGuard<'_, SequenceData> {
-        loop {
-            if let Ok(res) = self.data.try_lock() {
-                return res;
-            }
-        }
+    pub fn deref(&self) -> RwLockReadGuard<'_, SequenceData> {
+        // loop {
+        //     if let Ok(res) = self.data.try_lock() {
+        //         return res;
+        //     }
+        // }
+        self.data.read().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn deref_mut(&self) -> MutexGuard<'_, SequenceData> {
-        loop {
-            if let Ok(res) = self.data.try_lock() {
-                return res;
-            }
-        }
+    pub fn deref_mut(&self) -> RwLockWriteGuard<'_, SequenceData> {
+        // loop {
+        //     if let Ok(res) = self.data.try_lock() {
+        //         return res;
+        //     }
+        // }
+        self.data.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-pub struct Sequence(pub Mutex<_Sequence>);
+pub struct Sequence(pub RwLock<_Sequence>);
 
 impl Sequence {
-    pub fn deref_mut(&self) -> MutexGuard<'_, _Sequence> {
-        loop {
-            if let Ok(v) = self.0.try_lock() {
-                return v;
-            }
-        }
+    pub fn deref(&self) -> RwLockReadGuard<'_, _Sequence> {
+        self.0.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn deref_mut(&self) -> RwLockWriteGuard<'_, _Sequence> {
+        // loop {
+        //     if let Ok(v) = self.0.try_lock() {
+        //         return v;
+        //     }
+        // }
+        self.0.write().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -246,8 +254,14 @@ impl SequenceGroup {
     }
 
     pub fn set_status(&self, status: SequenceStatus) {
+        // for seq in self.seqs.values() {
+        //     seq.deref_mut().deref().set_status(status.clone());
+        // }
         for seq in self.seqs.values() {
-            seq.deref_mut().deref().set_status(status.clone());
+            // Lock each sequence individually and set the status
+            if let Ok(mut seq_guard) = seq.0.write() {
+                seq_guard.deref_mut().set_status(status.clone());
+            }
         }
     }
 
@@ -255,7 +269,7 @@ impl SequenceGroup {
     pub fn total_blocks_to_add_new_tok(&self) -> usize {
         self.seqs
             .values()
-            .map(|seq| seq.deref_mut().blocks_to_add_new_tok())
+            .map(|seq| seq.deref().blocks_to_add_new_tok())
             .sum()
     }
 
@@ -266,7 +280,7 @@ impl SequenceGroup {
     pub fn get_total_logical_token_blocks(&self) -> usize {
         self.seqs
             .values()
-            .map(|seq| seq.deref_mut().get_logical_token_blocks())
+            .map(|seq| seq.deref().get_logical_token_blocks())
             .sum()
     }
 
@@ -283,7 +297,7 @@ impl SequenceGroup {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.seqs.iter().all(|(_, x)| x.deref_mut().is_finished())
+        self.seqs.iter().all(|(_, x)| x.deref().is_finished())
     }
 
     pub fn get_request_id(&self) -> &String {

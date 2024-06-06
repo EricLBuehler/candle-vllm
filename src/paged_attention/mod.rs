@@ -171,15 +171,27 @@ impl PagedAttention {
         mut value_cache: Option<Tensor>,
         input_metadata: &mut InputMetadata,
         dtype: DType,
-        device: Device,
+        device: &Device,
     ) -> Result<Tensor, APIError> {
-        let (batch_size, seq_len, hidden_size) = try_api!(query.shape().dims3());
-        let query = try_api!(query.reshape(((), self.num_attention_heads, self.head_dim)));
-        let key = try_api!(key.reshape(((), self.num_key_value_heads, self.head_dim)));
-        let value = try_api!(value.reshape(((), self.num_key_value_heads, self.head_dim)));
-        let slot_mapping = try_api!(input_metadata
+        let (batch_size, seq_len, attention_heads, hidden_size) = try_api!(query.shape().dims4());
+        let (_, _, key_value_heads, _) = try_api!(key.shape().dims4());
+
+        let key = try_api!(key.reshape(((), key_value_heads, hidden_size)));
+        let value = try_api!(value.reshape(((), key_value_heads, hidden_size)));
+        let dims = input_metadata.slot_mapping.dims();
+        let slot_mapping = if dims.len() > 1 {
+            try_api!(input_metadata
             .slot_mapping
-            .flatten(0, input_metadata.slot_mapping.dims().len()));
+            .flatten(0, input_metadata.slot_mapping.dims().len()))
+        } else {
+            input_metadata.slot_mapping.clone()
+        };
+
+        // key: Tensor,              // [num_tokens, num_heads, head_size]
+        // value: Tensor,            // [num_tokens, num_heads, head_size]
+        // key_cache: &mut Tensor,   // [num_blocks, num_heads, head_size/x, block_size, x] 48,32,16,16,8
+        // value_cache: &mut Tensor, // [num_blocks, num_heads, head_size, block_size] 48,32,128,16
+        // slot_mapping: Tensor,     // [num_tokens]
 
         if key_cache.as_ref().is_some_and(|_| value_cache.is_some()) {
             try_api!(unsafe {
@@ -193,6 +205,23 @@ impl PagedAttention {
             });
         }
 
+        let query = try_api!(query.reshape(((), attention_heads, hidden_size)));
+
+    //  Args:
+    //  output: shape = [num_generation_tokens, num_heads, head_size]
+    // 
+    //  query: shape = [num_generation_tokens, num_heads, head_size]
+    // 
+    //  key_cache: shape = [num_blocks, num_kv_heads, head_size/x,
+    //      block_size, x]
+    // 
+    //  value_cache: shape = [num_blocks, num_kv_heads, head_size,
+    //      block_size]
+    // 
+    //  input_metadata: metadata for paged attention.
+    // 
+    //  alibi_slopes: shape = [num_heads]
+    //  
         let output = if input_metadata.is_prompt {
             self._normal_attention(
                 query,
@@ -201,11 +230,11 @@ impl PagedAttention {
                 input_metadata,
                 seq_len,
                 batch_size,
-                &device,
+                device,
                 dtype,
             )?
         } else {
-            self._paged_attention(
+            self._paged_attention( //TODO
                 query,
                 key_cache.as_ref().unwrap().clone(),
                 value_cache.as_ref().unwrap().clone(),
@@ -215,7 +244,7 @@ impl PagedAttention {
         };
 
         output
-            .reshape((batch_size, seq_len, hidden_size))
+            .reshape(((), seq_len, attention_heads * hidden_size))
             .map_err(APIError::from)
     }
 }

@@ -4,17 +4,18 @@ use candle_core::{
     cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchAsync, LaunchConfig},
     DType, Device, IndexOp, Storage, Tensor,
 };
-
+use candle_core::cuda_backend::CudaStorageSlice;
+use candle_core::cuda_backend::CudaError;
 use crate::{
     backend::{
-        dispatch_get_cuda_pointer, get_or_load_func, Conjoined, COPY_BLOCKS_KERNEL, COPY_BLOCKS_PTX,
+        dispatch_get_cuda_pointer, get_or_load_func, Conjoined,
     },
     openai::responses::APIError,
     try_api,
 };
 
-use super::{RESHAPE_AND_CACHE_KERNEL, RESHAPE_AND_CACHE_PTX};
-
+use super::{COPY_BLOCKS_KERNEL_NAME, RESHAPE_AND_CACHE_KERNEL_NAME};
+use kernels::{COPY_BLOCKS_KERNEL, RESHAPE_AND_CACHE_KERNEL};
 /// # Safety
 /// Unsafe due to passing pointers
 pub unsafe fn reshape_and_cache(
@@ -113,8 +114,8 @@ pub unsafe fn reshape_and_cache(
     };
 
     let kernel = try_api!(get_or_load_func(
-        RESHAPE_AND_CACHE_PTX,
         RESHAPE_AND_CACHE_KERNEL,
+        RESHAPE_AND_CACHE_KERNEL_NAME,
         key.dtype(),
         None,
         dev
@@ -124,7 +125,8 @@ pub unsafe fn reshape_and_cache(
     let value_ptr = dispatch_get_cuda_pointer(value);
     let key_cache_ptr = dispatch_get_cuda_pointer(key_cache.clone());
     let value_cache_ptr = dispatch_get_cuda_pointer(value_cache.clone());
-
+    let slot_mapping_ptr = dispatch_get_cuda_pointer(slot_mapping);
+    
     try_api!(unsafe {
         kernel.launch_on_stream(
             &stream,
@@ -134,6 +136,7 @@ pub unsafe fn reshape_and_cache(
                 value_ptr,
                 key_cache_ptr,
                 value_cache_ptr,
+                slot_mapping_ptr,
                 key_stride,
                 value_stride,
                 num_heads,
@@ -194,8 +197,8 @@ pub unsafe fn copy_blocks(
         let Storage::Cuda(key_storage) = &*key_cache.storage_and_layout().0 else {
             unreachable!()
         };
-        let key_ptr = *try_api!(key_storage.as_cuda_slice::<u8>()).device_ptr();
-        key_cache_ptrs.push(key_ptr + key_offset);
+
+        // let key_ptr = *try_api!(key_storage.as_cuda_slice::<u8>()).device_ptr();
 
         let value_offset: u64 = value_cache
             .storage_and_layout()
@@ -206,7 +209,29 @@ pub unsafe fn copy_blocks(
         let Storage::Cuda(value_storage) = &*value_cache.storage_and_layout().0 else {
             unreachable!()
         };
-        let value_ptr = *try_api!(value_storage.as_cuda_slice::<u8>()).device_ptr();
+        // let value_ptr = *try_api!(value_storage.as_cuda_slice::<u8>()).device_ptr();
+
+        let (key_ptr, value_ptr) = match (&key_storage.slice, &value_storage.slice) {
+            (CudaStorageSlice::BF16(slice_key), CudaStorageSlice::BF16(slice_value)) => {
+                let ptr_key = *slice_key.slice(0..).device_ptr();
+                let ptr_value = *slice_value.slice(0..).device_ptr();
+                (ptr_key, ptr_value)
+            }
+            (CudaStorageSlice::F16(slice_key), CudaStorageSlice::F16(slice_value)) => {
+                let ptr_key = *slice_key.slice(0..).device_ptr();
+                let ptr_value = *slice_value.slice(0..).device_ptr();
+                (ptr_key, ptr_value)
+            }
+            (CudaStorageSlice::F32(slice_key), CudaStorageSlice::F32(slice_value)) => {
+                let ptr_key = *slice_key.slice(0..).device_ptr();
+                let ptr_value = *slice_value.slice(0..).device_ptr();
+                (ptr_key, ptr_value)
+            }
+            _ => {
+                return Err(APIError::from("only f32, f16 and bf16 input data type supported!"));
+            }
+        };
+        key_cache_ptrs.push(key_ptr + key_offset);
         value_cache_ptrs.push(value_ptr + value_offset);
     }
 
@@ -247,18 +272,18 @@ pub unsafe fn copy_blocks(
     let stream = try_api!(dev.fork_default_stream());
 
     let kernel = try_api!(get_or_load_func(
-        COPY_BLOCKS_PTX,
         COPY_BLOCKS_KERNEL,
+        COPY_BLOCKS_KERNEL_NAME,
         key_caches.first().unwrap().dtype(),
         None,
-        dev,
+        &dev,
     ));
 
     try_api!(unsafe {
         kernel.launch_on_stream(
             &stream,
             launch_conf,
-            (key_cache_ptr, value_cache_ptr, block_mapping_ptr),
+            (key_cache_ptr, value_cache_ptr, block_mapping_ptr, numel_per_block as i32),
         )
     });
 
@@ -282,8 +307,28 @@ pub fn swap_blocks(
             assert!(matches!(&*dst_storage, Storage::Cuda(_)));
             let Storage::Cuda(src_storage) = &*src_storage else { unreachable!() };
             let Storage::Cuda(dst_storage) = &*dst_storage else { unreachable!() };
-            let src_ptr = src_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(src_layout.start_offset()).unwrap();
-            let dst_ptr = dst_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
+            let (src_ptr, dst_ptr) = match (&src_storage.slice, &dst_storage.slice) {
+                (CudaStorageSlice::BF16(slice_src), CudaStorageSlice::BF16(slice_dst)) => {
+                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
+                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
+                    (ptr_src, ptr_dst)
+                }
+                (CudaStorageSlice::F16(slice_src), CudaStorageSlice::F16(slice_dst)) => {
+                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
+                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
+                    (ptr_src, ptr_dst)
+                }
+                (CudaStorageSlice::F32(slice_src), CudaStorageSlice::F32(slice_dst)) => {
+                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
+                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
+                    (ptr_src, ptr_dst)
+                }
+                _ => {
+                    return Err(APIError::from("only f32, f16 and bf16 input data type supported!"));
+                }
+            };
+            // let src_ptr = src_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(src_layout.start_offset()).unwrap();
+            // let dst_ptr = dst_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
 
             for (src_block_number, dst_block_number) in block_mapping {
                 let src_offset: u64 = (src_block_number * block_size_in_bytes).try_into().unwrap();
