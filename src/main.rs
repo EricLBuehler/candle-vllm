@@ -4,16 +4,16 @@ use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::{App, HttpServer};
 use candle_core::{DType, Device};
+use candle_examples;
 use candle_vllm::openai::openai_server::chat_completions;
+use candle_vllm::openai::pipelines::llama::LlamaModelPaths;
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::responses::APIError;
 use candle_vllm::openai::OpenAIServerData;
 use candle_vllm::scheduler::cache_engine::CacheConfig;
 use candle_vllm::scheduler::SchedulerConfig;
-use candle_vllm::openai::pipelines::llama::LlamaModelPaths;
 use candle_vllm::{get_model_loader, hub_load_local_safetensors, ModelSelected};
 use clap::Parser;
-use candle_examples;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -54,7 +54,7 @@ struct Args {
     #[arg(long)]
     dtype: Option<String>,
 
-    #[arg(long, default_value_t=false)]
+    #[arg(long, default_value_t = false)]
     cpu: bool,
 }
 
@@ -64,16 +64,12 @@ async fn main() -> Result<(), APIError> {
     let (loader, model_id) = get_model_loader(args.command);
 
     let paths = match &args.weight_path {
-        Some(path) => {
-            Box::new(LlamaModelPaths {
-                tokenizer_filename: (path.to_owned() + "tokenizer.json").into(),
-                config_filename: (path.to_owned() + "config.json").into(),
-                filenames: hub_load_local_safetensors(path, "model.safetensors.index.json").unwrap(),
-            })
-        }
-        _ => {
-            loader.download_model(model_id, None, args.hf_token, args.hf_token_path)?
-        },
+        Some(path) => Box::new(LlamaModelPaths {
+            tokenizer_filename: (path.to_owned() + "tokenizer.json").into(),
+            config_filename: (path.to_owned() + "config.json").into(),
+            filenames: hub_load_local_safetensors(path, "model.safetensors.index.json").unwrap(),
+        }),
+        _ => loader.download_model(model_id, None, args.hf_token, args.hf_token_path)?,
     };
 
     let dtype = match args.dtype.as_deref() {

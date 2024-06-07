@@ -1,13 +1,13 @@
 // use candle_core::{cuda_backend::cudarc::driver::CudaFunction, DType, Tensor};
-use candle_core as candle;
 use crate::openai::responses::APIError;
 use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::DevicePtr;
 use candle::cuda_backend::WrapErr;
 use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
+use candle_core as candle;
 use half::{bf16, f16};
-use std::ffi::c_int;
 use kernels::ffi::{paged_attention_v1, paged_attention_v2};
+use std::ffi::c_int;
 
 struct PagedAttention {
     softmax_scale: f32,
@@ -251,7 +251,6 @@ impl candle::CustomOp1 for PagedAttention {
     }
 }
 
-
 /// Paged Attention layer.
 ///
 /// This implements scaled dot-product attention, `softmax(Q @ K^T . softmax_scale) @ V`.
@@ -271,21 +270,21 @@ impl candle::CustomOp1 for PagedAttention {
 ///
 /// The resulting tensor has dimensions `(num_sequences, num_heads_q, head_size)`.
 pub fn paged_attention(
-  q: &Tensor,
-  key_cache: &Tensor,
-  value_cache: &Tensor,
-  block_tables: &Tensor,
-  context_lens: &Tensor,
-  max_context_len: usize,
-  softmax_scale: f32,
+    q: &Tensor,
+    key_cache: &Tensor,
+    value_cache: &Tensor,
+    block_tables: &Tensor,
+    context_lens: &Tensor,
+    max_context_len: usize,
+    softmax_scale: f32,
 ) -> Result<Tensor> {
-  let op = PagedAttention {
-      softmax_scale,
-      key_cache: key_cache.clone(),
-      value_cache: value_cache.clone(),
-      block_tables: block_tables.clone(),
-      context_lens: context_lens.clone(),
-      max_context_len,
-  };
-  q.apply_op1(op)
+    let op = PagedAttention {
+        softmax_scale,
+        key_cache: key_cache.clone(),
+        value_cache: value_cache.clone(),
+        block_tables: block_tables.clone(),
+        context_lens: context_lens.clone(),
+        max_context_len,
+    };
+    q.apply_op1(op)
 }

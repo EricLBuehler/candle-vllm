@@ -54,18 +54,14 @@ fn _make_tensor_with_pad<D: WithDType>(
     x: Vec<Vec<D>>,
     max_len: usize,
     pad: D,
-    device: &Device
+    device: &Device,
 ) -> Result<Tensor, APIError> {
     let mut padded_x = Vec::new();
     for mut x_i in x {
         assert!(x_i.len() <= max_len);
         x_i.extend([pad].repeat(max_len - x_i.len()));
         let shape = (x_i.len(),);
-        padded_x.push(try_api!(Tensor::from_vec(
-            x_i,
-            shape,
-            device
-        )));
+        padded_x.push(try_api!(Tensor::from_vec(x_i, shape, device)));
     }
     Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
 }

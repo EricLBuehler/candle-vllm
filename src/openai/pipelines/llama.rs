@@ -1,5 +1,6 @@
 use std::{iter::zip, path::PathBuf, sync::Arc};
 
+use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
 use crate::{
     openai::{
         conversation::{
@@ -22,15 +23,14 @@ use crate::{
     try_api,
 };
 use candle_core::{DType, Device, IndexOp, Tensor};
-use candle_nn::VarBuilder;
+use candle_examples::token_output_stream::TokenOutputStream;
 use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
+use candle_nn::VarBuilder;
+use candle_sampling::logits_processor::{Logprobs, TopLogprob};
+use candle_transformers::generation::LogitsProcessor;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use tokenizers::Tokenizer;
-use candle_sampling::logits_processor::{Logprobs, TopLogprob};
-use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
-use candle_transformers::generation::LogitsProcessor;
-use candle_examples::token_output_stream::TokenOutputStream;
 
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
@@ -145,10 +145,12 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         //     &device,
         //     false
         // ));
-        
-        let vb = match unsafe { VarBuilder::from_mmaped_safetensors(&paths.get_weight_filenames(), dtype, &device) } {
-            Ok(vb_) => { vb_}
-            _=> panic!("Load model weights failed!")
+
+        let vb = match unsafe {
+            VarBuilder::from_mmaped_safetensors(&paths.get_weight_filenames(), dtype, &device)
+        } {
+            Ok(vb_) => vb_,
+            _ => panic!("Load model weights failed!"),
         };
 
         let llama = try_api!(Llama::load(vb, &config, dtype, &device));
@@ -205,7 +207,9 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         mut input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError> {
         self.llama.forward(
-            &input_tokens.reshape((1, input_tokens.shape().dims()[0])).unwrap(),
+            &input_tokens
+                .reshape((1, input_tokens.shape().dims()[0]))
+                .unwrap(),
             &input_positions,
             kv_cache,
             &mut input_metadata,
@@ -277,10 +281,10 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                         top_logprobs: Vec::<TopLogprob>::new(),
                         bytes: text,
                     };
-        
+
                     result.push(Left(logprob));
                 }
-                _=> {}
+                _ => {}
             }
 
             if Some(next_token) == eos_token_id.map(|x| x as u32) {

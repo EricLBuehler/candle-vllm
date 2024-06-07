@@ -3,13 +3,13 @@ use candle_core::{
     DType, Device, Tensor,
 };
 
+use super::dispatch_get_cuda_pointer;
 use crate::{
     backend::{get_or_load_func, ROTARY_EMBDEDDING_KERNEL_NAME},
     openai::responses::APIError,
     try_api,
 };
 use kernels::ROTARY_EMBEDDING_KERNEL;
-use super::dispatch_get_cuda_pointer;
 
 /// # Safety
 /// Unsafe due to passing pointers

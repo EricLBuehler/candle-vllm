@@ -21,15 +21,9 @@ pub fn _memory_efficient_attention(
     dtype: DType,
 ) -> Result<Tensor, APIError> {
     if true {
-        scaled_dot_product_attention(
-            &query,
-            &key,
-            &value,
-            None,
-            None,
-            this.scale,
-        )
-    } else {//problems to be fixed
+        scaled_dot_product_attention(&query, &key, &value, None, None, this.scale)
+    } else {
+        //problems to be fixed
         let (query, key, value) = if this.num_key_value_heads != this.num_attention_heads {
             let query = try_api!(query.reshape((
                 *query.shape().dims().first().unwrap(),
@@ -37,7 +31,7 @@ pub fn _memory_efficient_attention(
                 this.num_queries_per_kv,
                 *query.shape().dims().last().unwrap(),
             )));
-    
+
             let key = try_api!(
                 try_api!(try_api!(key.i((.., .., .., ..))).unsqueeze(2)).expand((
                     *key.shape().dims().first().unwrap(),
@@ -46,21 +40,20 @@ pub fn _memory_efficient_attention(
                     *key.shape().dims().last().unwrap(),
                 ))
             );
-    
-            let value = try_api!(
-                try_api!(try_api!(value.i((.., .., .., ..))).unsqueeze(2)).expand((
+
+            let value = try_api!(try_api!(try_api!(value.i((.., .., .., ..))).unsqueeze(2))
+                .expand((
                     *value.shape().dims().first().unwrap(),
                     this.num_key_value_heads,
                     this.num_queries_per_kv,
                     *value.shape().dims().last().unwrap(),
-                ))
-            );
-    
+                )));
+
             (query, key, value)
         } else {
             (query, key, value)
         };
-    
+
         if input_metadata.attn_bias.is_none() {
             if let Some(alibi_slopes) = &this.alibi_slopes {
                 //make alibi bias
@@ -74,7 +67,7 @@ pub fn _memory_efficient_attention(
                     (try_api!(bias.unsqueeze(0)) - try_api!(bias.unsqueeze(1)))
                 )
                 .to_device(alibi_slopes.device()));
-    
+
                 let padded_len = ((seq_len + 7) / 8) * 8;
                 let mut bias_new = try_api!(try_api!(Tensor::zeros(
                     (
@@ -87,9 +80,9 @@ pub fn _memory_efficient_attention(
                     device,
                 ))
                 .i((.., .., .., ..seq_len)));
-    
+
                 bias_new = try_api!(bias_new.slice_assign(&[.., .., .., ..], &bias));
-    
+
                 bias_new = try_api!(bias_new.mul(&try_api!(try_api!(
                     try_api!(alibi_slopes.i(..)).unsqueeze(1)
                 )
@@ -107,7 +100,7 @@ pub fn _memory_efficient_attention(
                 input_metadata.attn_bias = Some(attn_bias);
             }
         }
-    
+
         let (query, key, value) = if this.alibi_slopes.is_none() {
             (
                 try_api!(query.unsqueeze(0)),
@@ -165,18 +158,22 @@ pub fn _memory_efficient_attention(
                 )
             }
         };
-    
+
         let l = try_api!(query.dim(D::Minus2));
         let s = try_api!(key.dim(D::Minus2));
         scaled_dot_product_attention(
             &query,
             &key,
             &value,
-            Some(&try_api!(input_metadata.attn_bias.as_ref().unwrap().materialize(
-                &Shape::from_dims(&[l, s]),
-                query.dtype(),
-                device
-            ))),
+            Some(&try_api!(input_metadata
+                .attn_bias
+                .as_ref()
+                .unwrap()
+                .materialize(
+                    &Shape::from_dims(&[l, s]),
+                    query.dtype(),
+                    device
+                ))),
             None,
             this.scale,
         )
@@ -239,7 +236,9 @@ pub fn scaled_dot_product_attention(
         ),)) * f64::from(scale_factor)
     );
     if attn_bias.is_some() {
-        attn_weights = try_api!(&attn_weights + try_api!(attn_bias.unwrap().broadcast_as(attn_weights.shape())));
+        attn_weights = try_api!(
+            &attn_weights + try_api!(attn_bias.unwrap().broadcast_as(attn_weights.shape()))
+        );
     }
     attn_weights = try_api!(candle_nn::ops::softmax_last_dim(&attn_weights));
 

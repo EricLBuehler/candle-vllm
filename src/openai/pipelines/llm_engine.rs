@@ -112,15 +112,16 @@ impl<'a> LLMEngine<'a> {
                 tokens,
                 positions,
                 metadata,
-            } = if scheduled.front().is_some() && scheduled
-                .front()
-                .unwrap()
-                .get_seqs()
-                .values()
-                .nth(0)
-                .unwrap()
-                .deref_mut()
-                .is_prompt()
+            } = if scheduled.front().is_some()
+                && scheduled
+                    .front()
+                    .unwrap()
+                    .get_seqs()
+                    .values()
+                    .nth(0)
+                    .unwrap()
+                    .deref_mut()
+                    .is_prompt()
             {
                 self.prepare_prompt(scheduled)
             } else {
@@ -175,7 +176,12 @@ impl<'a> LLMEngine<'a> {
                             .iter()
                             .map(|x| x.token.try_into().unwrap())
                             .collect::<Vec<_>>();
-                        let data = self.pipeline.tokenizer().tokenizer().decode(&data, false).map_err(APIError::from)?;
+                        let data = self
+                            .pipeline
+                            .tokenizer()
+                            .tokenizer()
+                            .decode(&data, false)
+                            .map_err(APIError::from)?;
                         let choice = ChatChoice {
                             message: ChatChoiceData {
                                 role: self.pipeline.get_conversation().get_roles().0.clone(),
@@ -296,7 +302,7 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             *max_prompt_len,
             0,
-            &self.pipeline.device()
+            &self.pipeline.device(),
         )?;
         let input_positions = _make_tensor_with_pad(
             input_positions
@@ -305,9 +311,14 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             *max_prompt_len,
             0,
-            &self.pipeline.device()
+            &self.pipeline.device(),
         )?;
-        let slot_mapping = _make_tensor_with_pad(slot_mappings, *max_prompt_len, _PAD_SLOT_ID, &self.pipeline.device())?;
+        let slot_mapping = _make_tensor_with_pad(
+            slot_mappings,
+            *max_prompt_len,
+            _PAD_SLOT_ID,
+            &self.pipeline.device(),
+        )?;
 
         Ok(PreparedInputs {
             tokens: input_tokens,
@@ -387,7 +398,7 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             1,
             0,
-            &self.pipeline.device()
+            &self.pipeline.device(),
         )?;
         let input_positions = _make_tensor_with_pad(
             input_positions
@@ -396,9 +407,10 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             1,
             0,
-            &self.pipeline.device()
+            &self.pipeline.device(),
         )?;
-        let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID, &self.pipeline.device())?;
+        let slot_mapping =
+            _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID, &self.pipeline.device())?;
 
         let max_context_len = context_lens.iter().max().unwrap();
         let context_lens = try_api!(Tensor::from_vec(
@@ -415,7 +427,7 @@ impl<'a> LLMEngine<'a> {
                 .collect::<Vec<_>>(),
             max_block_table_len,
             0,
-            &self.pipeline.device()
+            &self.pipeline.device(),
         )?;
         let block_tables = try_api!(block_tables.reshape(((), max_block_table_len)));
         Ok(PreparedInputs {

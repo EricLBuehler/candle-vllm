@@ -142,8 +142,8 @@ impl PagedAttention {
         let dims = input_metadata.slot_mapping.dims();
         let slot_mapping = if dims.len() > 1 {
             try_api!(input_metadata
-            .slot_mapping
-            .flatten(0, input_metadata.slot_mapping.dims().len()))
+                .slot_mapping
+                .flatten(0, input_metadata.slot_mapping.dims().len()))
         } else {
             input_metadata.slot_mapping.clone()
         };
@@ -168,21 +168,21 @@ impl PagedAttention {
 
         let query = try_api!(query.reshape(((), attention_heads, hidden_size)));
 
-    //  Args:
-    //  output: shape = [num_generation_tokens, num_heads, head_size]
-    // 
-    //  query: shape = [num_generation_tokens, num_heads, head_size]
-    // 
-    //  key_cache: shape = [num_blocks, num_kv_heads, head_size/x,
-    //      block_size, x]
-    // 
-    //  value_cache: shape = [num_blocks, num_kv_heads, head_size,
-    //      block_size]
-    // 
-    //  input_metadata: metadata for paged attention.
-    // 
-    //  alibi_slopes: shape = [num_heads]
-    //  
+        //  Args:
+        //  output: shape = [num_generation_tokens, num_heads, head_size]
+        //
+        //  query: shape = [num_generation_tokens, num_heads, head_size]
+        //
+        //  key_cache: shape = [num_blocks, num_kv_heads, head_size/x,
+        //      block_size, x]
+        //
+        //  value_cache: shape = [num_blocks, num_kv_heads, head_size,
+        //      block_size]
+        //
+        //  input_metadata: metadata for paged attention.
+        //
+        //  alibi_slopes: shape = [num_heads]
+        //
         let output = if input_metadata.is_prompt {
             self._normal_attention(
                 query,
@@ -195,7 +195,7 @@ impl PagedAttention {
                 dtype,
             )?
         } else {
-            self._paged_attention( 
+            self._paged_attention(
                 query,
                 key_cache.as_ref().unwrap().clone(),
                 value_cache.as_ref().unwrap().clone(),

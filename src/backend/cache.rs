@@ -1,17 +1,15 @@
 use std::{collections::HashMap, iter::zip, ptr::NonNull};
 
+use crate::{
+    backend::{dispatch_get_cuda_pointer, get_or_load_func, Conjoined},
+    openai::responses::APIError,
+    try_api,
+};
+use candle_core::cuda_backend::CudaError;
+use candle_core::cuda_backend::CudaStorageSlice;
 use candle_core::{
     cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchAsync, LaunchConfig},
     DType, Device, IndexOp, Storage, Tensor,
-};
-use candle_core::cuda_backend::CudaStorageSlice;
-use candle_core::cuda_backend::CudaError;
-use crate::{
-    backend::{
-        dispatch_get_cuda_pointer, get_or_load_func, Conjoined,
-    },
-    openai::responses::APIError,
-    try_api,
 };
 
 use super::{COPY_BLOCKS_KERNEL_NAME, RESHAPE_AND_CACHE_KERNEL_NAME};
@@ -126,7 +124,7 @@ pub unsafe fn reshape_and_cache(
     let key_cache_ptr = dispatch_get_cuda_pointer(key_cache.clone());
     let value_cache_ptr = dispatch_get_cuda_pointer(value_cache.clone());
     let slot_mapping_ptr = dispatch_get_cuda_pointer(slot_mapping);
-    
+
     try_api!(unsafe {
         kernel.launch_on_stream(
             &stream,
@@ -228,7 +226,9 @@ pub unsafe fn copy_blocks(
                 (ptr_key, ptr_value)
             }
             _ => {
-                return Err(APIError::from("only f32, f16 and bf16 input data type supported!"));
+                return Err(APIError::from(
+                    "only f32, f16 and bf16 input data type supported!",
+                ));
             }
         };
         key_cache_ptrs.push(key_ptr + key_offset);
@@ -283,7 +283,12 @@ pub unsafe fn copy_blocks(
         kernel.launch_on_stream(
             &stream,
             launch_conf,
-            (key_cache_ptr, value_cache_ptr, block_mapping_ptr, numel_per_block as i32),
+            (
+                key_cache_ptr,
+                value_cache_ptr,
+                block_mapping_ptr,
+                numel_per_block as i32,
+            ),
         )
     });
 
