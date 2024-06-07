@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use candle_lora_transformers::bert::DTYPE;
 use either::Either;
 use tokenizers::Encoding;
 use tokio::sync::RwLock;
@@ -29,7 +30,7 @@ use crate::scheduler::Scheduler;
 
 use super::{ModulePipeline, _make_tensor_with_pad};
 
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 
 #[allow(dead_code)]
 struct PreparedInputs {
@@ -111,7 +112,7 @@ impl<'a> LLMEngine<'a> {
                 tokens,
                 positions,
                 metadata,
-            } = if scheduled
+            } = if scheduled.front().is_some() && scheduled
                 .front()
                 .unwrap()
                 .get_seqs()
@@ -125,7 +126,12 @@ impl<'a> LLMEngine<'a> {
             } else {
                 // Because of the KV cache, we only need to take
                 // the last token.
-                self.prepare_decode(scheduled)
+                if scheduled.front().is_some() {
+                    self.prepare_decode(scheduled)
+                } else {
+                    println!("Response should be finished!");
+                    unreachable!();
+                }
             }?;
 
             let logits = self.pipeline.forward(
@@ -136,8 +142,8 @@ impl<'a> LLMEngine<'a> {
             )?;
             let result = self.pipeline.sample(logits, &sampling_params, &seqs)?;
 
-            for (result, (_, seq)) in zip(result, seqs) {
-                match result {
+            for (result_, (_, seq)) in zip(result, seqs) {
+                match result_ {
                     Either::Left(logprobs) => {
                         seq.deref_mut().add_token(logprobs);
                     }
@@ -185,14 +191,14 @@ impl<'a> LLMEngine<'a> {
                     let usage = ChatCompletionUsageResponse {
                         completion_tokens: top_n
                             .iter()
-                            .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
+                            .map(|seq| seq.deref().get_len() - seq.deref().get_prompt_len())
                             .sum(),
-                        prompt_tokens: top_n.first().unwrap().deref_mut().get_prompt_len(),
+                        prompt_tokens: top_n.first().unwrap().deref().get_prompt_len(),
                         total_tokens: top_n
                             .iter()
-                            .map(|seq| seq.deref_mut().get_len() - seq.deref_mut().get_prompt_len())
+                            .map(|seq| seq.deref().get_len() - seq.deref().get_prompt_len())
                             .sum::<usize>()
-                            + top_n.first().unwrap().deref_mut().get_prompt_len(),
+                            + top_n.first().unwrap().deref().get_prompt_len(),
                     };
 
                     responses.insert(*group.get_id(), (choices, usage));
@@ -396,7 +402,7 @@ impl<'a> LLMEngine<'a> {
 
         let max_context_len = context_lens.iter().max().unwrap();
         let context_lens = try_api!(Tensor::from_vec(
-            context_lens.iter().map(|x| *x as i64).collect::<Vec<_>>(),
+            context_lens.iter().map(|x| *x as u32).collect::<Vec<_>>(),
             (context_lens.len(),),
             &self.pipeline.device(),
         ));
@@ -405,13 +411,13 @@ impl<'a> LLMEngine<'a> {
         let block_tables = _make_tensor_with_pad(
             block_tables
                 .iter()
-                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
+                .map(|x| x.iter().map(|x| *x as u32).collect::<Vec<_>>())
                 .collect::<Vec<_>>(),
             max_block_table_len,
             0,
             &self.pipeline.device()
         )?;
-
+        let block_tables = try_api!(block_tables.reshape(((), max_block_table_len)));
         Ok(PreparedInputs {
             tokens: input_tokens,
             positions: input_positions,

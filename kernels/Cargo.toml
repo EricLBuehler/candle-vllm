@@ -9,4 +9,5 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 
 [build-dependencies]
-bindgen_cuda = "0.1.1"
+bindgen_cuda = {path = "/root/bindgen_cuda/", version= "0.1.5"}
+anyhow = { version = "1", features = ["backtrace"] }

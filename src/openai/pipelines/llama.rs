@@ -245,7 +245,12 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 .iter()
                 .map(|x| *x as u32)
                 .collect::<Vec<_>>();
-            // let tokens_generated = sq.get_len() - sq.get_prompt_len();
+            let tokens_generated = sq.get_len() - sq.get_prompt_len();
+
+            if tokens_generated > sampling_params.max_tokens {
+                result.push(Right("length".to_string()));
+                break;
+            }
 
             let logits = if sampling_params.repetition_penalty == 1. {
                 logits
@@ -282,11 +287,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 result.push(Right("stop".to_string()));
                 continue;
             }
-            // if tokens_generated >= sampling_params.max_tokens {
-            //     result.push(Right("length".to_string()));
-            //     continue;
-            // }
-  
         }
 
         Ok(result)

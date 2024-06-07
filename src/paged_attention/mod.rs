@@ -1,7 +1,7 @@
 use candle_core::{DType, Device, Tensor};
 
 use crate::{
-    backend::{paged_attention_v1, paged_attention_v2, reshape_and_cache},
+    backend::{paged_attention, reshape_and_cache},
     openai::responses::APIError,
     try_api,
 };
@@ -76,55 +76,16 @@ impl PagedAttention {
         input_metadata: &mut InputMetadata,
         alibi_slopes: Option<Tensor>,
     ) -> Result<Tensor, APIError> {
-        let block_size = *value_cache.shape().dims().get(3).unwrap();
-        let (num_seqs, num_heads, _head_size) = try_api!(query.shape().dims3());
-        let max_num_partitions =
-            (input_metadata.max_context_len.unwrap() + _PARTITION_SIZE - 1) / _PARTITION_SIZE;
-
-        let use_v1 = input_metadata.max_context_len.unwrap() <= 8192
-            && (max_num_partitions == 1 || num_seqs * num_heads > 512);
-        let output = if use_v1 {
-            //Run PagedAttention V1
-            paged_attention_v1(
-                query,
-                key_cache,
-                value_cache,
-                self.num_key_value_heads.try_into().unwrap(),
-                self.scale,
-                input_metadata.block_tables.as_ref().unwrap().clone(),
-                input_metadata.context_lens.as_ref().unwrap().clone(),
-                block_size,
-                input_metadata.max_context_len.unwrap(),
-                alibi_slopes,
-                &input_metadata.kv_cache_dtype,
-            )?
-        } else {
-            //Run PagedAttention V2
-            assert_eq!(_PARTITION_SIZE % block_size, 0);
-
-            let exp_sums = try_api!(Tensor::zeros(
-                (num_seqs, num_heads, max_num_partitions),
-                DType::F32,
-                query.device(),
-            ));
-            let max_logits = try_api!(exp_sums.zeros_like());
-
-            paged_attention_v2(
-                exp_sums,
-                max_logits,
-                query,
-                key_cache,
-                value_cache,
-                self.num_key_value_heads.try_into().unwrap(),
-                self.scale,
-                input_metadata.block_tables.as_ref().unwrap().clone(),
-                input_metadata.context_lens.as_ref().unwrap().clone(),
-                block_size,
-                input_metadata.max_context_len.unwrap(),
-                alibi_slopes,
-            )
-        };
-        Ok(output)
+        let ys = paged_attention(
+            &query,
+            &key_cache,
+            &value_cache,
+            &input_metadata.block_tables.as_ref().unwrap(),
+            &input_metadata.context_lens.as_ref().unwrap(),
+            input_metadata.max_context_len.unwrap(),
+            self.scale,
+        );
+        ys.map_err(APIError::from)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -234,7 +195,7 @@ impl PagedAttention {
                 dtype,
             )?
         } else {
-            self._paged_attention( //TODO
+            self._paged_attention( 
                 query,
                 key_cache.as_ref().unwrap().clone(),
                 value_cache.as_ref().unwrap().clone(),
