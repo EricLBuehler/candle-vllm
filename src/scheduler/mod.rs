@@ -203,7 +203,7 @@ impl Scheduler {
     }
 
     pub fn has_unfinished_sequences(&self) -> bool {
-        !self.running.is_empty()
+        !self.running.is_empty() || !self.waiting.is_empty()
     }
 
     pub fn free_finished_sequence_groups(&mut self) {

@@ -1,266 +1,290 @@
-use candle_core::{cuda_backend::cudarc::driver::CudaFunction, DType, Tensor};
-
-use candle_core::cuda_backend::cudarc::driver::sys as cudarc_sys;
-
+// use candle_core::{cuda_backend::cudarc::driver::CudaFunction, DType, Tensor};
 use crate::openai::responses::APIError;
+use candle::backend::BackendStorage;
+use candle::cuda_backend::cudarc::driver::DevicePtr;
+use candle::cuda_backend::WrapErr;
+use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
+use candle_core as candle;
+use half::{bf16, f16};
+use kernels::ffi::{paged_attention_v1, paged_attention_v2};
+use std::ffi::c_int;
 
-fn set_max_dynamic_shared_memory_size(func: CudaFunction, size: usize) {
-    // let attr = cudarc_sys::CUfunction_attribute::CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES;
-    // func.set_attribute(attr, size.try_into().unwrap());
+struct PagedAttention {
+    softmax_scale: f32,
+
+    key_cache: Tensor,
+    value_cache: Tensor,
+    block_tables: Tensor,
+    context_lens: Tensor,
+    max_context_len: usize,
 }
 
-const WARP_SIZE: usize = 32;
+impl PagedAttention {
+    fn cuda_fwd_t<
+        T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
+    >(
+        &self,
+        q: &CudaStorage,
+        q_l: &Layout,
+    ) -> Result<(CudaStorage, Shape)> {
+        let dtype = q.dtype();
+        let internal_type = match dtype {
+            DType::F16 => 0,
+            DType::BF16 => 1,
+            DType::F32 => 2,
+            dtype => candle::bail!("dtype {dtype:?} is not supported"),
+        };
 
-#[allow(clippy::too_many_arguments)]
-fn paged_attention_v1_launcher(
-    query: Tensor,            // [num_seqs, num_heads, head_size]
-    key_cache: Tensor,        // [num_blocks, num_heads, head_size/x, block_size, x]
-    value_cache: Tensor,      // [num_blocks, num_heads, head_size, block_size]
-    num_key_value_heads: i32, // [num_heads]
-    scale: f32,
-    block_tables: Tensor, // [num_seqs, max_num_blocks_per_seq]
-    context_lens: Tensor, // [num_seqs]
-    block_size: usize,
-    max_context_len: usize,
-    alibi_slopes: Option<Tensor>,
-    dtype: DType,
-    is_fp8_e5m2_kv_cache: bool,
-) -> Tensor {
-    let num_seqs = query.shape().dims()[0];
-    let num_heads = query.shape().dims()[1];
-    let head_size = query.shape().dims()[2];
-    let max_num_blocks_per_seq = block_tables.shape().dims()[1];
-    let q_stride = query.stride()[0];
-    let kv_block_stride = key_cache.stride()[0];
-    let kv_head_stride = key_cache.stride()[1];
+        let dev = q.device();
+        let out_shape = q_l.shape().clone();
 
-    let thread_group_size = 1.max(WARP_SIZE / block_size);
-    debug_assert_eq!(head_size % thread_group_size, 0);
-    todo!();
-}
+        let (kc, kc_l) = self.key_cache.storage_and_layout();
+        let kc = match &*kc {
+            Storage::Cuda(kc) => kc,
+            _ => candle::bail!("key_cache must be a cuda tensor"),
+        };
 
-#[allow(clippy::too_many_arguments)]
-pub fn paged_attention_v1(
-    query: Tensor,            // [num_seqs, num_heads, head_size]
-    key_cache: Tensor,        // [num_blocks, num_heads, head_size/x, block_size, x]
-    value_cache: Tensor,      // [num_blocks, num_heads, head_size, block_size]
-    num_key_value_heads: i32, // [num_heads]
-    scale: f32,
-    block_tables: Tensor, // [num_seqs, max_num_blocks_per_seq]
-    context_lens: Tensor, // [num_seqs]
-    block_size: usize,
-    max_context_len: usize,
-    alibi_slopes: Option<Tensor>,
-    kv_cache_dtype: &str,
-) -> Result<Tensor, APIError> {
-    let query_dtype = query.dtype();
-    if kv_cache_dtype == "auto" {
-        match query_dtype {
-            DType::F32 | DType::F16 | DType::BF16 => Ok(paged_attention_v1_launcher(
-                query,
-                key_cache,
-                value_cache,
-                num_key_value_heads,
-                scale,
-                block_tables,
-                context_lens,
-                block_size,
-                max_context_len,
-                alibi_slopes,
-                query_dtype,
-                false,
-            )),
-            _ => Err(APIError::new(format!(
-                "Unsupported data type {:?}",
-                query_dtype
-            ))),
+        let (vc, vc_l) = self.value_cache.storage_and_layout();
+        let vc = match &*vc {
+            Storage::Cuda(vc) => vc,
+            _ => candle::bail!("value_cache must be a cuda tensor"),
+        };
+
+        let (bt, bt_l) = self.block_tables.storage_and_layout();
+        let bt = match &*bt {
+            Storage::Cuda(bt) => bt,
+            _ => candle::bail!("block_tables must be a cuda tensor"),
+        };
+
+        let (cl, cl_l) = self.context_lens.storage_and_layout();
+        let cl = match &*cl {
+            Storage::Cuda(cl) => cl,
+            _ => candle::bail!("context_lens must be a cuda tensor"),
+        };
+
+        let q_rank = q_l.stride().len();
+        let kc_rank = kc_l.stride().len();
+        let vc_rank = vc_l.stride().len();
+
+        if q_rank != 3 {
+            candle::bail!(
+                "paged-attention expects `q` tensor to be of rank 3 \
+                (q: {q_l:?})"
+            )
         }
-    } else if kv_cache_dtype == "fp8_e5m2" {
-        match query_dtype {
-            DType::F32 | DType::F16 | DType::BF16 => Ok(paged_attention_v1_launcher(
-                query,
-                key_cache,
-                value_cache,
-                num_key_value_heads,
-                scale,
-                block_tables,
-                context_lens,
-                block_size,
-                max_context_len,
-                alibi_slopes,
-                query_dtype,
-                true,
-            )),
-            _ => Err(APIError::new(format!(
-                "Unsupported data type {:?}",
-                query_dtype
-            ))),
+
+        if kc_rank != 5 {
+            candle::bail!(
+                "paged-attention expects `key_cache` tensor to be of rank 5 \
+                (key_cache: {kc_l:?})"
+            )
         }
-    } else {
-        Err(APIError::new(format!(
-            "Unsupported data type {:?}",
-            query_dtype
-        )))
+
+        if vc_rank != 4 {
+            candle::bail!(
+                "paged-attention expects `value_cache` tensor to be of rank 4 \
+                (value_cache: {vc_l:?})"
+            )
+        }
+
+        // Get cuda slices for all tensors
+        let q = q.as_cuda_slice::<T>()?;
+        let kc = kc.as_cuda_slice::<T>()?;
+        let vc = vc.as_cuda_slice::<T>()?;
+        let cl = cl.as_cuda_slice::<u32>()?; // Should be i32!
+        let bt = bt.as_cuda_slice::<u32>()?; // Should be i32!
+
+        // Get cuda views for all tensors
+        let q = q.slice(q_l.start_offset()..);
+        let kc = kc.slice(kc_l.start_offset()..);
+        let vc = vc.slice(vc_l.start_offset()..);
+        let cl = cl.slice(cl_l.start_offset()..);
+        let bt = bt.slice(bt_l.start_offset()..);
+
+        let (num_seqs, num_heads, head_size) = q_l.shape().dims3()?;
+        if !(head_size == 64
+            || head_size == 80
+            || head_size == 96
+            || head_size == 112
+            || head_size == 128
+            || head_size == 256)
+        {
+            candle::bail!("`head_size` must be one of 64, 80, 96, 112, 128 or 256");
+        }
+
+        let (num_seqs_bt, max_num_blocks_per_seq) = bt_l.shape().dims2()?;
+
+        if num_seqs_bt != num_seqs {
+            candle::bail!(
+                "shape mismatch block_tables {:?}, expected {:?}",
+                bt_l.shape(),
+                (num_seqs, max_num_blocks_per_seq)
+            )
+        }
+
+        let (num_blocks, num_kv_heads, head_size_kc, block_size, x) = kc_l.shape().dims5()?;
+        if head_size_kc != head_size / x {
+            candle::bail!(
+                "shape mismatch value_cache {:?}, expected {:?}",
+                vc_l.shape(),
+                (num_blocks, num_heads, head_size / x, block_size, x)
+            )
+        }
+
+        if (num_blocks, num_kv_heads, head_size, block_size) != vc_l.shape().dims4()? {
+            candle::bail!(
+                "shape mismatch key_cache {:?} and value_cache {:?}",
+                kc_l.shape(),
+                vc_l.shape()
+            )
+        }
+
+        if (num_seqs) != cl_l.shape().dims1()? {
+            candle::bail!(
+                "shape mismatch context_lens {:?}, expected {:?}",
+                cl_l.shape(),
+                (num_seqs)
+            )
+        }
+
+        let q_stride = q_l.stride()[0];
+        let kv_block_stride = kc_l.stride()[0];
+        let kv_head_stride = kc_l.stride()[1];
+
+        let partition_size = 512;
+        let max_num_partitions = (self.max_context_len + partition_size - 1) / partition_size;
+        let use_v1 = (max_num_partitions == 1 || num_seqs * num_heads > 512)
+            && partition_size % block_size == 0;
+
+        let elem_count = out_shape.elem_count();
+        let out = unsafe { dev.alloc::<T>(elem_count) }.w()?;
+
+        let out_ptr = *out.device_ptr() as *const core::ffi::c_void;
+        let q_ptr = *q.device_ptr() as *const core::ffi::c_void;
+        let kc_ptr = *kc.device_ptr() as *const core::ffi::c_void;
+        let vc_ptr = *vc.device_ptr() as *const core::ffi::c_void;
+        let bt_ptr = *bt.device_ptr() as *const core::ffi::c_int;
+        let cl_ptr = *cl.device_ptr() as *const core::ffi::c_int;
+
+        if use_v1 {
+            unsafe {
+                paged_attention_v1(
+                    out_ptr,
+                    q_ptr,
+                    kc_ptr,
+                    vc_ptr,
+                    num_kv_heads as c_int,
+                    self.softmax_scale,
+                    bt_ptr,
+                    cl_ptr,
+                    block_size as c_int,
+                    self.max_context_len as c_int,
+                    num_seqs as c_int,
+                    num_heads as c_int,
+                    head_size as c_int,
+                    max_num_blocks_per_seq as c_int,
+                    q_stride as c_int,
+                    kv_block_stride as c_int,
+                    kv_head_stride as c_int,
+                    internal_type,
+                )
+            }
+        } else {
+            let tmp_out_shape = Shape::from((num_seqs, num_heads, max_num_partitions, head_size));
+            let exp_sums_shape = Shape::from((num_seqs, num_heads, max_num_partitions));
+            let tmp_out = unsafe { dev.alloc::<T>(tmp_out_shape.elem_count()) }.w()?;
+            let exp_sums = unsafe { dev.alloc::<f32>(exp_sums_shape.elem_count()) }.w()?;
+            let max_logits = unsafe { dev.alloc::<f32>(exp_sums_shape.elem_count()) }.w()?;
+
+            let tmp_out_ptr = *tmp_out.device_ptr() as *const core::ffi::c_void;
+            let exp_sums_ptr = *exp_sums.device_ptr() as *const f32;
+            let max_logits_ptr = *max_logits.device_ptr() as *const f32;
+
+            unsafe {
+                paged_attention_v2(
+                    out_ptr,
+                    exp_sums_ptr,
+                    max_logits_ptr,
+                    tmp_out_ptr,
+                    q_ptr,
+                    kc_ptr,
+                    vc_ptr,
+                    num_kv_heads as c_int,
+                    self.softmax_scale,
+                    bt_ptr,
+                    cl_ptr,
+                    block_size as c_int,
+                    self.max_context_len as c_int,
+                    num_seqs as c_int,
+                    num_heads as c_int,
+                    head_size as c_int,
+                    max_num_blocks_per_seq as c_int,
+                    q_stride as c_int,
+                    kv_block_stride as c_int,
+                    kv_head_stride as c_int,
+                    internal_type,
+                )
+            }
+        }
+
+        let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
+        Ok((out, out_shape))
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn paged_attention_v2(
-    _exp_sums: Tensor,
-    _max_logits: Tensor,
-    _query: Tensor,
-    _key_cache: Tensor,
-    _value_cache: Tensor,
-    _num_key_value_heads: i32,
-    _scale: f32,
-    _block_tables: Tensor,
-    _context_lens: Tensor,
-    _block_size: usize,
-    _max_context_len: usize,
-    _alibi_slopes: Option<Tensor>,
-) -> Tensor {
-    todo!();
+impl candle::CustomOp1 for PagedAttention {
+    fn name(&self) -> &'static str {
+        "paged-attention"
+    }
+
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
+        candle::bail!("no cpu support for paged-attention")
+    }
+
+    fn cuda_fwd(&self, q: &CudaStorage, q_l: &Layout) -> Result<(CudaStorage, Shape)> {
+        match q.dtype() {
+            DType::F32 => self.cuda_fwd_t::<f32>(q, q_l),
+            DType::F16 => self.cuda_fwd_t::<f16>(q, q_l),
+            DType::BF16 => self.cuda_fwd_t::<bf16>(q, q_l),
+            dt => candle::bail!("paged-attention is only supported for f32/f16/bf16 ({dt:?})"),
+        }
+    }
 }
 
-/*
-#ifndef USE_ROCM
-  #define VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(FUNC, VAL) \
-    cudaFuncSetAttribute(FUNC, cudaFuncAttributeMaxDynamicSharedMemorySize, VAL)
-#else
-  #define VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(FUNC, VAL) \
-    hipFuncSetAttribute(FUNC, hipFuncAttributeMaxDynamicSharedMemorySize, VAL)
-#endif
-
-#define LAUNCH_PAGED_ATTENTION_V1(HEAD_SIZE)                                                  \
-  VLLM_DevFuncAttribute_SET_MaxDynamicSharedMemorySize(                                       \
-    ((void*)vllm::paged_attention_v1_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,   \
-      IS_FP8_E5M2_KV_CACHE>), shared_mem_size);                                               \
-  vllm::paged_attention_v1_kernel<T, CACHE_T, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS,             \
-  IS_FP8_E5M2_KV_CACHE><<<grid, block, shared_mem_size, stream>>>(                            \
-    out_ptr,                                                                                  \
-    query_ptr,                                                                                \
-    key_cache_ptr,                                                                            \
-    value_cache_ptr,                                                                          \
-    num_kv_heads,                                                                             \
-    scale,                                                                                    \
-    block_tables_ptr,                                                                         \
-    context_lens_ptr,                                                                         \
-    max_num_blocks_per_seq,                                                                   \
-    alibi_slopes_ptr,                                                                         \
-    q_stride,                                                                                 \
-    kv_block_stride,                                                                          \
-    kv_head_stride);
-
-// TODO(woosuk): Tune NUM_THREADS.
-template<
-  typename T,
-  typename CACHE_T,
-  int BLOCK_SIZE,
-  bool IS_FP8_E5M2_KV_CACHE,
-  int NUM_THREADS = 128>
-void paged_attention_v1_launcher(
-  torch::Tensor& out,
-  torch::Tensor& query,
-  torch::Tensor& key_cache,
-  torch::Tensor& value_cache,
-  int num_kv_heads,
-  float scale,
-  torch::Tensor& block_tables,
-  torch::Tensor& context_lens,
-  int max_context_len,
-  const c10::optional<torch::Tensor>& alibi_slopes) {
-  int num_seqs = query.size(0);
-  int num_heads = query.size(1);
-  int head_size = query.size(2);
-  int max_num_blocks_per_seq = block_tables.size(1);
-  int q_stride = query.stride(0);
-  int kv_block_stride = key_cache.stride(0);
-  int kv_head_stride = key_cache.stride(1);
-
-  int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
-  assert(head_size % thread_group_size == 0);
-
-  // NOTE: alibi_slopes is optional.
-  const float* alibi_slopes_ptr = alibi_slopes ?
-    reinterpret_cast<const float*>(alibi_slopes.value().data_ptr())
-    : nullptr;
-
-  T* out_ptr = reinterpret_cast<T*>(out.data_ptr());
-  T* query_ptr = reinterpret_cast<T*>(query.data_ptr());
-  CACHE_T* key_cache_ptr = reinterpret_cast<CACHE_T*>(key_cache.data_ptr());
-  CACHE_T* value_cache_ptr = reinterpret_cast<CACHE_T*>(value_cache.data_ptr());
-  int* block_tables_ptr = block_tables.data_ptr<int>();
-  int* context_lens_ptr = context_lens.data_ptr<int>();
-
-  constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
-  int padded_max_context_len = DIVIDE_ROUND_UP(max_context_len, BLOCK_SIZE) * BLOCK_SIZE;
-  int logits_size = padded_max_context_len * sizeof(float);
-  int outputs_size = (NUM_WARPS / 2) * head_size * sizeof(float);
-  // Python-side check in vllm.worker.worker._check_if_can_support_max_seq_len
-  // Keep that in sync with the logic here!
-  int shared_mem_size = std::max(logits_size, outputs_size);
-
-  dim3 grid(num_heads, num_seqs, 1);
-  dim3 block(NUM_THREADS);
-  const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
-  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  switch (head_size) {
-    // NOTE(woosuk): To reduce the compilation time, we only compile for the
-    // head sizes that we use in the model. However, we can easily extend this
-    // to support any head size which is a multiple of 16.
-    case 64:
-      LAUNCH_PAGED_ATTENTION_V1(64);
-      break;
-    case 80:
-      LAUNCH_PAGED_ATTENTION_V1(80);
-      break;
-    case 96:
-      LAUNCH_PAGED_ATTENTION_V1(96);
-      break;
-    case 112:
-      LAUNCH_PAGED_ATTENTION_V1(112);
-      break;
-    case 128:
-      LAUNCH_PAGED_ATTENTION_V1(128);
-      break;
-    case 256:
-      LAUNCH_PAGED_ATTENTION_V1(256);
-      break;
-    default:
-      TORCH_CHECK(false, "Unsupported head size: ", head_size);
-      break;
-  }
+/// Paged Attention layer.
+///
+/// This implements scaled dot-product attention, `softmax(Q @ K^T . softmax_scale) @ V`.
+/// Multi-query and grouped-query attention are supported by using tensors key_cache and value_cache
+/// with fewer heads than q, the number of heads in k and v has to be divisible by the number of heads in q.
+///
+/// # Arguments
+///
+/// * `q` - Query tensor with shape `(num_sequences, num_heads_q, head_size)`.
+/// * `key_cache` - Key cache paged tensor of shape `(num_blocks, num_heads_kv, head_size / x, block_size, x)`
+/// with `x` being the size of an element in bytes.
+/// * `value_cache` - Value cache paged tensor of shape `(num_blocks, num_heads_kv, head_size, block_size)`.
+/// * `block_tables` - Padded table associating blocks to each sequence of shape `(num_sequences, max_context_len // block_size)`
+/// * `context_lens` - Tensor associating lengths to each sequence of shape `(num_sequences)`
+/// * `max_context_len` - Max of `context_len`
+/// * `softmax_scale` - scaling factor
+///
+/// The resulting tensor has dimensions `(num_sequences, num_heads_q, head_size)`.
+pub fn paged_attention(
+    q: &Tensor,
+    key_cache: &Tensor,
+    value_cache: &Tensor,
+    block_tables: &Tensor,
+    context_lens: &Tensor,
+    max_context_len: usize,
+    softmax_scale: f32,
+) -> Result<Tensor> {
+    let op = PagedAttention {
+        softmax_scale,
+        key_cache: key_cache.clone(),
+        value_cache: value_cache.clone(),
+        block_tables: block_tables.clone(),
+        context_lens: context_lens.clone(),
+        max_context_len,
+    };
+    q.apply_op1(op)
 }
-
-#define CALL_V1_LAUNCHER(T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE)       \
-  paged_attention_v1_launcher<T, CACHE_T, BLOCK_SIZE, IS_FP8_E5M2_KV_CACHE>( \
-    out,                                                                     \
-    query,                                                                   \
-    key_cache,                                                               \
-    value_cache,                                                             \
-    num_kv_heads,                                                            \
-    scale,                                                                   \
-    block_tables,                                                            \
-    context_lens,                                                            \
-    max_context_len,                                                         \
-    alibi_slopes);
-
-// NOTE(woosuk): To reduce the compilation time, we omitted block sizes
-// 1, 2, 4, 64, 128, 256.
-#define CALL_V1_LAUNCHER_BLOCK_SIZE(T, CACHE_T, IS_FP8_E5M2_KV_CACHE) \
-  switch (block_size) {                                               \
-    case 8:                                                           \
-      CALL_V1_LAUNCHER(T, CACHE_T, 8, IS_FP8_E5M2_KV_CACHE);          \
-      break;                                                          \
-    case 16:                                                          \
-      CALL_V1_LAUNCHER(T, CACHE_T, 16, IS_FP8_E5M2_KV_CACHE);         \
-      break;                                                          \
-    case 32:                                                          \
-      CALL_V1_LAUNCHER(T, CACHE_T, 32, IS_FP8_E5M2_KV_CACHE);         \
-      break;                                                          \
-    default:                                                          \
-      TORCH_CHECK(false, "Unsupported block size: ", block_size);     \
-      break;                                                          \
-  }
-
-*/

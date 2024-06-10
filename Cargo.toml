@@ -37,11 +37,12 @@ range-checked = { git = "https://github.com/EricLBuehler/range-checked.git", ver
 chrono = { version = "0.4.31", features = ["clock"] }
 either = "1.9.0"
 dirs = "5.0.1"
+kernels = {path = "./kernels", version="0.1.0"}
 
 [features]
 default = ["cuda"]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:candle-flash-attn"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 cudnn = ["candle-core/cudnn"]
 flash-attn = ["cuda", "candle-transformers/flash-attn"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]

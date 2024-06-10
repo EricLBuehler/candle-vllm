@@ -47,14 +47,16 @@ impl CacheEngine {
         model_config: Box<dyn ConfigLike>,
         cache_config: CacheConfig,
         dtype: DType,
+        device: &Device,
     ) -> Result<Self, APIError> {
         Ok(Self {
             gpu_cache: Arc::new(Mutex::new(Self::allocate_gpu_cache(
                 &*model_config,
                 &cache_config,
                 dtype,
+                device,
             )?)),
-            cpu_cache: Self::allocate_cpu_cache(&*model_config, &cache_config, dtype)?,
+            cpu_cache: Self::allocate_cpu_cache(&*model_config, &cache_config, dtype, device)?,
             num_layers: model_config.get_num_hidden_layers(),
         })
     }
@@ -71,6 +73,7 @@ impl CacheEngine {
         model_config: &dyn ConfigLike,
         cache_config: &CacheConfig,
         dtype: DType,
+        device: &Device,
     ) -> Result<Vec<KVCache>, APIError> {
         assert!(cache_config.fully_init);
 
@@ -80,7 +83,6 @@ impl CacheEngine {
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut gpu_cache = Vec::new();
         for _ in 0..model_config.get_num_hidden_layers() {
-            let cuda_device = try_api!(Device::new_cuda(0));
             let key_blocks = try_api!(Tensor::zeros(
                 (
                     cache_config.num_gpu_blocks.unwrap(),
@@ -90,7 +92,7 @@ impl CacheEngine {
                     key_block_shape.3,
                 ),
                 dtype,
-                &cuda_device,
+                device,
             ));
             let value_blocks = try_api!(Tensor::zeros(
                 (
@@ -100,7 +102,7 @@ impl CacheEngine {
                     value_block_shape.2,
                 ),
                 dtype,
-                &cuda_device,
+                device,
             ));
             gpu_cache.push((key_blocks, value_blocks));
         }
@@ -111,6 +113,7 @@ impl CacheEngine {
         model_config: &dyn ConfigLike,
         cache_config: &CacheConfig,
         dtype: DType,
+        device: &Device,
     ) -> Result<Vec<KVCache>, APIError> {
         assert!(cache_config.fully_init);
 
@@ -120,7 +123,6 @@ impl CacheEngine {
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut cpu_cache = Vec::new();
         for _ in 0..model_config.get_num_hidden_layers() {
-            let cuda_device = try_api!(Device::new_cuda(0));
             let key_blocks = try_api!(Tensor::zeros(
                 (
                     cache_config.num_cpu_blocks.unwrap(),
@@ -130,7 +132,7 @@ impl CacheEngine {
                     key_block_shape.3,
                 ),
                 dtype,
-                &cuda_device,
+                device,
             ));
             let value_blocks = try_api!(Tensor::zeros(
                 (
@@ -140,7 +142,7 @@ impl CacheEngine {
                     value_block_shape.2,
                 ),
                 dtype,
-                &cuda_device,
+                device,
             ));
             cpu_cache.push((key_blocks, value_blocks));
         }

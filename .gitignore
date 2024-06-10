@@ -2,3 +2,5 @@
 .hf_token
 __pycache__
 *.ptx
+launch.json
+libpagedattention.a

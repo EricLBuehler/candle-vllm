@@ -3,13 +3,13 @@ use candle_core::{
     DType, Device, Tensor,
 };
 
+use super::dispatch_get_cuda_pointer;
 use crate::{
-    backend::{get_or_load_func, ROTARY_EMBDEDDING_KERNEL, ROTARY_EMBDEDDING_PTX},
+    backend::{get_or_load_func, ROTARY_EMBDEDDING_KERNEL_NAME},
     openai::responses::APIError,
     try_api,
 };
-
-use super::dispatch_get_cuda_pointer;
+use kernels::ROTARY_EMBEDDING_KERNEL;
 
 /// # Safety
 /// Unsafe due to passing pointers
@@ -57,12 +57,12 @@ pub unsafe fn rotary_embedding(
         )));
     }
 
-    let num_tokens = query.shape().elem_count() / query.shape().dims().last().unwrap();
+    let num_tokens = query.shape().dims()[2];
     let cache_shape = cos_sin_cache.shape().clone();
     let rot_dim = cache_shape.dims().get(1).unwrap();
-    let num_heads = query.shape().dims().last().unwrap() / head_size;
-    let num_kv_heads = key.shape().dims().last().unwrap() / head_size;
-    let query_stride = query.stride().get(key.stride().len() - 2).unwrap();
+    let num_heads = query.shape().dims()[1];
+    let num_kv_heads = key.shape().dims()[1];
+    let query_stride = query.stride().get(query.stride().len() - 2).unwrap();
     let key_stride = key.stride().get(key.stride().len() - 2).unwrap();
 
     let launch_conf = LaunchConfig {
@@ -84,16 +84,16 @@ pub unsafe fn rotary_embedding(
 
     let kernel = if is_neox {
         try_api!(get_or_load_func(
-            ROTARY_EMBDEDDING_PTX,
-            ROTARY_EMBDEDDING_KERNEL,
+            ROTARY_EMBEDDING_KERNEL,
+            ROTARY_EMBDEDDING_KERNEL_NAME,
             query.dtype(),
             Some("_neox"),
             &dev
         ))
     } else {
         try_api!(get_or_load_func(
-            ROTARY_EMBDEDDING_PTX,
-            ROTARY_EMBDEDDING_KERNEL,
+            ROTARY_EMBEDDING_KERNEL,
+            ROTARY_EMBDEDDING_KERNEL_NAME,
             query.dtype(),
             None,
             &dev

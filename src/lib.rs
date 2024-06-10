@@ -1,5 +1,6 @@
 #![warn(clippy::cast_lossless)]
-
+use candle::Result;
+use candle_core as candle;
 use clap::Subcommand;
 use openai::pipelines::{
     llama::{LlamaLoader, LlamaSpecificConfig},
@@ -68,6 +69,27 @@ pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoad
 
 pub fn log_warning(message: &str) {
     eprintln!("Warning at {:?}: '{}'", chrono::offset::Utc::now(), message);
+}
+
+pub fn hub_load_local_safetensors(
+    path: &String,
+    json_file: &str,
+) -> Result<Vec<std::path::PathBuf>> {
+    println!("{:}", path.to_owned() + json_file);
+    let jsfile = std::fs::File::open(path.to_owned() + json_file)?;
+    let json: serde_json::Value = serde_json::from_reader(&jsfile).map_err(candle::Error::wrap)?;
+    let weight_map = match json.get("weight_map") {
+        None => panic!("no weight map in {json_file:?}"),
+        Some(serde_json::Value::Object(map)) => map,
+        Some(_) => panic!("weight map in {json_file:?} is not a map"),
+    };
+    let mut safetensors_files = Vec::<std::path::PathBuf>::new();
+    for value in weight_map.values() {
+        if let Some(file) = value.as_str() {
+            safetensors_files.insert(0, (path.to_owned() + file).into());
+        }
+    }
+    Ok(safetensors_files)
 }
 
 pub mod backend;
