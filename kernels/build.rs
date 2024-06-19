@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use anyhow::Result;
+use std::fs::read_to_string;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
-use anyhow::{Result};
-use std::fs::read_to_string;
+use std::path::PathBuf;
 
 fn read_lines(filename: &str) -> Vec<String> {
     let mut result = Vec::new();
@@ -29,27 +29,27 @@ fn main() -> Result<()> {
     let kernel_dir = PathBuf::from("../kernels/");
     let absolute_kernel_dir = std::fs::canonicalize(&kernel_dir).unwrap();
 
-    println!("cargo:rustc-link-search=native={}", absolute_kernel_dir.display());
-    println!("cargo:rustc-link-lib=pagedattention"); 
+    println!(
+        "cargo:rustc-link-search=native={}",
+        absolute_kernel_dir.display()
+    );
+    println!("cargo:rustc-link-lib=pagedattention");
     println!("cargo:rustc-link-lib=dylib=cudart");
-    
+
     let contents = read_lines("src/lib.rs");
     for line in contents {
         if line == "pub mod ffi;" {
-            return Ok(())
+            return Ok(());
         }
     }
     let mut file = OpenOptions::new()
-                    .write(true)
-                    .append(true)
-                    .open("src/lib.rs")
-                    .unwrap();
+        .write(true)
+        .append(true)
+        .open("src/lib.rs")
+        .unwrap();
     //Expose paged attention interface to Rust
     if let Err(e) = writeln!(file, "pub mod ffi;") {
-        anyhow::bail!(
-            "error while building dependencies: {:?}\n",
-            e,
-        )
+        anyhow::bail!("error while building dependencies: {:?}\n", e,)
     } else {
         Ok(())
     }
