@@ -52,4 +52,6 @@ pub struct ChatCompletionRequest {
     pub skip_special_tokens: Option<bool>, //false
     #[serde(default)]
     pub stop_token_ids: Option<Vec<usize>>, //[]
+    #[serde(default)]
+    pub logprobs: Option<bool>, //false
 }
