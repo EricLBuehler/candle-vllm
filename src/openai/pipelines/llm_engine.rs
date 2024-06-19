@@ -186,7 +186,11 @@ impl<'a> LLMEngine<'a> {
                             },
                             finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
                             index,
-                            logprobs: if use_logprobs { Some(WrapperLogprobs { content: outputs })} else { None },
+                            logprobs: if use_logprobs {
+                                Some(WrapperLogprobs { content: outputs })
+                            } else {
+                                None
+                            },
                         };
                         choices.push(choice);
                     }

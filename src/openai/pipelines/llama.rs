@@ -9,7 +9,7 @@ use crate::{
             Conversation,
         },
         models::{
-            llama::{Cache, Llama, LlamaConfig, Config},
+            llama::{Cache, Config, Llama, LlamaConfig},
             ConfigLike,
         },
         requests::StopTokens,
@@ -136,7 +136,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
             paths.get_config_filename()
         )),));
         let config = config.into_config(false);
-        
+
         println!("Loading {} model.", self.name);
 
         let vb = match unsafe {
@@ -227,7 +227,8 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         sampling_params: &SamplingParams,
         seqs: &[(&usize, &Arc<Sequence>)],
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        let eos_token_id = self.config
+        let eos_token_id = self
+            .config
             .eos_token_id
             .or_else(|| self.tokenizer().tokenizer().token_to_id(EOS_TOKEN));
         let stop_tokens = match sampling_params.stop.clone() {
@@ -278,7 +279,7 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
                 Some(t) => t,
                 _ => "".to_string(),
             };
-            
+
             let logprob = Logprobs {
                 token: next_token as usize,
                 logprob: 0.0,
