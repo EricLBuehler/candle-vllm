@@ -169,7 +169,13 @@ async fn chat_completions(
         let (sender, receiver) = new_streaming_conn();
         let _ = thread::spawn(move || {
             let mut model = data.model.lock().unwrap();
-            let model_res = model.generate(token_ids, request_id, created, sampling_params);
+            let model_res = model.generate(
+                token_ids,
+                request_id,
+                created,
+                sampling_params,
+                request.logprobs.unwrap_or(false),
+            );
             if model_res.is_err() {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -193,7 +199,13 @@ async fn chat_completions(
 
     let result = {
         let mut model = data.model.lock().unwrap();
-        let model_res = model.generate(token_ids, request_id.clone(), created, sampling_params);
+        let model_res = model.generate(
+            token_ids,
+            request_id.clone(),
+            created,
+            sampling_params,
+            request.logprobs.unwrap_or(false),
+        );
         if model_res.is_err() {
             return Either::Left(Err(model_res.err().unwrap()));
         }

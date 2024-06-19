@@ -23,6 +23,41 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 See [this folder](examples/) for some examples.
 
 ### Example with Llama 7b
+
+#### Step 1:
+Run candle-vllm service:
+
+```
+cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama7b --repeat-last-n 64 #for local weights
+cargo run --release -- --port 2000 llama7b --repeat-last-n 64
+```
+
+#### Step 2:
+
+#### Option 1: Chat completion request with HTTP post
+
+``` shell
+curl -X POST "http://127.0.0.1:2000/v1/chat/completions" \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer YOUR_API_KEY" \
+     -d '{
+           "model": "llama7b",
+           "messages": [
+               {"role": "user", "content": "Explain how to best learn Rust."}
+           ],
+           "temperature": 0.7,
+          "max_tokens": 128,
+          "stop": {"Single":"</s>"}
+       }'
+```
+Sample response:
+
+```
+{"id":"cmpl-53092967-c9cf-40e0-ae26-d7ac786d59e8","choices":[{"message":{"content":" Learning any programming language requires a combination of theory, practice, and dedication. Here are some steps and resources to help you learn Rust effectively:\n\n1. Start with the basics:\n\t* Understand the syntax and basic structure of Rust programs.\n\t* Learn about variables, data types, loops, and control structures.\n\t* Familiarize yourself with Rust's ownership system and borrowing mechanism.\n2. Read the Rust book:\n\t* The Rust book is an official resource that provides a comprehensive introduction to the language.\n\t* It covers topics such","role":"[INST]"},"finish_reason":"length","index":0,"logprobs":null}],"created":1718784498,"model":"llama7b","object":"chat.completion","usage":{"completion_tokens":129,"prompt_tokens":29,"total_tokens":158}}
+```
+
+#### Option 2: Chat completion with with openai package
+
 In your terminal, install the `openai` Python package by running `pip install openai`. I use version `1.3.5`.
 
 Then, create a new Python file and write the following code:
@@ -45,9 +80,8 @@ completion = openai.chat.completions.create(
 )
 print(completion.choices[0].message.content)
 ```
-Next, launch a `candle-vllm` instance by running `cargo run --release -- --port 2000 llama7b --repeat-last-n 64`.
 
-After the `candle-vllm` instance is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
+After the `candle-vllm` service is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.

@@ -85,6 +85,7 @@ impl<'a> LLMEngine<'a> {
         request_id: String,
         created: u64,
         sampling_params: SamplingParams,
+        use_logprobs: bool,
     ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
         self.add_request(prompt, request_id, created);
 
@@ -185,7 +186,11 @@ impl<'a> LLMEngine<'a> {
                             },
                             finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
                             index,
-                            logprobs: Some(WrapperLogprobs { content: outputs }),
+                            logprobs: if use_logprobs {
+                                Some(WrapperLogprobs { content: outputs })
+                            } else {
+                                None
+                            },
                         };
                         choices.push(choice);
                     }

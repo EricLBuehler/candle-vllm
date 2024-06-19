@@ -9,7 +9,7 @@ use crate::{
             Conversation,
         },
         models::{
-            llama::{Cache, Llama, LlamaConfig},
+            llama::{Cache, Config, Llama, LlamaConfig},
             ConfigLike,
         },
         requests::StopTokens,
@@ -55,6 +55,7 @@ pub struct LlamaPipeline {
     dtype: DType,
     device: Device,
     cur_idx: usize,
+    config: Config,
 }
 
 pub struct LlamaLoader {
@@ -185,6 +186,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                 dtype,
                 device: device.clone(),
                 cur_idx: 0,
+                config: config,
             }),
             pipeline_config,
         ))
@@ -225,7 +227,10 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         sampling_params: &SamplingParams,
         seqs: &[(&usize, &Arc<Sequence>)],
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        let eos_token_id = self.tokenizer().tokenizer().token_to_id(EOS_TOKEN);
+        let eos_token_id = self
+            .config
+            .eos_token_id
+            .or_else(|| self.tokenizer().tokenizer().token_to_id(EOS_TOKEN));
         let stop_tokens = match sampling_params.stop.clone() {
             Some(stop) => match stop {
                 StopTokens::Multi(multi) => multi,
@@ -265,38 +270,23 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
             };
 
             let next_token = try_api!(self.logits_processor.sample(&logits));
-            match self.tokenizer.next_token(next_token) {
-                Ok(Some(text)) => {
-                    let text = text.replace('▁', " ").replace("<0x0A>", "\n");
-                    if stop_tokens.contains(&text) {
-                        result.push(Right("stop".to_string()));
-                        continue;
-                    }
-                    let logprob = Logprobs {
-                        token: next_token as usize,
-                        logprob: 0.0,
-                        top_logprobs: Vec::<TopLogprob>::new(),
-                        bytes: text,
-                    };
-
-                    result.push(Left(logprob));
-                }
-                _ => {
-                    let logprob = Logprobs {
-                        token: next_token as usize,
-                        logprob: 0.0,
-                        top_logprobs: Vec::<TopLogprob>::new(),
-                        bytes: "".to_string(),
-                    };
-
-                    result.push(Left(logprob));
-                }
-            }
-
-            if Some(next_token) == eos_token_id.map(|x| x as u32) {
+            if Some(next_token) == eos_token_id {
                 result.push(Right("stop".to_string()));
-                continue;
+                break;
             }
+            let text = self.tokenizer.next_token(next_token).unwrap();
+            let text = match text {
+                Some(t) => t,
+                _ => "".to_string(),
+            };
+
+            let logprob = Logprobs {
+                token: next_token as usize,
+                logprob: 0.0,
+                top_logprobs: Vec::<TopLogprob>::new(),
+                bytes: text,
+            };
+            result.push(Left(logprob));
         }
 
         Ok(result)
