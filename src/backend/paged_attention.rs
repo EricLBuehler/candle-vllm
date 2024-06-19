@@ -6,6 +6,7 @@ use candle::cuda_backend::WrapErr;
 use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
 use half::{bf16, f16};
+use kernels::ffi;
 use kernels::ffi::{paged_attention_v1, paged_attention_v2};
 use std::ffi::c_int;
 
@@ -287,4 +288,175 @@ pub fn paged_attention(
         max_context_len,
     };
     q.apply_op1(op)
+}
+
+fn update_cache<
+    T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
+>(
+    key: &Tensor,
+    value: &Tensor,
+    key_cache: &Tensor,
+    value_cache: &Tensor,
+    slot_mapping: &Tensor,
+) -> Result<()> {
+    let dtype = key.dtype();
+
+    let internal_type = match dtype {
+        DType::F16 => 0,
+        DType::BF16 => 1,
+        DType::F32 => 2,
+        dtype => candle::bail!("dtype {dtype:?} is not supported"),
+    };
+
+    let (k, k_l) = key.storage_and_layout();
+    let k = match &*k {
+        Storage::Cuda(k) => k,
+        _ => candle::bail!("key must be a cuda tensor"),
+    };
+
+    let (v, v_l) = value.storage_and_layout();
+    let v = match &*v {
+        Storage::Cuda(v) => v,
+        _ => candle::bail!("value must be a cuda tensor"),
+    };
+
+    let (kc, kc_l) = key_cache.storage_and_layout();
+    let kc = match &*kc {
+        Storage::Cuda(kc) => kc,
+        _ => candle::bail!("key_cache must be a cuda tensor"),
+    };
+
+    let (vc, vc_l) = value_cache.storage_and_layout();
+    let vc = match &*vc {
+        Storage::Cuda(vc) => vc,
+        _ => candle::bail!("value_cache must be a cuda tensor"),
+    };
+
+    let (s, s_l) = slot_mapping.storage_and_layout();
+    let s = match &*s {
+        Storage::Cuda(s) => s,
+        _ => candle::bail!("slot_mapping must be a cuda tensor"),
+    };
+
+    let k_rank = k_l.stride().len();
+    let v_rank = v_l.stride().len();
+    let kc_rank = kc_l.stride().len();
+    let vc_rank = vc_l.stride().len();
+
+    if k_rank != 3 || v_rank != 3 {
+        candle::bail!("paged-attention expects input tensors of rank 3 (k: {k_l:?}, v: {v_l:?})")
+    }
+
+    if kc_rank != 5 {
+        candle::bail!(
+            "paged-attention expects `key_cache` tensor to be of rank 5 \
+                (key_cache: {kc_l:?})"
+        )
+    }
+
+    if vc_rank != 4 {
+        candle::bail!(
+            "paged-attention expects `value_cache` tensor to be of rank 4 \
+                (value_cache: {vc_l:?})"
+        )
+    }
+
+    // Get cuda slices for all tensors
+    let k = k.as_cuda_slice::<T>()?;
+    let v = v.as_cuda_slice::<T>()?;
+    let kc = kc.as_cuda_slice::<T>()?;
+    let vc = vc.as_cuda_slice::<T>()?;
+    let s = s.as_cuda_slice::<i64>()?;
+
+    // Get cuda views for all tensors
+    let k = k.slice(k_l.start_offset()..);
+    let v = v.slice(v_l.start_offset()..);
+    let kc = kc.slice(kc_l.start_offset()..);
+    let vc = vc.slice(vc_l.start_offset()..);
+    let s = s.slice(s_l.start_offset()..);
+
+    let (num_tokens, num_heads, head_size) = k_l.shape().dims3()?;
+    if (num_tokens, num_heads, head_size) != v_l.shape().dims3()? {
+        candle::bail!("shape mismatch k {:?} and v {:?}", k_l.shape(), v_l.shape())
+    }
+
+    let (num_blocks, num_heads_kc, head_size_kc, block_size, x) = kc_l.shape().dims5()?;
+    if num_heads_kc != num_heads || head_size_kc != head_size / x {
+        candle::bail!(
+            "shape mismatch value_cache {:?}, expected {:?}",
+            vc_l.shape(),
+            (num_blocks, num_heads, head_size / x, block_size, x)
+        )
+    }
+
+    if (num_blocks, num_heads, head_size, block_size) != vc_l.shape().dims4()? {
+        candle::bail!(
+            "shape mismatch key_cache {:?} and value_cache {:?}",
+            kc_l.shape(),
+            vc_l.shape()
+        )
+    }
+
+    if (num_tokens) != s_l.shape().dims1()? {
+        candle::bail!(
+            "shape mismatch slot_mapping {:?}, expected {:?}",
+            s_l.shape(),
+            (num_tokens)
+        )
+    }
+
+    let key_stride = k_l.stride()[0] as c_int;
+    let value_stride = v_l.stride()[0] as c_int;
+
+    let k_ptr = *k.device_ptr() as *const core::ffi::c_void;
+    let v_ptr = *v.device_ptr() as *const core::ffi::c_void;
+    let kc_ptr = *kc.device_ptr() as *const core::ffi::c_void;
+    let vc_ptr = *vc.device_ptr() as *const core::ffi::c_void;
+    let s_ptr = *s.device_ptr() as *const core::ffi::c_long;
+
+    unsafe {
+        ffi::reshape_and_cache(
+            k_ptr,
+            v_ptr,
+            kc_ptr,
+            vc_ptr,
+            s_ptr,
+            num_tokens as c_int,
+            num_heads as c_int,
+            head_size as c_int,
+            block_size as c_int,
+            x as c_int,
+            key_stride,
+            value_stride,
+            internal_type,
+        )
+    }
+    Ok(())
+}
+
+/// Insert key and values at the provided slot mapping inside the key value paged cache
+///
+/// # Arguments
+///
+/// * `key` - Key tensor of shape `(num_tokens, num_heads, head_size)`.
+/// * `value` - Value tensor of shape `(num_tokens, num_heads, head_size)`.
+/// * `key_cache` - Key cache paged tensor of shape `(num_blocks, num_heads, head_size / x, block_size, x)`
+/// with `x` being the size of an element in bytes.
+/// * `value_cache` - Value cache paged tensor of shape `(num_blocks, num_heads, head_size, block_size)`.
+/// * `slot_mapping` - Mapping associating a slot to each token of shape `(num_tokens)`.
+pub fn reshape_and_cache(
+    key: &Tensor,
+    value: &Tensor,
+    key_cache: &Tensor,
+    value_cache: &Tensor,
+    slot_mapping: &Tensor,
+) -> Result<()> {
+    match key.dtype() {
+        DType::F16 => update_cache::<f16>(key, value, key_cache, value_cache, slot_mapping),
+        DType::BF16 => update_cache::<bf16>(key, value, key_cache, value_cache, slot_mapping),
+        DType::F32 => update_cache::<f32>(key, value, key_cache, value_cache, slot_mapping),
+        dt => {
+            candle::bail!("reshape_and_cache is only supported for f32, f16 and bf16 ({dt:?})")
+        }
+    }
 }

@@ -43,7 +43,7 @@ struct Args {
     max_num_seqs: usize,
 
     /// Size of a block
-    #[arg(long, default_value_t = 16)]
+    #[arg(long, default_value_t = 32)]
     block_size: usize,
 
     /// The folder name that contains safetensor weights and json files
@@ -90,8 +90,8 @@ async fn main() -> Result<(), APIError> {
         },
         CacheConfig {
             block_size: args.block_size,
-            num_gpu_blocks: Some(48),
-            num_cpu_blocks: Some(48),
+            num_gpu_blocks: Some(64),
+            num_cpu_blocks: Some(64),
             fully_init: true,
         },
     )?;

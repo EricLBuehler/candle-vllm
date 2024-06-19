@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-use candle_sampling::logits_processor::Logprobs;
+use crate::openai::sampling_params::Logprobs;
 
 use super::block_engine::LogicalTokenBlock;
 
