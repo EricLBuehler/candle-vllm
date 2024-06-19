@@ -1,13 +1,11 @@
 use std::{
     collections::{HashMap, VecDeque},
     iter::zip,
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 
-use candle_lora_transformers::bert::DTYPE;
 use either::Either;
 use tokenizers::Encoding;
-use tokio::sync::RwLock;
 
 use crate::{
     openai::{
@@ -26,11 +24,9 @@ use crate::{
     try_api,
 };
 
-use crate::scheduler::Scheduler;
-
 use super::{ModulePipeline, _make_tensor_with_pad};
-
-use candle_core::{DType, Device, Tensor};
+use crate::scheduler::Scheduler;
+use candle_core::Tensor;
 
 #[allow(dead_code)]
 struct PreparedInputs {

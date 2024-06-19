@@ -1,6 +1,5 @@
-use std::{iter::zip, path::PathBuf, sync::Arc};
-
 use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
+use crate::openai::sampling_params::{Logprobs, TopLogprob};
 use crate::{
     openai::{
         conversation::{
@@ -10,7 +9,7 @@ use crate::{
             Conversation,
         },
         models::{
-            llama::{Llama, LlamaConfig},
+            llama::{Cache, Llama, LlamaConfig},
             ConfigLike,
         },
         requests::StopTokens,
@@ -24,12 +23,11 @@ use crate::{
 };
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
-use candle_lora_transformers::varbuilder_utils::from_mmaped_safetensors;
 use candle_nn::VarBuilder;
-use candle_sampling::logits_processor::{Logprobs, TopLogprob};
 use candle_transformers::generation::LogitsProcessor;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
+use std::{iter::zip, path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
 
 const EOS_TOKEN: &str = "</s>";
@@ -56,6 +54,7 @@ pub struct LlamaPipeline {
     name: String,
     dtype: DType,
     device: Device,
+    cur_idx: usize,
 }
 
 pub struct LlamaLoader {
@@ -135,16 +134,9 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
             paths.get_config_filename()
         )),));
-        let config = config.into_config();
+        let config = config.into_config(false);
 
         println!("Loading {} model.", self.name);
-
-        // let vb = try_api!(from_mmaped_safetensors(
-        //     paths.get_weight_filenames(),
-        //     dtype,
-        //     &device,
-        //     false
-        // ));
 
         let vb = match unsafe {
             VarBuilder::from_mmaped_safetensors(&paths.get_weight_filenames(), dtype, &device)
@@ -192,6 +184,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                 name: self.name.clone(),
                 dtype,
                 device: device.clone(),
+                cur_idx: 0,
             }),
             pipeline_config,
         ))
@@ -206,14 +199,24 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         mut input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError> {
-        self.llama.forward(
-            &input_tokens
-                .reshape((1, input_tokens.shape().dims()[0]))
-                .unwrap(),
-            &input_positions,
-            kv_cache,
-            &mut input_metadata,
-        )
+        let length = input_tokens.shape().dims()[0];
+        if length > 1 {
+            self.cur_idx = 0;
+        }
+
+        let ret = self
+            .llama
+            .forward(
+                &input_tokens
+                    .reshape((1, input_tokens.shape().dims()[0]))
+                    .unwrap(),
+                self.cur_idx,
+                kv_cache,
+                &mut input_metadata,
+            )
+            .map_err(APIError::from);
+        self.cur_idx += length;
+        return ret;
     }
 
     fn sample(
@@ -223,12 +226,6 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         seqs: &[(&usize, &Arc<Sequence>)],
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         let eos_token_id = self.tokenizer().tokenizer().token_to_id(EOS_TOKEN);
-
-        // let mut logits_processor = sampling_params.get_logits_processor(
-        //     SAMPLING_SEED,
-        //     &self.tokenizer,
-        //     sampling_params.logprobs.unwrap_or(1),
-        // );
         let stop_tokens = match sampling_params.stop.clone() {
             Some(stop) => match stop {
                 StopTokens::Multi(multi) => multi,
@@ -284,7 +281,16 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
 
                     result.push(Left(logprob));
                 }
-                _ => {}
+                _ => {
+                    let logprob = Logprobs {
+                        token: next_token as usize,
+                        logprob: 0.0,
+                        top_logprobs: Vec::<TopLogprob>::new(),
+                        bytes: "".to_string(),
+                    };
+
+                    result.push(Left(logprob));
+                }
             }
 
             if Some(next_token) == eos_token_id.map(|x| x as u32) {

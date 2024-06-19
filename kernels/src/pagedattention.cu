@@ -90,8 +90,8 @@ __device__ void paged_attention_kernel(
   const scalar_t* __restrict__ v_cache,   // [num_blocks, num_kv_heads, head_size, block_size]
   const int num_kv_heads,                 // [num_heads]
   const float scale,
-  const int* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
-  const int* __restrict__ context_lens,   // [num_seqs]
+  const uint32_t* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
+  const uint32_t* __restrict__ context_lens,   // [num_seqs]
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
@@ -101,7 +101,7 @@ __device__ void paged_attention_kernel(
   const int partition_idx = blockIdx.z;
   const int max_num_partitions = gridDim.z;
   constexpr bool USE_PARTITIONING = PARTITION_SIZE > 0;
-  const int context_len = context_lens[seq_idx];
+  const uint32_t context_len = context_lens[seq_idx];
   if (USE_PARTITIONING && partition_idx * PARTITION_SIZE >= context_len) {
     // No work to do. Terminate the thread block.
     return;
@@ -181,7 +181,7 @@ __device__ void paged_attention_kernel(
   // Each warp fetches a block of keys for each iteration.
   // Each thread group in a warp fetches a key from the block, and computes
   // dot product with the query.
-  const int* block_table = block_tables + seq_idx * max_num_blocks_per_seq;
+  const uint32_t* block_table = block_tables + seq_idx * max_num_blocks_per_seq;
   for (int block_idx = start_block_idx + warp_idx; block_idx < end_block_idx; block_idx += NUM_WARPS) {
     // NOTE(woosuk): The block number is stored in int32. However, we cast it to int64
     // because int32 can lead to overflow when this variable is multiplied by large numbers
@@ -403,8 +403,8 @@ __global__ void paged_attention_v1_kernel(
   const scalar_t* __restrict__ v_cache,   // [num_blocks, num_kv_heads, head_size, block_size]
   const int num_kv_heads,                 // [num_heads]
   const float scale,
-  const int* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
-  const int* __restrict__ context_lens,   // [num_seqs]
+  const uint32_t* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
+  const uint32_t* __restrict__ context_lens,   // [num_seqs]
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
@@ -432,8 +432,8 @@ __global__ void paged_attention_v2_kernel(
   const scalar_t* __restrict__ v_cache,   // [num_blocks, num_kv_heads, head_size, block_size]
   const int num_kv_heads,                 // [num_heads]
   const float scale,
-  const int* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
-  const int* __restrict__ context_lens,   // [num_seqs]
+  const uint32_t* __restrict__ block_tables,   // [num_seqs, max_num_blocks_per_seq]
+  const uint32_t* __restrict__ context_lens,   // [num_seqs]
   const int max_num_blocks_per_seq,
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
@@ -456,12 +456,12 @@ __global__ void paged_attention_v2_reduce_kernel(
   const float* __restrict__ exp_sums,     // [num_seqs, num_heads, max_num_partitions]
   const float* __restrict__ max_logits,   // [num_seqs, num_heads, max_num_partitions]
   const scalar_t* __restrict__ tmp_out,   // [num_seqs, num_heads, max_num_partitions, head_size]
-  const int* __restrict__ context_lens,   // [num_seqs]
+  const uint32_t* __restrict__ context_lens,   // [num_seqs]
   const int max_num_partitions) {
   const int num_heads = gridDim.x;
   const int head_idx = blockIdx.x;
   const int seq_idx = blockIdx.y;
-  const int context_len = context_lens[seq_idx];
+  const uint32_t context_len = context_lens[seq_idx];
   const int num_partitions = DIVIDE_ROUND_UP(context_len, PARTITION_SIZE);
   if (num_partitions == 1) {
     // No need to reduce. Only copy tmp_out to out.
@@ -578,8 +578,8 @@ void paged_attention_v1_launcher(
   void *value_cache,
   int num_kv_heads,
   float scale,
-  int *block_tables,
-  int *context_lens,
+  uint32_t *block_tables,
+  uint32_t *context_lens,
   int max_context_len,
 
   int num_seqs,
@@ -678,8 +678,8 @@ extern "C" void paged_attention_v1(
   void *value_cache,     // [num_blocks, num_heads, head_size, block_size]
   int32_t num_kv_heads,               // [num_heads]
   float scale,
-  int32_t *block_tables,    // [num_seqs, max_num_blocks_per_seq]
-  int32_t *context_lens,    // [num_seqs]
+  uint32_t *block_tables,    // [num_seqs, max_num_blocks_per_seq]
+  uint32_t *context_lens,    // [num_seqs]
   int32_t block_size,
   int32_t max_context_len,
 
@@ -744,8 +744,8 @@ void paged_attention_v2_launcher(
   void *value_cache,
   int num_kv_heads,
   float scale,
-  int *block_tables,
-  int *context_lens,
+  uint32_t *block_tables,
+  uint32_t *context_lens,
   int max_context_len,
 
   int num_seqs,
@@ -854,8 +854,8 @@ extern "C" void paged_attention_v2(
   void *value_cache,     // [num_blocks, num_heads, head_size, block_size]
   int32_t num_kv_heads,
   float scale,
-  int32_t *block_tables,    // [num_seqs, max_num_blocks_per_seq]
-  int32_t *context_lens,    // [num_seqs]
+  uint32_t *block_tables,    // [num_seqs, max_num_blocks_per_seq]
+  uint32_t *context_lens,    // [num_seqs]
   int32_t block_size,
   int32_t max_context_len,
 

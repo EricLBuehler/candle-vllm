@@ -16,10 +16,9 @@ fn read_lines(filename: &str) -> Vec<String> {
 
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/attention.cu");
+    println!("cargo:rerun-if-changed=src/pagedattention.cu");
     println!("cargo:rerun-if-changed=src/copy_blocks_kernel.cu");
     println!("cargo:rerun-if-changed=src/reshape_and_cache_kernel.cu");
-    println!("cargo:rerun-if-changed=src/rotary_embedding_kernel.cu");
     let builder = bindgen_cuda::Builder::default();
     println!("cargo:info={builder:?}");
     builder.build_lib("libpagedattention.a");
@@ -45,7 +44,7 @@ fn main() -> Result<()> {
                     .append(true)
                     .open("src/lib.rs")
                     .unwrap();
-    
+    //Expose paged attention interface to Rust
     if let Err(e) = writeln!(file, "pub mod ffi;") {
         anyhow::bail!(
             "error while building dependencies: {:?}\n",

@@ -1,5 +1,5 @@
+use crate::openai::sampling_params::Logprobs;
 use actix_web::error;
-use candle_sampling::logits_processor::Logprobs;
 use derive_more::{Display, Error};
 
 use serde::{Deserialize, Serialize};

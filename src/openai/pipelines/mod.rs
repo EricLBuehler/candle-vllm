@@ -1,5 +1,5 @@
+use crate::openai::sampling_params::Logprobs;
 use candle_core::{DType, Device, Tensor, WithDType};
-use candle_sampling::logits_processor::Logprobs;
 use dirs;
 use either::Either;
 use std::{env, fs, path::PathBuf, sync::Arc};

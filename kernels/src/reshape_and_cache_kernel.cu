@@ -1,11 +1,22 @@
+#include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <stdint.h>
 
+#include "cuda_compat.h"
+
+#include <algorithm>
+#include <cassert>
+#include <map>
+#include <vector>
+
+namespace vllm {
+
 template<typename scalar_t>
-__device__ void reshape_and_cache_internal_kernel(
+__global__ void reshape_and_cache_kernel(
   const scalar_t* __restrict__ key,           // [num_tokens, num_heads, head_size]
   const scalar_t* __restrict__ value,         // [num_tokens, num_heads, head_size]
   scalar_t* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  scalar_t* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, blosudo ck_size]
+  scalar_t* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
   const int64_t* __restrict__ slot_mapping,   // [num_tokens]
   const int key_stride,
   const int value_stride,
@@ -47,108 +58,50 @@ __device__ void reshape_and_cache_internal_kernel(
   }
 }
 
-// Monomorphize the generics ourselves
-extern "C" __global__ void reshape_and_cache_kernel_u8(
-  const uint8_t* __restrict__ key,           // [num_tokens, num_heads, head_size]
-  const uint8_t* __restrict__ value,         // [num_tokens, num_heads, head_size]
-  uint8_t* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  uint8_t* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
-  const int64_t* __restrict__ slot_mapping,   // [num_tokens]
-  const int key_stride,
-  const int value_stride,
-  const int num_heads,
-  const int head_size,
-  const int block_size,
-  const int x) {
-  reshape_and_cache_internal_kernel<uint8_t>(key, value, key_cache, value_cache, slot_mapping, key_stride, value_stride, num_heads, head_size, block_size, x);
-}
+#define CALL_RESHAPE_AND_CACHE(T)                                     \
+  vllm::reshape_and_cache_kernel<T><<<grid, block, 0, stream>>>(      \
+    reinterpret_cast<T*>(key),                                        \
+    reinterpret_cast<T*>(value),                                      \
+    reinterpret_cast<T*>(key_cache),                                  \
+    reinterpret_cast<T*>(value_cache),                                \
+    slot_mapping,                                                     \
+    key_stride,                                                       \
+    value_stride,                                                     \
+    num_heads,                                                        \
+    head_size,                                                        \
+    block_size,                                                       \
+    x);
 
-extern "C" __global__ void reshape_and_cache_kernel_u32(
-  const uint32_t* __restrict__ key,           // [num_tokens, num_heads, head_size]
-  const uint32_t* __restrict__ value,         // [num_tokens, num_heads, head_size]
-  uint32_t* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  uint32_t* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
-  const int64_t* __restrict__ slot_mapping,   // [num_tokens]
-  const int key_stride,
-  const int value_stride,
-  const int num_heads,
-  const int head_size,
-  const int block_size,
-  const int x) {
-  reshape_and_cache_internal_kernel<uint32_t>(key, value, key_cache, value_cache, slot_mapping, key_stride, value_stride, num_heads, head_size, block_size, x);
-}
 
-extern "C" __global__ void reshape_and_cache_kernel_i64(
-  const int64_t* __restrict__ key,           // [num_tokens, num_heads, head_size]
-  const int64_t* __restrict__ value,         // [num_tokens, num_heads, head_size]
-  int64_t* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  int64_t* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
-  const int64_t* __restrict__ slot_mapping,   // [num_tokens]
-  const int key_stride,
-  const int value_stride,
-  const int num_heads,
-  const int head_size,
-  const int block_size,
-  const int x) {
-  reshape_and_cache_internal_kernel<int64_t>(key, value, key_cache, value_cache, slot_mapping, key_stride, value_stride, num_heads, head_size, block_size, x);
-}
+} // namespace vllm
 
-extern "C" __global__ void reshape_and_cache_kernel_f32(
-  const float* __restrict__ key,           // [num_tokens, num_heads, head_size]
-  const float* __restrict__ value,         // [num_tokens, num_heads, head_size]
-  float* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  float* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
-  const int64_t* __restrict__ slot_mapping,   // [num_tokens]
-  const int key_stride,
-  const int value_stride,
-  const int num_heads,
-  const int head_size,
-  const int block_size,
-  const int x) {
-  reshape_and_cache_internal_kernel<float>(key, value, key_cache, value_cache, slot_mapping, key_stride, value_stride, num_heads, head_size, block_size, x);
-}
+extern "C" void reshape_and_cache(
+  void *key,              // [num_tokens, num_heads, head_size]
+  void *value,            // [num_tokens, num_heads, head_size]
+  void *key_cache,        // [num_blocks, num_heads, head_size/x, block_size, x]
+  void *value_cache,      // [num_blocks, num_heads, head_size, block_size]
+  int64_t* slot_mapping,  // [num_tokens]
 
-extern "C" __global__ void reshape_and_cache_kernel_f64(
-  const double* __restrict__ key,           // [num_tokens, num_heads, head_size]
-  const double* __restrict__ value,         // [num_tokens, num_heads, head_size]
-  double* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  double* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
-  const int64_t* __restrict__ slot_mapping,   // [num_tokens]
-  const int key_stride,
-  const int value_stride,
-  const int num_heads,
-  const int head_size,
-  const int block_size,
-  const int x) {
-  reshape_and_cache_internal_kernel<double>(key, value, key_cache, value_cache, slot_mapping, key_stride, value_stride, num_heads, head_size, block_size, x);
-}
+  int32_t num_tokens,
+  int32_t num_heads,
+  int32_t head_size,
+  int32_t block_size,
+  int32_t x,
+  int32_t key_stride,
+  int32_t value_stride,
 
-extern "C" __global__ void reshape_and_cache_kernel_f16(
-  const int16_t* __restrict__ key,           // [num_tokens, num_heads, head_size]
-  const int16_t* __restrict__ value,         // [num_tokens, num_heads, head_size]
-  int16_t* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  int16_t* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
-  const int64_t* __restrict__ slot_mapping,   // [num_tokens]
-  const int key_stride,
-  const int value_stride,
-  const int num_heads,
-  const int head_size,
-  const int block_size,
-  const int x) {
-  reshape_and_cache_internal_kernel<int16_t>(key, value, key_cache, value_cache, slot_mapping, key_stride, value_stride, num_heads, head_size, block_size, x);
-}
+  uint32_t dtype      // 0 => f16; 1 => bf16; 2 => f32
+  )
+{
+  dim3 grid(num_tokens);
+  dim3 block(std::min(num_heads * head_size, 512));
+  const cudaStream_t stream = 0;
 
-extern "C" __global__ void reshape_and_cache_kernel_bf16(
-  const int16_t* __restrict__ key,           // [num_tokens, num_heads, head_size]
-  const int16_t* __restrict__ value,         // [num_tokens, num_heads, head_size]
-  int16_t* __restrict__ key_cache,           // [num_blocks, num_heads, head_size/x, block_size, x]
-  int16_t* __restrict__ value_cache,         // [num_blocks, num_heads, head_size, block_size]
-  const int64_t* __restrict__ slot_mapping,   // [num_tokens]
-  const int key_stride,
-  const int value_stride,
-  const int num_heads,
-  const int head_size,
-  const int block_size,
-  const int x) {
-  reshape_and_cache_internal_kernel<int16_t>(key, value, key_cache, value_cache, slot_mapping, key_stride, value_stride, num_heads, head_size, block_size, x);
+  if (dtype == 0){
+    CALL_RESHAPE_AND_CACHE(uint16_t);
+  } else if (dtype == 1) {
+    CALL_RESHAPE_AND_CACHE(__nv_bfloat16);
+  } else if (dtype == 2) {
+    CALL_RESHAPE_AND_CACHE(float);
+  }
 }

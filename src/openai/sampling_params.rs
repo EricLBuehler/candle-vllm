@@ -1,11 +1,27 @@
+use serde::{Deserialize, Serialize};
 use std::ops::Range;
-
-use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
+// use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
 use tokenizers::Tokenizer;
 
 use super::{requests::StopTokens, responses::APIError};
 
 const SAMPLING_EPS: f32 = 1e-5;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+// Top-n logprobs element
+pub struct TopLogprob {
+    pub token: usize,
+    pub logprob: f32,
+    pub bytes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Logprobs {
+    pub token: usize,
+    pub logprob: f32,
+    pub bytes: String,
+    pub top_logprobs: Vec<TopLogprob>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum EarlyStoppingCondition {
@@ -134,43 +150,43 @@ impl SamplingParams {
         Ok(this)
     }
 
-    pub fn get_logits_processor<'a>(
-        &self,
-        seed: u64,
-        tokenizer: &'a Tokenizer,
-        top_n_logprobs: usize,
-    ) -> LogitsProcessor<'a> {
-        if self.top_k == -1 && self.top_p == 1. {
-            // Greedy
-            LogitsProcessor::new(
-                seed,
-                Some(self.temperature.into()),
-                SamplingMethod::Multinomial,
-                top_n_logprobs,
-                tokenizer,
-            )
-        } else if self.top_k > 0 && self.top_p == 1. {
-            // Top-k
-            LogitsProcessor::new(
-                seed,
-                Some(self.temperature.into()),
-                SamplingMethod::TopK(self.top_k.try_into().unwrap()),
-                top_n_logprobs,
-                tokenizer,
-            )
-        } else if self.top_k == -1 && self.top_p != 1. {
-            // Top-p
-            LogitsProcessor::new(
-                seed,
-                Some(self.temperature.into()),
-                SamplingMethod::TopP(self.top_p.into()),
-                top_n_logprobs,
-                tokenizer,
-            )
-        } else {
-            unreachable!()
-        }
-    }
+    // pub fn get_logits_processor<'a>(
+    //     &self,
+    //     seed: u64,
+    //     tokenizer: &'a Tokenizer,
+    //     top_n_logprobs: usize,
+    // ) -> LogitsProcessor<'a> {
+    //     if self.top_k == -1 && self.top_p == 1. {
+    //         // Greedy
+    //         LogitsProcessor::new(
+    //             seed,
+    //             Some(self.temperature.into()),
+    //             SamplingMethod::Multinomial,
+    //             top_n_logprobs,
+    //             tokenizer,
+    //         )
+    //     } else if self.top_k > 0 && self.top_p == 1. {
+    //         // Top-k
+    //         LogitsProcessor::new(
+    //             seed,
+    //             Some(self.temperature.into()),
+    //             SamplingMethod::TopK(self.top_k.try_into().unwrap()),
+    //             top_n_logprobs,
+    //             tokenizer,
+    //         )
+    //     } else if self.top_k == -1 && self.top_p != 1. {
+    //         // Top-p
+    //         LogitsProcessor::new(
+    //             seed,
+    //             Some(self.temperature.into()),
+    //             SamplingMethod::TopP(self.top_p.into()),
+    //             top_n_logprobs,
+    //             tokenizer,
+    //         )
+    //     } else {
+    //         unreachable!()
+    //     }
+    // }
 
     fn verify_args(&self) -> Result<(), APIError> {
         if self.n < 1 {
