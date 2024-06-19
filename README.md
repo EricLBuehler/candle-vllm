@@ -3,13 +3,8 @@
 </p>
 
 [![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
-[![Discord server](https://dcbadge.vercel.app/api/server/FAeJRRJ8)](https://discord.gg/FAeJRRJ8)
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
-
-PPlease see [mistral.rs](https://github.com/EricLBuehler/mistral.rs), efficient inference platform for many models, including quantized support. Additionally, it implements X-LoRA, recently released method [here](https://github.com/EricLBuehler/xlora). X-LoRA introduces a MoE inspired method to densely gate LoRA adapters powered by a model self-reflection forward pass.
-
-**candle-vllm is flux, in breaking development and as such is currently unstable.**
 
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
@@ -23,8 +18,6 @@ PPlease see [mistral.rs](https://github.com/EricLBuehler/mistral.rs), efficient 
     - 7b
     - 13b
     - 70b
-- Mistral
-    - 7b
 
 ## Examples
 See [this folder](examples/) for some examples.
