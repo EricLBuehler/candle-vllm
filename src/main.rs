@@ -56,6 +56,14 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     cpu: bool,
+
+    /// Available GPU memory for kvcache (MB)
+    #[arg(long, default_value_t = 4096)]
+    kvcache_mem: usize,
+
+    /// Record conversation (default false, the client need to record chat history)
+    #[arg(long)]
+    record_conversation: bool,
 }
 
 #[actix_web::main]
@@ -72,33 +80,44 @@ async fn main() -> Result<(), APIError> {
         _ => loader.download_model(model_id, None, args.hf_token, args.hf_token_path)?,
     };
 
-    let dtype = match args.dtype.as_deref() {
-        Some("f16") => DType::F16,
-        Some("bf16") => DType::BF16,
-        Some("f32") => DType::F32,
+    let (dtype, dsize) = match args.dtype.as_deref() {
+        Some("f16") => (DType::F16, 2),
+        Some("bf16") => (DType::BF16, 2),
+        Some("f32") => (DType::F32, 4),
         Some(dtype) => panic!("Unsupported dtype {dtype}"),
-        None => DType::BF16,
+        None => (DType::BF16, 2),
     };
 
     let device = candle_examples::device(args.cpu).unwrap();
     let model = loader.load_model(paths, dtype, device)?;
+    let config = model.0.get_model_config();
+    let num_gpu_blocks = args.kvcache_mem * 1024 * 1024
+        / dsize
+        / args.block_size
+        / config.get_num_kv_heads()
+        / config.get_head_size()
+        / config.get_num_hidden_layers()
+        / 2;
+    let cache_config = CacheConfig {
+        block_size: args.block_size,
+        num_gpu_blocks: Some(num_gpu_blocks),
+        num_cpu_blocks: Some(32),
+        fully_init: true,
+    };
+    println!("Cache config {:?}", cache_config);
 
     let llm_engine = LLMEngine::new(
         model.0,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
         },
-        CacheConfig {
-            block_size: args.block_size,
-            num_gpu_blocks: Some(64),
-            num_cpu_blocks: Some(64),
-            fully_init: true,
-        },
+        cache_config,
     )?;
 
     let server_data = OpenAIServerData {
         pipeline_config: model.1,
         model: Arc::new(Mutex::new(llm_engine)),
+        record_conversation: args.record_conversation,
         device: Device::Cpu,
     };
 

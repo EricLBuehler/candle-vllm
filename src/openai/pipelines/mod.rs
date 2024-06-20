@@ -40,7 +40,7 @@ pub trait ModulePipeline<'s>: Send + Sync {
 
     fn tokenizer(&self) -> &TokenOutputStream;
 
-    fn get_conversation(&mut self) -> &mut dyn Conversation;
+    fn get_conversation(&mut self, with_history: bool) -> &mut dyn Conversation;
 
     fn get_model_config(&self) -> Box<dyn ConfigLike>;
 

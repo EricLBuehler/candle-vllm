@@ -11,7 +11,7 @@ use crate::{
     try_api,
 };
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CacheConfig {
     pub block_size: usize,
     pub num_gpu_blocks: Option<usize>, // Set after profiling init

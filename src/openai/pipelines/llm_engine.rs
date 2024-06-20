@@ -181,7 +181,7 @@ impl<'a> LLMEngine<'a> {
                             .map_err(APIError::from)?;
                         let choice = ChatChoice {
                             message: ChatChoiceData {
-                                role: self.pipeline.get_conversation().get_roles().0.clone(),
+                                role: self.pipeline.get_conversation(true).get_roles().0.clone(),
                                 content: Some(data),
                             },
                             finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),

@@ -32,7 +32,9 @@ async fn get_gen_prompt(
     request: &web::Json<ChatCompletionRequest>,
 ) -> Result<String, APIError> {
     let mut model = data.model.lock().unwrap();
-    let conversation = model.get_mut_pipeline().get_conversation();
+    let conversation = model
+        .get_mut_pipeline()
+        .get_conversation(data.record_conversation);
 
     match &request.messages {
         Messages::Literal(msg) => {
@@ -129,6 +131,7 @@ async fn chat_completions(
         return Either::Left(Err(prompt.err().unwrap()));
     }
     let prompt = prompt.unwrap();
+    println!("\n\n\nPrompt {:?}", prompt);
 
     let token_ids = check_length(&request, prompt, &data);
     if token_ids.is_err() {

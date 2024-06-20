@@ -300,7 +300,10 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         &self.tokenizer
     }
 
-    fn get_conversation(&mut self) -> &mut dyn Conversation {
+    fn get_conversation(&mut self, with_history: bool) -> &mut dyn Conversation {
+        if !with_history {
+            self.conversation.clear_message();
+        }
         &mut self.conversation
     }
 

@@ -13,4 +13,6 @@ pub trait Conversation {
     fn get_roles(&self) -> &(String, String);
 
     fn get_prompt(&mut self) -> String;
+
+    fn clear_message(&mut self);
 }
