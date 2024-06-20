@@ -24,12 +24,15 @@ See [this folder](examples/) for some examples.
 
 ### Example with Llama 7b
 
-#### Step 1:
-Run candle-vllm service:
+#### Step 1: Run Candle-VLLM service (assume llama2-7b model weights downloaded)
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama7b --repeat-last-n 64 #for local weights
-cargo run --release -- --port 2000 llama7b --repeat-last-n 64
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+sudo apt install libssl-dev
+sudo apt install pkg-config
+git clone git@github.com:EricLBuehler/candle-vllm.git
+cd candle-vllm
+cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama7b --repeat-last-n 64
 ```
 
 #### Step 2:
@@ -80,13 +83,35 @@ completion = openai.chat.completions.create(
 )
 print(completion.choices[0].message.content)
 ```
-
 After the `candle-vllm` service is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
+
+#### Option 3: Chat with ChatUI (recommended)
+Installation of the required packages from here [ChatUI for Candle-VLLM](https://github.com/guoqingbao/ChattierGPT-UI):
+
+```
+git clone git@github.com:guoqingbao/ChattierGPT-UI.git
+pip install -r requirements.txt
+```
+
+Launching the ChatUI:
+```
+python -m streamlit run src/main.py
+```
+
+## Demo Chat with candle-vllm 
+<img src="./res/candle-vllm-demo.gif" width="95%" height="95%" >
 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.
 
 For model-specific help, run `cargo run -- --port 1234 <MODEL NAME> --help`
+
+For local model weights, run `cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama7b --repeat-last-n 64`, change the path when needed.
+
+For kvcache configuration, set `kvcache_mem_cpu` and `kvcache_mem_gpu`, default 4GB CPU memory and 4GB GPU memory for kvcache. 
+
+For chat history settings, set `record_conversation` to `true` to let candle-vllm remember chat history. By `default`, candle-vllm `does not` record chat history; instead, the client sends both the messages and the contextual history to candle-vllm. If record_conversation is set to `true`, the client sends only new chat messages to candle-vllm, and candle-vllm is responsible for recording the previous chat messages. However, this approach requires per-session chat recording, which is not yet implemented, so the default approach `record_conversation=false` is recommended.
+
 
 ## Installation
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
