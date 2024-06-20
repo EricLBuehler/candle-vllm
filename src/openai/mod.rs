@@ -40,6 +40,7 @@ pub struct PipelineConfig {
 pub struct OpenAIServerData<'s> {
     pub model: Arc<Mutex<LLMEngine<'s>>>,
     pub pipeline_config: PipelineConfig,
+    pub record_conversation: bool,
     pub device: Device,
 }
 

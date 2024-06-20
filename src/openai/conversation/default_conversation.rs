@@ -112,6 +112,9 @@ impl Conversation for DefaultConversation {
         &self.roles
     }
 
+    fn clear_message(&mut self) {
+        self.messages.clear()
+    }
     /// Convert this conversation to a String prompt
     fn get_prompt(&mut self) -> String {
         let system_prompt = self.system_template.format(&[self.system_message.clone()]);
