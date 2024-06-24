@@ -228,18 +228,27 @@ impl CausalSelfAttention {
         let k = self.k_proj.forward(x)?;
         let v = self.v_proj.forward(x)?;
 
-        let q = q
-            .reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let k = k
-            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let v = v
-            .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
+        let (q, k, v) = if seq_len == 1 {
+            //no need transpose for seq_len == 1, change reshape dim
+            let q = q.reshape((b_sz, self.num_attention_heads, seq_len, self.head_dim))?;
+            let k = k.reshape((b_sz, self.num_key_value_heads, seq_len, self.head_dim))?;
+            let v = v.reshape((b_sz, self.num_key_value_heads, seq_len, self.head_dim))?;
+            (q, k, v)
+        } else {
+            let q = q
+                .reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim))?
+                .transpose(1, 2)?
+                .contiguous()?;
+            let k = k
+                .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
+                .transpose(1, 2)?
+                .contiguous()?;
+            let v = v
+                .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
+                .transpose(1, 2)?
+                .contiguous()?;
+            (q, k, v)
+        };
 
         let q = self.apply_rotary_emb(&q, index_pos)?;
         let k = self.apply_rotary_emb(&k, index_pos)?;

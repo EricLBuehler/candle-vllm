@@ -286,7 +286,11 @@ impl<'a> LLMEngine<'a> {
                         slot_mapping.push(_PAD_SLOT_ID);
                     }
 
-                    let block_number = table.get(i / self.cache_config.block_size).unwrap();
+                    let block_number = if i / self.cache_config.block_size >= table.len() {
+                        table.get(table.len() - 1).unwrap() //position exceed! use last position
+                    } else {
+                        table.get(i / self.cache_config.block_size).unwrap()
+                    };
                     let block_offset = i % self.cache_config.block_size;
                     let slot = block_number * self.cache_config.block_size + block_offset;
                     slot_mapping.push(slot.try_into().unwrap());
@@ -372,7 +376,11 @@ impl<'a> LLMEngine<'a> {
                     .map(|block| block.deref_mut().block_id)
                     .collect::<Vec<_>>();
 
-                let block_number = table.get(position / self.cache_config.block_size).unwrap();
+                let block_number = if position / self.cache_config.block_size >= table.len() {
+                    table.get(table.len() - 1).unwrap() //position exceed! use last position; TODO (bug fix)
+                } else {
+                    table.get(position / self.cache_config.block_size).unwrap()
+                };
                 let block_offset = position % self.cache_config.block_size;
                 let slot = block_number * self.cache_config.block_size + block_offset;
                 let slot = slot.try_into().unwrap();
