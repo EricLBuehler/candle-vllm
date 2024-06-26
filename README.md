@@ -20,7 +20,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     - 70b
 
 ## Demo Chat with candle-vllm (66 tokens/s, 7B model, bf16, A100)
-<img src="./res/candle-vllm-demo.gif" width="95%" height="95%" >
+<img src="./res/candle-vllm-demo.gif" width="60%" height="60%" >
 
 ## Usage
 See [this folder](examples/) for some examples.
