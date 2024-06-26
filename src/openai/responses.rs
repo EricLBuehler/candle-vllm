@@ -46,8 +46,8 @@ pub struct ChatCompletionUsageResponse {
     pub completion_tokens: usize,
     pub prompt_tokens: usize,
     pub total_tokens: usize,
-    pub prompt_time_costs: usize,     //miliseconds
-    pub completion_time_costs: usize, //miliseconds
+    pub prompt_time_costs: usize,     //milliseconds
+    pub completion_time_costs: usize, //milliseconds
 }
 
 // tool_calls, function_call not supported!
