@@ -46,6 +46,8 @@ pub struct ChatCompletionUsageResponse {
     pub completion_tokens: usize,
     pub prompt_tokens: usize,
     pub total_tokens: usize,
+    pub prompt_time_costs: usize,     //miliseconds
+    pub completion_time_costs: usize, //miliseconds
 }
 
 // tool_calls, function_call not supported!
@@ -80,23 +82,24 @@ pub struct ChatCompletionResponse {
 
 // tool_calls, function_call not supported!
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamingChoiceData {
+pub struct ChoiceData {
     pub content: Option<String>,
     pub role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamingChoice {
-    pub delta: StreamingChoiceData,
+pub struct Choice {
+    pub delta: ChoiceData,
     pub finish_reason: Option<String>,
     pub index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamingChatCompletionResponse {
+pub struct ChatCompletionChunk {
     pub id: String,
-    pub choices: Vec<StreamingChoice>,
+    pub choices: Vec<Choice>,
     pub created: u64,
     pub model: String,
     pub object: &'static str,
+    pub system_fingerprint: Option<String>,
 }

@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix-web = "4.4.0"
+actix-web = "4.8.0"
 anyhow = "1.0.75"
 candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.6.0" }
 candle-examples = { git = "https://github.com/huggingface/candle.git", version = "0.6.0" }
@@ -30,7 +30,7 @@ candle-flash-attn = { git = "https://github.com/huggingface/candle.git", version
 clap = { version = "4.4.7", features = ["derive"] }
 #candle-sampling = { git = "https://github.com/EricLBuehler/candle-sampling.git", version = "0.2.0" }
 futures = "0.3.29"
-tokio = { version = "1.33.0", features = ["sync"] }
+tokio = { version = "1.38.0", features = ["sync"] }
 env_logger = "0.10.1"
 tracing = "0.1.40"
 range-checked = { git = "https://github.com/EricLBuehler/range-checked.git", version = "0.1.0" }

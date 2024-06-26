@@ -9,6 +9,7 @@ use super::utils::get_created_time_secs;
 use super::OpenAIServerData;
 use actix_web::web::Bytes;
 use actix_web::{post, web, Either, HttpResponse};
+use std::time::{Duration, Instant};
 use tokenizers::Encoding;
 use uuid::Uuid;
 
@@ -113,10 +114,10 @@ async fn chat_completions(
     request: web::Json<ChatCompletionRequest>,
 ) -> Either<Result<web::Json<ChatCompletionResponse>, APIError>, HttpResponse> {
     let model_name = &request.model;
-    let res = verify_model(&data, model_name);
-    if res.is_err() {
-        return Either::Left(Err(res.err().unwrap()));
-    }
+    // let res = verify_model(&data, model_name);
+    // if res.is_err() {
+    //     return Either::Left(Err(res.err().unwrap()));
+    // }
 
     if request.logit_bias.as_ref().is_some()
         && request.logit_bias.as_ref().is_some_and(|x| !x.is_empty())
@@ -156,7 +157,7 @@ async fn chat_completions(
         request.stop.clone(),
         request.stop_token_ids.clone().unwrap_or_default(),
         request.ignore_eos.unwrap_or(false),
-        request.max_tokens.unwrap_or(16),
+        request.max_tokens.unwrap_or(512),
         None,
         None,
         request.skip_special_tokens.unwrap_or(true),
@@ -170,32 +171,58 @@ async fn chat_completions(
 
     if request.stream.is_some_and(|x| x) {
         let (sender, receiver) = new_streaming_conn();
-        let _ = thread::spawn(move || {
+        let runner = thread::spawn(move || {
             let mut model = data.model.lock().unwrap();
-            let model_res = model.generate(
-                token_ids,
-                request_id,
-                created,
-                sampling_params,
-                request.logprobs.unwrap_or(false),
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let start_time = Instant::now();
+            let result = model
+                .generate(
+                    token_ids,
+                    request_id,
+                    created,
+                    sampling_params,
+                    request.logprobs.unwrap_or(false),
+                    Some((&runtime, &sender)),
+                )
+                .unwrap();
+            runtime.shutdown_background();
+            //chat completion statistics
+            let usage = ChatCompletionUsageResponse {
+                completion_tokens: result
+                    .iter()
+                    .map(|(_, usage)| usage.completion_tokens)
+                    .sum(),
+                prompt_tokens: result.iter().map(|(_, usage)| usage.prompt_tokens).sum(),
+                total_tokens: result.iter().map(|(_, usage)| usage.total_tokens).sum(),
+                prompt_time_costs: result
+                    .iter()
+                    .map(|(_, usage)| usage.prompt_time_costs)
+                    .sum(),
+                completion_time_costs: result
+                    .iter()
+                    .map(|(_, usage)| usage.completion_time_costs)
+                    .sum(),
+            };
+            println!(
+                "\r\n Prefilling: {} prompt tokens processed in {} seconds",
+                usage.prompt_tokens,
+                usage.prompt_time_costs / 1000
             );
-            if model_res.is_err() {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
 
-                // Ignore sending errors
-                let _ = runtime.block_on(sender.send(Ok(Bytes::from(
-                    serde_json::to_vec(&model_res.err().unwrap()).unwrap(),
-                ))));
-            }
+            println!(
+                "\r\n Decoding: {} tokens processed in {} seconds ({} tokens/s)",
+                usage.completion_tokens,
+                usage.completion_time_costs / 1000,
+                usage.completion_tokens * 1000 / usage.completion_time_costs
+            );
         });
 
         return Either::Right(
             HttpResponse::Ok()
                 .append_header(("content-type", "text/event-stream"))
-                //.no_chunking(asdf)
                 .streaming(receiver),
         );
     }
@@ -208,6 +235,7 @@ async fn chat_completions(
             created,
             sampling_params,
             request.logprobs.unwrap_or(false),
+            None,
         );
         if model_res.is_err() {
             return Either::Left(Err(model_res.err().unwrap()));
@@ -226,6 +254,14 @@ async fn chat_completions(
             .sum(),
         prompt_tokens: result.iter().map(|(_, usage)| usage.prompt_tokens).sum(),
         total_tokens: result.iter().map(|(_, usage)| usage.total_tokens).sum(),
+        prompt_time_costs: result
+            .iter()
+            .map(|(_, usage)| usage.prompt_time_costs)
+            .sum(),
+        completion_time_costs: result
+            .iter()
+            .map(|(_, usage)| usage.completion_time_costs)
+            .sum(),
     };
 
     Either::Left(Ok(web::Json(ChatCompletionResponse {
