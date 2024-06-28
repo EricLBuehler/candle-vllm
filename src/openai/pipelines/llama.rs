@@ -170,13 +170,13 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
                 logits_processor: LogitsProcessor::new(SAMPLING_SEED, None, None),
                 conversation: DefaultConversation::new(
                     "llama-2".to_string(),
-                    "[INST] <<SYS>>\n{}\n<</SYS>>\n\n".to_string(),
+                    "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST] ".to_string(),
                     Vec::default(),
                     0,
                     SeparatorStyle::Llama2,
                     "".to_string(),
                     Vec::default(),
-                    ("[INST]".to_string(), "[/INST]".to_string()),
+                    ("user".to_string(), "assistant".to_string()),
                     DefaultConversationSeparators {
                         sep: " ".to_string(),
                         sep2: Some(" </s></s>".to_string()),

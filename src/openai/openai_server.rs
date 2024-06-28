@@ -55,18 +55,13 @@ async fn get_gen_prompt(
 
                 if role == "system" {
                     conversation.set_system_message(content);
-                } else if role == "user" {
-                    conversation.append_message(conversation.get_roles().0.clone(), content)
-                } else if role == "assistant" {
-                    conversation.append_message(conversation.get_roles().1.clone(), content)
                 } else {
-                    return Err(APIError::new(format!("Unknown role: {role}")));
-                }
+                    conversation.append_message(role.to_string(), content)
+                } 
             }
         }
     }
 
-    conversation.append_none_message(conversation.get_roles().1.clone());
 
     Ok(conversation.get_prompt())
 }

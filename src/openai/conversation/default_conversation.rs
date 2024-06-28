@@ -220,25 +220,21 @@ impl Conversation for DefaultConversation {
             }
 
             SeparatorStyle::Llama2 => {
-                let seps = [&self.sep, &self.sep2.clone().unwrap_or("".to_string())];
-                let mut accum = if !system_prompt.is_empty() {
-                    system_prompt.clone()
-                } else {
-                    "[INST] ".to_string()
-                };
+                let mut accum = "".to_string();
                 for (i, message) in self.messages.iter().enumerate() {
                     let Message((_role, message)) = message;
-
-                    let tag = &[self.roles.0.clone(), self.roles.1.clone()][i % 2];
-
-                    if let Some(message) = message {
-                        if i == 0 {
-                            accum += &format!("{message} ");
+                    if _role.clone() == self.roles.0 { //user message
+                        if let Some(message) = message {
+                            accum += &format!("[INST] {message} [/INST]");
                         } else {
-                            accum += &format!("{tag} {message}{}", seps[i % 2]);
+                            accum += &format!("[INST] [/INST]");
                         }
-                    } else {
-                        accum += tag;
+                    } else if _role.clone() == self.roles.1 { //assistant message
+                        if let Some(message) = message {
+                            accum += &format!("[assistant] {message} [/assistant] ");
+                        }
+                    } else if i == 0 && !system_prompt.is_empty(){
+                        accum += &system_prompt;
                     }
                 }
                 accum
