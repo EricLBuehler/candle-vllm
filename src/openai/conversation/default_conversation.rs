@@ -233,7 +233,7 @@ impl Conversation for DefaultConversation {
                     } else if _role.clone() == self.roles.1 {
                         //assistant message
                         if let Some(message) = message {
-                            accum += &format!("[assistant] {message} [/assistant] ");
+                            accum += &format!("{message} \n");
                         }
                     } else if i == 0 && !system_prompt.is_empty() {
                         accum += &system_prompt;

@@ -125,14 +125,19 @@ async fn chat_completions(
     if prompt.is_err() {
         return Either::Left(Err(prompt.err().unwrap()));
     }
-    let prompt = prompt.unwrap();
-    println!("\n\n\nPrompt {:?}", prompt);
+    let mut prompt = prompt.unwrap();
 
-    let token_ids = check_length(&request, prompt, &data).await;
+    let token_ids = check_length(&request, prompt.clone(), &data).await;
     if token_ids.is_err() {
         return Either::Left(Err(token_ids.err().unwrap()));
     }
-    let token_ids = token_ids.unwrap();
+    let mut token_ids: Encoding = token_ids.unwrap();
+    if token_ids.len() % 2 == 0 {
+        //padding to avoid block allocation issue
+        prompt += "\n";
+        token_ids = check_length(&request, prompt.clone(), &data).await.unwrap();
+    }
+    println!("\n\n\nPrompt {:?}", prompt);
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
 
