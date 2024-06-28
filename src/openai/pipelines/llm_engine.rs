@@ -114,17 +114,14 @@ impl<'a> LLMEngine<'a> {
         format!("data: {}\n\n", serde_json::to_string(&response).unwrap())
     }
 
-    pub fn generate(
+    pub async fn generate(
         &mut self,
         prompt: Encoding,
         request_id: String,
         created: u64,
         sampling_params: SamplingParams,
         use_logprobs: bool,
-        stream: Option<(
-            &tokio::runtime::Runtime,
-            &Sender<Result<Bytes, SenderError>>,
-        )>,
+        stream: Option<&Sender<Result<Bytes, SenderError>>>,
     ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
         self.add_request(prompt, request_id.clone(), created);
         let mut responses = HashMap::new();
@@ -191,27 +188,27 @@ impl<'a> LLMEngine<'a> {
             for (result_, (_, seq)) in zip(result, seqs) {
                 match result_ {
                     Either::Left(logprobs) => {
-                        if let Some((runtime, sender)) = stream {
+                        if let Some(sender) = stream {
                             let str_response = self.get_stream_response(
                                 request_id.clone(),
                                 created,
                                 Some(logprobs.bytes.clone()),
                                 None,
                             );
-                            let _ = runtime.block_on(sender.send(Ok(Bytes::from(str_response))));
+                            let _ = sender.send(Ok(Bytes::from(str_response))).await;
                         };
                         print!("{}", logprobs.bytes.clone());
                         seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
-                        if let Some((runtime, sender)) = stream {
+                        if let Some(sender) = stream {
                             let str_response = self.get_stream_response(
                                 request_id.clone(),
                                 created,
                                 None,
                                 Some(finish_reason.clone()),
                             );
-                            let _ = runtime.block_on(sender.send(Ok(Bytes::from(str_response))));
+                            let _ = sender.send(Ok(Bytes::from(str_response))).await;
                         };
                         seq.deref_mut().set_finish_reason(finish_reason)
                     }
@@ -282,9 +279,9 @@ impl<'a> LLMEngine<'a> {
                 }
             }
         }
-        if let Some((runtime, sender)) = stream {
+        if let Some(sender) = stream {
             let str_response = "data: [DONE]\n\n"; //stream finish flag
-            let _ = runtime.block_on(sender.send(Ok(Bytes::from(str_response))));
+            let _ = sender.send(Ok(Bytes::from(str_response))).await;
         };
         Ok(responses.into_values().collect::<Vec<_>>())
     }

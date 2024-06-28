@@ -13,26 +13,26 @@ use std::time::{Duration, Instant};
 use tokenizers::Encoding;
 use uuid::Uuid;
 
-fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
-    let current_name = {
-        let model = data.model.lock().unwrap();
-        model.get_pipeline().name().to_string()
-    };
-    if &current_name != model_name {
-        Err(APIError::new(format!(
-            "Model name `{model_name}` is invalid."
-        )))
-    } else {
-        Ok(())
-    }
-}
+// fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
+//     let current_name = {
+//         let model = data.model.lock().unwrap();
+//         model.get_pipeline().name().to_string()
+//     };
+//     if &current_name != model_name {
+//         Err(APIError::new(format!(
+//             "Model name `{model_name}` is invalid."
+//         )))
+//     } else {
+//         Ok(())
+//     }
+// }
 
 // Get prompt, roles
 async fn get_gen_prompt(
     data: &OpenAIServerData<'_>,
     request: &web::Json<ChatCompletionRequest>,
 ) -> Result<String, APIError> {
-    let mut model = data.model.lock().unwrap();
+    let mut model = data.model.lock().await;
     let conversation = model
         .get_mut_pipeline()
         .get_conversation(data.record_conversation);
@@ -71,13 +71,13 @@ async fn get_gen_prompt(
     Ok(conversation.get_prompt())
 }
 
-fn check_length(
+async fn check_length(
     request: &web::Json<ChatCompletionRequest>,
     prompt: String,
     data: &OpenAIServerData<'_>,
 ) -> Result<Encoding, APIError> {
     let token_ids = {
-        let model = data.model.lock().unwrap();
+        let model = data.model.lock().await;
         model
             .get_pipeline()
             .tokenizer()
@@ -134,7 +134,7 @@ async fn chat_completions(
     let prompt = prompt.unwrap();
     println!("\n\n\nPrompt {:?}", prompt);
 
-    let token_ids = check_length(&request, prompt, &data);
+    let token_ids = check_length(&request, prompt, &data).await;
     if token_ids.is_err() {
         return Either::Left(Err(token_ids.err().unwrap()));
     }
@@ -171,13 +171,8 @@ async fn chat_completions(
 
     if request.stream.is_some_and(|x| x) {
         let (sender, receiver) = new_streaming_conn();
-        let runner = thread::spawn(move || {
-            let mut model = data.model.lock().unwrap();
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            let start_time = Instant::now();
+        let _ = tokio::spawn(async move {
+            let mut model = data.model.lock().await;
             let result = model
                 .generate(
                     token_ids,
@@ -185,10 +180,10 @@ async fn chat_completions(
                     created,
                     sampling_params,
                     request.logprobs.unwrap_or(false),
-                    Some((&runtime, &sender)),
+                    Some(&sender),
                 )
+                .await
                 .unwrap();
-            runtime.shutdown_background();
             //chat completion statistics
             let usage = ChatCompletionUsageResponse {
                 completion_tokens: result
@@ -228,15 +223,17 @@ async fn chat_completions(
     }
 
     let result = {
-        let mut model = data.model.lock().unwrap();
-        let model_res = model.generate(
-            token_ids,
-            request_id.clone(),
-            created,
-            sampling_params,
-            request.logprobs.unwrap_or(false),
-            None,
-        );
+        let mut model = data.model.lock().await;
+        let model_res = model
+            .generate(
+                token_ids,
+                request_id.clone(),
+                created,
+                sampling_params,
+                request.logprobs.unwrap_or(false),
+                None,
+            )
+            .await;
         if model_res.is_err() {
             return Either::Left(Err(model_res.err().unwrap()));
         }

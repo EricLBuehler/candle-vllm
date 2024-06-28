@@ -1,5 +1,3 @@
-use std::sync::{Arc, Mutex};
-
 use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::{App, HttpServer};
@@ -14,6 +12,8 @@ use candle_vllm::scheduler::cache_engine::CacheConfig;
 use candle_vllm::scheduler::SchedulerConfig;
 use candle_vllm::{get_model_loader, hub_load_local_safetensors, ModelSelected};
 use clap::Parser;
+use futures::lock::Mutex;
+use std::sync::Arc;
 const SIZE_IN_MB: usize = 1024 * 1024;
 
 #[derive(Parser, Debug)]

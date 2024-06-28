@@ -33,7 +33,7 @@ sudo apt install libssl-dev
 sudo apt install pkg-config
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
-cargo run -- --port 2000 --weight-path /home/llama2_7b/ llama7b --repeat-last-n 64
+cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama7b --repeat-last-n 64
 ```
 
 ### Step 2:
@@ -112,7 +112,7 @@ For general configuration help, run `cargo run -- --help`.
 
 For model-specific help, run `cargo run -- --port 1234 <MODEL NAME> --help`
 
-For local model weights, run `cargo run -- --port 2000 --weight-path /home/llama2_7b/ llama7b --repeat-last-n 64`, change the path when needed.
+For local model weights, run `cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama7b --repeat-last-n 64`, change the path when needed.
 
 For kvcache configuration, set `kvcache_mem_cpu` and `kvcache_mem_gpu`, default 4GB CPU memory and 4GB GPU memory for kvcache. 
 
