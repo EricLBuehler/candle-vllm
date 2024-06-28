@@ -57,11 +57,10 @@ async fn get_gen_prompt(
                     conversation.set_system_message(content);
                 } else {
                     conversation.append_message(role.to_string(), content)
-                } 
+                }
             }
         }
     }
-
 
     Ok(conversation.get_prompt())
 }
