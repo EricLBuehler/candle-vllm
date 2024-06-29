@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex};
-
 use candle_core::Device;
+use futures::lock::Mutex;
+use std::sync::Arc;
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
 
 use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
@@ -8,7 +8,7 @@ use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
 pub mod requests;
 pub mod responses;
 pub mod sampling_params;
-mod streaming;
+pub mod streaming;
 
 pub trait TokenizerWrapper<'s, E>
 where

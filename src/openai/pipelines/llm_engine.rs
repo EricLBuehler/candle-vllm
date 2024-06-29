@@ -4,13 +4,18 @@ use std::{
     sync::Arc,
 };
 
+use crate::openai::streaming::SenderError;
+use actix_web::web::Bytes;
 use either::Either;
+use std::time::Instant;
 use tokenizers::Encoding;
+use tokio::sync::mpsc::Sender;
 
 use crate::{
     openai::{
         responses::{
-            APIError, ChatChoice, ChatChoiceData, ChatCompletionUsageResponse, WrapperLogprobs,
+            APIError, ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionUsageResponse,
+            Choice, ChoiceData, WrapperLogprobs,
         },
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
@@ -79,17 +84,50 @@ impl<'a> LLMEngine<'a> {
         &mut *self.pipeline
     }
 
-    pub fn generate(
+    fn get_stream_response(
+        &mut self,
+        request_id: String,
+        created: u64,
+        content: Option<String>,
+        finish_reason: Option<String>,
+    ) -> String {
+        let mut choices = Vec::new();
+        let choice = Choice {
+            delta: ChoiceData {
+                role: self.pipeline.get_conversation(true).get_roles().0.clone(),
+                content: content,
+            },
+            finish_reason: finish_reason,
+            index: 0,
+        };
+        choices.push(choice);
+
+        let response = ChatCompletionChunk {
+            id: request_id,
+            choices: choices,
+            created: created,
+            model: self.pipeline.name().to_string(),
+            object: "chat.completion.chunk",
+            system_fingerprint: None,
+        };
+
+        format!("data: {}\n\n", serde_json::to_string(&response).unwrap())
+    }
+
+    pub async fn generate(
         &mut self,
         prompt: Encoding,
         request_id: String,
         created: u64,
         sampling_params: SamplingParams,
         use_logprobs: bool,
+        stream: Option<&Sender<Result<Bytes, SenderError>>>,
     ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
-        self.add_request(prompt, request_id, created);
-
+        self.add_request(prompt, request_id.clone(), created);
         let mut responses = HashMap::new();
+        let mut start_time = Instant::now();
+        let mut prompt_time_costs = 1;
+        let mut completion_time_costs = 1;
         while self.scheduler.has_unfinished_sequences() {
             let scheduler_outputs = self.scheduler.schedule();
             if !scheduler_outputs.ignored_seq_groups.is_empty() {
@@ -131,6 +169,7 @@ impl<'a> LLMEngine<'a> {
                     unreachable!();
                 }
             }?;
+            let token_len = tokens.shape().dims()[0];
 
             let logits = self.pipeline.forward(
                 tokens,
@@ -140,12 +179,37 @@ impl<'a> LLMEngine<'a> {
             )?;
             let result = self.pipeline.sample(logits, &sampling_params, &seqs)?;
 
+            if token_len > 1 {
+                let end_time = Instant::now();
+                prompt_time_costs = end_time.duration_since(start_time).as_millis();
+                start_time = Instant::now();
+            }
+
             for (result_, (_, seq)) in zip(result, seqs) {
                 match result_ {
                     Either::Left(logprobs) => {
+                        if let Some(sender) = stream {
+                            let str_response = self.get_stream_response(
+                                request_id.clone(),
+                                created,
+                                Some(logprobs.bytes.clone()),
+                                None,
+                            );
+                            let _ = sender.send(Ok(Bytes::from(str_response))).await;
+                        };
+                        print!("{}", logprobs.bytes.clone());
                         seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
+                        if let Some(sender) = stream {
+                            let str_response = self.get_stream_response(
+                                request_id.clone(),
+                                created,
+                                None,
+                                Some(finish_reason.clone()),
+                            );
+                            let _ = sender.send(Ok(Bytes::from(str_response))).await;
+                        };
                         seq.deref_mut().set_finish_reason(finish_reason)
                     }
                 }
@@ -155,6 +219,8 @@ impl<'a> LLMEngine<'a> {
 
             for group in scheduler_outputs.scheduled.iter() {
                 if group.is_finished() && !responses.contains_key(group.get_id()) {
+                    let end_time = Instant::now();
+                    completion_time_costs = end_time.duration_since(start_time).as_millis();
                     // Create choices from the group
                     let mut seqs = group.get_seqs().values().collect::<Vec<_>>();
                     seqs.sort_by(|seq_a, seq_b| {
@@ -195,24 +261,28 @@ impl<'a> LLMEngine<'a> {
                         choices.push(choice);
                     }
 
+                    let completion_tokens = top_n
+                        .iter()
+                        .map(|seq| seq.deref().get_len() - seq.deref().get_prompt_len())
+                        .sum();
+                    let prompt_tokens = top_n.first().unwrap().deref().get_prompt_len();
+
                     let usage = ChatCompletionUsageResponse {
-                        completion_tokens: top_n
-                            .iter()
-                            .map(|seq| seq.deref().get_len() - seq.deref().get_prompt_len())
-                            .sum(),
-                        prompt_tokens: top_n.first().unwrap().deref().get_prompt_len(),
-                        total_tokens: top_n
-                            .iter()
-                            .map(|seq| seq.deref().get_len() - seq.deref().get_prompt_len())
-                            .sum::<usize>()
-                            + top_n.first().unwrap().deref().get_prompt_len(),
+                        completion_tokens: completion_tokens,
+                        prompt_tokens: prompt_tokens,
+                        total_tokens: completion_tokens + prompt_tokens,
+                        prompt_time_costs: prompt_time_costs as usize,
+                        completion_time_costs: completion_time_costs as usize,
                     };
 
                     responses.insert(*group.get_id(), (choices, usage));
                 }
             }
         }
-
+        if let Some(sender) = stream {
+            let str_response = "data: [DONE]\n\n"; //stream finish flag
+            let _ = sender.send(Ok(Bytes::from(str_response))).await;
+        };
         Ok(responses.into_values().collect::<Vec<_>>())
     }
 }
@@ -286,7 +356,11 @@ impl<'a> LLMEngine<'a> {
                         slot_mapping.push(_PAD_SLOT_ID);
                     }
 
-                    let block_number = table.get(i / self.cache_config.block_size).unwrap();
+                    let block_number = if i / self.cache_config.block_size >= table.len() {
+                        table.get(table.len() - 1).unwrap() //position exceed! use last position
+                    } else {
+                        table.get(i / self.cache_config.block_size).unwrap()
+                    };
                     let block_offset = i % self.cache_config.block_size;
                     let slot = block_number * self.cache_config.block_size + block_offset;
                     slot_mapping.push(slot.try_into().unwrap());
@@ -372,7 +446,11 @@ impl<'a> LLMEngine<'a> {
                     .map(|block| block.deref_mut().block_id)
                     .collect::<Vec<_>>();
 
-                let block_number = table.get(position / self.cache_config.block_size).unwrap();
+                let block_number = if position / self.cache_config.block_size >= table.len() {
+                    table.get(table.len() - 1).unwrap() //position exceed! use last position; TODO (bug fix)
+                } else {
+                    table.get(position / self.cache_config.block_size).unwrap()
+                };
                 let block_offset = position % self.cache_config.block_size;
                 let slot = block_number * self.cache_config.block_size + block_offset;
                 let slot = slot.try_into().unwrap();

@@ -9,29 +9,30 @@ use super::utils::get_created_time_secs;
 use super::OpenAIServerData;
 use actix_web::web::Bytes;
 use actix_web::{post, web, Either, HttpResponse};
+use std::time::{Duration, Instant};
 use tokenizers::Encoding;
 use uuid::Uuid;
 
-fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
-    let current_name = {
-        let model = data.model.lock().unwrap();
-        model.get_pipeline().name().to_string()
-    };
-    if &current_name != model_name {
-        Err(APIError::new(format!(
-            "Model name `{model_name}` is invalid."
-        )))
-    } else {
-        Ok(())
-    }
-}
+// fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
+//     let current_name = {
+//         let model = data.model.lock().unwrap();
+//         model.get_pipeline().name().to_string()
+//     };
+//     if &current_name != model_name {
+//         Err(APIError::new(format!(
+//             "Model name `{model_name}` is invalid."
+//         )))
+//     } else {
+//         Ok(())
+//     }
+// }
 
 // Get prompt, roles
 async fn get_gen_prompt(
     data: &OpenAIServerData<'_>,
     request: &web::Json<ChatCompletionRequest>,
 ) -> Result<String, APIError> {
-    let mut model = data.model.lock().unwrap();
+    let mut model = data.model.lock().await;
     let conversation = model
         .get_mut_pipeline()
         .get_conversation(data.record_conversation);
@@ -54,29 +55,23 @@ async fn get_gen_prompt(
 
                 if role == "system" {
                     conversation.set_system_message(content);
-                } else if role == "user" {
-                    conversation.append_message(conversation.get_roles().0.clone(), content)
-                } else if role == "assistant" {
-                    conversation.append_message(conversation.get_roles().1.clone(), content)
                 } else {
-                    return Err(APIError::new(format!("Unknown role: {role}")));
+                    conversation.append_message(role.to_string(), content)
                 }
             }
         }
     }
 
-    conversation.append_none_message(conversation.get_roles().1.clone());
-
     Ok(conversation.get_prompt())
 }
 
-fn check_length(
+async fn check_length(
     request: &web::Json<ChatCompletionRequest>,
     prompt: String,
     data: &OpenAIServerData<'_>,
 ) -> Result<Encoding, APIError> {
     let token_ids = {
-        let model = data.model.lock().unwrap();
+        let model = data.model.lock().await;
         model
             .get_pipeline()
             .tokenizer()
@@ -113,10 +108,10 @@ async fn chat_completions(
     request: web::Json<ChatCompletionRequest>,
 ) -> Either<Result<web::Json<ChatCompletionResponse>, APIError>, HttpResponse> {
     let model_name = &request.model;
-    let res = verify_model(&data, model_name);
-    if res.is_err() {
-        return Either::Left(Err(res.err().unwrap()));
-    }
+    // let res = verify_model(&data, model_name);
+    // if res.is_err() {
+    //     return Either::Left(Err(res.err().unwrap()));
+    // }
 
     if request.logit_bias.as_ref().is_some()
         && request.logit_bias.as_ref().is_some_and(|x| !x.is_empty())
@@ -130,14 +125,19 @@ async fn chat_completions(
     if prompt.is_err() {
         return Either::Left(Err(prompt.err().unwrap()));
     }
-    let prompt = prompt.unwrap();
-    println!("\n\n\nPrompt {:?}", prompt);
+    let mut prompt = prompt.unwrap();
 
-    let token_ids = check_length(&request, prompt, &data);
+    let token_ids = check_length(&request, prompt.clone(), &data).await;
     if token_ids.is_err() {
         return Either::Left(Err(token_ids.err().unwrap()));
     }
-    let token_ids = token_ids.unwrap();
+    let mut token_ids: Encoding = token_ids.unwrap();
+    if token_ids.len() % 2 == 0 {
+        //padding to avoid block allocation issue
+        prompt += "\n";
+        token_ids = check_length(&request, prompt.clone(), &data).await.unwrap();
+    }
+    println!("\n\n\nPrompt {:?}", prompt);
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
 
@@ -156,7 +156,7 @@ async fn chat_completions(
         request.stop.clone(),
         request.stop_token_ids.clone().unwrap_or_default(),
         request.ignore_eos.unwrap_or(false),
-        request.max_tokens.unwrap_or(16),
+        request.max_tokens.unwrap_or(512),
         None,
         None,
         request.skip_special_tokens.unwrap_or(true),
@@ -170,45 +170,69 @@ async fn chat_completions(
 
     if request.stream.is_some_and(|x| x) {
         let (sender, receiver) = new_streaming_conn();
-        let _ = thread::spawn(move || {
-            let mut model = data.model.lock().unwrap();
-            let model_res = model.generate(
-                token_ids,
-                request_id,
-                created,
-                sampling_params,
-                request.logprobs.unwrap_or(false),
+        let _ = tokio::spawn(async move {
+            let mut model = data.model.lock().await;
+            let result = model
+                .generate(
+                    token_ids,
+                    request_id,
+                    created,
+                    sampling_params,
+                    request.logprobs.unwrap_or(false),
+                    Some(&sender),
+                )
+                .await
+                .unwrap();
+            //chat completion statistics
+            let usage = ChatCompletionUsageResponse {
+                completion_tokens: result
+                    .iter()
+                    .map(|(_, usage)| usage.completion_tokens)
+                    .sum(),
+                prompt_tokens: result.iter().map(|(_, usage)| usage.prompt_tokens).sum(),
+                total_tokens: result.iter().map(|(_, usage)| usage.total_tokens).sum(),
+                prompt_time_costs: result
+                    .iter()
+                    .map(|(_, usage)| usage.prompt_time_costs)
+                    .sum(),
+                completion_time_costs: result
+                    .iter()
+                    .map(|(_, usage)| usage.completion_time_costs)
+                    .sum(),
+            };
+            println!(
+                "\r\n Prefilling: {} prompt tokens processed in {} seconds",
+                usage.prompt_tokens,
+                usage.prompt_time_costs / 1000
             );
-            if model_res.is_err() {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
 
-                // Ignore sending errors
-                let _ = runtime.block_on(sender.send(Ok(Bytes::from(
-                    serde_json::to_vec(&model_res.err().unwrap()).unwrap(),
-                ))));
-            }
+            println!(
+                "\r\n Decoding: {} tokens processed in {} seconds ({} tokens/s)",
+                usage.completion_tokens,
+                usage.completion_time_costs / 1000,
+                usage.completion_tokens * 1000 / usage.completion_time_costs
+            );
         });
 
         return Either::Right(
             HttpResponse::Ok()
                 .append_header(("content-type", "text/event-stream"))
-                //.no_chunking(asdf)
                 .streaming(receiver),
         );
     }
 
     let result = {
-        let mut model = data.model.lock().unwrap();
-        let model_res = model.generate(
-            token_ids,
-            request_id.clone(),
-            created,
-            sampling_params,
-            request.logprobs.unwrap_or(false),
-        );
+        let mut model = data.model.lock().await;
+        let model_res = model
+            .generate(
+                token_ids,
+                request_id.clone(),
+                created,
+                sampling_params,
+                request.logprobs.unwrap_or(false),
+                None,
+            )
+            .await;
         if model_res.is_err() {
             return Either::Left(Err(model_res.err().unwrap()));
         }
@@ -226,6 +250,14 @@ async fn chat_completions(
             .sum(),
         prompt_tokens: result.iter().map(|(_, usage)| usage.prompt_tokens).sum(),
         total_tokens: result.iter().map(|(_, usage)| usage.total_tokens).sum(),
+        prompt_time_costs: result
+            .iter()
+            .map(|(_, usage)| usage.prompt_time_costs)
+            .sum(),
+        completion_time_costs: result
+            .iter()
+            .map(|(_, usage)| usage.completion_time_costs)
+            .sum(),
     };
 
     Either::Left(Ok(web::Json(ChatCompletionResponse {

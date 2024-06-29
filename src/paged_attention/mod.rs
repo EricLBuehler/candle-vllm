@@ -92,9 +92,9 @@ impl PagedAttention {
         };
 
         // // paged-attn expects (b_sz, seq_len, nheads, head_dim)
-        let query = query.transpose(1, 2)?.contiguous()?;
-        let key = key.transpose(1, 2)?.contiguous()?;
-        let value = value.transpose(1, 2)?.contiguous()?;
+        let query = query.transpose(1, 2)?;
+        let key = key.transpose(1, 2)?;
+        let value = value.transpose(1, 2)?;
 
         //format [batch_size, num_tokens, num_heads, head_size]
         let (batch_size, seq_len, attention_heads, head_size) = query.shape().dims4()?;
