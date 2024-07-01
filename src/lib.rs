@@ -3,7 +3,7 @@ use candle::Result;
 use candle_core as candle;
 use clap::Subcommand;
 use openai::pipelines::{
-    llama::{LlamaLoader, LlamaSpecificConfig},
+    pipeline::{DefaultLoader, SpecificConfig},
     ModelLoader,
 };
 
@@ -29,6 +29,13 @@ pub enum ModelSelected {
         #[arg(long)]
         repeat_last_n: usize,
     },
+
+    /// Select the phi3 3.8b model.
+    Phi3 {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: usize,
+    },
 }
 
 impl ToString for ModelSelected {
@@ -37,6 +44,7 @@ impl ToString for ModelSelected {
             ModelSelected::Llama7b { repeat_last_n: _ } => "llama7b".to_string(),
             ModelSelected::Llama13b { repeat_last_n: _ } => "llama13b".to_string(),
             ModelSelected::Llama70b { repeat_last_n: _ } => "llama70b".to_string(),
+            ModelSelected::Phi3 { repeat_last_n: _ } => "phi3".to_string(),
         }
     }
 }
@@ -44,25 +52,32 @@ impl ToString for ModelSelected {
 pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoader<'a>>, String) {
     match selected_model {
         ModelSelected::Llama7b { repeat_last_n } => (
-            Box::new(LlamaLoader::new(
-                LlamaSpecificConfig::new(repeat_last_n),
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(repeat_last_n),
                 "llama7b".to_string(),
             )),
             "meta-llama/Llama-2-7b-chat-hf".to_string(),
         ),
         ModelSelected::Llama13b { repeat_last_n } => (
-            Box::new(LlamaLoader::new(
-                LlamaSpecificConfig::new(repeat_last_n),
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(repeat_last_n),
                 "llama13b".to_string(),
             )),
             "meta-llama/Llama-2-13b-chat-hf".to_string(),
         ),
         ModelSelected::Llama70b { repeat_last_n } => (
-            Box::new(LlamaLoader::new(
-                LlamaSpecificConfig::new(repeat_last_n),
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(repeat_last_n),
                 "llama70b".to_string(),
             )),
             "meta-llama/Llama-2-70b-chat-hf".to_string(),
+        ),
+        ModelSelected::Phi3 { repeat_last_n } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(repeat_last_n),
+                "phi3".to_string(),
+            )),
+            "microsoft/Phi-3-mini-4k-instruct".to_string(),
         ),
     }
 }

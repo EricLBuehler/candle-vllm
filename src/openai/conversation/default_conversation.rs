@@ -17,6 +17,7 @@ pub enum SeparatorStyle {
     NoColonTwo,
     AddNewLineSingle,
     Llama2,
+    Phi,
     ChatGLM,
     ChatML,
     ChatIntern,
@@ -234,6 +235,29 @@ impl Conversation for DefaultConversation {
                         //assistant message
                         if let Some(message) = message {
                             accum += &format!("{message} \n");
+                        }
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
+                    }
+                }
+                accum
+            }
+
+            SeparatorStyle::Phi => {
+                let mut accum = "".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    let Message((_role, message)) = message;
+                    if _role.clone() == self.roles.0 {
+                        //user message
+                        if let Some(message) = message {
+                            accum += &format!("<|user|> {message}<|end|>");
+                        } else {
+                            accum += &format!("<|user|> <|end|");
+                        }
+                    } else if _role.clone() == self.roles.1 {
+                        //assistant message
+                        if let Some(message) = message {
+                            accum += &format!("<|assistant|>{message}<|end|>");
                         }
                     } else if i == 0 && !system_prompt.is_empty() {
                         accum += &system_prompt;
