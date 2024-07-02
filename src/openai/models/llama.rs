@@ -1,4 +1,4 @@
-use super::ConfigLike;
+use super::Config;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
@@ -23,35 +23,8 @@ pub struct LlamaConfig {
     pub eos_token_id: Option<u32>,
 }
 
-impl LlamaConfig {
-    pub fn num_key_value_heads(&self) -> usize {
-        self.num_key_value_heads.unwrap_or(self.num_attention_heads)
-    }
-}
-
 fn default_rope() -> f32 {
     10_000.0
-}
-
-impl ConfigLike for LlamaConfig {
-    fn get_num_kv_heads(&self) -> usize {
-        self.num_key_value_heads.unwrap_or(self.num_attention_heads)
-    }
-    fn get_hidden_size(&self) -> usize {
-        self.hidden_size
-    }
-    fn get_num_hidden_layers(&self) -> usize {
-        self.num_hidden_layers
-    }
-    fn get_num_attention_heads(&self) -> usize {
-        self.num_attention_heads
-    }
-    fn get_vocab_size(&self) -> usize {
-        self.vocab_size
-    }
-    fn get_sliding_window(&self) -> Option<usize> {
-        None
-    }
 }
 
 impl LlamaConfig {
@@ -68,77 +41,10 @@ impl LlamaConfig {
             use_flash_attn,
             bos_token_id: self.bos_token_id,
             eos_token_id: self.eos_token_id,
+            max_seq_len: MAX_SEQ_LEN,
+            sliding_window: None,
+            hidden_act: None,
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Config {
-    pub hidden_size: usize,
-    pub intermediate_size: usize,
-    pub vocab_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: usize,
-    pub use_flash_attn: bool,
-    pub rms_norm_eps: f64,
-    pub rope_theta: f32,
-    pub bos_token_id: Option<u32>,
-    pub eos_token_id: Option<u32>,
-}
-
-impl Config {
-    pub fn config_7b_v1(use_flash_attn: bool) -> Self {
-        Self {
-            hidden_size: 4096,
-            intermediate_size: 11008,
-            vocab_size: 32000,
-            num_hidden_layers: 32,
-            num_attention_heads: 32,
-            num_key_value_heads: 32,
-            use_flash_attn,
-            rms_norm_eps: 1e-6,
-            rope_theta: 10_000.0,
-            bos_token_id: None,
-            eos_token_id: None,
-        }
-    }
-
-    pub fn config_7b_v2(use_flash_attn: bool) -> Self {
-        Self {
-            hidden_size: 4096,
-            intermediate_size: 11008,
-            vocab_size: 32000,
-            num_hidden_layers: 32,
-            num_attention_heads: 32,
-            num_key_value_heads: 32,
-            use_flash_attn,
-            rms_norm_eps: 1e-5,
-            rope_theta: 10_000.0,
-            bos_token_id: None,
-            eos_token_id: None,
-        }
-    }
-}
-
-impl ConfigLike for Config {
-    fn get_num_kv_heads(&self) -> usize {
-        self.num_key_value_heads
-    }
-    fn get_hidden_size(&self) -> usize {
-        self.hidden_size
-    }
-    fn get_num_hidden_layers(&self) -> usize {
-        self.num_hidden_layers
-    }
-    fn get_num_attention_heads(&self) -> usize {
-        self.num_attention_heads
-    }
-    fn get_vocab_size(&self) -> usize {
-        self.vocab_size
-    }
-    fn get_sliding_window(&self) -> Option<usize> {
-        None
     }
 }
 
@@ -159,9 +65,9 @@ impl Cache {
             .map(|i| 1f32 / config.rope_theta.powf(i as f32 / n_elem as f32))
             .collect();
         let theta = Tensor::new(theta.as_slice(), device)?;
-        let idx_theta = Tensor::arange(0, MAX_SEQ_LEN as u32, device)?
+        let idx_theta = Tensor::arange(0, config.max_seq_len as u32, device)?
             .to_dtype(DType::F32)?
-            .reshape((MAX_SEQ_LEN, 1))?
+            .reshape((config.max_seq_len, 1))?
             .matmul(&theta.reshape((1, theta.elem_count()))?)?;
         let cos = idx_theta.cos()?.to_dtype(dtype)?;
         let sin = idx_theta.sin()?.to_dtype(dtype)?;

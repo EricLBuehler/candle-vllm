@@ -64,7 +64,7 @@ impl<'a> LLMEngine<'a> {
             pipeline.get_dtype(),
             &pipeline.device(),
         )?;
-        let sliding_window = pipeline.get_model_config().get_sliding_window();
+        let sliding_window = pipeline.get_model_config().sliding_window;
         Ok(Self {
             pipeline,
             scheduler: Scheduler::new(scheduler_config, &cache_config),
@@ -344,7 +344,11 @@ impl<'a> LLMEngine<'a> {
                     .collect::<Vec<_>>();
 
                 let start_idx = if let Some(sliding_window) = self.sliding_window {
-                    0.min(prompt_len - sliding_window)
+                    if prompt_len > sliding_window {
+                        0.min(prompt_len - sliding_window)
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 };
@@ -458,12 +462,12 @@ impl<'a> LLMEngine<'a> {
 
                 if let Some(sliding_window) = self.sliding_window {
                     let sliding_window_blocks = sliding_window / self.cache_config.block_size;
-                    block_tables.push(
-                        table
-                            .get(table.len() - sliding_window_blocks..)
-                            .unwrap()
-                            .to_vec(),
-                    );
+                    let slide_idx = if table.len() > sliding_window_blocks {
+                        table.len() - sliding_window_blocks
+                    } else {
+                        0
+                    };
+                    block_tables.push(table.get(slide_idx..).unwrap().to_vec());
                 } else {
                     block_tables.push(table);
                 }
