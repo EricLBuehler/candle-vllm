@@ -134,7 +134,13 @@ async fn chat_completions(
     let mut token_ids: Encoding = token_ids.unwrap();
     if token_ids.len() % 2 == 0 {
         //padding to avoid block allocation issue
-        token_ids.pad(token_ids.len() + 1, 0, 0, "\n", tokenizers::PaddingDirection::Right);
+        token_ids.pad(
+            token_ids.len() + 1,
+            0,
+            0,
+            "\n",
+            tokenizers::PaddingDirection::Right,
+        );
     }
     println!("\n\n\nPrompt {:?}", prompt);
 
