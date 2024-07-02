@@ -13,11 +13,25 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Efficient management of key-value cache with PagedAttention.
 - Continuous batching.
 
-### Pipelines
-- Llama
-    - 7b
-    - 13b
-    - 70b
+## Develop Status
+
+Currently, candle-vllm supports chat serving for the following models.
+
+| Model ID | Model Type | Supported | Speed (A100, BF16)
+|--|--|--|--|
+| #1 | **LLAMA/LLAMA2/LLaMa3** |✅|71 tks/s (7B)|
+| #2 | Mistral |TBD|TBD|
+| #3 | Phi (v1, v1.5, v2) |TBD|TBD|
+| #4 | **Phi-3 （3.8B, 7B）** |✅|99 tks/s (3.8B)|
+| #5 | Yi |TBD|TBD|
+| #6 | StableLM |TBD|TBD|
+| #7 | BigCode/StarCode |TBD|TBD|
+| #8 | ChatGLM |TBD|TBD|
+| #9 | QWen |TBD|TBD|
+| #10 | Google Gemma |TBD|TBD|
+| #11 | Blip-large (Multimodal) |TBD|TBD|
+| #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|
+
 
 ## Demo Chat with candle-vllm (71 tokens/s, LLaMa2 7B, bf16, on A100)
 <img src="./res/candle-vllm-demo.gif" width="90%" height="90%" >
