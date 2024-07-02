@@ -125,7 +125,7 @@ async fn chat_completions(
     if prompt.is_err() {
         return Either::Left(Err(prompt.err().unwrap()));
     }
-    let mut prompt = prompt.unwrap();
+    let prompt = prompt.unwrap();
 
     let token_ids = check_length(&request, prompt.clone(), &data).await;
     if token_ids.is_err() {
@@ -134,8 +134,7 @@ async fn chat_completions(
     let mut token_ids: Encoding = token_ids.unwrap();
     if token_ids.len() % 2 == 0 {
         //padding to avoid block allocation issue
-        prompt += "\n";
-        token_ids = check_length(&request, prompt.clone(), &data).await.unwrap();
+        token_ids.pad(token_ids.len() + 1, 0, 0, "\n", tokenizers::PaddingDirection::Right);
     }
     println!("\n\n\nPrompt {:?}", prompt);
 
