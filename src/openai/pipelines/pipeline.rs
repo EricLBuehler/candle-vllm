@@ -9,8 +9,9 @@ use crate::{
             Conversation,
         },
         models::{
-            llama::{Cache, Config, Llama, LlamaConfig},
-            ConfigLike,
+            llama::{Cache, Llama, LlamaConfig},
+            phi3::{Phi, PhiConfig},
+            Config,
         },
         requests::StopTokens,
         responses::APIError,
@@ -34,20 +35,24 @@ const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
 
 #[derive(Debug, Clone)]
-pub struct LlamaSpecificConfig {
+pub struct SpecificConfig {
     repeat_last_n: usize,
 }
 
-impl LlamaSpecificConfig {
+impl SpecificConfig {
     pub fn new(repeat_last_n: usize) -> Self {
         Self { repeat_last_n }
     }
 }
 
+enum LLMModel {
+    LLAMA(Llama),
+    Phi3(Phi),
+}
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
-pub struct LlamaPipeline {
-    llama: Llama,
-    args: LlamaSpecificConfig,
+pub struct DefaultPipeline {
+    model: LLMModel,
+    args: SpecificConfig,
     tokenizer: TokenOutputStream,
     logits_processor: LogitsProcessor,
     conversation: DefaultConversation,
@@ -58,18 +63,18 @@ pub struct LlamaPipeline {
     config: Config,
 }
 
-pub struct LlamaLoader {
-    config: LlamaSpecificConfig,
+pub struct DefaultLoader {
+    config: SpecificConfig,
     name: String,
 }
 
-pub struct LlamaModelPaths<P> {
+pub struct DefaultModelPaths<P> {
     pub tokenizer_filename: P,
     pub config_filename: P,
     pub filenames: Vec<P>,
 }
 
-impl ModelPaths for LlamaModelPaths<PathBuf> {
+impl ModelPaths for DefaultModelPaths<PathBuf> {
     fn get_config_filename(&self) -> &PathBuf {
         &self.config_filename
     }
@@ -81,13 +86,13 @@ impl ModelPaths for LlamaModelPaths<PathBuf> {
     }
 }
 
-impl LlamaLoader {
-    pub fn new(config: LlamaSpecificConfig, name: String) -> Self {
+impl DefaultLoader {
+    pub fn new(config: SpecificConfig, name: String) -> Self {
         Self { config, name }
     }
 }
 
-impl<'a> ModelLoader<'a> for LlamaLoader {
+impl<'a> ModelLoader<'a> for DefaultLoader {
     fn download_model(
         &self,
         model_id: String,
@@ -117,7 +122,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
             filenames.push(filename);
         }
 
-        Ok(Box::new(LlamaModelPaths {
+        Ok(Box::new(DefaultModelPaths {
             tokenizer_filename,
             config_filename,
             filenames,
@@ -132,10 +137,21 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
         let args = self.config.clone();
 
-        let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
-            paths.get_config_filename()
-        )),));
-        let config = config.into_config(false);
+        let config = match self.name.as_str() {
+            "llama7b" | "llama13b" | "llama70b" => {
+                let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
+                    std::fs::read(paths.get_config_filename())
+                ),));
+                config.into_config(false)
+            }
+            "phi3" => {
+                let config: PhiConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
+                    paths.get_config_filename()
+                )),));
+                config.into_config(false)
+            }
+            _ => panic!(""),
+        };
 
         println!("Loading {} model.", self.name);
 
@@ -146,7 +162,17 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
             _ => panic!("Load model weights failed!"),
         };
 
-        let llama = try_api!(Llama::load(vb, &config, dtype, &device));
+        let (model, sep_style) = match self.name.as_str() {
+            "llama7b" | "llama13b" | "llama70b" => (
+                LLMModel::LLAMA(try_api!(Llama::load(vb, &config, dtype, &device))),
+                SeparatorStyle::Llama2,
+            ),
+            "phi3" => (
+                LLMModel::Phi3(try_api!(Phi::new(vb, &config, dtype, &device))),
+                SeparatorStyle::Phi,
+            ),
+            _ => panic!(""),
+        };
 
         let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
             .map_err(|x| APIError::new(x.to_string()))?;
@@ -163,17 +189,17 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
         //reference: https://huggingface.co/blog/codellama#conversational-instructions,
         //reference: https://github.com/facebookresearch/llama/blob/1a240688810f8036049e8da36b073f63d2ac552c/llama/generation.py#L212
         Ok((
-            Box::new(LlamaPipeline {
-                llama,
+            Box::new(DefaultPipeline {
+                model,
                 args,
                 tokenizer,
                 logits_processor: LogitsProcessor::new(SAMPLING_SEED, None, None),
                 conversation: DefaultConversation::new(
-                    "llama-2".to_string(),
-                    "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST] ".to_string(),
+                    self.name.to_string(),
+                    "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string(),
                     Vec::default(),
                     0,
-                    SeparatorStyle::Llama2,
+                    sep_style,
                     "".to_string(),
                     Vec::default(),
                     ("user".to_string(), "assistant".to_string()),
@@ -193,7 +219,7 @@ impl<'a> ModelLoader<'a> for LlamaLoader {
     }
 }
 
-impl<'s> ModulePipeline<'s> for LlamaPipeline {
+impl<'s> ModulePipeline<'s> for DefaultPipeline {
     fn forward(
         &mut self,
         input_tokens: Tensor,
@@ -205,18 +231,30 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         if length > 1 {
             self.cur_idx = 0;
         }
+        let ret = match &mut self.model {
+            LLMModel::LLAMA(llama) => llama
+                .forward(
+                    &input_tokens
+                        .reshape((1, input_tokens.shape().dims()[0]))
+                        .unwrap(),
+                    self.cur_idx,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
+            LLMModel::Phi3(phi) => phi
+                .forward(
+                    &input_tokens
+                        .reshape((1, input_tokens.shape().dims()[0]))
+                        .unwrap(),
+                    self.cur_idx,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
+            _ => panic!("Not supported model!"),
+        };
 
-        let ret = self
-            .llama
-            .forward(
-                &input_tokens
-                    .reshape((1, input_tokens.shape().dims()[0]))
-                    .unwrap(),
-                self.cur_idx,
-                kv_cache,
-                &mut input_metadata,
-            )
-            .map_err(APIError::from);
         self.cur_idx += length;
         return ret;
     }
@@ -307,8 +345,12 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
         &mut self.conversation
     }
 
-    fn get_model_config(&self) -> Box<dyn ConfigLike> {
-        Box::new(self.llama.get_config().clone())
+    fn get_model_config(&self) -> Config {
+        match &self.model {
+            LLMModel::LLAMA(llama) => llama.get_config().clone(),
+            LLMModel::Phi3(phi) => phi.get_config().clone(),
+            _ => panic!("Not supported model!"),
+        }
     }
 
     fn get_dtype(&self) -> DType {
@@ -320,5 +362,5 @@ impl<'s> ModulePipeline<'s> for LlamaPipeline {
     }
 }
 
-unsafe impl Send for LlamaPipeline {}
-unsafe impl Sync for LlamaPipeline {}
+unsafe impl Send for DefaultPipeline {}
+unsafe impl Sync for DefaultPipeline {}

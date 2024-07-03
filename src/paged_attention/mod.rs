@@ -86,7 +86,7 @@ impl PagedAttention {
             Some(mask) => {
                 let att = (query.matmul(&key.t()?)? * self.scale as f64)?;
                 let att = att.broadcast_add(mask)?;
-                let att = candle_nn::ops::softmax(&att, D::Minus1)?;
+                let att = candle_nn::ops::softmax_last_dim(&att)?;
                 Some(att.matmul(&value)?)
             }
         };

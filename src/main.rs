@@ -4,8 +4,8 @@ use actix_web::{App, HttpServer};
 use candle_core::{DType, Device};
 use candle_examples;
 use candle_vllm::openai::openai_server::chat_completions;
-use candle_vllm::openai::pipelines::llama::LlamaModelPaths;
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
+use candle_vllm::openai::pipelines::pipeline::DefaultModelPaths;
 use candle_vllm::openai::responses::APIError;
 use candle_vllm::openai::OpenAIServerData;
 use candle_vllm::scheduler::cache_engine::CacheConfig;
@@ -77,7 +77,7 @@ async fn main() -> Result<(), APIError> {
     let (loader, model_id) = get_model_loader(args.command);
 
     let paths = match &args.weight_path {
-        Some(path) => Box::new(LlamaModelPaths {
+        Some(path) => Box::new(DefaultModelPaths {
             tokenizer_filename: (path.to_owned() + "tokenizer.json").into(),
             config_filename: (path.to_owned() + "config.json").into(),
             filenames: hub_load_local_safetensors(path, "model.safetensors.index.json").unwrap(),
@@ -100,16 +100,16 @@ async fn main() -> Result<(), APIError> {
     let num_gpu_blocks = args.kvcache_mem_gpu * SIZE_IN_MB
         / dsize
         / args.block_size
-        / config.get_num_kv_heads()
+        / config.num_key_value_heads
         / config.get_head_size()
-        / config.get_num_hidden_layers()
+        / config.num_hidden_layers
         / 2;
     let num_cpu_blocks = args.kvcache_mem_cpu * SIZE_IN_MB
         / dsize
         / args.block_size
-        / config.get_num_kv_heads()
+        / config.num_key_value_heads
         / config.get_head_size()
-        / config.get_num_hidden_layers()
+        / config.num_hidden_layers
         / 2;
     let cache_config = CacheConfig {
         block_size: args.block_size,

@@ -1,8 +1,3 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
-
 use actix_web::{http::header::ContentType, test, web::Data, App};
 use candle_core::{DType, Device};
 use candle_vllm::{
@@ -14,6 +9,8 @@ use candle_vllm::{
     scheduler::{cache_engine::CacheConfig, SchedulerConfig},
     ModelSelected,
 };
+use futures::lock::Mutex;
+use std::{collections::HashMap, sync::Arc};
 
 #[actix_web::test]
 async fn test_llama() -> Result<(), APIError> {
@@ -40,6 +37,7 @@ async fn test_llama() -> Result<(), APIError> {
         pipeline_config: model.1,
         model: Arc::new(Mutex::new(llm_engine)),
         device: Device::Cpu,
+        record_conversation: false,
     };
 
     let app = test::init_service(
@@ -84,6 +82,7 @@ async fn test_llama() -> Result<(), APIError> {
             skip_special_tokens: None,
             ignore_eos: None,
             stop_token_ids: None,
+            logprobs: None,
         })
         .to_request();
 

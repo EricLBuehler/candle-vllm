@@ -7,7 +7,7 @@ use candle_core::{DType, Device, Tensor};
 
 use crate::{
     backend::{copy_blocks, swap_blocks},
-    openai::{models::ConfigLike, responses::APIError},
+    openai::{models::Config, responses::APIError},
     try_api,
 };
 
@@ -44,20 +44,20 @@ pub struct CacheEngine {
 
 impl CacheEngine {
     pub fn new(
-        model_config: Box<dyn ConfigLike>,
+        model_config: Config,
         cache_config: CacheConfig,
         dtype: DType,
         device: &Device,
     ) -> Result<Self, APIError> {
         Ok(Self {
             gpu_cache: Arc::new(Mutex::new(Self::allocate_gpu_cache(
-                &*model_config,
+                &model_config,
                 &cache_config,
                 dtype,
                 device,
             )?)),
-            cpu_cache: Self::allocate_cpu_cache(&*model_config, &cache_config, dtype, device)?,
-            num_layers: model_config.get_num_hidden_layers(),
+            cpu_cache: Self::allocate_cpu_cache(&model_config, &cache_config, dtype, device)?,
+            num_layers: model_config.num_hidden_layers,
         })
     }
 
@@ -70,7 +70,7 @@ impl CacheEngine {
     }
 
     fn allocate_gpu_cache(
-        model_config: &dyn ConfigLike,
+        model_config: &Config,
         cache_config: &CacheConfig,
         dtype: DType,
         device: &Device,
@@ -82,7 +82,7 @@ impl CacheEngine {
         let value_block_shape =
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut gpu_cache = Vec::new();
-        for _ in 0..model_config.get_num_hidden_layers() {
+        for _ in 0..model_config.num_hidden_layers {
             let key_blocks = try_api!(Tensor::zeros(
                 (
                     cache_config.num_gpu_blocks.unwrap(),
@@ -110,7 +110,7 @@ impl CacheEngine {
     }
 
     fn allocate_cpu_cache(
-        model_config: &dyn ConfigLike,
+        model_config: &Config,
         cache_config: &CacheConfig,
         dtype: DType,
         device: &Device,
@@ -122,7 +122,7 @@ impl CacheEngine {
         let value_block_shape =
             Self::calculate_value_block_shape(model_config, cache_config.block_size);
         let mut cpu_cache = Vec::new();
-        for _ in 0..model_config.get_num_hidden_layers() {
+        for _ in 0..model_config.num_hidden_layers {
             let key_blocks = try_api!(Tensor::zeros(
                 (
                     cache_config.num_cpu_blocks.unwrap(),
@@ -152,27 +152,27 @@ impl CacheEngine {
 
 impl CacheEngine {
     fn calculate_key_block_shape(
-        model_config: &dyn ConfigLike,
+        model_config: &Config,
         dtype: DType,
         block_size: usize,
     ) -> (usize, usize, usize, usize) {
         let element_size = dtype.size_in_bytes();
         let x = 16 / element_size;
         (
-            model_config.get_num_kv_heads(),
-            model_config.get_head_size() / x,
+            model_config.num_key_value_heads,
+            model_config.hidden_size / model_config.num_attention_heads / x,
             block_size,
             x,
         )
     }
 
     fn calculate_value_block_shape(
-        model_config: &dyn ConfigLike,
+        model_config: &Config,
         block_size: usize,
     ) -> (usize, usize, usize) {
         (
-            model_config.get_num_kv_heads(),
-            model_config.get_head_size(),
+            model_config.num_key_value_heads,
+            model_config.hidden_size / model_config.num_attention_heads,
             block_size,
         )
     }
