@@ -23,7 +23,7 @@ pub enum ModelSelected {
         repeat_last_n: usize,
     },
 
-    /// Select the qwen model (default 1.5b).
+    /// Select the qwen model (default 1.8b).
     Qwen2 {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
@@ -76,7 +76,7 @@ pub fn get_model_loader<'a>(
             if model_id.is_some() {
                 model_id.unwrap()
             } else {
-                "Qwen/Qwen2-1.5B-Instruct".to_string()
+                "Qwen/Qwen1.5-1.8B-Chat".to_string()
             },
         ),
     }
