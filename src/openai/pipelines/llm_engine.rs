@@ -195,7 +195,11 @@ impl<'a> LLMEngine<'a> {
                                 Some(logprobs.bytes.clone()),
                                 None,
                             );
-                            let _ = sender.send(Ok(Bytes::from(str_response))).await;
+                            if token_len > 1 {
+                                //do not send the first generated token in prompt stage
+                            } else {
+                                let _ = sender.send(Ok(Bytes::from(str_response))).await;
+                            }
                         };
                         print!("{}", logprobs.bytes.clone());
                         seq.deref_mut().add_token(logprobs);

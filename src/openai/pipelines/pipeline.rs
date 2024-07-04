@@ -11,6 +11,7 @@ use crate::{
         models::{
             llama::{Cache, Llama, LlamaConfig},
             phi3::{Phi, PhiConfig},
+            qwen2::{Qwen2, QwenConfig},
             Config,
         },
         requests::StopTokens,
@@ -28,9 +29,9 @@ use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
+use std::io::Write;
 use std::{iter::zip, path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
-
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
 
@@ -48,6 +49,7 @@ impl SpecificConfig {
 enum LLMModel {
     LLAMA(Llama),
     Phi3(Phi),
+    Qwen2(Qwen2),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -61,6 +63,7 @@ pub struct DefaultPipeline {
     device: Device,
     cur_idx: usize,
     config: Config,
+    stop_token_id: u32,
 }
 
 pub struct DefaultLoader {
@@ -138,7 +141,7 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         let args = self.config.clone();
 
         let config = match self.name.as_str() {
-            "llama7b" | "llama13b" | "llama70b" => {
+            "llama" => {
                 let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
                 ),));
@@ -148,6 +151,12 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                 let config: PhiConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
                     paths.get_config_filename()
                 )),));
+                config.into_config(false)
+            }
+            "qwen2" => {
+                let config: QwenConfig = try_api!(serde_json::from_slice(&try_api!(
+                    std::fs::read(paths.get_config_filename())
+                ),));
                 config.into_config(false)
             }
             _ => panic!(""),
@@ -163,13 +172,17 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         };
 
         let (model, sep_style) = match self.name.as_str() {
-            "llama7b" | "llama13b" | "llama70b" => (
+            "llama" => (
                 LLMModel::LLAMA(try_api!(Llama::load(vb, &config, dtype, &device))),
-                SeparatorStyle::Llama2,
+                SeparatorStyle::Llama,
             ),
             "phi3" => (
                 LLMModel::Phi3(try_api!(Phi::new(vb, &config, dtype, &device))),
                 SeparatorStyle::Phi,
+            ),
+            "qwen2" => (
+                LLMModel::Qwen2(try_api!(Qwen2::new(vb, &config, dtype, &device))),
+                SeparatorStyle::Qwen2,
             ),
             _ => panic!(""),
         };
@@ -184,6 +197,11 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         //max is https://huggingface.co/docs/transformers/model_doc/llama2#transformers.LlamaConfig.max_position_embeddings
         let pipeline_config = PipelineConfig {
             max_model_len: 4096,
+        };
+
+        let eos_token = match tokenizer.get_token("<|endoftext|>") {
+            Some(token) => token,
+            None => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap(),
         };
 
         //reference: https://huggingface.co/blog/codellama#conversational-instructions,
@@ -201,7 +219,7 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                     0,
                     sep_style,
                     "".to_string(),
-                    Vec::default(),
+                    vec![eos_token as usize],
                     ("user".to_string(), "assistant".to_string()),
                     DefaultConversationSeparators {
                         sep: " ".to_string(),
@@ -213,6 +231,7 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                 device: device.clone(),
                 cur_idx: 0,
                 config: config,
+                stop_token_id: eos_token,
             }),
             pipeline_config,
         ))
@@ -252,6 +271,16 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
+            LLMModel::Qwen2(qwen2) => qwen2
+                .forward(
+                    &input_tokens
+                        .reshape((1, input_tokens.shape().dims()[0]))
+                        .unwrap(),
+                    self.cur_idx,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
             _ => panic!("Not supported model!"),
         };
 
@@ -268,15 +297,7 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
         let eos_token_id = self
             .config
             .eos_token_id
-            .or_else(|| self.tokenizer().tokenizer().token_to_id(EOS_TOKEN));
-        let stop_tokens = match sampling_params.stop.clone() {
-            Some(stop) => match stop {
-                StopTokens::Multi(multi) => multi,
-                StopTokens::Single(single) => vec![single],
-            },
-
-            None => vec![],
-        };
+            .or_else(|| Some(self.stop_token_id));
 
         let n_seqs = logits.dims()[0];
 
@@ -308,7 +329,8 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
             };
 
             let next_token = try_api!(self.logits_processor.sample(&logits));
-            if Some(next_token) == eos_token_id {
+            //the first token (after prompt may be eos token)
+            if Some(next_token) == eos_token_id && tokens_generated > 1 {
                 result.push(Right("stop".to_string()));
                 break;
             }
@@ -349,6 +371,7 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
         match &self.model {
             LLMModel::LLAMA(llama) => llama.get_config().clone(),
             LLMModel::Phi3(phi) => phi.get_config().clone(),
+            LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),
             _ => panic!("Not supported model!"),
         }
     }

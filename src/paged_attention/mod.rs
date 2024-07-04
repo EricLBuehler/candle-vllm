@@ -91,17 +91,28 @@ impl PagedAttention {
             }
         };
 
-        // // paged-attn expects (b_sz, seq_len, nheads, head_dim)
-        let query = query.transpose(1, 2)?;
-        let key = key.transpose(1, 2)?;
-        let value = value.transpose(1, 2)?;
+        let (batch_size, attention_heads, seq_len, head_size) = query.shape().dims4()?;
+        let (_, key_value_heads, _, _) = key.shape().dims4()?;
 
-        //format [batch_size, num_tokens, num_heads, head_size]
-        let (batch_size, seq_len, attention_heads, head_size) = query.shape().dims4()?;
-        let (_, _, key_value_heads, _) = key.shape().dims4()?;
-        let query = query.reshape(((), attention_heads, head_size))?;
-        let key = key.reshape(((), key_value_heads, head_size))?;
-        let value = value.reshape(((), key_value_heads, head_size))?;
+        // // paged-attn expects [batch_size, num_tokens, num_heads, head_size]
+        let (query, key, value) = if seq_len > 1 {
+            let q = query
+                .transpose(1, 2)?
+                .reshape(((), attention_heads, head_size))?;
+            let k = key
+                .transpose(1, 2)?
+                .reshape(((), attention_heads, head_size))?;
+            let v = value
+                .transpose(1, 2)?
+                .reshape(((), attention_heads, head_size))?;
+            (q, k, v)
+        } else {
+            //avoid unneccesary transpose for decoding
+            let q = query.reshape(((), attention_heads, head_size))?;
+            let k = key.reshape(((), key_value_heads, head_size))?;
+            let v = value.reshape(((), key_value_heads, head_size))?;
+            (q, k, v)
+        };
 
         // key: Tensor,              // [num_tokens, num_heads, head_size]
         // value: Tensor,            // [num_tokens, num_heads, head_size]

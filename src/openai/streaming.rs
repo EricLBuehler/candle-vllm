@@ -7,7 +7,7 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 pub(crate) type SenderError = Arc<dyn Error + Send + Sync>;
 
 pub(crate) fn new_streaming_conn() -> (Sender<Result<Bytes, SenderError>>, Client) {
-    let (tx, rx) = channel(5);
+    let (tx, rx) = channel(1);
     (tx, Client(rx))
 }
 

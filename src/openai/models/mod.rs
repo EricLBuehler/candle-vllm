@@ -1,5 +1,6 @@
 pub mod llama;
 pub mod phi3;
+pub mod qwen2;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -11,12 +12,13 @@ pub struct Config {
     pub num_key_value_heads: usize,
     pub use_flash_attn: bool,
     pub rms_norm_eps: f64,
-    pub rope_theta: f32,
+    pub rope_theta: f64,
     pub bos_token_id: Option<u32>,
     pub eos_token_id: Option<u32>,
     pub max_seq_len: usize,
     pub sliding_window: Option<usize>,
     pub hidden_act: Option<candle_nn::Activation>,
+    pub tie_word_embeddings: bool,
 }
 
 impl Config {

@@ -16,8 +16,9 @@ pub enum SeparatorStyle {
     NoColonSingle,
     NoColonTwo,
     AddNewLineSingle,
-    Llama2,
+    Llama,
     Phi,
+    Qwen2,
     ChatGLM,
     ChatML,
     ChatIntern,
@@ -220,7 +221,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeparatorStyle::Llama2 => {
+            SeparatorStyle::Llama => {
                 let mut accum = "".to_string();
                 for (i, message) in self.messages.iter().enumerate() {
                     let Message((_role, message)) = message;
@@ -258,6 +259,29 @@ impl Conversation for DefaultConversation {
                         //assistant message
                         if let Some(message) = message {
                             accum += &format!("<|assistant|>{message}<|end|>");
+                        }
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
+                    }
+                }
+                accum
+            }
+
+            SeparatorStyle::Qwen2 => {
+                let mut accum = "".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    let Message((_role, message)) = message;
+                    if _role.clone() == self.roles.0 {
+                        //user message
+                        if let Some(message) = message {
+                            accum += &format!("<|im_start|>user\n {message} <|im_end|>");
+                        } else {
+                            accum += &format!("<|im_start|> <|im_end|>");
+                        }
+                    } else if _role.clone() == self.roles.1 {
+                        //assistant message
+                        if let Some(message) = message {
+                            accum += &format!("<|im_start|>assistant\n {message} <|im_end|>");
                         }
                     } else if i == 0 && !system_prompt.is_empty() {
                         accum += &system_prompt;

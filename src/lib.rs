@@ -9,29 +9,22 @@ use openai::pipelines::{
 
 #[derive(Debug, Subcommand)]
 pub enum ModelSelected {
-    /// Select the llama7b model.
-    Llama7b {
+    /// Select the llama model (default llama2-7b).
+    Llama {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: usize,
     },
 
-    /// Select the llama13b model.
-    Llama13b {
-        /// Control the application of repeat penalty for the last n tokens
-        #[arg(long)]
-        repeat_last_n: usize,
-    },
-
-    /// Select the llama70b model.
-    Llama70b {
-        /// Control the application of repeat penalty for the last n tokens
-        #[arg(long)]
-        repeat_last_n: usize,
-    },
-
-    /// Select the phi3 3.8b model.
+    /// Select the phi3 model (default 3.8b).
     Phi3 {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: usize,
+    },
+
+    /// Select the qwen model (default 1.5b).
+    Qwen2 {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: usize,
@@ -41,43 +34,50 @@ pub enum ModelSelected {
 impl ToString for ModelSelected {
     fn to_string(&self) -> String {
         match self {
-            ModelSelected::Llama7b { repeat_last_n: _ } => "llama7b".to_string(),
-            ModelSelected::Llama13b { repeat_last_n: _ } => "llama13b".to_string(),
-            ModelSelected::Llama70b { repeat_last_n: _ } => "llama70b".to_string(),
+            ModelSelected::Llama { repeat_last_n: _ } => "llama".to_string(),
             ModelSelected::Phi3 { repeat_last_n: _ } => "phi3".to_string(),
+            ModelSelected::Qwen2 { repeat_last_n: _ } => "qwen2".to_string(),
         }
     }
 }
 
-pub fn get_model_loader<'a>(selected_model: ModelSelected) -> (Box<dyn ModelLoader<'a>>, String) {
+pub fn get_model_loader<'a>(
+    selected_model: ModelSelected,
+    model_id: Option<String>,
+) -> (Box<dyn ModelLoader<'a>>, String) {
     match selected_model {
-        ModelSelected::Llama7b { repeat_last_n } => (
+        ModelSelected::Llama { repeat_last_n } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(repeat_last_n),
-                "llama7b".to_string(),
+                "llama".to_string(),
             )),
-            "meta-llama/Llama-2-7b-chat-hf".to_string(),
-        ),
-        ModelSelected::Llama13b { repeat_last_n } => (
-            Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n),
-                "llama13b".to_string(),
-            )),
-            "meta-llama/Llama-2-13b-chat-hf".to_string(),
-        ),
-        ModelSelected::Llama70b { repeat_last_n } => (
-            Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n),
-                "llama70b".to_string(),
-            )),
-            "meta-llama/Llama-2-70b-chat-hf".to_string(),
+            if model_id.is_some() {
+                model_id.unwrap()
+            } else {
+                "meta-llama/Llama-2-7b-chat-hf".to_string()
+            },
         ),
         ModelSelected::Phi3 { repeat_last_n } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(repeat_last_n),
                 "phi3".to_string(),
             )),
-            "microsoft/Phi-3-mini-4k-instruct".to_string(),
+            if model_id.is_some() {
+                model_id.unwrap()
+            } else {
+                "microsoft/Phi-3-mini-4k-instruct".to_string()
+            },
+        ),
+        ModelSelected::Qwen2 { repeat_last_n } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(repeat_last_n),
+                "qwen2".to_string(),
+            )),
+            if model_id.is_some() {
+                model_id.unwrap()
+            } else {
+                "Qwen/Qwen2-1.5B-Instruct".to_string()
+            },
         ),
     }
 }
