@@ -107,7 +107,7 @@ impl PagedAttention {
                 .reshape(((), attention_heads, head_size))?;
             (q, k, v)
         } else {
-            //avoid unneccesary transpose for decoding
+            //avoid unnecessary transpose for decoding
             let q = query.reshape(((), attention_heads, head_size))?;
             let k = key.reshape(((), key_value_heads, head_size))?;
             let v = value.reshape(((), key_value_heads, head_size))?;
