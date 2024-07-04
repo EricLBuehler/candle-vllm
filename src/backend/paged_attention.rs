@@ -1,5 +1,4 @@
 // use candle_core::{cuda_backend::cudarc::driver::CudaFunction, DType, Tensor};
-use crate::openai::responses::APIError;
 use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::DevicePtr;
 use candle::cuda_backend::WrapErr;

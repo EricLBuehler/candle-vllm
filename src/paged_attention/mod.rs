@@ -1,10 +1,6 @@
-use candle_core::{DType, Device, Result, Tensor, D};
+use candle_core::{Device, Result, Tensor};
 
-use crate::{
-    backend::{paged_attention, reshape_and_cache},
-    openai::responses::APIError,
-    try_api,
-};
+use crate::backend::{paged_attention, reshape_and_cache};
 
 use self::input_metadata::InputMetadata;
 mod attn_bias;

@@ -1,5 +1,3 @@
-use std::thread;
-
 use super::requests::ChatCompletionRequest;
 use super::requests::Messages;
 use super::responses::{APIError, ChatCompletionResponse, ChatCompletionUsageResponse};
@@ -7,9 +5,7 @@ use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::new_streaming_conn;
 use super::utils::get_created_time_secs;
 use super::OpenAIServerData;
-use actix_web::web::Bytes;
 use actix_web::{post, web, Either, HttpResponse};
-use std::time::{Duration, Instant};
 use tokenizers::Encoding;
 use uuid::Uuid;
 
@@ -107,7 +103,7 @@ async fn chat_completions(
     data: web::Data<OpenAIServerData<'static>>,
     request: web::Json<ChatCompletionRequest>,
 ) -> Either<Result<web::Json<ChatCompletionResponse>, APIError>, HttpResponse> {
-    let model_name = &request.model;
+    // let model_name = &request.model;
     // let res = verify_model(&data, model_name);
     // if res.is_err() {
     //     return Either::Left(Err(res.err().unwrap()));

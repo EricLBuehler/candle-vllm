@@ -79,7 +79,7 @@ struct GPUAllocator;
 struct CPUAllocator;
 
 struct GPUAllocatorWrapper(usize);
-struct CPUAllocatorWrapper(usize);
+// struct CPUAllocatorWrapper(usize);
 
 impl Deref for GPUAllocatorWrapper {
     type Target = usize;
@@ -89,13 +89,13 @@ impl Deref for GPUAllocatorWrapper {
     }
 }
 
-impl Deref for CPUAllocatorWrapper {
-    type Target = usize;
+// impl Deref for CPUAllocatorWrapper {
+//     type Target = usize;
 
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
+//     fn deref(&self) -> &Self::Target {
+//         &self.0
+//     }
+// }
 
 struct Allocator<T> {
     free_blocks: BlockTable,

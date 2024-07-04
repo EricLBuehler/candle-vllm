@@ -2,7 +2,6 @@ mod cache;
 mod paged_attention;
 
 const COPY_BLOCKS_KERNEL_NAME: &str = "copy_blocks_kernel";
-const RESHAPE_AND_CACHE_KERNEL_NAME: &str = "reshape_and_cache_kernel";
 
 pub fn get_or_load_func(
     ptx_file: &'static str,
@@ -58,34 +57,11 @@ unsafe impl<'a, T, R> DeviceRepr for Conjoined<'a, T, R> {
     }
 }
 
-fn dispatch_get_cuda_pointer(tensor: Tensor) -> u64 {
-    match tensor.dtype() {
-        DType::BF16 => get_cuda_pointer::<bf16>(tensor),
-        DType::F16 => get_cuda_pointer::<f16>(tensor),
-        DType::U8 => get_cuda_pointer::<u8>(tensor),
-        DType::U32 => get_cuda_pointer::<u32>(tensor),
-        DType::I64 => get_cuda_pointer::<i64>(tensor),
-        DType::F32 => get_cuda_pointer::<f32>(tensor),
-        DType::F64 => get_cuda_pointer::<f64>(tensor),
-    }
-}
-
-fn get_cuda_pointer<T: CudaDType>(tensor: Tensor) -> u64 {
-    match &*tensor.storage_and_layout().0 {
-        Storage::Cuda(cuda_storage) => *cuda_storage.as_cuda_slice::<T>().unwrap().device_ptr(),
-        other => panic!("Unsupported storage `{:?}`", other),
-    }
-}
-
 pub use cache::*;
 use candle_core::{
-    cuda_backend::{
-        cudarc::driver::{CudaFunction, DevicePtr, DeviceRepr},
-        CudaDType,
-    },
-    CudaDevice, DType, Storage, Tensor,
+    cuda_backend::cudarc::driver::{CudaFunction, DeviceRepr},
+    CudaDevice, DType,
 };
-use half::{bf16, f16};
 pub use paged_attention::*;
 pub use std::ops::Deref;
 use std::{

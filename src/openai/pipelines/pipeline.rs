@@ -9,27 +9,25 @@ use crate::{
             Conversation,
         },
         models::{
-            llama::{Cache, Llama, LlamaConfig},
+            llama::{Llama, LlamaConfig},
             phi3::{Phi, PhiConfig},
             qwen2::{Qwen2, QwenConfig},
             Config,
         },
-        requests::StopTokens,
         responses::APIError,
         sampling_params::SamplingParams,
-        PipelineConfig, TokenizerWrapper,
+        PipelineConfig,
     },
     paged_attention::input_metadata::InputMetadata,
     scheduler::sequence::Sequence,
     try_api,
 };
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_nn::VarBuilder;
 use candle_transformers::generation::LogitsProcessor;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
-use std::io::Write;
 use std::{iter::zip, path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
 const EOS_TOKEN: &str = "</s>";
@@ -242,7 +240,7 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
     fn forward(
         &mut self,
         input_tokens: Tensor,
-        input_positions: Tensor,
+        _input_positions: Tensor,
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         mut input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError> {
@@ -281,7 +279,6 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
-            _ => panic!("Not supported model!"),
         };
 
         self.cur_idx += length;
@@ -302,7 +299,7 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
         let n_seqs = logits.dims()[0];
 
         let mut result = Vec::new();
-        for (seq_n, (_, seq)) in zip(0..n_seqs, seqs) {
+        for (_, (_, seq)) in zip(0..n_seqs, seqs) {
             let logits = logits.squeeze(0).unwrap();
             let sq = seq.deref_mut();
             let tokens = sq
@@ -372,7 +369,6 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
             LLMModel::LLAMA(llama) => llama.get_config().clone(),
             LLMModel::Phi3(phi) => phi.get_config().clone(),
             LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),
-            _ => panic!("Not supported model!"),
         }
     }
 

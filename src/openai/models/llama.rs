@@ -5,7 +5,6 @@ use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::{embedding, Embedding, Module, VarBuilder};
 use candle_transformers::models::with_tracing::{linear_no_bias as linear, Linear, RmsNorm};
-use std::collections::HashMap;
 pub const MAX_SEQ_LEN: usize = 4096;
 use std::iter::zip;
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -51,14 +50,12 @@ impl LlamaConfig {
 
 #[derive(Debug, Clone)]
 pub struct Cache {
-    masks: HashMap<usize, Tensor>,
     cos: Tensor,
     sin: Tensor,
-    device: Device,
 }
 
 impl Cache {
-    pub fn new(use_kv_cache: bool, dtype: DType, config: &Config, device: &Device) -> Result<Self> {
+    pub fn new(dtype: DType, config: &Config, device: &Device) -> Result<Self> {
         // precompute freqs_cis
         let n_elem = config.hidden_size / config.num_attention_heads;
         let theta: Vec<_> = (0..n_elem)
@@ -72,12 +69,7 @@ impl Cache {
             .matmul(&theta.reshape((1, theta.elem_count()))?)?;
         let cos = idx_theta.cos()?.to_dtype(dtype)?;
         let sin = idx_theta.sin()?.to_dtype(dtype)?;
-        Ok(Self {
-            masks: HashMap::new(),
-            device: device.clone(),
-            cos,
-            sin,
-        })
+        Ok(Self { cos, sin })
     }
 }
 
@@ -89,27 +81,10 @@ struct CausalSelfAttention {
     num_attention_heads: usize,
     num_key_value_heads: usize,
     head_dim: usize,
-    use_flash_attn: bool,
     span: tracing::Span,
     span_rot: tracing::Span,
     attn: PagedAttention,
     cos_sin_cache: Cache,
-}
-
-#[cfg(feature = "flash-attn")]
-fn flash_attn(
-    q: &Tensor,
-    k: &Tensor,
-    v: &Tensor,
-    softmax_scale: f32,
-    causal: bool,
-) -> Result<Tensor> {
-    candle_flash_attn::flash_attn(q, k, v, softmax_scale, causal)
-}
-
-#[cfg(not(feature = "flash-attn"))]
-fn flash_attn(_: &Tensor, _: &Tensor, _: &Tensor, _: f32, _: bool) -> Result<Tensor> {
-    unimplemented!("compile with '--features flash-attn'")
 }
 
 impl CausalSelfAttention {
@@ -208,7 +183,6 @@ impl CausalSelfAttention {
             num_attention_heads: cfg.num_attention_heads,
             num_key_value_heads: cfg.num_key_value_heads,
             head_dim: head_dim,
-            use_flash_attn: cfg.use_flash_attn,
             span,
             span_rot,
             attn: PagedAttention::new(
@@ -220,7 +194,7 @@ impl CausalSelfAttention {
                 vb.device().clone(),
                 None,
             )?,
-            cos_sin_cache: Cache::new(true, dtype, &cfg, device)?,
+            cos_sin_cache: Cache::new(dtype, &cfg, device)?,
         })
     }
 }
