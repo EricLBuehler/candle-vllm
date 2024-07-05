@@ -15,6 +15,7 @@ use clap::Parser;
 use futures::lock::Mutex;
 use std::sync::Arc;
 const SIZE_IN_MB: usize = 1024 * 1024;
+use std::path::Path;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -47,8 +48,12 @@ struct Args {
     #[arg(long, default_value_t = 32)]
     block_size: usize,
 
+    /// if weight_path is passed, it will ignore the model_id
+    #[arg(long)]
+    model_id: Option<String>,
+
     /// The folder name that contains safetensor weights and json files
-    /// (same structure as huggingface online)
+    /// (same structure as huggingface online), path must include last "/"
     #[arg(long)]
     weight_path: Option<String>,
 
@@ -74,13 +79,23 @@ struct Args {
 #[actix_web::main]
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
-    let (loader, model_id) = get_model_loader(args.command);
+    let (loader, model_id) = get_model_loader(args.command, args.model_id.clone());
+    if args.model_id.is_none() {
+        println!("No model id specified, using the default model or specified in the weight_path!");
+    }
 
     let paths = match &args.weight_path {
         Some(path) => Box::new(DefaultModelPaths {
             tokenizer_filename: (path.to_owned() + "tokenizer.json").into(),
             config_filename: (path.to_owned() + "config.json").into(),
-            filenames: hub_load_local_safetensors(path, "model.safetensors.index.json").unwrap(),
+            filenames: if Path::new(&(path.to_owned() + "model.safetensors.index.json")).exists() {
+                hub_load_local_safetensors(path, "model.safetensors.index.json").unwrap()
+            } else {
+                //a single weight file case
+                let mut safetensors_files = Vec::<std::path::PathBuf>::new();
+                safetensors_files.insert(0, (path.to_owned() + "model.safetensors").into());
+                safetensors_files
+            },
         }),
         _ => loader.download_model(model_id, None, args.hf_token, args.hf_token_path)?,
     };

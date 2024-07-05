@@ -1,9 +1,6 @@
+use super::{requests::StopTokens, responses::APIError};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
-// use candle_sampling::logits_processor::{LogitsProcessor, SamplingMethod};
-use tokenizers::Tokenizer;
-
-use super::{requests::StopTokens, responses::APIError};
 
 const SAMPLING_EPS: f32 = 1e-5;
 

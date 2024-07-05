@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     conversation::Conversation, models::Config, responses::APIError,
-    sampling_params::SamplingParams, PipelineConfig, TokenizerWrapper,
+    sampling_params::SamplingParams, PipelineConfig,
 };
 use candle_examples::token_output_stream::TokenOutputStream;
 /// The LLMEngine is effectively a wrapper around a ModulePipeline. It contains a Scheduler and a CacheEngine

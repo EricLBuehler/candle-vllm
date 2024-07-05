@@ -1,5 +1,3 @@
-use std::thread;
-
 use super::requests::ChatCompletionRequest;
 use super::requests::Messages;
 use super::responses::{APIError, ChatCompletionResponse, ChatCompletionUsageResponse};
@@ -7,9 +5,7 @@ use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::new_streaming_conn;
 use super::utils::get_created_time_secs;
 use super::OpenAIServerData;
-use actix_web::web::Bytes;
 use actix_web::{post, web, Either, HttpResponse};
-use std::time::{Duration, Instant};
 use tokenizers::Encoding;
 use uuid::Uuid;
 
@@ -107,7 +103,7 @@ async fn chat_completions(
     data: web::Data<OpenAIServerData<'static>>,
     request: web::Json<ChatCompletionRequest>,
 ) -> Either<Result<web::Json<ChatCompletionResponse>, APIError>, HttpResponse> {
-    let model_name = &request.model;
+    // let model_name = &request.model;
     // let res = verify_model(&data, model_name);
     // if res.is_err() {
     //     return Either::Left(Err(res.err().unwrap()));
@@ -151,7 +147,7 @@ async fn chat_completions(
         request.best_of,
         request.presence_penalty.unwrap_or(0.0),
         request.frequency_penalty.unwrap_or(0.0),
-        1.0,
+        request.repetition_penalty.unwrap_or(1.1),
         request.temperature.unwrap_or(0.7),
         request.top_p.unwrap_or(1.0),
         request.top_k.unwrap_or(-1),
@@ -161,7 +157,7 @@ async fn chat_completions(
         request.stop.clone(),
         request.stop_token_ids.clone().unwrap_or_default(),
         request.ignore_eos.unwrap_or(false),
-        request.max_tokens.unwrap_or(512),
+        request.max_tokens.unwrap_or(1024),
         None,
         None,
         request.skip_special_tokens.unwrap_or(true),
@@ -215,7 +211,12 @@ async fn chat_completions(
                 "\r\n Decoding: {} tokens processed in {} seconds ({} tokens/s)",
                 usage.completion_tokens,
                 usage.completion_time_costs / 1000,
-                usage.completion_tokens * 1000 / usage.completion_time_costs
+                usage.completion_tokens * 1000
+                    / if usage.completion_time_costs > 0 {
+                        usage.completion_time_costs
+                    } else {
+                        1
+                    }
             );
         });
 

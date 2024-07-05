@@ -259,7 +259,7 @@ impl SequenceGroup {
         // }
         for seq in self.seqs.values() {
             // Lock each sequence individually and set the status
-            if let Ok(mut seq_guard) = seq.0.write() {
+            if let Ok(seq_guard) = seq.0.write() {
                 seq_guard.deref_mut().set_status(status.clone());
             }
         }
