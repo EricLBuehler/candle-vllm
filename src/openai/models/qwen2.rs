@@ -46,6 +46,8 @@ impl QwenConfig {
             sliding_window: Some(self.sliding_window),
             hidden_act: Some(self.hidden_act),
             tie_word_embeddings: self.tie_word_embeddings,
+            rope_scaling: None,
+            original_max_position_embeddings: None,
         }
     }
 }

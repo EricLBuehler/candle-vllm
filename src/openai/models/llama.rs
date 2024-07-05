@@ -44,6 +44,8 @@ impl LlamaConfig {
             sliding_window: None,
             hidden_act: None,
             tie_word_embeddings: false,
+            rope_scaling: None,
+            original_max_position_embeddings: None,
         }
     }
 }

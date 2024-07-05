@@ -1,6 +1,12 @@
 pub mod llama;
 pub mod phi3;
 pub mod qwen2;
+use either::Either;
+use serde::Deserialize;
+use std::collections::HashMap;
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct RopeScaling(#[serde(with = "either::serde_untagged")] pub Either<Vec<f64>, String>);
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -19,6 +25,8 @@ pub struct Config {
     pub sliding_window: Option<usize>,
     pub hidden_act: Option<candle_nn::Activation>,
     pub tie_word_embeddings: bool,
+    pub rope_scaling: Option<HashMap<String, RopeScaling>>,
+    pub original_max_position_embeddings: Option<usize>,
 }
 
 impl Config {
