@@ -32,6 +32,8 @@ use std::{iter::zip, path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
+const MIN_GEN_TOKENS: usize = 128;
+const MAX_GEN_TOKENS: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct SpecificConfig {
@@ -160,6 +162,8 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
             _ => panic!(""),
         };
 
+        println!("Model {:?}", config);
+
         println!("Loading {} model.", self.name);
 
         let vb = match unsafe {
@@ -192,9 +196,24 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
 
         println!("Done loading.");
 
-        //max is https://huggingface.co/docs/transformers/model_doc/llama2#transformers.LlamaConfig.max_position_embeddings
+        //max and min number of tokens generated per request
+        let mut default_max_tokens = config.max_seq_len / 10;
+        if default_max_tokens < MIN_GEN_TOKENS {
+            default_max_tokens = MIN_GEN_TOKENS;
+        } else if default_max_tokens > MAX_GEN_TOKENS {
+            default_max_tokens = MAX_GEN_TOKENS;
+        }
+
         let pipeline_config = PipelineConfig {
-            max_model_len: 4096,
+            max_model_len: config.max_seq_len,
+            default_max_tokens,
+        };
+
+        println!("{:?}", pipeline_config);
+
+        let eos_token = match tokenizer.get_token("<|endoftext|>") {
+            Some(token) => token,
+            None => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap(),
         };
 
         let eos_token = match tokenizer.get_token("<|endoftext|>") {

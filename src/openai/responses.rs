@@ -1,5 +1,5 @@
 use crate::openai::sampling_params::Logprobs;
-use actix_web::error;
+use actix_web::{error, HttpResponse};
 use derive_more::{Display, Error};
 
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,14 @@ pub struct APIError {
     data: String,
 }
 
-impl error::ResponseError for APIError {}
+impl error::ResponseError for APIError {
+    fn error_response(&self) -> HttpResponse {
+        //pack error to json so that client can handle it
+        HttpResponse::BadRequest()
+            .content_type("application/json")
+            .json(self.data.to_string())
+    }
+}
 
 impl APIError {
     pub fn new(data: String) -> Self {

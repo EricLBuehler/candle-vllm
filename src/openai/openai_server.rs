@@ -76,22 +76,20 @@ async fn check_length(
             .map_err(APIError::from)?
     };
 
-    let max_tokens = if let Some(max_toks) = request.max_tokens {
-        max_toks
-    } else {
-        data.pipeline_config.max_model_len - token_ids.len()
-    };
+    let max_gen_tokens = request
+        .max_tokens
+        .unwrap_or(data.pipeline_config.default_max_tokens);
 
-    if token_ids.len() + max_tokens > data.pipeline_config.max_model_len {
+    if token_ids.len() + max_gen_tokens > data.pipeline_config.max_model_len {
         Err(APIError::new(format!(
             "This model's maximum context length is {} tokens. \
             However, you requested {} tokens ({} in the messages, \
-            {} in the completion). Please reduce the length of the \
-            messages or completion.",
+            {} in the completion). \nPlease clear the chat history or reduce the length of the \
+            messages.",
             data.pipeline_config.max_model_len,
-            max_tokens + token_ids.len(),
+            max_gen_tokens + token_ids.len(),
             token_ids.len(),
-            max_tokens
+            max_gen_tokens
         )))
     } else {
         Ok(token_ids)
@@ -157,7 +155,9 @@ async fn chat_completions(
         request.stop.clone(),
         request.stop_token_ids.clone().unwrap_or_default(),
         request.ignore_eos.unwrap_or(false),
-        request.max_tokens.unwrap_or(1024),
+        request
+            .max_tokens
+            .unwrap_or(data.pipeline_config.default_max_tokens),
         None,
         None,
         request.skip_special_tokens.unwrap_or(true),

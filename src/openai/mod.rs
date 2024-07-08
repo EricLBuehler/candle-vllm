@@ -31,9 +31,10 @@ where
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PipelineConfig {
     pub max_model_len: usize,
+    pub default_max_tokens: usize,
 }
 
 #[derive(Clone)]
