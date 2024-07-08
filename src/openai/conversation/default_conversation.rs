@@ -19,6 +19,7 @@ pub enum SeparatorStyle {
     Llama,
     Phi,
     Qwen2,
+    Gemma,
     ChatGLM,
     ChatML,
     ChatIntern,
@@ -287,6 +288,21 @@ impl Conversation for DefaultConversation {
                         accum += &system_prompt;
                     }
                 }
+                accum
+            }
+
+            SeparatorStyle::Gemma => {
+                let mut accum = "".to_string();
+                for (_, message) in self.messages.iter().enumerate() {
+                    let Message((_role, message)) = message;
+                    if let Some(message) = message {
+                        accum +=
+                            &format!("<bos><start_of_turn>{_role}\n {message} <end_of_turn>\n");
+                    } else {
+                        accum += &format!("<start_of_turn>{_role}\n <end_of_turn>\n");
+                    }
+                }
+                accum += "<start_of_turn>model\n";
                 accum
             }
 

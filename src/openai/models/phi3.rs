@@ -51,6 +51,7 @@ impl PhiConfig {
             tie_word_embeddings: false,
             rope_scaling: self.rope_scaling,
             original_max_position_embeddings: self.original_max_position_embeddings,
+            attention_bias: false,
         }
     }
 }
@@ -290,8 +291,6 @@ impl Attention {
         let q = q.to_dtype(v.dtype())?;
         let k = k.to_dtype(v.dtype())?;
 
-        let k = candle_transformers::utils::repeat_kv(k, self.num_kv_groups)?.contiguous()?;
-        let v = candle_transformers::utils::repeat_kv(v, self.num_kv_groups)?.contiguous()?;
         let y = self.attn.forward(
             &q,
             &k,

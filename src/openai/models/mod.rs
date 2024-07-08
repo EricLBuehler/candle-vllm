@@ -1,3 +1,4 @@
+pub mod gemma;
 pub mod llama;
 pub mod phi3;
 pub mod qwen2;
@@ -27,6 +28,7 @@ pub struct Config {
     pub tie_word_embeddings: bool,
     pub rope_scaling: Option<HashMap<String, RopeScaling>>,
     pub original_max_position_embeddings: Option<usize>,
+    pub attention_bias: bool,
 }
 
 impl Config {

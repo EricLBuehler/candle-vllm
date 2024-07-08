@@ -29,6 +29,13 @@ pub enum ModelSelected {
         #[arg(long)]
         repeat_last_n: usize,
     },
+
+    /// Select the gemma model (default 2b).
+    Gemma {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: usize,
+    },
 }
 
 impl ToString for ModelSelected {
@@ -37,6 +44,7 @@ impl ToString for ModelSelected {
             ModelSelected::Llama { repeat_last_n: _ } => "llama".to_string(),
             ModelSelected::Phi3 { repeat_last_n: _ } => "phi3".to_string(),
             ModelSelected::Qwen2 { repeat_last_n: _ } => "qwen2".to_string(),
+            ModelSelected::Gemma { repeat_last_n: _ } => "gemma".to_string(),
         }
     }
 }
@@ -77,6 +85,17 @@ pub fn get_model_loader<'a>(
                 model_id.unwrap()
             } else {
                 "Qwen/Qwen1.5-1.8B-Chat".to_string()
+            },
+        ),
+        ModelSelected::Gemma { repeat_last_n } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(repeat_last_n),
+                "gemma".to_string(),
+            )),
+            if model_id.is_some() {
+                model_id.unwrap()
+            } else {
+                "google/gemma-2b-it".to_string()
             },
         ),
     }

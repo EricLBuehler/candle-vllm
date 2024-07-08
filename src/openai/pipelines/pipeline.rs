@@ -9,6 +9,7 @@ use crate::{
             Conversation,
         },
         models::{
+            gemma::{Gemma, GemmaConfig},
             llama::{Llama, LlamaConfig},
             phi3::{Phi, PhiConfig},
             qwen2::{Qwen2, QwenConfig},
@@ -50,6 +51,7 @@ enum LLMModel {
     LLAMA(Llama),
     Phi3(Phi),
     Qwen2(Qwen2),
+    Gemma(Gemma),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -159,6 +161,12 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                 ),));
                 config.into_config(false)
             }
+            "gemma" => {
+                let config: GemmaConfig = try_api!(serde_json::from_slice(&try_api!(
+                    std::fs::read(paths.get_config_filename())
+                ),));
+                config.into_config(false)
+            }
             _ => panic!(""),
         };
 
@@ -186,6 +194,10 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                 LLMModel::Qwen2(try_api!(Qwen2::new(vb, &config, dtype, &device))),
                 SeparatorStyle::Qwen2,
             ),
+            "gemma" => (
+                LLMModel::Gemma(try_api!(Gemma::new(vb, &config, dtype, &device))),
+                SeparatorStyle::Gemma,
+            ),
             _ => panic!(""),
         };
 
@@ -210,11 +222,6 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         };
 
         println!("{:?}", pipeline_config);
-
-        let eos_token = match tokenizer.get_token("<|endoftext|>") {
-            Some(token) => token,
-            None => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap(),
-        };
 
         let eos_token = match tokenizer.get_token("<|endoftext|>") {
             Some(token) => token,
@@ -289,6 +296,16 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
                 )
                 .map_err(APIError::from),
             LLMModel::Qwen2(qwen2) => qwen2
+                .forward(
+                    &input_tokens
+                        .reshape((1, input_tokens.shape().dims()[0]))
+                        .unwrap(),
+                    self.cur_idx,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
+            LLMModel::Gemma(gemma) => gemma
                 .forward(
                     &input_tokens
                         .reshape((1, input_tokens.shape().dims()[0]))
@@ -388,6 +405,7 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
             LLMModel::LLAMA(llama) => llama.get_config().clone(),
             LLMModel::Phi3(phi) => phi.get_config().clone(),
             LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),
+            LLMModel::Gemma(gemma) => gemma.get_config().clone(),
         }
     }
 
