@@ -77,18 +77,37 @@ impl PagedAttention {
             input_metadata.slot_mapping.clone()
         };
 
+        let (batch_size, attention_heads, seq_len, head_size) = query.shape().dims4()?;
+        let (_, key_value_heads, _, _) = key.shape().dims4()?;
+
         let att = match attention_mask {
             None => None,
             Some(mask) => {
-                let att = (query.matmul(&key.t()?)? * self.scale as f64)?;
+                let att = if key_value_heads != attention_heads {
+                    (query.matmul(&key.t()?.broadcast_as((
+                        batch_size,
+                        attention_heads,
+                        head_size,
+                        seq_len,
+                    ))?)?
+                        * self.scale as f64)?
+                } else {
+                    (query.matmul(&key.t()?)? * self.scale as f64)?
+                };
                 let att = att.broadcast_add(mask)?;
                 let att = candle_nn::ops::softmax_last_dim(&att)?;
-                Some(att.matmul(&value)?)
+                if key_value_heads != attention_heads {
+                    Some(att.matmul(&value.broadcast_as((
+                        batch_size,
+                        attention_heads,
+                        seq_len,
+                        head_size,
+                    ))?)?)
+                } else {
+                    Some(att.matmul(&value)?)
+                }
             }
         };
-
-        let (batch_size, attention_heads, seq_len, head_size) = query.shape().dims4()?;
-        let (_, key_value_heads, _, _) = key.shape().dims4()?;
 
         // // paged-attn expects [batch_size, num_tokens, num_heads, head_size]
         let (query, key, value) = if seq_len > 1 {
@@ -97,10 +116,10 @@ impl PagedAttention {
                 .reshape(((), attention_heads, head_size))?;
             let k = key
                 .transpose(1, 2)?
-                .reshape(((), attention_heads, head_size))?;
+                .reshape(((), key_value_heads, head_size))?;
             let v = value
                 .transpose(1, 2)?
-                .reshape(((), attention_heads, head_size))?;
+                .reshape(((), key_value_heads, head_size))?;
             (q, k, v)
         } else {
             //avoid unnecessary transpose for decoding
