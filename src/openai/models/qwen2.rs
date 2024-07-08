@@ -134,7 +134,6 @@ struct Attention {
     o_proj: Linear,
     num_heads: usize,
     num_kv_heads: usize,
-    num_kv_groups: usize,
     head_dim: usize,
     hidden_size: usize,
     rotary_emb: Arc<RotaryEmbedding>,
@@ -146,7 +145,6 @@ impl Attention {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
-        let num_kv_groups = num_heads / num_kv_heads;
         let head_dim = hidden_sz / num_heads;
         let q_proj = linear(hidden_sz, num_heads * head_dim, vb.pp("q_proj"))?;
         let k_proj = linear(hidden_sz, num_kv_heads * head_dim, vb.pp("k_proj"))?;
@@ -159,7 +157,6 @@ impl Attention {
             o_proj,
             num_heads,
             num_kv_heads,
-            num_kv_groups,
             head_dim,
             hidden_size: hidden_sz,
             rotary_emb,
