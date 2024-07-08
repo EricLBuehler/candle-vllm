@@ -205,7 +205,6 @@ struct Attention {
     o_proj: Linear,
     num_heads: usize,
     num_kv_heads: usize,
-    num_kv_groups: usize,
     hidden_size: usize,
     head_dim: usize,
     rotary_emb: Arc<RotaryEmbedding>,
@@ -226,7 +225,6 @@ impl Attention {
             rotary_emb,
             num_heads,
             num_kv_heads,
-            num_kv_groups: num_heads / num_kv_heads,
             head_dim,
             hidden_size: cfg.hidden_size,
             attn: PagedAttention::new(
