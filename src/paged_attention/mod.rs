@@ -83,25 +83,30 @@ impl PagedAttention {
         let att = match attention_mask {
             None => None,
             Some(mask) => {
+                //Only perform key/value repeat in prefiling stage, this will reduce kvcache
+                //and remove redundant repeat_kv in decoding stage
                 let att = if key_value_heads != attention_heads {
-                    (query.matmul(
-                        &key.t()?
-                            .broadcast_as((batch_size, attention_heads, head_size, seq_len))?
-                            .contiguous()?,
-                    )? * self.scale as f64)?
+                    let key_repeat = if key_value_heads == 1 {
+                        key.broadcast_as((batch_size, attention_heads, seq_len, head_size))?
+                    } else {
+                        Tensor::cat(&vec![&key; attention_heads / key_value_heads], 2)?
+                            .reshape((batch_size, attention_heads, seq_len, head_size))?
+                    };
+                    (query.matmul(&key_repeat.t()?.contiguous()?)? * self.scale as f64)?
                 } else {
                     (query.matmul(&key.t()?)? * self.scale as f64)?
                 };
+
                 let att = att.broadcast_add(mask)?;
                 let att = candle_nn::ops::softmax_last_dim(&att)?;
                 if key_value_heads != attention_heads {
-                    Some(
-                        att.matmul(
-                            &value
-                                .broadcast_as((batch_size, attention_heads, seq_len, head_size))?
-                                .contiguous()?,
-                        )?,
-                    )
+                    let value_repeat = if key_value_heads == 1 {
+                        value.broadcast_as((batch_size, attention_heads, seq_len, head_size))?
+                    } else {
+                        Tensor::cat(&vec![&value; attention_heads / key_value_heads], 2)?
+                            .reshape((batch_size, attention_heads, seq_len, head_size))?
+                    };
+                    Some(att.matmul(&value_repeat.contiguous()?)?)
                 } else {
                     Some(att.matmul(&value)?)
                 }
