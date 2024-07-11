@@ -16,11 +16,27 @@ pub enum ModelSelected {
         repeat_last_n: usize,
     },
 
+    /// Select the phi2 model (default 2.7b).
+    Phi2 {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: usize,
+    },
+
     /// Select the phi3 model (default 3.8b).
     Phi3 {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: usize,
+
+        #[arg(long)]
+        temperature: Option<f64>,
+
+        #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
     },
 
     /// Select the qwen model (default 1.8b).
@@ -28,10 +44,26 @@ pub enum ModelSelected {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: usize,
+
+        #[arg(long)]
+        temperature: Option<f64>,
+
+        #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
     },
 
     /// Select the gemma model (default 2b).
     Gemma {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: usize,
+    },
+
+    /// Select the mistral model (default 7b).
+    Mistral {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: usize,
@@ -42,9 +74,21 @@ impl ToString for ModelSelected {
     fn to_string(&self) -> String {
         match self {
             ModelSelected::Llama { repeat_last_n: _ } => "llama".to_string(),
-            ModelSelected::Phi3 { repeat_last_n: _ } => "phi3".to_string(),
-            ModelSelected::Qwen2 { repeat_last_n: _ } => "qwen2".to_string(),
+            ModelSelected::Phi2 { repeat_last_n: _ } => "phi2".to_string(),
+            ModelSelected::Phi3 {
+                repeat_last_n: _,
+                temperature: _,
+                top_k: _,
+                top_p: _,
+            } => "phi3".to_string(),
+            ModelSelected::Qwen2 {
+                repeat_last_n: _,
+                temperature: _,
+                top_k: _,
+                top_p: _,
+            } => "qwen2".to_string(),
             ModelSelected::Gemma { repeat_last_n: _ } => "gemma".to_string(),
+            ModelSelected::Mistral { repeat_last_n: _ } => "mistral".to_string(),
         }
     }
 }
@@ -56,7 +100,7 @@ pub fn get_model_loader<'a>(
     match selected_model {
         ModelSelected::Llama { repeat_last_n } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n),
+                SpecificConfig::new(repeat_last_n, None, None, None),
                 "llama".to_string(),
             )),
             if model_id.is_some() {
@@ -65,9 +109,25 @@ pub fn get_model_loader<'a>(
                 "meta-llama/Llama-2-7b-chat-hf".to_string()
             },
         ),
-        ModelSelected::Phi3 { repeat_last_n } => (
+        ModelSelected::Phi2 { repeat_last_n } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n),
+                SpecificConfig::new(repeat_last_n, None, None, None),
+                "phi2".to_string(),
+            )),
+            if model_id.is_some() {
+                model_id.unwrap()
+            } else {
+                "microsoft/microsoft/phi-2".to_string()
+            },
+        ),
+        ModelSelected::Phi3 {
+            repeat_last_n,
+            temperature,
+            top_k,
+            top_p,
+        } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(repeat_last_n, temperature, top_k, top_p),
                 "phi3".to_string(),
             )),
             if model_id.is_some() {
@@ -76,9 +136,14 @@ pub fn get_model_loader<'a>(
                 "microsoft/Phi-3-mini-4k-instruct".to_string()
             },
         ),
-        ModelSelected::Qwen2 { repeat_last_n } => (
+        ModelSelected::Qwen2 {
+            repeat_last_n,
+            temperature,
+            top_k,
+            top_p,
+        } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n),
+                SpecificConfig::new(repeat_last_n, temperature, top_k, top_p),
                 "qwen2".to_string(),
             )),
             if model_id.is_some() {
@@ -89,13 +154,24 @@ pub fn get_model_loader<'a>(
         ),
         ModelSelected::Gemma { repeat_last_n } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n),
+                SpecificConfig::new(repeat_last_n, None, None, None),
                 "gemma".to_string(),
             )),
             if model_id.is_some() {
                 model_id.unwrap()
             } else {
                 "google/gemma-2b-it".to_string()
+            },
+        ),
+        ModelSelected::Mistral { repeat_last_n } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(repeat_last_n, None, None, None),
+                "mistral".to_string(),
+            )),
+            if model_id.is_some() {
+                model_id.unwrap()
+            } else {
+                "mistralai/Mistral-7B-Instruct-v0.3".to_string()
             },
         ),
     }

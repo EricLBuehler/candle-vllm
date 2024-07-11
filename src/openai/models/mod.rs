@@ -1,7 +1,10 @@
 pub mod gemma;
 pub mod llama;
+pub mod mistral;
+pub mod phi2;
 pub mod phi3;
 pub mod qwen2;
+use candle_core::DType;
 use either::Either;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -29,6 +32,9 @@ pub struct Config {
     pub rope_scaling: Option<HashMap<String, RopeScaling>>,
     pub original_max_position_embeddings: Option<usize>,
     pub attention_bias: bool,
+    pub partial_rotary_factor: Option<f32>,
+    pub qk_layer_rms_norm: Option<bool>,
+    pub kv_cache_dtype: DType,
 }
 
 impl Config {

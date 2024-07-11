@@ -20,8 +20,8 @@ Currently, candle-vllm supports chat serving for the following models.
 | Model ID | Model Type | Supported | Speed (A100, BF16)
 |--|--|--|--|
 | #1 | **LLAMA/LLAMA2/LLaMa3** |✅|74 tks/s (7B)|
-| #2 | Mistral |TBD|TBD|
-| #3 | Phi (v1, v1.5, v2) |TBD|TBD|
+| #2 | **Mistral** |✅|TBD|
+| #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|
 | #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)|
 | #5 | Yi |TBD|TBD|
 | #6 | StableLM |TBD|TBD|
@@ -133,7 +133,7 @@ For model-specific help, run `cargo run -- --port 2000 <MODEL_TYPE> --help`
 
 For local model weights, run `cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama --repeat-last-n 64`, change the path when needed.
 
-`MODEL_TYPE` = ["llama", "phi3", "qwen2", "gemma"]
+`MODEL_TYPE` = ["llama", "mistral", "phi2", "phi3", "qwen2", "gemma"]
 
 `WEIGHT_FILE_PATH` = Corresponding weight path for the given model type
 

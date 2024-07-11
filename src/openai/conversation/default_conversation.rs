@@ -20,6 +20,7 @@ pub enum SeparatorStyle {
     Phi,
     Qwen2,
     Gemma,
+    Mistral,
     ChatGLM,
     ChatML,
     ChatIntern,
@@ -222,7 +223,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeparatorStyle::Llama => {
+            SeparatorStyle::Llama | SeparatorStyle::Mistral => {
                 let mut accum = "".to_string();
                 for (i, message) in self.messages.iter().enumerate() {
                     let Message((_role, message)) = message;

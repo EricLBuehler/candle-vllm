@@ -29,7 +29,7 @@ pub struct QwenConfig {
 }
 
 impl QwenConfig {
-    pub fn into_config(self, use_flash_attn: bool) -> Config {
+    pub fn into_config(self, use_flash_attn: bool, kv_cache_dtype: DType) -> Config {
         Config {
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -49,6 +49,9 @@ impl QwenConfig {
             rope_scaling: None,
             original_max_position_embeddings: None,
             attention_bias: false,
+            partial_rotary_factor: None,
+            qk_layer_rms_norm: None,
+            kv_cache_dtype,
         }
     }
 }

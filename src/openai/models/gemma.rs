@@ -8,10 +8,6 @@ use candle_nn::{linear_b, linear_no_bias as linear, Linear, RmsNorm, VarBuilder}
 use std::iter::zip;
 use std::sync::Arc;
 
-fn default_max_position_embeddings() -> usize {
-    4096
-}
-
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct GemmaConfig {
     pub attention_bias: bool,
@@ -29,12 +25,11 @@ pub struct GemmaConfig {
     pub vocab_size: usize,
     pub bos_token_id: usize,
     pub eos_token_id: usize,
-    #[serde(default = "default_max_position_embeddings")]
-    pub max_position_embeddings: usize,
+    pub max_position_embeddings: Option<usize>,
 }
 
 impl GemmaConfig {
-    pub fn into_config(self, use_flash_attn: bool) -> Config {
+    pub fn into_config(self, use_flash_attn: bool, kv_cache_dtype: DType) -> Config {
         let hidden_act = match (self.hidden_act, self.hidden_activation) {
             (None, Some(act)) | (Some(act), None) => Some(act),
             (Some(_), Some(_)) => panic!("both hidden_act and hidden_activation are set"),
@@ -52,13 +47,16 @@ impl GemmaConfig {
             use_flash_attn,
             bos_token_id: Some(self.bos_token_id as u32),
             eos_token_id: Some(self.eos_token_id as u32),
-            max_seq_len: self.max_position_embeddings,
+            max_seq_len: self.max_position_embeddings.unwrap_or(4096),
             sliding_window: None,
             hidden_act: hidden_act,
             tie_word_embeddings: false,
             rope_scaling: None,
             original_max_position_embeddings: None,
             attention_bias: self.attention_bias,
+            partial_rotary_factor: None,
+            qk_layer_rms_norm: None,
+            kv_cache_dtype,
         }
     }
 }

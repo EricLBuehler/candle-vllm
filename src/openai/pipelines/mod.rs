@@ -47,6 +47,8 @@ pub trait ModulePipeline<'s>: Send + Sync {
     fn get_dtype(&self) -> DType;
 
     fn device(&self) -> &Device;
+
+    fn reset_decoder(&mut self) -> Option<String>;
 }
 
 // TODO(EricLBuehler): Ensure the padding token matches tokenizer

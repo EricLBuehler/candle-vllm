@@ -17,6 +17,7 @@ pub struct CacheConfig {
     pub num_gpu_blocks: Option<usize>, // Set after profiling init
     pub num_cpu_blocks: Option<usize>, // Set after profiling init
     pub fully_init: bool,
+    pub dtype: DType,
 }
 
 impl CacheConfig {

@@ -15,6 +15,7 @@ use clap::Parser;
 use futures::lock::Mutex;
 use std::sync::Arc;
 const SIZE_IN_MB: usize = 1024 * 1024;
+use candle_vllm::openai::models::Config;
 use std::path::Path;
 
 #[derive(Parser, Debug)]
@@ -108,10 +109,10 @@ async fn main() -> Result<(), APIError> {
         None => DType::BF16,
     };
 
-    let dsize = dtype.size_in_bytes();
     let device = candle_examples::device(args.cpu).unwrap();
     let model = loader.load_model(paths, dtype, device)?;
-    let config = model.0.get_model_config();
+    let config: Config = model.0.get_model_config();
+    let dsize = config.kv_cache_dtype.size_in_bytes();
     let num_gpu_blocks = args.kvcache_mem_gpu * SIZE_IN_MB
         / dsize
         / args.block_size
@@ -131,6 +132,7 @@ async fn main() -> Result<(), APIError> {
         num_gpu_blocks: Some(num_gpu_blocks),
         num_cpu_blocks: Some(num_cpu_blocks),
         fully_init: true,
+        dtype: config.kv_cache_dtype,
     };
     println!("Cache config {:?}", cache_config);
 
