@@ -40,24 +40,27 @@ const MAX_GEN_TOKENS: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct SpecificConfig {
-    repeat_last_n: usize,
-    temperature: Option<f64>,
+    repeat_last_n: Option<usize>,
+    temperature: Option<f32>,
     top_k: Option<usize>,
     top_p: Option<f64>,
+    penalty: Option<f32>,
 }
 
 impl SpecificConfig {
     pub fn new(
-        repeat_last_n: usize,
-        temperature: Option<f64>,
+        repeat_last_n: Option<usize>,
+        temperature: Option<f32>,
         top_k: Option<usize>,
         top_p: Option<f64>,
+        penalty: Option<f32>,
     ) -> Self {
         Self {
             repeat_last_n,
             temperature,
             top_k,
             top_p,
+            penalty,
         }
     }
 }
@@ -257,6 +260,9 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         let pipeline_config = PipelineConfig {
             max_model_len: config.max_seq_len,
             default_max_tokens,
+            penalty: self.config.penalty.unwrap_or(1.1),
+            repeat_last_n: self.config.repeat_last_n.unwrap_or(16),
+            temperature: self.config.temperature.unwrap_or(0.),
         };
 
         println!("{:?}", pipeline_config);
@@ -266,8 +272,10 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
             None => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap(),
         };
 
+        println!("{:?}", self.config);
+
         let logits_processor = {
-            let temperature = args.temperature.unwrap_or(0.);
+            let temperature = args.temperature.unwrap_or(0.) as f64;
             let sampling = if temperature <= 0. {
                 Sampling::ArgMax
             } else {
@@ -422,11 +430,13 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
             }
 
             let logits = if sampling_params.repetition_penalty == 1.
-                || self.args.repeat_last_n >= tokens.len()
+                || self.args.repeat_last_n.unwrap_or(16) >= tokens.len()
             {
                 logits
             } else {
-                let start_at = tokens.len().saturating_sub(self.args.repeat_last_n);
+                let start_at = tokens
+                    .len()
+                    .saturating_sub(self.args.repeat_last_n.unwrap_or(16));
                 try_api!(candle_transformers::utils::apply_repeat_penalty(
                     &logits,
                     sampling_params.repetition_penalty,

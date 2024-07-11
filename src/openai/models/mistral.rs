@@ -74,7 +74,6 @@ impl RotaryEmbedding {
             .to_dtype(dtype)?
             .reshape((max_seq_len, 1))?;
         let freqs = t.matmul(&inv_freq)?;
-        let freqs = Tensor::cat(&[&freqs, &freqs], D::Minus1)?;
 
         Ok(Self {
             sin: freqs.sin()?,
@@ -205,7 +204,7 @@ impl Attention {
             let v = value_states
                 .reshape((b_sz, seq_len, self.num_kv_heads, self.head_dim))?
                 .transpose(1, 2)?;
-            (q, k, v.contiguous()?)
+            (q.contiguous()?, k.contiguous()?, v.contiguous()?)
         };
 
         let (q, k) = self
@@ -380,9 +379,13 @@ impl Mistral {
                 )?
             }
         }
-        xs.narrow(1, seq_len - 1, 1)?
+        let logits = xs
+            .narrow(1, seq_len - 1, 1)?
             .apply(&self.norm)?
-            .apply(&self.lm_head)
+            .apply(&self.lm_head)?;
+
+        //TODO: do not squeeze for batched streaming
+        logits.squeeze(0)?.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {

@@ -20,7 +20,7 @@ Currently, candle-vllm supports chat serving for the following models.
 | Model ID | Model Type | Supported | Speed (A100, BF16)
 |--|--|--|--|
 | #1 | **LLAMA/LLAMA2/LLaMa3** |✅|74 tks/s (7B)|
-| #2 | **Mistral** |✅|TBD|
+| #2 | **Mistral** |✅|70 tks/s (7B)|
 | #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|
 | #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)|
 | #5 | Yi |TBD|TBD|

@@ -35,6 +35,9 @@ where
 pub struct PipelineConfig {
     pub max_model_len: usize,
     pub default_max_tokens: usize,
+    pub penalty: f32,
+    pub repeat_last_n: usize,
+    pub temperature: f32,
 }
 
 #[derive(Clone)]
