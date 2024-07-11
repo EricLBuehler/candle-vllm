@@ -13,82 +13,114 @@ pub enum ModelSelected {
     Llama {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
-        repeat_last_n: usize,
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
     },
 
     /// Select the phi2 model (default 2.7b).
     Phi2 {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
-        repeat_last_n: usize,
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
     },
 
     /// Select the phi3 model (default 3.8b).
     Phi3 {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
-        repeat_last_n: usize,
+        repeat_last_n: Option<usize>,
 
         #[arg(long)]
-        temperature: Option<f64>,
+        temperature: Option<f32>,
 
         #[arg(long)]
         top_p: Option<f64>,
 
         #[arg(long)]
         top_k: Option<usize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
     },
 
     /// Select the qwen model (default 1.8b).
     Qwen2 {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
-        repeat_last_n: usize,
+        repeat_last_n: Option<usize>,
 
         #[arg(long)]
-        temperature: Option<f64>,
+        temperature: Option<f32>,
 
         #[arg(long)]
         top_p: Option<f64>,
 
         #[arg(long)]
         top_k: Option<usize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
     },
 
     /// Select the gemma model (default 2b).
     Gemma {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
-        repeat_last_n: usize,
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
     },
 
     /// Select the mistral model (default 7b).
     Mistral {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
-        repeat_last_n: usize,
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
     },
 }
 
 impl ToString for ModelSelected {
     fn to_string(&self) -> String {
         match self {
-            ModelSelected::Llama { repeat_last_n: _ } => "llama".to_string(),
-            ModelSelected::Phi2 { repeat_last_n: _ } => "phi2".to_string(),
+            ModelSelected::Llama {
+                repeat_last_n: _,
+                penalty: _,
+            } => "llama".to_string(),
+            ModelSelected::Phi2 {
+                repeat_last_n: _,
+                penalty: _,
+            } => "phi2".to_string(),
             ModelSelected::Phi3 {
                 repeat_last_n: _,
                 temperature: _,
                 top_k: _,
                 top_p: _,
+                penalty: _,
             } => "phi3".to_string(),
             ModelSelected::Qwen2 {
                 repeat_last_n: _,
                 temperature: _,
                 top_k: _,
                 top_p: _,
+                penalty: _,
             } => "qwen2".to_string(),
-            ModelSelected::Gemma { repeat_last_n: _ } => "gemma".to_string(),
-            ModelSelected::Mistral { repeat_last_n: _ } => "mistral".to_string(),
+            ModelSelected::Gemma {
+                repeat_last_n: _,
+                penalty: _,
+            } => "gemma".to_string(),
+            ModelSelected::Mistral {
+                repeat_last_n: _,
+                penalty: _,
+            } => "mistral".to_string(),
         }
     }
 }
@@ -98,9 +130,12 @@ pub fn get_model_loader<'a>(
     model_id: Option<String>,
 ) -> (Box<dyn ModelLoader<'a>>, String) {
     match selected_model {
-        ModelSelected::Llama { repeat_last_n } => (
+        ModelSelected::Llama {
+            repeat_last_n,
+            penalty,
+        } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, None, None, None),
+                SpecificConfig::new(repeat_last_n, None, None, None, penalty),
                 "llama".to_string(),
             )),
             if model_id.is_some() {
@@ -109,9 +144,12 @@ pub fn get_model_loader<'a>(
                 "meta-llama/Llama-2-7b-chat-hf".to_string()
             },
         ),
-        ModelSelected::Phi2 { repeat_last_n } => (
+        ModelSelected::Phi2 {
+            repeat_last_n,
+            penalty,
+        } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, None, None, None),
+                SpecificConfig::new(repeat_last_n, None, None, None, penalty),
                 "phi2".to_string(),
             )),
             if model_id.is_some() {
@@ -125,9 +163,10 @@ pub fn get_model_loader<'a>(
             temperature,
             top_k,
             top_p,
+            penalty,
         } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, temperature, top_k, top_p),
+                SpecificConfig::new(repeat_last_n, temperature, top_k, top_p, penalty),
                 "phi3".to_string(),
             )),
             if model_id.is_some() {
@@ -141,9 +180,10 @@ pub fn get_model_loader<'a>(
             temperature,
             top_k,
             top_p,
+            penalty,
         } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, temperature, top_k, top_p),
+                SpecificConfig::new(repeat_last_n, temperature, top_k, top_p, penalty),
                 "qwen2".to_string(),
             )),
             if model_id.is_some() {
@@ -152,9 +192,12 @@ pub fn get_model_loader<'a>(
                 "Qwen/Qwen1.5-1.8B-Chat".to_string()
             },
         ),
-        ModelSelected::Gemma { repeat_last_n } => (
+        ModelSelected::Gemma {
+            repeat_last_n,
+            penalty,
+        } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, None, None, None),
+                SpecificConfig::new(repeat_last_n, None, None, None, penalty),
                 "gemma".to_string(),
             )),
             if model_id.is_some() {
@@ -163,9 +206,12 @@ pub fn get_model_loader<'a>(
                 "google/gemma-2b-it".to_string()
             },
         ),
-        ModelSelected::Mistral { repeat_last_n } => (
+        ModelSelected::Mistral {
+            repeat_last_n,
+            penalty,
+        } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, None, None, None),
+                SpecificConfig::new(repeat_last_n, None, None, None, penalty),
                 "mistral".to_string(),
             )),
             if model_id.is_some() {

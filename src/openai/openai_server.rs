@@ -145,8 +145,12 @@ async fn chat_completions(
         request.best_of,
         request.presence_penalty.unwrap_or(0.0),
         request.frequency_penalty.unwrap_or(0.0),
-        request.repetition_penalty.unwrap_or(1.1),
-        request.temperature.unwrap_or(0.7),
+        request
+            .repetition_penalty
+            .unwrap_or(data.pipeline_config.penalty),
+        request
+            .temperature
+            .unwrap_or(data.pipeline_config.temperature),
         request.top_p.unwrap_or(1.0),
         request.top_k.unwrap_or(-1),
         request.use_beam_search.unwrap_or(false),
@@ -166,6 +170,8 @@ async fn chat_completions(
         return Either::Left(Err(sampling_params.err().unwrap()));
     }
     let sampling_params = sampling_params.unwrap();
+
+    println!("{:?}", sampling_params);
 
     let created = get_created_time_secs();
 
