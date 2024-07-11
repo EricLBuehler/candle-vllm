@@ -61,7 +61,7 @@ impl<'a> LLMEngine<'a> {
         let cache_engine = CacheEngine::new(
             pipeline.get_model_config(),
             cache_config.clone(),
-            pipeline.get_dtype(),
+            cache_config.dtype,
             &pipeline.device(),
         )?;
         let sliding_window = pipeline.get_model_config().sliding_window;
@@ -195,13 +195,9 @@ impl<'a> LLMEngine<'a> {
                                 Some(logprobs.bytes.clone()),
                                 None,
                             );
-                            if token_len > 1 {
-                                //do not send the first generated token in prompt stage
-                            } else {
-                                let _ = sender.send(Ok(Bytes::from(str_response))).await;
-                            }
+                            let _ = sender.send(Ok(Bytes::from(str_response))).await;
                         };
-                        print!("{}", logprobs.bytes.clone());
+                        // print!("{}", logprobs.bytes.clone());
                         seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
@@ -283,7 +279,16 @@ impl<'a> LLMEngine<'a> {
                 }
             }
         }
+
         if let Some(sender) = stream {
+            //reset tokenizer decoder after processing each request
+            //respond the remaining characters in the decoder
+            if let Some(remain) = self.pipeline.reset_decoder() {
+                let str_response =
+                    self.get_stream_response(request_id.clone(), created, Some(remain), None);
+                let _ = sender.send(Ok(Bytes::from(str_response))).await;
+            };
+
             let str_response = "data: [DONE]\n\n"; //stream finish flag
             let _ = sender.send(Ok(Bytes::from(str_response))).await;
         };
