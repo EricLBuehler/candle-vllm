@@ -160,7 +160,7 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         dtype: DType,
         device: Device,
     ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
-        let args = self.config.clone();
+        let specific_args = self.config.clone();
 
         let config = match self.name.as_str() {
             "llama" => {
@@ -260,9 +260,9 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         let pipeline_config = PipelineConfig {
             max_model_len: config.max_seq_len,
             default_max_tokens,
-            penalty: self.config.penalty.unwrap_or(1.1),
-            repeat_last_n: self.config.repeat_last_n.unwrap_or(16),
-            temperature: self.config.temperature.unwrap_or(0.),
+            penalty: specific_args.penalty.unwrap_or(1.1),
+            repeat_last_n: specific_args.repeat_last_n.unwrap_or(32),
+            temperature: specific_args.temperature.unwrap_or(0.),
         };
 
         println!("{:?}", pipeline_config);
@@ -272,14 +272,14 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
             None => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap(),
         };
 
-        println!("{:?}", self.config);
+        println!("{:?}", specific_args);
 
         let logits_processor = {
-            let temperature = args.temperature.unwrap_or(0.) as f64;
+            let temperature = specific_args.temperature.unwrap_or(0.) as f64;
             let sampling = if temperature <= 0. {
                 Sampling::ArgMax
             } else {
-                match (args.top_k, args.top_p) {
+                match (specific_args.top_k, specific_args.top_p) {
                     (None, None) => Sampling::All { temperature },
                     (Some(k), None) => Sampling::TopK { k, temperature },
                     (None, Some(p)) => Sampling::TopP { p, temperature },
@@ -292,7 +292,7 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         Ok((
             Box::new(DefaultPipeline {
                 model,
-                args,
+                args: specific_args,
                 tokenizer,
                 logits_processor: logits_processor,
                 conversation: DefaultConversation::new(

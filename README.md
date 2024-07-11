@@ -155,7 +155,11 @@ For chat history settings, set `record_conversation` to `true` to let candle-vll
 
 For chat streaming, the `stream` flag in chat request need to be set to `True`.
 
-You may revise `repetition_penalty` and `temperature` flag in chat request (http post).
+You may supply `penalty` and `temperature` to the model to **prevent potential repetitions**, for example:
+
+```
+cargo run --release -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 32 --penalty 1.1 temperature 0.8
+```
 
 ## Report issue
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
