@@ -29,6 +29,13 @@ pub enum ModelSelected {
         penalty: Option<f32>,
     },
 
+    /// Select the phi2 model (default 2.7b).
+    Phi2 {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: usize,
+    },
+
     /// Select the phi3 model (default 3.8b).
     Phi3 {
         /// Control the application of repeat penalty for the last n tokens
@@ -85,6 +92,13 @@ pub enum ModelSelected {
 
         #[arg(long)]
         penalty: Option<f32>,
+    },
+
+    /// Select the mistral model (default 7b).
+    Mistral {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: usize,
     },
 }
 

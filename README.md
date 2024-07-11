@@ -138,7 +138,7 @@ For local model weights, run `cargo run --release -- --port 2000 --weight-path /
 `WEIGHT_FILE_PATH` = Corresponding weight path for the given model type
 
 ```
-cargo run --release --features gcu -- --port 2000 --weight-path <WEIGHT_FILE_PATH> <MODEL_TYPE> --repeat-last-n 64
+cargo run --release -- --port 2000 --weight-path <WEIGHT_FILE_PATH> <MODEL_TYPE> --repeat-last-n 64
 ```
 
 or
@@ -146,7 +146,7 @@ or
 `MODEL_ID` = Huggingface model id
 
 ```
-cargo run --release --features gcu -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE> --repeat-last-n 64
+cargo run --release -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE> --repeat-last-n 64
 ```
 
 For kvcache configuration, set `kvcache_mem_cpu` and `kvcache_mem_gpu`, default 4GB CPU memory and 4GB GPU memory for kvcache. 
