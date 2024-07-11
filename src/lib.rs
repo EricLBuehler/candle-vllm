@@ -16,6 +16,9 @@ pub enum ModelSelected {
         repeat_last_n: Option<usize>,
 
         #[arg(long)]
+        temperature: Option<f32>,
+
+        #[arg(long)]
         penalty: Option<f32>,
     },
 
@@ -24,6 +27,9 @@ pub enum ModelSelected {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        temperature: Option<f32>,
 
         #[arg(long)]
         penalty: Option<f32>,
@@ -74,6 +80,9 @@ pub enum ModelSelected {
         repeat_last_n: Option<usize>,
 
         #[arg(long)]
+        temperature: Option<f32>,
+
+        #[arg(long)]
         penalty: Option<f32>,
     },
 
@@ -82,6 +91,9 @@ pub enum ModelSelected {
         /// Control the application of repeat penalty for the last n tokens
         #[arg(long)]
         repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        temperature: Option<f32>,
 
         #[arg(long)]
         penalty: Option<f32>,
@@ -93,10 +105,12 @@ impl ToString for ModelSelected {
         match self {
             ModelSelected::Llama {
                 repeat_last_n: _,
+                temperature: _,
                 penalty: _,
             } => "llama".to_string(),
             ModelSelected::Phi2 {
                 repeat_last_n: _,
+                temperature: _,
                 penalty: _,
             } => "phi2".to_string(),
             ModelSelected::Phi3 {
@@ -115,10 +129,12 @@ impl ToString for ModelSelected {
             } => "qwen2".to_string(),
             ModelSelected::Gemma {
                 repeat_last_n: _,
+                temperature: _,
                 penalty: _,
             } => "gemma".to_string(),
             ModelSelected::Mistral {
                 repeat_last_n: _,
+                temperature: _,
                 penalty: _,
             } => "mistral".to_string(),
         }
@@ -132,10 +148,11 @@ pub fn get_model_loader<'a>(
     match selected_model {
         ModelSelected::Llama {
             repeat_last_n,
+            temperature,
             penalty,
         } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, None, None, None, penalty),
+                SpecificConfig::new(repeat_last_n, temperature, None, None, penalty),
                 "llama".to_string(),
             )),
             if model_id.is_some() {
@@ -146,10 +163,11 @@ pub fn get_model_loader<'a>(
         ),
         ModelSelected::Phi2 {
             repeat_last_n,
+            temperature,
             penalty,
         } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, None, None, None, penalty),
+                SpecificConfig::new(repeat_last_n, temperature, None, None, penalty),
                 "phi2".to_string(),
             )),
             if model_id.is_some() {
@@ -194,10 +212,11 @@ pub fn get_model_loader<'a>(
         ),
         ModelSelected::Gemma {
             repeat_last_n,
+            temperature,
             penalty,
         } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, None, None, None, penalty),
+                SpecificConfig::new(repeat_last_n, temperature, None, None, penalty),
                 "gemma".to_string(),
             )),
             if model_id.is_some() {
@@ -208,10 +227,11 @@ pub fn get_model_loader<'a>(
         ),
         ModelSelected::Mistral {
             repeat_last_n,
+            temperature,
             penalty,
         } => (
             Box::new(DefaultLoader::new(
-                SpecificConfig::new(repeat_last_n, None, None, None, penalty),
+                SpecificConfig::new(repeat_last_n, temperature, None, None, penalty),
                 "mistral".to_string(),
             )),
             if model_id.is_some() {

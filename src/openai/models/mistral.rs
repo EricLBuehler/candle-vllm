@@ -69,9 +69,9 @@ impl RotaryEmbedding {
             .map(|i| 1f32 / rope_theta.powf(i as f32 / dim as f32))
             .collect();
         let inv_freq_len = inv_freq.len();
-        let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?.to_dtype(dtype)?;
+        let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?.to_dtype(DType::F32)?;
         let t = Tensor::arange(0u32, max_seq_len as u32, dev)?
-            .to_dtype(dtype)?
+            .to_dtype(DType::F32)?
             .reshape((max_seq_len, 1))?;
         let freqs = t.matmul(&inv_freq)?;
 
@@ -204,12 +204,17 @@ impl Attention {
             let v = value_states
                 .reshape((b_sz, seq_len, self.num_kv_heads, self.head_dim))?
                 .transpose(1, 2)?;
-            (q.contiguous()?, k.contiguous()?, v.contiguous()?)
+            (q, k, v.contiguous()?)
         };
 
-        let (q, k) = self
-            .rotary_emb
-            .apply_rotary_emb_qkv(&q, &k, seqlen_offset)?;
+        let (q, k) = self.rotary_emb.apply_rotary_emb_qkv(
+            &q.to_dtype(DType::F32)?,
+            &k.to_dtype(DType::F32)?,
+            seqlen_offset,
+        )?;
+
+        let q = q.to_dtype(v.dtype())?;
+        let k = k.to_dtype(v.dtype())?;
 
         let y = self.attn.forward(
             &q,

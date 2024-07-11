@@ -171,7 +171,7 @@ async fn chat_completions(
     }
     let sampling_params = sampling_params.unwrap();
 
-    println!("{:?}", sampling_params);
+    // println!("{:?}", sampling_params);
 
     let created = get_created_time_secs();
 
