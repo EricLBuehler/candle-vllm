@@ -27,6 +27,10 @@ impl LogicalTokenBlock {
         self.num_tokens == self.block_size
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.num_tokens == 0
+    }
+
     pub fn append_token_id(&mut self, token: usize) {
         assert!(!self.is_full());
         self.tokens[self.num_tokens] = token;

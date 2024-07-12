@@ -76,7 +76,7 @@ impl _Sequence {
 
     pub fn blocks_to_add_new_tok(&self) -> usize {
         let last = self.logical_token_blocks.last();
-        if !last.is_some_and(|last| last.is_full()) {
+        if !last.is_some_and(|last| last.is_full() || last.is_empty()) {
             // If we have space
             0
         } else {
@@ -168,17 +168,22 @@ impl _Sequence {
 
     fn append_token_to_blocks(&mut self, token: usize) {
         let last = self.logical_token_blocks.last_mut();
-        if last.is_some() && !last.as_ref().is_some_and(|last| last.is_full()) {
-            // If we have space
-            let last = last.unwrap();
-            last.append_token_id(token);
-        } else {
+        match last {
+            Some(last) => {
+                last.append_token_id(tok);
+            }
+            None => {
+                self.logical_token_blocks
+                    .push(LogicalTokenBlock::new(self.block_size));
+                self.logical_token_blocks
+                    .last_mut()
+                    .unwrap()
+                    .append_token_id(tok);
+            }
+        }
+        if self.logical_token_blocks.last().as_ref().unwrap().is_full() {
             self.logical_token_blocks
-                .push(LogicalTokenBlock::new(self.block_size));
-            self.logical_token_blocks
-                .last_mut()
-                .unwrap()
-                .append_token_id(token);
+                .push(LogicalTokenBlock::new(*block_size));
         }
     }
 }

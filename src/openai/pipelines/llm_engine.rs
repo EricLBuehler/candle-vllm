@@ -370,7 +370,12 @@ impl<'a> LLMEngine<'a> {
                     }
 
                     let block_number = if i / self.cache_config.block_size >= table.len() {
-                        table.get(table.len() - 1).unwrap() //position exceed! use last position
+                        panic!(
+                            "Block table is too small (prompt)! i={} block_size={} table_len={}",
+                            i,
+                            self.cache_config.block_size,
+                            table.len()
+                        );
                     } else {
                         table.get(i / self.cache_config.block_size).unwrap()
                     };
@@ -460,7 +465,7 @@ impl<'a> LLMEngine<'a> {
                     .collect::<Vec<_>>();
 
                 let block_number = if position / self.cache_config.block_size >= table.len() {
-                    table.get(table.len() - 1).unwrap() //position exceed! use last position; TODO (bug fix)
+                    panic!("Block table is too small (completion)! start_pos={} block_size={} table_len={}", position, self.cache_config.block_size, table.len());
                 } else {
                     table.get(position / self.cache_config.block_size).unwrap()
                 };
