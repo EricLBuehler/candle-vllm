@@ -76,7 +76,7 @@ impl _Sequence {
 
     pub fn blocks_to_add_new_tok(&self) -> usize {
         let last = self.logical_token_blocks.last();
-        if !last.is_some_and(|last| last.is_full()) {
+        if !last.is_some_and(|last| last.is_full() || last.is_empty()) {
             // If we have space
             0
         } else {
