@@ -91,7 +91,7 @@ pub struct DefaultPipeline {
     dtype: DType,
     device: Device,
     cur_idx: usize,
-    _config: Config,
+    config: Config,
     stop_token_ids: Vec<u32>,
 }
 
