@@ -133,7 +133,7 @@ For model-specific help, run `cargo run -- --port 2000 <MODEL_TYPE> --help`
 
 For local model weights, run `cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama --repeat-last-n 64`, change the path when needed.
 
-`MODEL_TYPE` = ["llama", "mistral", "phi2", "phi3", "qwen2", "gemma"]
+`MODEL_TYPE` = ["llama", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm"]
 
 `WEIGHT_FILE_PATH` = Corresponding weight path for the given model type
 

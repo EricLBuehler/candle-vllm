@@ -50,6 +50,8 @@ impl LlamaConfig {
             partial_rotary_factor: None,
             qk_layer_rms_norm: None,
             kv_cache_dtype,
+            use_qkv_bias: None,
+            custom_stop_tokens: None,
         }
     }
 }

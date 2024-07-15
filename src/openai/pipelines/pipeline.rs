@@ -15,6 +15,8 @@ use crate::{
             phi2::{Phi2, Phi2Config},
             phi3::{Phi, PhiConfig},
             qwen2::{Qwen2, QwenConfig},
+            stable_lm::{StableLM, StableLMConfig},
+            yi::{Yi, YiConfig},
             Config,
         },
         responses::APIError,
@@ -30,6 +32,7 @@ use candle_examples::token_output_stream::TokenOutputStream;
 use candle_nn::VarBuilder;
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use either::Either::{Left, Right};
+use futures::TryFutureExt;
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use std::{iter::zip, path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
@@ -45,6 +48,7 @@ pub struct SpecificConfig {
     top_k: Option<usize>,
     top_p: Option<f64>,
     penalty: Option<f32>,
+    max_gen_tokens: Option<usize>,
 }
 
 impl SpecificConfig {
@@ -54,6 +58,7 @@ impl SpecificConfig {
         top_k: Option<usize>,
         top_p: Option<f64>,
         penalty: Option<f32>,
+        max_gen_tokens: Option<usize>,
     ) -> Self {
         Self {
             repeat_last_n,
@@ -61,6 +66,7 @@ impl SpecificConfig {
             top_k,
             top_p,
             penalty,
+            max_gen_tokens,
         }
     }
 }
@@ -72,6 +78,8 @@ enum LLMModel {
     Qwen2(Qwen2),
     Gemma(Gemma),
     Mistral(Mistral),
+    Yi(Yi),
+    StableLM(StableLM),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -85,7 +93,7 @@ pub struct DefaultPipeline {
     device: Device,
     cur_idx: usize,
     config: Config,
-    stop_token_id: u32,
+    stop_token_ids: Vec<u32>,
 }
 
 pub struct DefaultLoader {
@@ -200,6 +208,18 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                 ),));
                 config.into_config(false, dtype)
             }
+            "yi" => {
+                let config: YiConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
+                    paths.get_config_filename()
+                )),));
+                config.into_config(false, dtype)
+            }
+            "stablelm" => {
+                let config: StableLMConfig = try_api!(serde_json::from_slice(&try_api!(
+                    std::fs::read(paths.get_config_filename())
+                ),));
+                config.into_config(false, dtype)
+            }
             _ => panic!("Model not supported!"),
         };
 
@@ -239,6 +259,14 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                 LLMModel::Mistral(try_api!(Mistral::new(vb, &config, dtype, &device))),
                 SeparatorStyle::Mistral,
             ),
+            "yi" => (
+                LLMModel::Yi(try_api!(Yi::new(vb, &config, dtype, &device))),
+                SeparatorStyle::Yi,
+            ),
+            "stablelm" => (
+                LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
+                SeparatorStyle::StableLM,
+            ),
             _ => panic!("Model not supported!"),
         };
 
@@ -250,7 +278,9 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         println!("Done loading.");
 
         //max and min number of tokens generated per request
-        let mut default_max_tokens = config.max_seq_len / 10;
+        let mut default_max_tokens = specific_args
+            .max_gen_tokens
+            .unwrap_or(config.max_seq_len / 5);
         if default_max_tokens < MIN_GEN_TOKENS {
             default_max_tokens = MIN_GEN_TOKENS;
         } else if default_max_tokens > MAX_GEN_TOKENS {
@@ -271,6 +301,17 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
             Some(token) => token,
             None => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap(),
         };
+        let mut stop_token_ids = Vec::<u32>::new();
+        stop_token_ids.push(eos_token);
+
+        if let Some(custom_stop) = &config.custom_stop_tokens {
+            for stop in custom_stop {
+                match tokenizer.get_token(&stop) {
+                    Some(token) => stop_token_ids.push(token),
+                    None => {}
+                };
+            }
+        }
 
         println!("{:?}", specific_args);
 
@@ -302,7 +343,7 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                     0,
                     sep_style,
                     "".to_string(),
-                    vec![eos_token as usize],
+                    stop_token_ids.clone(),
                     ("user".to_string(), "assistant".to_string()),
                     DefaultConversationSeparators {
                         sep: " ".to_string(),
@@ -313,8 +354,8 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
                 dtype,
                 device: device.clone(),
                 cur_idx: 0,
-                config: config,
-                stop_token_id: eos_token,
+                config: config.clone(),
+                stop_token_ids,
             }),
             pipeline_config,
         ))
@@ -394,6 +435,26 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
+            LLMModel::Yi(yi) => yi
+                .forward(
+                    &input_tokens
+                        .reshape((1, input_tokens.shape().dims()[0]))
+                        .unwrap(),
+                    self.cur_idx,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
+            LLMModel::StableLM(stablelm) => stablelm
+                .forward(
+                    &input_tokens
+                        .reshape((1, input_tokens.shape().dims()[0]))
+                        .unwrap(),
+                    self.cur_idx,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
         };
 
         self.cur_idx += length;
@@ -406,11 +467,6 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
         sampling_params: &SamplingParams,
         seqs: &[(&usize, &Arc<Sequence>)],
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        let eos_token_id = self
-            .config
-            .eos_token_id
-            .or_else(|| Some(self.stop_token_id));
-
         let n_seqs = logits.dims()[0];
 
         let mut result = Vec::new();
@@ -450,8 +506,7 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
                 .next_token(next_token)
                 .unwrap()
                 .unwrap_or("".to_string());
-
-            if Some(next_token) == eos_token_id && tokens_generated > 1 {
+            if self.stop_token_ids.contains(&next_token) && tokens_generated > 1 {
                 result.push(Right("stop".to_string()));
                 break;
             }
@@ -490,6 +545,8 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
             LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),
             LLMModel::Gemma(gemma) => gemma.get_config().clone(),
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
+            LLMModel::Yi(yi) => yi.get_config().clone(),
+            LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),
         }
     }
 

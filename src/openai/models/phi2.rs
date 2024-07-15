@@ -54,6 +54,8 @@ impl Phi2Config {
             partial_rotary_factor: Some(self.partial_rotary_factor),
             qk_layer_rms_norm: Some(self.qk_layernorm),
             kv_cache_dtype,
+            use_qkv_bias: None,
+            custom_stop_tokens: None,
         }
     }
 }
@@ -297,7 +299,6 @@ pub struct Phi2 {
     final_layernorm: LayerNorm,
     lm_head: Linear,
     cfg: Config,
-    dtype: DType,
     device: Device,
 }
 
@@ -324,7 +325,6 @@ impl Phi2 {
             final_layernorm,
             lm_head,
             cfg: cfg.clone(),
-            dtype,
             device: device.clone(),
         })
     }
