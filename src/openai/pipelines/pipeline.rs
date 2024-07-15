@@ -32,7 +32,6 @@ use candle_examples::token_output_stream::TokenOutputStream;
 use candle_nn::VarBuilder;
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use either::Either::{Left, Right};
-use futures::TryFutureExt;
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use std::{iter::zip, path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
@@ -92,7 +91,7 @@ pub struct DefaultPipeline {
     dtype: DType,
     device: Device,
     cur_idx: usize,
-    config: Config,
+    _config: Config,
     stop_token_ids: Vec<u32>,
 }
 

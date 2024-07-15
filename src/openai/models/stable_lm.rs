@@ -69,11 +69,6 @@ pub(crate) struct RotaryEmbedding {
     dim: usize,
 }
 
-fn rotate_half(xs: &Tensor) -> Result<Tensor> {
-    let xs = xs.chunk(2, D::Minus1)?;
-    Tensor::cat(&[&xs[1].neg()?, &xs[0]], D::Minus1)
-}
-
 impl RotaryEmbedding {
     pub(crate) fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
