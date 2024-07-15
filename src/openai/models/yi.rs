@@ -8,7 +8,7 @@ use std::iter::zip;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct MistralConfig {
+pub struct YiConfig {
     pub vocab_size: usize,
     pub hidden_size: usize,
     pub intermediate_size: usize,
@@ -20,12 +20,12 @@ pub struct MistralConfig {
     pub rms_norm_eps: f64,
     pub rope_theta: f64,
     pub sliding_window: Option<usize>,
+    pub tie_word_embeddings: Option<bool>,
     pub bos_token_id: usize,
     pub eos_token_id: usize,
-    pub tie_word_embeddings: Option<bool>,
 }
 
-impl MistralConfig {
+impl YiConfig {
     pub fn into_config(self, use_flash_attn: bool, kv_cache_dtype: DType) -> Config {
         Config {
             hidden_size: self.hidden_size,
@@ -50,7 +50,7 @@ impl MistralConfig {
             qk_layer_rms_norm: None,
             kv_cache_dtype,
             use_qkv_bias: None,
-            custom_stop_tokens: None,
+            custom_stop_tokens: Some(vec!["<|im_end|>".to_string()]),
         }
     }
 }
@@ -63,8 +63,8 @@ struct RotaryEmbedding {
 
 impl RotaryEmbedding {
     fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
-        let rope_theta = cfg.rope_theta as f32;
         let dim = cfg.hidden_size / cfg.num_attention_heads;
+        let rope_theta = cfg.rope_theta as f32;
         let max_seq_len = cfg.max_seq_len;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
@@ -76,7 +76,6 @@ impl RotaryEmbedding {
             .to_dtype(DType::F32)?
             .reshape((max_seq_len, 1))?;
         let freqs = t.matmul(&inv_freq)?;
-
         Ok(Self {
             sin: freqs.sin()?,
             cos: freqs.cos()?,
@@ -242,17 +241,16 @@ impl Attention {
 struct DecoderLayer {
     self_attn: Attention,
     mlp: MLP,
-    input_layernorm: RmsNorm,
-    post_attention_layernorm: RmsNorm,
+    ln1: RmsNorm,
+    ln2: RmsNorm,
 }
 
 impl DecoderLayer {
     fn new(rotary_emb: Arc<RotaryEmbedding>, cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"))?;
         let mlp = MLP::new(cfg, vb.pp("mlp"))?;
-        let input_layernorm =
-            RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
-        let post_attention_layernorm = RmsNorm::new(
+        let ln1 = RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
+        let ln2 = RmsNorm::new(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
@@ -260,8 +258,8 @@ impl DecoderLayer {
         Ok(Self {
             self_attn,
             mlp,
-            input_layernorm,
-            post_attention_layernorm,
+            ln1,
+            ln2,
         })
     }
 
@@ -274,34 +272,33 @@ impl DecoderLayer {
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
         let residual = xs;
-        let xs = self.input_layernorm.forward(xs)?;
+        let xs = self.ln1.forward(xs)?;
         let xs =
             self.self_attn
                 .forward(&xs, attention_mask, seqlen_offset, cache, input_metadata)?;
         let xs = (xs + residual)?;
         let residual = &xs;
-        let xs = xs.apply(&self.post_attention_layernorm)?.apply(&self.mlp)?;
+        let xs = xs.apply(&self.ln2)?.apply(&self.mlp)?;
         residual + xs
     }
 }
 
-pub struct Mistral {
+pub struct Yi {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
     lm_head: Linear,
-    sliding_window: Option<usize>,
     device: Device,
     dtype: DType,
     cfg: Config,
 }
 
-impl Mistral {
+impl Yi {
     pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens =
             candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let rotary_emb = Arc::new(RotaryEmbedding::new(dtype, cfg, device)?);
+        let rotary_emb = Arc::new(RotaryEmbedding::new(vb.dtype(), cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
@@ -315,7 +312,6 @@ impl Mistral {
             layers,
             norm,
             lm_head,
-            sliding_window: cfg.sliding_window,
             device: device.clone(),
             dtype: dtype,
             cfg: cfg.clone(),
@@ -324,20 +320,13 @@ impl Mistral {
 
     fn prepare_decoder_attention_mask(
         &self,
+        b_size: usize,
         tgt_len: usize,
         seqlen_offset: usize,
     ) -> Result<Tensor> {
-        let sliding_window = self.sliding_window.unwrap_or(tgt_len + 1);
+        // Sliding window mask?
         let mask: Vec<_> = (0..tgt_len)
-            .flat_map(|i| {
-                (0..tgt_len).map(move |j| {
-                    if i < j || j + sliding_window < i {
-                        f32::NEG_INFINITY
-                    } else {
-                        0.
-                    }
-                })
-            })
+            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
             .collect();
         let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
         let mask = if seqlen_offset > 0 {
@@ -346,7 +335,7 @@ impl Mistral {
         } else {
             mask
         };
-        mask.expand((1, 1, tgt_len, tgt_len + seqlen_offset))?
+        mask.expand((b_size, 1, tgt_len, tgt_len + seqlen_offset))?
             .to_dtype(self.dtype)
     }
 
@@ -357,11 +346,11 @@ impl Mistral {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
-        let (_b_size, seq_len) = input_ids.dims2()?;
+        let (b_size, seq_len) = input_ids.dims2()?;
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = self.prepare_decoder_attention_mask(seq_len, seqlen_offset)?;
+            let mask = self.prepare_decoder_attention_mask(b_size, seq_len, seqlen_offset)?;
             Some(mask)
         };
         let mut xs = self.embed_tokens.forward(input_ids)?;
@@ -386,13 +375,12 @@ impl Mistral {
                 )?
             }
         }
-        let logits = xs
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.norm)?
-            .apply(&self.lm_head)?;
 
-        //TODO: do not squeeze for batched streaming
-        logits.squeeze(0)?.to_dtype(DType::F32)
+        xs.narrow(1, seq_len - 1, 1)?
+            .apply(&self.norm)?
+            .apply(&self.lm_head)?
+            .squeeze(0)?
+            .to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {

@@ -4,6 +4,8 @@ pub mod mistral;
 pub mod phi2;
 pub mod phi3;
 pub mod qwen2;
+pub mod stable_lm;
+pub mod yi;
 use candle_core::DType;
 use either::Either;
 use serde::Deserialize;
@@ -35,6 +37,8 @@ pub struct Config {
     pub partial_rotary_factor: Option<f32>,
     pub qk_layer_rms_norm: Option<bool>,
     pub kv_cache_dtype: DType,
+    pub use_qkv_bias: Option<bool>,
+    pub custom_stop_tokens: Option<Vec<String>>,
 }
 
 impl Config {

@@ -21,6 +21,8 @@ pub enum SeparatorStyle {
     Qwen2,
     Gemma,
     Mistral,
+    Yi,
+    StableLM,
     ChatGLM,
     ChatML,
     ChatIntern,
@@ -41,7 +43,7 @@ pub struct DefaultConversation {
     offset: usize,
     sep_style: SeparatorStyle,
     stop_criteria: String,
-    stop_token_ids: Vec<usize>,
+    stop_token_ids: Vec<u32>,
     roles: (String, String),
     sep: String,
     sep2: Option<String>,
@@ -71,7 +73,7 @@ impl DefaultConversation {
         offset: usize,
         sep_style: SeparatorStyle,
         stop_criteria: String,
-        stop_token_ids: Vec<usize>,
+        stop_token_ids: Vec<u32>,
         roles: (String, String),
         seps: DefaultConversationSeparators,
     ) -> Self {
@@ -269,7 +271,7 @@ impl Conversation for DefaultConversation {
                 accum
             }
 
-            SeparatorStyle::Qwen2 => {
+            SeparatorStyle::Qwen2 | SeparatorStyle::Yi => {
                 let mut accum = "".to_string();
                 for (i, message) in self.messages.iter().enumerate() {
                     let Message((_role, message)) = message;
@@ -304,6 +306,29 @@ impl Conversation for DefaultConversation {
                     }
                 }
                 accum += "<start_of_turn>model\n";
+                accum
+            }
+
+            SeparatorStyle::StableLM => {
+                let mut accum = "".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    let Message((_role, message)) = message;
+                    if _role.clone() == self.roles.0 {
+                        //user message
+                        if let Some(message) = message {
+                            accum += &format!("<|user|>user\n {message}<|endoftext|>");
+                        } else {
+                            accum += &format!("<|user|> <|endoftext|>");
+                        }
+                    } else if _role.clone() == self.roles.1 {
+                        //assistant message
+                        if let Some(message) = message {
+                            accum += &format!("<|assistant|>\n {message}<|endoftext|>");
+                        }
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
+                    }
+                }
                 accum
             }
 

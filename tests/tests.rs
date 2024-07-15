@@ -18,6 +18,7 @@ async fn test_llama() -> Result<(), APIError> {
         ModelSelected::Llama {
             repeat_last_n: Some(64),
             penalty: Some(1.1),
+            temperature: None,
         },
         Some("meta-llama/Llama-2-7b-chat-hf".to_string()),
     );
