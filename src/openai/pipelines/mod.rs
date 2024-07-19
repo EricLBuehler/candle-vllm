@@ -73,14 +73,16 @@ pub(crate) fn get_token(
     hf_token_path: Option<String>,
 ) -> Result<String, APIError> {
     Ok(match (hf_token, hf_token_path) {
-        (Some(envvar), None) => try_api!(env::var(envvar)),
-        (None, Some(path)) => try_api!(fs::read_to_string(path)),
+        (Some(envvar), None) => try_api!(env::var(envvar)).trim().to_string(),
+        (None, Some(path)) => try_api!(fs::read_to_string(path)).trim().to_string(),
         (None, None) => try_api!(fs::read_to_string(format!(
             "{}/.cache/huggingface/token",
             dirs::home_dir()
                 .ok_or(APIError::new_str("No home directory"))?
                 .display()
-        ))),
+        )))
+        .trim()
+        .to_string(),
         _ => {
             return Err(APIError::new_str(
                 "Do not specify `hf_token` and `hf_token_path` at the same time.",
