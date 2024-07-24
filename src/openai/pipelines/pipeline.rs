@@ -1,5 +1,6 @@
 use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
 use crate::openai::sampling_params::{Logprobs, TopLogprob};
+use crate::scheduler::sequence::SequenceGroup;
 use crate::{
     openai::{
         conversation::{
@@ -24,7 +25,6 @@ use crate::{
         PipelineConfig,
     },
     paged_attention::input_metadata::InputMetadata,
-    scheduler::sequence::Sequence,
     try_api,
 };
 use candle_core::{DType, Device, Tensor};
@@ -33,7 +33,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::generation::{LogitsProcessor, Sampling};
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
-use std::{iter::zip, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
@@ -124,7 +124,7 @@ impl DefaultLoader {
     }
 }
 
-impl<'a> ModelLoader<'a> for DefaultLoader {
+impl ModelLoader for DefaultLoader {
     fn download_model(
         &self,
         model_id: String,
@@ -166,7 +166,7 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
         paths: Box<dyn ModelPaths>,
         dtype: DType,
         device: Device,
-    ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError> {
+    ) -> Result<(Box<dyn ModulePipeline>, PipelineConfig), APIError> {
         let specific_args = self.config.clone();
 
         let config = match self.name.as_str() {
@@ -361,7 +361,7 @@ impl<'a> ModelLoader<'a> for DefaultLoader {
     }
 }
 
-impl<'s> ModulePipeline<'s> for DefaultPipeline {
+impl ModulePipeline for DefaultPipeline {
     fn forward(
         &mut self,
         input_tokens: Tensor,
@@ -464,12 +464,12 @@ impl<'s> ModulePipeline<'s> for DefaultPipeline {
         &mut self,
         logits: Tensor,
         sampling_params: &SamplingParams,
-        seqs: &[(&usize, &Arc<Sequence>)],
+        seqs: &Arc<SequenceGroup>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        let n_seqs = logits.dims()[0];
+        // let n_seqs = logits.dims()[0];
 
         let mut result = Vec::new();
-        for (_, (_, seq)) in zip(0..n_seqs, seqs) {
+        for (_, seq) in seqs.get_seqs() {
             let logits = logits.squeeze(0).unwrap();
             let sq = seq.deref_mut();
             let tokens = sq

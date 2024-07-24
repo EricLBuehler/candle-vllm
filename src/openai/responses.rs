@@ -1,23 +1,24 @@
+use super::streaming::Streamer;
 use crate::openai::sampling_params::Logprobs;
-use actix_web::{error, HttpResponse};
+use axum::extract::Json;
+use axum::http::{self, StatusCode};
+use axum::response::{IntoResponse, Sse};
 use derive_more::{Display, Error};
-
 use serde::{Deserialize, Serialize};
-
 #[derive(Debug, Display, Error, Serialize)]
 #[display(fmt = "Error: {}", data)]
 pub struct APIError {
     data: String,
 }
 
-impl error::ResponseError for APIError {
-    fn error_response(&self) -> HttpResponse {
-        //pack error to json so that client can handle it
-        HttpResponse::BadRequest()
-            .content_type("application/json")
-            .json(self.data.to_string())
-    }
-}
+// impl error::ResponseError for APIError {
+//     fn error_response(&self) -> HttpResponse {
+//         //pack error to json so that client can handle it
+//         HttpResponse::BadRequest()
+//             .content_type("application/json")
+//             .json(self.data.to_string())
+//     }
+// }
 
 impl APIError {
     pub fn new(data: String) -> Self {
@@ -50,6 +51,8 @@ macro_rules! try_api {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionUsageResponse {
+    pub request_id: String,
+    pub created: u64,
     pub completion_tokens: usize,
     pub prompt_tokens: usize,
     pub total_tokens: usize,
@@ -109,4 +112,50 @@ pub struct ChatCompletionChunk {
     pub model: String,
     pub object: &'static str,
     pub system_fingerprint: Option<String>,
+}
+
+trait ErrorToResponse: Serialize {
+    fn to_response(&self, code: StatusCode) -> axum::response::Response {
+        let mut r = Json(self).into_response();
+        *r.status_mut() = code;
+        r
+    }
+}
+
+#[derive(Serialize)]
+struct JsonError {
+    message: String,
+}
+
+impl JsonError {
+    fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+impl ErrorToResponse for JsonError {}
+
+pub enum ChatResponder {
+    Streamer(Sse<Streamer>),
+    Completion(ChatCompletionResponse),
+    ModelError(APIError),
+    InternalError(APIError),
+    ValidationError(APIError),
+}
+
+impl IntoResponse for ChatResponder {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            ChatResponder::Streamer(s) => s.into_response(),
+            ChatResponder::Completion(s) => Json(s).into_response(),
+            ChatResponder::InternalError(e) => {
+                JsonError::new(e.to_string()).to_response(http::StatusCode::INTERNAL_SERVER_ERROR)
+            }
+            ChatResponder::ValidationError(e) => {
+                JsonError::new(e.to_string()).to_response(http::StatusCode::UNPROCESSABLE_ENTITY)
+            }
+            ChatResponder::ModelError(msg) => {
+                JsonError::new(msg.to_string()).to_response(http::StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+    }
 }

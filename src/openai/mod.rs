@@ -1,7 +1,7 @@
 use candle_core::Device;
-use futures::lock::Mutex;
 use std::sync::Arc;
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
+use tokio::sync::Mutex;
 
 use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
 
@@ -40,9 +40,8 @@ pub struct PipelineConfig {
     pub temperature: f32,
 }
 
-#[derive(Clone)]
-pub struct OpenAIServerData<'s> {
-    pub model: Arc<Mutex<LLMEngine<'s>>>,
+pub struct OpenAIServerData {
+    pub model: Arc<Mutex<LLMEngine>>,
     pub pipeline_config: PipelineConfig,
     pub record_conversation: bool,
     pub device: Device,

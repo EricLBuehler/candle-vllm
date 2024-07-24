@@ -1,14 +1,21 @@
 use super::requests::ChatCompletionRequest;
 use super::requests::Messages;
-use super::responses::{APIError, ChatCompletionResponse, ChatCompletionUsageResponse};
+use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
-use super::streaming::new_streaming_conn;
-use super::utils::get_created_time_secs;
+use super::streaming::{Streamer, StreamingStatus};
 use super::OpenAIServerData;
-use actix_web::{post, web, Either, HttpResponse};
+use axum::response::sse::KeepAlive;
+use axum::{
+    extract::{Json, State},
+    response::Sse,
+};
+use flume;
+use std::env;
+use std::sync::Arc;
+use std::time::SystemTime;
 use tokenizers::Encoding;
+use tokio::time::Duration;
 use uuid::Uuid;
-
 // fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
 //     let current_name = {
 //         let model = data.model.lock().unwrap();
@@ -25,8 +32,8 @@ use uuid::Uuid;
 
 // Get prompt, roles
 async fn get_gen_prompt(
-    data: &OpenAIServerData<'_>,
-    request: &web::Json<ChatCompletionRequest>,
+    data: &OpenAIServerData,
+    request: &ChatCompletionRequest,
 ) -> Result<String, APIError> {
     let mut model = data.model.lock().await;
     let conversation = model
@@ -62,9 +69,9 @@ async fn get_gen_prompt(
 }
 
 async fn check_length(
-    request: &web::Json<ChatCompletionRequest>,
+    request: &ChatCompletionRequest,
     prompt: String,
-    data: &OpenAIServerData<'_>,
+    data: &OpenAIServerData,
 ) -> Result<Encoding, APIError> {
     let token_ids = {
         let model = data.model.lock().await;
@@ -96,11 +103,17 @@ async fn check_length(
     }
 }
 
-#[post("/v1/chat/completions")]
-async fn chat_completions(
-    data: web::Data<OpenAIServerData<'static>>,
-    request: web::Json<ChatCompletionRequest>,
-) -> Either<Result<web::Json<ChatCompletionResponse>, APIError>, HttpResponse> {
+#[utoipa::path(
+    post,
+    tag = "candle-vllm",
+    path = "/v1/chat/completions",
+    request_body = ChatCompletionRequest,
+    responses((status = 200, description = "Chat completions"))
+)]
+pub async fn chat_completions(
+    State(data): State<Arc<OpenAIServerData>>,
+    request: Json<ChatCompletionRequest>,
+) -> ChatResponder {
     // let model_name = &request.model;
     // let res = verify_model(&data, model_name);
     // if res.is_err() {
@@ -110,20 +123,20 @@ async fn chat_completions(
     if request.logit_bias.as_ref().is_some()
         && request.logit_bias.as_ref().is_some_and(|x| !x.is_empty())
     {
-        return Either::Left(Err(APIError::new_str(
+        return ChatResponder::ValidationError(APIError::new_str(
             "`logit_bias` is not currently supported.",
-        )));
+        ));
     }
 
     let prompt = get_gen_prompt(&data, &request).await;
     if prompt.is_err() {
-        return Either::Left(Err(prompt.err().unwrap()));
+        return ChatResponder::ValidationError(prompt.err().unwrap());
     }
     let prompt = prompt.unwrap();
 
     let token_ids = check_length(&request, prompt.clone(), &data).await;
     if token_ids.is_err() {
-        return Either::Left(Err(token_ids.err().unwrap()));
+        return ChatResponder::ValidationError(token_ids.err().unwrap());
     }
     let mut token_ids: Encoding = token_ids.unwrap();
     if token_ids.len() % 2 == 0 {
@@ -167,117 +180,56 @@ async fn chat_completions(
         request.skip_special_tokens.unwrap_or(true),
     );
     if sampling_params.is_err() {
-        return Either::Left(Err(sampling_params.err().unwrap()));
+        return ChatResponder::ValidationError(sampling_params.err().unwrap());
     }
     let sampling_params = sampling_params.unwrap();
 
-    // println!("{:?}", sampling_params);
-
-    let created = get_created_time_secs();
-
-    if request.stream.is_some_and(|x| x) {
-        let (sender, receiver) = new_streaming_conn();
-        let _ = tokio::spawn(async move {
-            let mut model = data.model.lock().await;
-            let result = model
-                .generate(
-                    token_ids,
-                    request_id,
-                    created,
-                    sampling_params,
-                    request.logprobs.unwrap_or(false),
-                    Some(&sender),
-                )
-                .await
-                .unwrap();
-            //chat completion statistics
-            let usage = ChatCompletionUsageResponse {
-                completion_tokens: result
-                    .iter()
-                    .map(|(_, usage)| usage.completion_tokens)
-                    .sum(),
-                prompt_tokens: result.iter().map(|(_, usage)| usage.prompt_tokens).sum(),
-                total_tokens: result.iter().map(|(_, usage)| usage.total_tokens).sum(),
-                prompt_time_costs: result
-                    .iter()
-                    .map(|(_, usage)| usage.prompt_time_costs)
-                    .sum(),
-                completion_time_costs: result
-                    .iter()
-                    .map(|(_, usage)| usage.completion_time_costs)
-                    .sum(),
-            };
-            println!(
-                "\r\n Prefilling: {} prompt tokens processed in {} seconds",
-                usage.prompt_tokens,
-                usage.prompt_time_costs / 1000
-            );
-
-            println!(
-                "\r\n Decoding: {} tokens processed in {} seconds ({} tokens/s)",
-                usage.completion_tokens,
-                usage.completion_time_costs / 1000,
-                usage.completion_tokens * 1000
-                    / if usage.completion_time_costs > 0 {
-                        usage.completion_time_costs
-                    } else {
-                        1
-                    }
-            );
-        });
-
-        return Either::Right(
-            HttpResponse::Ok()
-                .append_header(("content-type", "text/event-stream"))
-                .streaming(receiver),
+    let (response_tx, rx) = flume::unbounded();
+    {
+        //send completion request to inference engine
+        let mut model = data.model.lock().await;
+        model.add_request(
+            token_ids,
+            request_id.clone(),
+            SystemTime::now(),
+            sampling_params,
+            request.logprobs.unwrap_or(false),
+            Some(response_tx),
         );
+        model.notify.notify_one();
     }
 
-    let result = {
-        let mut model = data.model.lock().await;
-        let model_res = model
-            .generate(
-                token_ids,
-                request_id.clone(),
-                created,
-                sampling_params,
-                request.logprobs.unwrap_or(false),
-                None,
-            )
-            .await;
-        if model_res.is_err() {
-            return Either::Left(Err(model_res.err().unwrap()));
-        }
-        model_res.unwrap()
-    };
+    // println!("{:?}", sampling_params);
 
-    let choices = result
-        .iter()
-        .flat_map(|(choices, _)| choices.clone())
-        .collect::<Vec<_>>();
-    let usage = ChatCompletionUsageResponse {
-        completion_tokens: result
-            .iter()
-            .map(|(_, usage)| usage.completion_tokens)
-            .sum(),
-        prompt_tokens: result.iter().map(|(_, usage)| usage.prompt_tokens).sum(),
-        total_tokens: result.iter().map(|(_, usage)| usage.total_tokens).sum(),
-        prompt_time_costs: result
-            .iter()
-            .map(|(_, usage)| usage.prompt_time_costs)
-            .sum(),
-        completion_time_costs: result
-            .iter()
-            .map(|(_, usage)| usage.completion_time_costs)
-            .sum(),
-    };
+    if request.stream.is_some_and(|x| x) {
+        ChatResponder::Streamer(
+            Sse::new(Streamer {
+                rx,
+                status: StreamingStatus::Uninitilized,
+            })
+            .keep_alive(
+                KeepAlive::new()
+                    .interval(Duration::from_millis(
+                        env::var("KEEP_ALIVE_INTERVAL")
+                            .map(|val| val.parse::<u64>().unwrap_or(100))
+                            .unwrap_or(100),
+                    ))
+                    .text("keep-alive-text"),
+            ),
+        )
+    } else {
+        // wait until current response finished
+        let model = data.model.lock().await;
+        let choices = &model.completion_records[&request_id].0;
+        let usage = &model.completion_records[&request_id].1;
 
-    Either::Left(Ok(web::Json(ChatCompletionResponse {
-        id: request_id,
-        choices,
-        created,
-        model: request.model.clone(),
-        object: "chat.completion",
-        usage,
-    })))
+        ChatResponder::Completion(ChatCompletionResponse {
+            id: request_id,
+            choices: choices.to_vec(),
+            created: usage.created,
+            model: request.model.clone(),
+            object: "chat.completion",
+            usage: usage.clone(),
+        })
+    }
 }

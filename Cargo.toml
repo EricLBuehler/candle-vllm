@@ -6,8 +6,13 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix-web = "4.8.0"
+axum = { version = "0.7.4", features = ["tokio"] }
+utoipa = { version = "4.2", features = ["axum_extras"] }
+tower-http = { version = "0.5.1", features = ["cors"]}
+flume = "0.10.14"
+#actix-web = "4.8.0"
 anyhow = "1.0.75"
+hyper = { version = "0.14", features = ["full"] }
 candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.6.0" }
 candle-examples = { git = "https://github.com/huggingface/candle.git", version = "0.6.0" }
 #candle-lora = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }

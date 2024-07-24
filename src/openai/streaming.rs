@@ -1,25 +1,66 @@
-use std::{error::Error, sync::Arc};
-
-use actix_web::web::Bytes;
+use super::responses::ChatCompletionChunk;
+use axum::response::sse::Event;
+use flume::Receiver;
 use futures::Stream;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-pub(crate) type SenderError = Arc<dyn Error + Send + Sync>;
-
-pub(crate) fn new_streaming_conn() -> (Sender<Result<Bytes, SenderError>>, Client) {
-    let (tx, rx) = channel(1);
-    (tx, Client(rx))
+#[derive(PartialEq)]
+pub enum StreamingStatus {
+    Uninitilized,
+    Started,
+    Interupted,
+    Stopped,
+}
+pub enum ChatResponse {
+    InternalError(String),
+    ValidationError(String),
+    ModelError(String),
+    Chunk(ChatCompletionChunk),
+    Done, //finish flag
 }
 
-pub(crate) struct Client(Receiver<Result<Bytes, SenderError>>);
+pub struct Streamer {
+    pub rx: Receiver<ChatResponse>,
+    pub status: StreamingStatus,
+}
 
-impl Stream for Client {
-    type Item = Result<Bytes, SenderError>;
+impl Stream for Streamer {
+    type Item = Result<Event, axum::Error>;
 
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.0.poll_recv(cx)
+    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.status == StreamingStatus::Stopped {
+            return Poll::Ready(None);
+        }
+        match self.rx.try_recv() {
+            Ok(resp) => match resp {
+                ChatResponse::InternalError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
+                ChatResponse::ValidationError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
+                ChatResponse::ModelError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
+                ChatResponse::Chunk(response) => {
+                    if self.status != StreamingStatus::Started {
+                        self.status = StreamingStatus::Started;
+                    }
+                    Poll::Ready(Some(Event::default().json_data(response)))
+                }
+                ChatResponse::Done => {
+                    self.status = StreamingStatus::Stopped;
+                    Poll::Ready(Some(Ok(Event::default().data("[DONE]"))))
+                }
+            },
+
+            Err(e) => {
+                if self.status == StreamingStatus::Started && e == flume::TryRecvError::Disconnected
+                {
+                    //no TryRecvError::Disconnected returned even if the client closed the stream or disconnected
+                    self.status = StreamingStatus::Interupted;
+                    Poll::Ready(None)
+                } else {
+                    Poll::Pending
+                }
+            }
+        }
     }
 }

@@ -1,6 +1,8 @@
-use actix_web::middleware::Logger;
-use actix_web::web::Data;
-use actix_web::{App, HttpServer};
+use axum::{
+    http::{self, Method},
+    routing::post,
+    Router,
+};
 use candle_core::{DType, Device};
 use candle_examples;
 use candle_vllm::openai::openai_server::chat_completions;
@@ -12,12 +14,12 @@ use candle_vllm::scheduler::cache_engine::CacheConfig;
 use candle_vllm::scheduler::SchedulerConfig;
 use candle_vllm::{get_model_loader, hub_load_local_safetensors, ModelSelected};
 use clap::Parser;
-use futures::lock::Mutex;
 use std::sync::Arc;
 const SIZE_IN_MB: usize = 1024 * 1024;
 use candle_vllm::openai::models::Config;
 use std::path::Path;
-
+use tokio::sync::Notify;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -77,7 +79,7 @@ struct Args {
     record_conversation: bool,
 }
 
-#[actix_web::main]
+#[tokio::main]
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
     let (loader, model_id) = get_model_loader(args.command, args.model_id.clone());
@@ -142,42 +144,35 @@ async fn main() -> Result<(), APIError> {
             max_num_seqs: args.max_num_seqs,
         },
         cache_config,
+        Arc::new(Notify::new()),
     )?;
 
     let server_data = OpenAIServerData {
         pipeline_config: model.1,
-        model: Arc::new(Mutex::new(llm_engine)),
+        model: llm_engine,
         record_conversation: args.record_conversation,
         device: Device::Cpu,
     };
 
     println!("Server started at http://127.0.0.1:{}.", args.port);
-    if args.verbose {
-        env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
 
-        HttpServer::new(move || {
-            App::new()
-                .wrap(Logger::default())
-                .service(chat_completions)
-                .app_data(Data::new(server_data.clone()))
-        })
-        .bind(("127.0.0.1", args.port))
-        .map_err(|e| APIError::new(e.to_string()))?
-        .run()
+    let allow_origin = AllowOrigin::any();
+    let cors_layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([http::header::CONTENT_TYPE])
+        .allow_origin(allow_origin);
+
+    let app = Router::new()
+        .layer(cors_layer)
+        .route("/v1/chat/completions", post(chat_completions))
+        .with_state(Arc::new(server_data));
+
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", args.port))
         .await
         .map_err(|e| APIError::new(e.to_string()))?;
-    } else {
-        HttpServer::new(move || {
-            App::new()
-                .service(chat_completions)
-                .app_data(Data::new(server_data.clone()))
-        })
-        .bind(("127.0.0.1", args.port))
-        .map_err(|e| APIError::new(e.to_string()))?
-        .run()
+    axum::serve(listener, app)
         .await
         .map_err(|e| APIError::new(e.to_string()))?;
-    }
 
     Ok(())
 }

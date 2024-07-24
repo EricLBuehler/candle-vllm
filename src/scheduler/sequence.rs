@@ -3,10 +3,11 @@ use std::{
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
-use crate::openai::sampling_params::Logprobs;
-
 use super::block_engine::LogicalTokenBlock;
-
+use crate::openai::sampling_params::{Logprobs, SamplingParams};
+use crate::openai::streaming::ChatResponse;
+use flume::Sender;
+use std::time::SystemTime;
 #[derive(Clone)]
 pub enum SequenceStatus {
     FinishedIgnored,
@@ -170,20 +171,20 @@ impl _Sequence {
         let last = self.logical_token_blocks.last_mut();
         match last {
             Some(last) => {
-                last.append_token_id(tok);
+                last.append_token_id(token);
             }
-            None => {
+            _ => {
                 self.logical_token_blocks
                     .push(LogicalTokenBlock::new(self.block_size));
                 self.logical_token_blocks
                     .last_mut()
                     .unwrap()
-                    .append_token_id(tok);
+                    .append_token_id(token);
             }
         }
         if self.logical_token_blocks.last().as_ref().unwrap().is_full() {
             self.logical_token_blocks
-                .push(LogicalTokenBlock::new(*block_size));
+                .push(LogicalTokenBlock::new(self.block_size));
         }
     }
 }
@@ -231,10 +232,13 @@ type SeqID = usize;
 /// A SequenceGroup contains only sequences with the same prompt. They will always be scheduled together.
 pub struct SequenceGroup {
     seqs: HashMap<SeqID, Arc<Sequence>>,
-    arrival_time: u64,
-    group_id: usize,
-    request_id: String,
-    created: u64,
+    pub arrival_time: u64,
+    pub group_id: usize,
+    pub request_id: String,
+    pub created_time: SystemTime,
+    pub sampling_params: SamplingParams,
+    pub use_logprobs: bool,
+    pub sender: Option<Sender<ChatResponse>>,
 }
 
 impl SequenceGroup {
@@ -243,7 +247,10 @@ impl SequenceGroup {
         arrival_time: u64,
         group_id: usize,
         request_id: String,
-        created: u64,
+        created_time: SystemTime,
+        sampling_params: SamplingParams,
+        use_logprobs: bool,
+        sender: Option<Sender<ChatResponse>>,
     ) -> Self {
         let mut seq_map = HashMap::new();
         for seq in seqs {
@@ -254,7 +261,10 @@ impl SequenceGroup {
             arrival_time,
             group_id,
             request_id,
-            created,
+            created_time,
+            sampling_params,
+            use_logprobs,
+            sender,
         }
     }
 
@@ -309,7 +319,7 @@ impl SequenceGroup {
         &self.request_id
     }
 
-    pub fn get_created_time(&self) -> u64 {
-        self.created
+    pub fn get_created_time(&self) -> SystemTime {
+        self.created_time
     }
 }
