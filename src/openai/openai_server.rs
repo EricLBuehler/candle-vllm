@@ -219,6 +219,7 @@ pub async fn chat_completions(
         )
     } else {
         // wait until current response finished
+        tokio::time::sleep(Duration::from_millis(100)).await; //permits generation thread to work
         let model = data.model.lock().await;
         let choices = &model.completion_records[&request_id].0;
         let usage = &model.completion_records[&request_id].1;
