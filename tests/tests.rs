@@ -34,6 +34,7 @@ async fn test_llama() -> Result<(), APIError> {
         None,
     )?;
     let model = loader.load_model(paths, DType::F16, Device::Cpu)?;
+    let finish_notify = Arc::new(Notify::new());
     let llm_engine = LLMEngine::new(
         model.0,
         SchedulerConfig { max_num_seqs: 256 },
@@ -45,6 +46,7 @@ async fn test_llama() -> Result<(), APIError> {
             dtype: DType::F16,
         },
         Arc::new(Notify::new()),
+        finish_notify.clone(),
     )?;
 
     let server_data = OpenAIServerData {
@@ -52,6 +54,7 @@ async fn test_llama() -> Result<(), APIError> {
         model: llm_engine,
         device: Device::Cpu,
         record_conversation: false,
+        finish_notify: finish_notify.clone(),
     };
 
     let allow_origin = AllowOrigin::any();
