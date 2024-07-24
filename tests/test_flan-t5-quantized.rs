@@ -6,17 +6,25 @@ extern crate accelerate_src;
 use std::io::Write;
 use std::path::PathBuf;
 
-use actix_web::{post, web, App, HttpResponse, HttpServer, Responder};
 use serde::{Deserialize, Serialize};
 
 use candle_transformers::models::quantized_t5 as t5;
 
 use anyhow::{Error as E, Result};
+use axum::response::IntoResponse;
+use axum::{
+    extract::Json,
+    http::{self, Method},
+    routing::post,
+    Router,
+};
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
+use candle_vllm::openai::responses::APIError;
 use clap::{Parser, ValueEnum};
 use hf_hub::{api::sync::Api, api::sync::ApiRepo, Repo, RepoType};
 use tokenizers::Tokenizer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
 #[derive(Clone, Debug, Copy, ValueEnum)]
 enum Which {
@@ -231,19 +239,44 @@ struct Response {
     answer: String,
 }
 
-#[post("/generate")]
-async fn generate(req_body: web::Json<Request>) -> impl Responder {
-    let args = Args::parse();
-    let generated_answer = generate_answer(req_body.prompt.clone(), &args);
-    HttpResponse::Ok().json(Response {
-        answer: generated_answer.unwrap(),
-    })
+impl IntoResponse for Response {
+    fn into_response(self) -> axum::response::Response {
+        Json(self.answer).into_response()
+    }
 }
 
-#[actix_web::main]
-async fn main() -> std::io::Result<()> {
-    HttpServer::new(|| App::new().service(generate))
-        .bind("localhost:1111")?
-        .run()
+#[utoipa::path(
+    post,
+    tag = "test",
+    path = "/v1/chat/completions",
+    request_body = Request,
+    responses((status = 200, description = "Chat completions"))
+)]
+pub async fn generate(req_body: Json<Request>) -> axum::response::Response {
+    let args = Args::parse();
+    let generated_answer = generate_answer(req_body.prompt.clone(), &args);
+    Json(Response {
+        answer: generated_answer.unwrap(),
+    })
+    .into_response()
+}
+
+#[tokio::main]
+async fn main() -> Result<(), APIError> {
+    let allow_origin = AllowOrigin::any();
+    let cors_layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([http::header::CONTENT_TYPE])
+        .allow_origin(allow_origin);
+
+    let app = Router::new()
+        .layer(cors_layer)
+        .route("/v1/chat/completions", post(generate));
+
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:2000"))
         .await
+        .map_err(|e| APIError::new(e.to_string()))?;
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| APIError::new(e.to_string()))
 }

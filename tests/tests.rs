@@ -1,24 +1,29 @@
-use actix_web::{http::header::ContentType, test, web::Data, App};
+use axum::{
+    http::{self, Method},
+    routing::post,
+    Router,
+};
 use candle_core::{DType, Device};
 use candle_vllm::{
     get_model_loader,
     openai::{
-        self, openai_server::chat_completions, pipelines::llm_engine::LLMEngine,
-        requests::Messages, responses::APIError, OpenAIServerData,
+        openai_server::chat_completions, pipelines::llm_engine::LLMEngine, responses::APIError,
+        OpenAIServerData,
     },
     scheduler::{cache_engine::CacheConfig, SchedulerConfig},
     ModelSelected,
 };
-use futures::lock::Mutex;
-use std::{collections::HashMap, sync::Arc};
-
-#[actix_web::test]
+use std::sync::Arc;
+use tokio::sync::Notify;
+use tower_http::cors::{AllowOrigin, CorsLayer};
+#[tokio::main]
 async fn test_llama() -> Result<(), APIError> {
     let (loader, model_id) = get_model_loader(
         ModelSelected::Llama {
             repeat_last_n: Some(64),
             penalty: Some(1.1),
             temperature: None,
+            max_gen_tokens: Some(512),
         },
         Some("meta-llama/Llama-2-7b-chat-hf".to_string()),
     );
@@ -39,64 +44,33 @@ async fn test_llama() -> Result<(), APIError> {
             fully_init: false,
             dtype: DType::F16,
         },
+        Arc::new(Notify::new()),
     )?;
 
     let server_data = OpenAIServerData {
         pipeline_config: model.1,
-        model: Arc::new(Mutex::new(llm_engine)),
+        model: llm_engine,
         device: Device::Cpu,
         record_conversation: false,
     };
 
-    let app = test::init_service(
-        App::new()
-            .service(chat_completions)
-            .app_data(Data::new(server_data)),
-    )
-    .await;
+    let allow_origin = AllowOrigin::any();
+    let cors_layer = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST])
+        .allow_headers([http::header::CONTENT_TYPE])
+        .allow_origin(allow_origin);
 
-    let mut system = HashMap::new();
-    system.insert("role".to_string(), "system".to_string());
-    system.insert(
-        "content".to_string(),
-        "You are a talented author who specializes in writing poems.".to_string(),
-    );
+    let app = Router::new()
+        .layer(cors_layer)
+        .route("/v1/chat/completions", post(chat_completions))
+        .with_state(Arc::new(server_data));
 
-    let mut user = HashMap::new();
-    user.insert("role".to_string(), "user".to_string());
-    user.insert(
-        "content".to_string(),
-        "Please write me a poem about why Rust is a great programming language:".to_string(),
-    );
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:2000"))
+        .await
+        .map_err(|e| APIError::new(e.to_string()))?;
+    axum::serve(listener, app)
+        .await
+        .map_err(|e| APIError::new(e.to_string()))?;
 
-    let req = test::TestRequest::with_uri("/v1/chat/completions")
-        .insert_header(ContentType::json())
-        .set_json(openai::requests::ChatCompletionRequest {
-            model: "llama".to_string(),
-            messages: Messages::Map(vec![system, user]),
-            temperature: None,
-            top_p: None,
-            n: None,
-            max_tokens: None,
-            stop: None,
-            stream: None,
-            presence_penalty: None,
-            frequency_penalty: None,
-            logit_bias: None,
-            user: None,
-            top_k: None,
-            best_of: None,
-            use_beam_search: None,
-            skip_special_tokens: None,
-            ignore_eos: None,
-            stop_token_ids: None,
-            logprobs: None,
-            repetition_penalty: None,
-        })
-        .to_request();
-
-    let resp = test::call_service(&app, req).await;
-    println!("{:?}", resp.status());
-    println!("{:?}", resp.into_body());
     Ok(())
 }

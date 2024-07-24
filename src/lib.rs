@@ -209,10 +209,10 @@ impl ToString for ModelSelected {
     }
 }
 
-pub fn get_model_loader<'a>(
+pub fn get_model_loader(
     selected_model: ModelSelected,
     model_id: Option<String>,
-) -> (Box<dyn ModelLoader<'a>>, String) {
+) -> (Box<dyn ModelLoader>, String) {
     match selected_model {
         ModelSelected::Llama {
             repeat_last_n,

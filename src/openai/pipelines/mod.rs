@@ -4,9 +4,7 @@ use dirs;
 use either::Either;
 use std::{env, fs, path::PathBuf, sync::Arc};
 
-use crate::{
-    paged_attention::input_metadata::InputMetadata, scheduler::sequence::Sequence, try_api,
-};
+use crate::{paged_attention::input_metadata::InputMetadata, try_api};
 
 use super::{
     conversation::Conversation, models::Config, responses::APIError,
@@ -17,10 +15,10 @@ use candle_examples::token_output_stream::TokenOutputStream;
 /// which are used to scheduler and manage the cache during generation requests, respectively.
 pub mod llm_engine;
 pub mod pipeline;
-
+use crate::scheduler::sequence::SequenceGroup;
 type TokenOrFinishReason = Either<Logprobs, String>;
 
-pub trait ModulePipeline<'s>: Send + Sync {
+pub trait ModulePipeline: Send + Sync {
     fn forward(
         &mut self,
         input_tokens: Tensor,
@@ -33,7 +31,7 @@ pub trait ModulePipeline<'s>: Send + Sync {
         &mut self,
         logits: Tensor,
         sampling_params: &SamplingParams,
-        seqs: &[(&usize, &Arc<Sequence>)],
+        seqs: &Arc<SequenceGroup>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError>;
 
     fn name(&self) -> &str;
@@ -97,7 +95,7 @@ pub trait ModelPaths {
     fn get_tokenizer_filename(&self) -> &PathBuf;
 }
 
-pub trait ModelLoader<'a> {
+pub trait ModelLoader {
     fn download_model(
         &self,
         model_id: String,
@@ -111,5 +109,5 @@ pub trait ModelLoader<'a> {
         paths: Box<dyn ModelPaths>,
         dtype: DType,
         device: Device,
-    ) -> Result<(Box<dyn ModulePipeline<'a>>, PipelineConfig), APIError>;
+    ) -> Result<(Box<dyn ModulePipeline>, PipelineConfig), APIError>;
 }
