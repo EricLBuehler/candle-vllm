@@ -49,6 +49,7 @@ pub struct LLMEngine {
     cache_engine: CacheEngine,
     sliding_window: Option<usize>,
     pub notify: Arc<Notify>,
+    pub finish_notify: Arc<Notify>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
 }
 
@@ -58,6 +59,7 @@ impl LLMEngine {
         scheduler_config: SchedulerConfig,
         cache_config: CacheConfig,
         notify: Arc<Notify>,
+        finish_notify: Arc<Notify>,
     ) -> Result<Arc<Mutex<Self>>, APIError> {
         let cache_engine = CacheEngine::new(
             pipeline.get_model_config(),
@@ -76,6 +78,7 @@ impl LLMEngine {
             cache_engine,
             sliding_window,
             notify: notify.clone(),
+            finish_notify: finish_notify.clone(),
             completion_records: HashMap::new(),
         }));
         let engine_clone = engine.clone();
@@ -133,6 +136,7 @@ impl LLMEngine {
                     );
                     e.completion_records
                         .insert(request_id.clone(), (choices, usage));
+                    finish_notify.notify_one();
                 }
             });
         });

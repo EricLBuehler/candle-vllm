@@ -137,7 +137,7 @@ async fn main() -> Result<(), APIError> {
         dtype: config.kv_cache_dtype,
     };
     println!("Cache config {:?}", cache_config);
-
+    let finish_notify = Arc::new(Notify::new());
     let llm_engine = LLMEngine::new(
         model.0,
         SchedulerConfig {
@@ -145,6 +145,7 @@ async fn main() -> Result<(), APIError> {
         },
         cache_config,
         Arc::new(Notify::new()),
+        finish_notify.clone(),
     )?;
 
     let server_data = OpenAIServerData {
@@ -152,6 +153,7 @@ async fn main() -> Result<(), APIError> {
         model: llm_engine,
         record_conversation: args.record_conversation,
         device: Device::Cpu,
+        finish_notify: finish_notify.clone(),
     };
 
     println!("Server started at http://127.0.0.1:{}.", args.port);

@@ -219,8 +219,15 @@ pub async fn chat_completions(
         )
     } else {
         // wait until current response finished
-        tokio::time::sleep(Duration::from_millis(100)).await; //permits generation thread to work
+        data.finish_notify.notified().await;
         let model = data.model.lock().await;
+        if !model.completion_records.contains_key(&request_id) {
+            return ChatResponder::ModelError(APIError::from(format!(
+                "Unable to generate response for request {}",
+                request_id
+            )));
+        }
+
         let choices = &model.completion_records[&request_id].0;
         let usage = &model.completion_records[&request_id].1;
 
