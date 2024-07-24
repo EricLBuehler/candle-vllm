@@ -11,7 +11,7 @@ use std::{
 pub enum StreamingStatus {
     Uninitilized,
     Started,
-    Interupted,
+    Interrupted,
     Stopped,
 }
 pub enum ChatResponse {
@@ -55,7 +55,7 @@ impl Stream for Streamer {
                 if self.status == StreamingStatus::Started && e == flume::TryRecvError::Disconnected
                 {
                     //no TryRecvError::Disconnected returned even if the client closed the stream or disconnected
-                    self.status = StreamingStatus::Interupted;
+                    self.status = StreamingStatus::Interrupted;
                     Poll::Ready(None)
                 } else {
                     Poll::Pending

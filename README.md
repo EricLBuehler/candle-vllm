@@ -23,8 +23,8 @@ Currently, candle-vllm supports chat serving for the following models.
 | #2 | **Mistral** |✅|70 tks/s (7B)|
 | #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|
 | #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)|
-| #5 | **Yi** |✅|TBD|
-| #6 | **StableLM** |✅|TBD|
+| #5 | **Yi** |✅|75 tks/s (6B)|
+| #6 | **StableLM** |✅|99 tks/s (3B)|
 | #7 | BigCode/StarCode |TBD|TBD|
 | #8 | ChatGLM |TBD|TBD|
 | #9 | **QWen2 (1.8B, 7B)** |✅|148 tks/s (1.8B)|
