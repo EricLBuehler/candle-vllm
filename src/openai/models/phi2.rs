@@ -6,6 +6,7 @@ use candle_nn::{Activation, VarBuilder};
 use candle_transformers::models::with_tracing::{
     layer_norm, linear_no_bias as linear, Embedding, LayerNorm, Linear,
 };
+use either::Either;
 use serde::Deserialize;
 use std::iter::zip;
 
@@ -41,8 +42,8 @@ impl Phi2Config {
             num_key_value_heads: self.num_key_value_heads.unwrap_or(self.num_attention_heads),
             rms_norm_eps: self.layer_norm_eps,
             rope_theta: self.rope_theta,
-            bos_token_id: self.bos_token_id,
-            eos_token_id: self.eos_token_id,
+            bos_token_id: super::TokenID(Either::Left(self.bos_token_id)),
+            eos_token_id: super::TokenID(Either::Left(self.eos_token_id)),
             max_seq_len: self.max_position_embeddings,
             sliding_window: self.sliding_window,
             hidden_act: Some(self.hidden_act),

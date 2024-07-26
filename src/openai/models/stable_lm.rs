@@ -4,6 +4,7 @@ use crate::paged_attention::PagedAttention;
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::{Activation, LayerNorm, VarBuilder};
 use candle_transformers::models::with_tracing::{linear, linear_no_bias, Linear};
+use either::Either;
 use std::iter::zip;
 use std::sync::Arc;
 
@@ -41,8 +42,8 @@ impl StableLMConfig {
             rms_norm_eps: self.norm_eps,
             rope_theta: self.rope_theta,
             use_flash_attn,
-            bos_token_id: Some(self.bos_token_id as u32),
-            eos_token_id: Some(self.eos_token_id as u32),
+            bos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
+            eos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
             max_seq_len: self.max_position_embeddings,
             sliding_window: self.sliding_window,
             hidden_act: Some(self.hidden_act),

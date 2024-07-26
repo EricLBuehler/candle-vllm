@@ -14,6 +14,11 @@ use std::collections::HashMap;
 #[derive(Deserialize, Debug, Clone)]
 pub struct RopeScaling(#[serde(with = "either::serde_untagged")] pub Either<Vec<f64>, String>);
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct TokenID(
+    #[serde(with = "either::serde_untagged")] pub Either<Option<u32>, Option<Vec<u32>>>,
+);
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub hidden_size: usize,
@@ -25,8 +30,8 @@ pub struct Config {
     pub use_flash_attn: bool,
     pub rms_norm_eps: f64,
     pub rope_theta: f64,
-    pub bos_token_id: Option<u32>,
-    pub eos_token_id: Option<u32>,
+    pub bos_token_id: TokenID,
+    pub eos_token_id: TokenID,
     pub max_seq_len: usize,
     pub sliding_window: Option<usize>,
     pub hidden_act: Option<candle_nn::Activation>,

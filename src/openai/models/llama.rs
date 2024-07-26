@@ -6,6 +6,7 @@ use candle_core as candle;
 use candle_nn::{embedding, Embedding, Module, VarBuilder};
 use candle_transformers::models::with_tracing::{linear_no_bias as linear, Linear, RmsNorm};
 pub const MAX_SEQ_LEN: usize = 4096;
+use crate::openai::models::TokenID;
 use std::iter::zip;
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct LlamaConfig {
@@ -18,8 +19,9 @@ pub struct LlamaConfig {
     pub rms_norm_eps: f64,
     #[serde(default = "default_rope")]
     pub rope_theta: f32,
-    pub bos_token_id: Option<u32>,
-    pub eos_token_id: Option<u32>,
+    pub bos_token_id: TokenID,
+    pub eos_token_id: TokenID,
+    pub max_position_embeddings: Option<usize>,
 }
 
 fn default_rope() -> f32 {
@@ -40,7 +42,7 @@ impl LlamaConfig {
             use_flash_attn,
             bos_token_id: self.bos_token_id,
             eos_token_id: self.eos_token_id,
-            max_seq_len: MAX_SEQ_LEN,
+            max_seq_len: self.max_position_embeddings.unwrap_or(MAX_SEQ_LEN),
             sliding_window: None,
             hidden_act: None,
             tie_word_embeddings: false,
