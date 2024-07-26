@@ -33,8 +33,10 @@ Currently, candle-vllm supports chat serving for the following models.
 | #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|
 
 
-## Demo Chat with candle-vllm (71 tokens/s, LLaMa2 7B, bf16, on A100)
-<img src="./res/candle-vllm-demo.gif" width="90%" height="90%" >
+## Demo Chat with candle-vllm (61-65 tokens/s, LLaMa3.1 8B, bf16, on A100)
+
+https://github.com/user-attachments/assets/290d72d8-d5e6-41a3-8bd8-1d9d732aee3b
+
 
 ## Usage
 See [this folder](examples/) for some examples.
