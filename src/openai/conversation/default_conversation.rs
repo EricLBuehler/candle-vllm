@@ -17,6 +17,7 @@ pub enum SeparatorStyle {
     NoColonTwo,
     AddNewLineSingle,
     Llama,
+    Llama3,
     Phi,
     Qwen2,
     Gemma,
@@ -240,6 +241,32 @@ impl Conversation for DefaultConversation {
                         //assistant message
                         if let Some(message) = message {
                             accum += &format!("{message} \n");
+                        }
+                    } else if i == 0 && !system_prompt.is_empty() {
+                        accum += &system_prompt;
+                    }
+                }
+                accum
+            }
+
+            SeparatorStyle::Llama3 => {
+                let mut accum = "<|begin_of_text|>".to_string();
+                for (i, message) in self.messages.iter().enumerate() {
+                    let Message((_role, message)) = message;
+                    if _role.clone() == self.roles.0 {
+                        //user message
+                        if let Some(message) = message {
+                            accum += &format!(
+                                "<|start_header_id|>user<|end_header_id|>\n\n {message} <|eot_id|>"
+                            );
+                        } else {
+                            accum +=
+                                &format!("<|start_header_id|>user<|end_header_id|>\n\n <|eot_id|>");
+                        }
+                    } else if _role.clone() == self.roles.1 {
+                        //assistant message
+                        if let Some(message) = message {
+                            accum += &format!("<|start_header_id|>assistant<|end_header_id|>\n\n {message} <|eot_id|>");
                         }
                     } else if i == 0 && !system_prompt.is_empty() {
                         accum += &system_prompt;

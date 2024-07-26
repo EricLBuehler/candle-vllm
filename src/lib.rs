@@ -25,6 +25,22 @@ pub enum ModelSelected {
         max_gen_tokens: Option<usize>,
     },
 
+    /// Select the llama3 model (default llama3.1-8b).
+    Llama3 {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        temperature: Option<f32>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
+
+        #[arg(long)]
+        max_gen_tokens: Option<usize>,
+    },
+
     /// Select the phi2 model (default 2.7b).
     Phi2 {
         /// Control the application of repeat penalty for the last n tokens
@@ -159,6 +175,12 @@ impl ToString for ModelSelected {
                 penalty: _,
                 max_gen_tokens: _,
             } => "llama".to_string(),
+            ModelSelected::Llama3 {
+                repeat_last_n: _,
+                temperature: _,
+                penalty: _,
+                max_gen_tokens: _,
+            } => "llama3".to_string(),
             ModelSelected::Phi2 {
                 repeat_last_n: _,
                 temperature: _,
@@ -235,6 +257,29 @@ pub fn get_model_loader(
                 model_id.unwrap()
             } else {
                 "meta-llama/Llama-2-7b-chat-hf".to_string()
+            },
+        ),
+        ModelSelected::Llama3 {
+            repeat_last_n,
+            temperature,
+            penalty,
+            max_gen_tokens,
+        } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(
+                    repeat_last_n,
+                    temperature,
+                    None,
+                    None,
+                    penalty,
+                    max_gen_tokens,
+                ),
+                "llama3".to_string(),
+            )),
+            if model_id.is_some() {
+                model_id.unwrap()
+            } else {
+                "meta-llama/Meta-Llama-3.1-8B-Instruct".to_string()
             },
         ),
         ModelSelected::Phi2 {

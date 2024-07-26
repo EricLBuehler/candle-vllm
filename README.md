@@ -19,7 +19,7 @@ Currently, candle-vllm supports chat serving for the following models.
 
 | Model ID | Model Type | Supported | Speed (A100, BF16)
 |--|--|--|--|
-| #1 | **LLAMA/LLAMA2/LLaMa3** |✅|74 tks/s (7B)|
+| #1 | **LLAMA/LLAMA2/LLaMa3/LLaMa3.1** |✅|74 tks/s (7B), 65 tks/s (LLaMa3.1 8B)|
 | #2 | **Mistral** |✅|70 tks/s (7B)|
 | #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|
 | #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)|
@@ -55,6 +55,11 @@ You may also run specific model using huggingface model-id, e.g.,
 cargo run --release -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama --repeat-last-n 64
 ```
 
+Run latest LLaMa3.1 using local weights
+
+```
+cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --repeat-last-n 64
+```
 ### Step 2:
 
 #### Option 1: Chat with ChatUI (recommended)
