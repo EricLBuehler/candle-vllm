@@ -327,7 +327,7 @@ impl ModelLoader for DefaultLoader {
             stop_token_ids.push(eos_token);
         }
 
-        //custome stop tokens
+        //custom stop tokens
         if let Some(custom_stop) = &config.custom_stop_tokens {
             for stop in custom_stop {
                 match tokenizer.get_token(&stop) {
