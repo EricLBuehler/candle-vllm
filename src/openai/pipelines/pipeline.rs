@@ -1,4 +1,5 @@
 use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
+use crate::openai::models::TokenID;
 use crate::openai::sampling_params::{Logprobs, TopLogprob};
 use crate::scheduler::sequence::SequenceGroup;
 use crate::{
@@ -31,6 +32,7 @@ use candle_core::{DType, Device, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_nn::VarBuilder;
 use candle_transformers::generation::{LogitsProcessor, Sampling};
+use either::Either;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use std::{path::PathBuf, sync::Arc};
@@ -170,7 +172,7 @@ impl ModelLoader for DefaultLoader {
         let specific_args = self.config.clone();
 
         let config = match self.name.as_str() {
-            "llama" => {
+            "llama" | "llama3" => {
                 let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
                 ),));
@@ -238,6 +240,10 @@ impl ModelLoader for DefaultLoader {
                 LLMModel::LLAMA(try_api!(Llama::load(vb, &config, dtype, &device))),
                 SeparatorStyle::Llama,
             ),
+            "llama3" => (
+                LLMModel::LLAMA(try_api!(Llama::load(vb, &config, dtype, &device))),
+                SeparatorStyle::Llama3,
+            ),
             "phi2" => (
                 LLMModel::Phi2(try_api!(Phi2::new(vb, &config, dtype, &device))),
                 SeparatorStyle::Phi,
@@ -296,13 +302,32 @@ impl ModelLoader for DefaultLoader {
 
         println!("{:?}", pipeline_config);
 
-        let eos_token = match tokenizer.get_token("<|endoftext|>") {
-            Some(token) => token,
-            None => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap(),
-        };
         let mut stop_token_ids = Vec::<u32>::new();
-        stop_token_ids.push(eos_token);
 
+        match &config.eos_token_id {
+            //eos_token defined in the config
+            TokenID(Either::Left(eos_token)) => {
+                if let Some(tk) = eos_token {
+                    stop_token_ids.push(*tk);
+                }
+            }
+            TokenID(Either::Right(eos_token_list)) => {
+                if let Some(tks) = eos_token_list {
+                    stop_token_ids.extend(tks)
+                }
+            }
+        }
+
+        if stop_token_ids.len() == 0 {
+            //if no eos_token defined in the config, use default
+            let eos_token = match tokenizer.get_token("<|endoftext|>") {
+                Some(token) => token,
+                _ => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap_or(0),
+            };
+            stop_token_ids.push(eos_token);
+        }
+
+        //custome stop tokens
         if let Some(custom_stop) = &config.custom_stop_tokens {
             for stop in custom_stop {
                 match tokenizer.get_token(&stop) {

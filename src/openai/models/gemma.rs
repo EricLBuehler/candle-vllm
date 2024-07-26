@@ -5,9 +5,9 @@ use candle::{DType, Device, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::Activation;
 use candle_nn::{linear_b, linear_no_bias as linear, Linear, RmsNorm, VarBuilder};
+use either::Either;
 use std::iter::zip;
 use std::sync::Arc;
-
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct GemmaConfig {
     pub attention_bias: bool,
@@ -45,8 +45,8 @@ impl GemmaConfig {
             rms_norm_eps: self.rms_norm_eps,
             rope_theta: self.rope_theta,
             use_flash_attn,
-            bos_token_id: Some(self.bos_token_id as u32),
-            eos_token_id: Some(self.eos_token_id as u32),
+            bos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
+            eos_token_id: super::TokenID(Either::Left(Some(self.eos_token_id as u32))),
             max_seq_len: self.max_position_embeddings.unwrap_or(4096),
             sliding_window: None,
             hidden_act: hidden_act,
