@@ -55,7 +55,7 @@ async def benchmark():
                "What is the future trend of large language model?",
                "The famous tech companies in the world."]
     
-    # send 16 chat reqeusts at the same time
+    # send 16 chat requests at the same time
     tasks: List[asyncio.Task] = []
     for i in range(len(prompts)):
         tasks.append(
