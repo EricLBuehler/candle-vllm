@@ -1,4 +1,5 @@
 pub mod gemma;
+pub mod linear;
 pub mod llama;
 pub mod mistral;
 pub mod phi2;

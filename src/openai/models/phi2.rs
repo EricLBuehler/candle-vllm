@@ -1,11 +1,11 @@
 use super::Config;
+use crate::openai::models::linear::{linear_no_bias as linear, Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_nn::{Activation, VarBuilder};
-use candle_transformers::models::with_tracing::{
-    layer_norm, linear_no_bias as linear, Embedding, LayerNorm, Linear,
-};
+use candle_transformers::models::with_tracing::{layer_norm, Embedding, LayerNorm};
+
 use either::Either;
 use serde::Deserialize;
 use std::iter::zip;
@@ -89,14 +89,19 @@ impl RotaryEmbedding {
         })
     }
 
-    fn apply_rotary_emb(&self, xs: &Tensor, seqlen_offset: usize) -> Result<Tensor> {
-        let (_b_size, _num_heads, seq_len, _headdim) = xs.dims4()?;
-        let xs_rot = xs.i((.., .., .., ..self.dim))?.contiguous()?;
-        let xs_pass = xs.i((.., .., .., self.dim..))?;
-        let c = self.cos.narrow(0, seqlen_offset, seq_len)?;
-        let s = self.sin.narrow(0, seqlen_offset, seq_len)?;
-        let xs_rot = candle_nn::rotary_emb::rope(&xs_rot, &c, &s)?;
-        Tensor::cat(&[&xs_rot, &xs_pass], D::Minus1)?.contiguous()
+    fn apply_rotary_emb(&self, xs: &Tensor, input_positions: &Vec<Vec<usize>>) -> Result<Tensor> {
+        let (b_size, _num_heads, seq_len, _headdim) = xs.dims4()?;
+        let mut embeds = Vec::new();
+        for (b, seqlen_offset) in zip(0..b_size, input_positions) {
+            let cos = self.cos.narrow(0, seqlen_offset[0], seq_len)?;
+            let sin = self.sin.narrow(0, seqlen_offset[0], seq_len)?;
+            let xs_rot = xs.i((b, .., .., ..self.dim))?.contiguous()?;
+            let xs_pass = xs.i((b, .., .., self.dim..))?;
+            let xs_rot = candle_nn::rotary_emb::rope(&xs_rot, &cos, &sin).unwrap();
+            let embed = Tensor::cat(&[&xs_rot, &xs_pass], D::Minus1)?.contiguous()?;
+            embeds.push(embed);
+        }
+        Tensor::cat(&embeds, 0)
     }
 }
 
@@ -189,7 +194,7 @@ impl Attention {
         &mut self,
         xs: &Tensor,
         attention_mask: Option<&Tensor>,
-        seqlen_offset: usize,
+        input_positions: &Vec<Vec<usize>>,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -228,10 +233,10 @@ impl Attention {
 
         let q = self
             .rotary_emb
-            .apply_rotary_emb(&q.to_dtype(DType::F32)?, seqlen_offset)?;
+            .apply_rotary_emb(&q.to_dtype(DType::F32)?, input_positions)?;
         let k = self
             .rotary_emb
-            .apply_rotary_emb(&k.to_dtype(DType::F32)?, seqlen_offset)?;
+            .apply_rotary_emb(&k.to_dtype(DType::F32)?, input_positions)?;
         let v = v.to_dtype(DType::F32)?;
 
         let y = self.attn.forward(
@@ -279,7 +284,7 @@ impl DecoderLayer {
         &mut self,
         xs: &Tensor,
         mask: Option<&Tensor>,
-        seqlen_offset: usize,
+        input_positions: &Vec<Vec<usize>>,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -288,7 +293,7 @@ impl DecoderLayer {
         let xs = xs.apply(&self.input_layernorm)?;
         let attn_outputs =
             self.self_attn
-                .forward(&xs, mask, seqlen_offset, cache, input_metadata)?;
+                .forward(&xs, mask, input_positions, cache, input_metadata)?;
         let feed_forward_hidden_states = self.mlp.forward(&xs)?;
         attn_outputs + feed_forward_hidden_states + residual
     }
@@ -330,12 +335,8 @@ impl Phi2 {
         })
     }
 
-    fn prepare_decoder_attention_mask(
-        &self,
-        b_size: usize,
-        tgt_len: usize,
-        seqlen_offset: usize,
-    ) -> Result<Tensor> {
+    fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
+        let seqlen_offset = 0;
         let mask: Vec<_> = (0..tgt_len)
             .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
             .collect();
@@ -353,7 +354,7 @@ impl Phi2 {
     pub fn forward(
         &mut self,
         xs: &Tensor,
-        seqlen_offset: usize,
+        input_positions: &Vec<Vec<usize>>,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -362,7 +363,7 @@ impl Phi2 {
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = self.prepare_decoder_attention_mask(b_size, seq_len, seqlen_offset)?;
+            let mask = self.prepare_decoder_attention_mask(b_size, seq_len)?;
             Some(mask)
         };
         if let Some(kv_caches) = kv_caches {
@@ -370,7 +371,7 @@ impl Phi2 {
                 xs = layer.forward(
                     &xs,
                     attention_mask.as_ref(),
-                    seqlen_offset,
+                    input_positions,
                     Some((k_cache, v_cache)),
                     input_metadata,
                 )?
@@ -380,16 +381,15 @@ impl Phi2 {
                 xs = layer.forward(
                     &xs,
                     attention_mask.as_ref(),
-                    seqlen_offset,
+                    input_positions,
                     None,
                     input_metadata,
                 )?
             }
         }
         xs.apply(&self.final_layernorm)?
-            .narrow(1, seq_len - 1, 1)?
-            .apply(&self.lm_head)?
-            .squeeze(1)
+            .i((.., seq_len - 1, ..))?
+            .apply(&self.lm_head)
     }
 
     pub fn get_config(&self) -> &Config {

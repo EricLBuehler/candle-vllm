@@ -34,7 +34,8 @@ use tokio::sync::Notify;
 #[allow(dead_code)]
 struct PreparedInputs {
     tokens: Tensor,
-    positions: Tensor,
+    positions: Vec<Vec<usize>>,
+    positions_tensor: Tensor,
     metadata: InputMetadata,
 }
 
@@ -87,56 +88,57 @@ impl LLMEngine {
             tokio::runtime::Handle::current().block_on(async move {
                 loop {
                     notify.notified().await; // Blocking call to wait for notification
+                    let _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
                     let mut e = engine.lock().await;
                     let result = e.generate_once().unwrap();
+                    if result.len() == 0 {
+                        continue;
+                    }
 
-                    let choices = result
-                        .iter()
-                        .flat_map(|(choices, _)| choices.clone())
-                        .collect::<Vec<_>>();
-                    let request_id = &result[0].1.request_id;
-                    let created = result[0].1.created;
+                    let _ = result.values()
+                    .map(|usage| e.completion_records.insert(usage.1.request_id.clone(), usage.clone()));
+                    finish_notify.notify_one();
 
                     //chat completion statistics
-                    let usage = ChatCompletionUsageResponse {
-                        request_id: request_id.clone(),
-                        created,
-                        completion_tokens: result
-                            .iter()
+                    let overall_usage = ChatCompletionUsageResponse {
+                        request_id: "".to_string(),
+                        created: 0,
+                        completion_tokens: result.values()
                             .map(|(_, usage)| usage.completion_tokens)
                             .sum(),
-                        prompt_tokens: result.iter().map(|(_, usage)| usage.prompt_tokens).sum(),
-                        total_tokens: result.iter().map(|(_, usage)| usage.total_tokens).sum(),
+                        prompt_tokens: result.values().map(|(_, usage)| usage.prompt_tokens).sum(),
+                        total_tokens: result.values().map(|(_, usage)| usage.total_tokens).sum(),
                         prompt_time_costs: result
-                            .iter()
+                            .values()
                             .map(|(_, usage)| usage.prompt_time_costs)
-                            .sum(),
+                            .max()
+                            .unwrap_or(0),
                         completion_time_costs: result
-                            .iter()
+                            .values()
                             .map(|(_, usage)| usage.completion_time_costs)
-                            .sum(),
+                            .max()
+                            .unwrap_or(0),
                     };
 
                     println!(
-                        "\r\n Prefilling: {} prompt tokens processed in {} seconds",
-                        usage.prompt_tokens,
-                        usage.prompt_time_costs / 1000
+                        "\r\n [{} requets] Prefilling: {} prompt tokens processed in {} seconds",
+                        result.len(),
+                        overall_usage.prompt_tokens,
+                        overall_usage.prompt_time_costs / 1000
                     );
 
                     println!(
-                        "\r\n Decoding: {} tokens processed in {} seconds ({} tokens/s)",
-                        usage.completion_tokens,
-                        usage.completion_time_costs / 1000,
-                        usage.completion_tokens * 1000
-                            / if usage.completion_time_costs > 0 {
-                                usage.completion_time_costs
+                        "\r\n [{} requets] Decoding: {} tokens processed in {} seconds ({} tokens/s)",
+                        result.len(),
+                        overall_usage.completion_tokens,
+                        overall_usage.completion_time_costs / 1000,
+                        overall_usage.completion_tokens * 1000
+                            / if overall_usage.completion_time_costs > 0 {
+                                overall_usage.completion_time_costs
                             } else {
                                 1
                             }
                     );
-                    e.completion_records
-                        .insert(request_id.clone(), (choices, usage));
-                    finish_notify.notify_one();
                 }
             });
         });
@@ -182,9 +184,11 @@ impl LLMEngine {
 
     pub fn generate_once(
         &mut self,
-    ) -> Result<Vec<(Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
-        let mut responses = HashMap::new();
-        let mut prompt_finish_time = SystemTime::now();
+    ) -> Result<HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
+        let mut responses =
+            HashMap::<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>::new();
+        let mut prompt_finish_times = HashMap::<usize, SystemTime>::new();
+        // let mut prompt_finish_time = SystemTime::now();
         while self.scheduler.has_unfinished_sequences() {
             let scheduler_outputs = self.scheduler.schedule();
             if !scheduler_outputs.ignored_seq_groups.is_empty() {
@@ -194,78 +198,87 @@ impl LLMEngine {
             self.execute_scheduler_ops(&scheduler_outputs).unwrap();
 
             let scheduled: &VecDeque<Arc<SequenceGroup>> = &*scheduler_outputs.scheduled;
-            for group in scheduled.iter() {
-                let seqs = group.get_seqs();
+            // for group in scheduled.iter() {
+            let seqs = scheduled[0].get_seqs();
 
-                let PreparedInputs {
+            let PreparedInputs {
+                tokens,
+                positions,
+                positions_tensor,
+                metadata,
+            } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
+                self.prepare_prompt(scheduled)
+            } else {
+                self.prepare_decode(scheduled)
+            }
+            .unwrap();
+
+            let logits = self
+                .pipeline
+                .forward(
                     tokens,
-                    positions,
+                    &positions,
+                    Some(&*self.cache_engine.get_kv_cache()),
                     metadata,
-                } = if seqs.values().nth(0).unwrap().deref_mut().is_prompt() {
-                    self.prepare_prompt(group)
-                } else {
-                    self.prepare_decode(group)
-                }
+                )
                 .unwrap();
+            let results = self.pipeline.sample(logits, scheduled).unwrap();
 
-                let token_len = tokens.shape().dims()[0];
-
-                let logits = self
-                    .pipeline
-                    .forward(
-                        tokens,
-                        positions,
-                        Some(&*self.cache_engine.get_kv_cache()),
-                        metadata,
-                    )
-                    .unwrap();
-                let result = self
-                    .pipeline
-                    .sample(logits, &group.sampling_params, group)
-                    .unwrap();
-
-                if token_len > 1 {
-                    prompt_finish_time = SystemTime::now();
-                }
-
-                for (result_, (_, seq)) in zip(result, seqs) {
-                    match result_ {
-                        Either::Left(logprobs) => {
-                            if let Some(sender) = &group.sender {
-                                let chunk = self.get_stream_response(
-                                    group.request_id.clone(),
-                                    group.arrival_time,
-                                    Some(logprobs.bytes.clone()),
-                                    None,
-                                );
-                                sender.send(ChatResponse::Chunk(chunk)).unwrap();
-                            };
-                            // print!("{}", logprobs.bytes.clone());
-                            seq.deref_mut().add_token(logprobs);
+            for (result_, group) in zip(results, scheduled) {
+                match result_ {
+                    Either::Left(logprobs) => {
+                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        if seq.deref().is_prompt() {
+                            prompt_finish_times.insert(*group.get_id(), SystemTime::now());
                         }
-                        Either::Right(finish_reason) => {
-                            if let Some(sender) = &group.sender {
-                                let chunk = self.get_stream_response(
-                                    group.request_id.clone(),
-                                    group.arrival_time,
-                                    None,
-                                    Some(finish_reason.clone()),
-                                );
-                                sender.send(ChatResponse::Chunk(chunk)).unwrap();
-                            };
-                            seq.deref_mut().set_finish_reason(finish_reason)
-                        }
+                        if let Some(sender) = &group.sender {
+                            let chunk = self.get_stream_response(
+                                group.request_id.clone(),
+                                group.arrival_time,
+                                Some(logprobs.bytes.clone()),
+                                None,
+                            );
+                            let ret = sender.send(ChatResponse::Chunk(chunk));
+                            if ret.is_err() {
+                                println!("Send stream response error!");
+                                seq.deref_mut().set_finish_reason("Abort".to_string());
+                                break;
+                            }
+                        };
+                        // print!("{}", logprobs.bytes.clone());
+                        seq.deref_mut().add_token(logprobs);
+                    }
+                    Either::Right(finish_reason) => {
+                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        if let Some(sender) = &group.sender {
+                            let chunk = self.get_stream_response(
+                                group.request_id.clone(),
+                                group.arrival_time,
+                                None,
+                                Some(finish_reason.clone()),
+                            );
+                            sender.send(ChatResponse::Chunk(chunk)).unwrap();
+                        };
+                        seq.deref_mut().set_finish_reason(finish_reason)
                     }
                 }
+            }
 
-                self.scheduler.free_finished_sequence_groups();
+            self.scheduler.free_finished_sequence_groups();
 
-                if group.is_finished() && !responses.contains_key(group.get_id()) {
+            for group in scheduled.iter() {
+                if group.is_finished() && !responses.contains_key(&group.request_id) {
                     let end_time = SystemTime::now();
+                    let prompt_finish_time = prompt_finish_times[group.get_id()];
                     let completion_time_costs = end_time
                         .duration_since(prompt_finish_time)
                         .unwrap()
                         .as_millis();
+                    println!(
+                        "Request {} decoding finished in {} seconds",
+                        group.request_id,
+                        completion_time_costs / 1000
+                    );
                     // Create choices from the group
                     let mut seqs = group.get_seqs().values().collect::<Vec<_>>();
                     seqs.sort_by(|seq_a, seq_b| {
@@ -327,7 +340,7 @@ impl LLMEngine {
                         completion_time_costs: completion_time_costs as usize,
                     };
 
-                    responses.insert(*group.get_id(), (choices, usage));
+                    responses.insert(group.request_id.clone(), (choices, usage));
 
                     if let Some(sender) = &group.sender {
                         //reset tokenizer decoder after processing each request
@@ -339,16 +352,16 @@ impl LLMEngine {
                                 Some(remain),
                                 None,
                             );
-                            sender.send(ChatResponse::Chunk(chunk)).unwrap();
+                            let _ = sender.send(ChatResponse::Chunk(chunk));
                         };
 
-                        sender.send(ChatResponse::Done).unwrap();
+                        let _ = sender.send(ChatResponse::Done);
                     };
                 }
             }
         }
 
-        Ok(responses.into_values().collect::<Vec<_>>())
+        Ok(responses)
     }
 }
 
@@ -375,70 +388,73 @@ impl LLMEngine {
         Ok(())
     }
 
-    fn prepare_prompt(&self, group: &Arc<SequenceGroup>) -> Result<PreparedInputs, APIError> {
+    fn prepare_prompt(
+        &self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+    ) -> Result<PreparedInputs, APIError> {
         let mut prompt_lens = Vec::new();
         let mut input_tokens = Vec::new();
         let mut input_positions = Vec::new();
         let mut slot_mappings = Vec::new();
-        // for group in groups {
-        for seq in group.get_seqs().values() {
-            let prompt_ids = seq.deref_mut().get_token_ids();
+        for group in groups {
+            for seq in group.get_seqs().values() {
+                let prompt_ids = seq.deref_mut().get_token_ids();
 
-            let prompt_len = prompt_ids.len();
-            prompt_lens.push(prompt_len);
+                let prompt_len = prompt_ids.len();
+                prompt_lens.push(prompt_len);
 
-            input_tokens.push(prompt_ids);
-            input_positions.push((0..prompt_len).collect::<Vec<_>>());
-            let table = self
-                .scheduler
-                .block_engine
-                .block_tables
-                .get(&seq.deref_mut().get_id());
-            if table.is_none() {
-                // Will be None during profiling.
-                slot_mappings.push([_PAD_SLOT_ID].repeat(prompt_len));
-                continue;
-            }
-            let table = table
-                .unwrap()
-                .iter()
-                .map(|block| block.deref_mut().block_id)
-                .collect::<Vec<_>>();
+                input_tokens.push(prompt_ids);
+                input_positions.push((0..prompt_len).collect::<Vec<_>>());
+                let table = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.deref_mut().get_id());
+                if table.is_none() {
+                    // Will be None during profiling.
+                    slot_mappings.push([_PAD_SLOT_ID].repeat(prompt_len));
+                    continue;
+                }
+                let table = table
+                    .unwrap()
+                    .iter()
+                    .map(|block| block.deref_mut().block_id)
+                    .collect::<Vec<_>>();
 
-            let start_idx = if let Some(sliding_window) = self.sliding_window {
-                if prompt_len > sliding_window {
-                    0.min(prompt_len - sliding_window)
+                let start_idx = if let Some(sliding_window) = self.sliding_window {
+                    if prompt_len > sliding_window {
+                        0.min(prompt_len - sliding_window)
+                    } else {
+                        0
+                    }
                 } else {
                     0
-                }
-            } else {
-                0
-            };
-
-            let mut slot_mapping = Vec::new();
-            for i in 0..prompt_len {
-                if i < start_idx {
-                    // Pad [0,start_idx) with _PAD_TOKEN_ID
-                    slot_mapping.push(_PAD_SLOT_ID);
-                }
-
-                let block_number = if i / self.cache_config.block_size >= table.len() {
-                    panic!(
-                        "Block table is too small (prompt)! i={} block_size={} table_len={}",
-                        i,
-                        self.cache_config.block_size,
-                        table.len()
-                    );
-                } else {
-                    table.get(i / self.cache_config.block_size).unwrap()
                 };
-                let block_offset = i % self.cache_config.block_size;
-                let slot = block_number * self.cache_config.block_size + block_offset;
-                slot_mapping.push(slot.try_into().unwrap());
+
+                let mut slot_mapping = Vec::new();
+                for i in 0..prompt_len {
+                    if i < start_idx {
+                        // Pad [0,start_idx) with _PAD_TOKEN_ID
+                        slot_mapping.push(_PAD_SLOT_ID);
+                    }
+
+                    let block_number = if i / self.cache_config.block_size >= table.len() {
+                        panic!(
+                            "Block table is too small (prompt)! i={} block_size={} table_len={}",
+                            i,
+                            self.cache_config.block_size,
+                            table.len()
+                        );
+                    } else {
+                        table.get(i / self.cache_config.block_size).unwrap()
+                    };
+                    let block_offset = i % self.cache_config.block_size;
+                    let slot = block_number * self.cache_config.block_size + block_offset;
+                    slot_mapping.push(slot.try_into().unwrap());
+                }
+                slot_mappings.push(slot_mapping);
             }
-            slot_mappings.push(slot_mapping);
         }
-        // }
 
         let max_prompt_len = prompt_lens.iter().max().unwrap();
         let input_tokens = _make_tensor_with_pad(
@@ -450,7 +466,7 @@ impl LLMEngine {
             0,
             &self.pipeline.device(),
         )?;
-        let input_positions = _make_tensor_with_pad(
+        let input_positions_tensor = _make_tensor_with_pad(
             input_positions
                 .iter()
                 .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
@@ -468,6 +484,7 @@ impl LLMEngine {
 
         Ok(PreparedInputs {
             tokens: input_tokens,
+            positions_tensor: input_positions_tensor,
             positions: input_positions,
             metadata: InputMetadata {
                 prompt_lens,
@@ -482,61 +499,64 @@ impl LLMEngine {
         })
     }
 
-    fn prepare_decode(&self, group: &Arc<SequenceGroup>) -> Result<PreparedInputs, APIError> {
+    fn prepare_decode(
+        &self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+    ) -> Result<PreparedInputs, APIError> {
         let mut input_tokens = Vec::new();
         let mut input_positions = Vec::new();
         let mut context_lens = Vec::new();
         let mut slot_mappings = Vec::new();
         let mut block_tables = Vec::new();
-        // for group in groups {
-        for seq in group.get_seqs().values() {
-            let last_token_id = seq.deref_mut().get_last_token_id();
-            input_tokens.push(vec![last_token_id]);
+        for group in groups {
+            for seq in group.get_seqs().values() {
+                let last_token_id = seq.deref_mut().get_last_token_id();
+                input_tokens.push(vec![last_token_id]);
 
-            let position = seq.deref_mut().get_len() - 1;
-            input_positions.push(vec![position]);
+                let position = seq.deref_mut().get_len() - 1;
+                input_positions.push(vec![position]);
 
-            let context_len = if let Some(sliding_window) = self.sliding_window {
-                seq.deref_mut().get_len().min(sliding_window)
-            } else {
-                seq.deref_mut().get_len()
-            };
-            context_lens.push(context_len);
-
-            let table = self
-                .scheduler
-                .block_engine
-                .block_tables
-                .get(&seq.deref_mut().get_id())
-                .unwrap();
-            let table = table
-                .iter()
-                .map(|block| block.deref_mut().block_id)
-                .collect::<Vec<_>>();
-
-            let block_number = if position / self.cache_config.block_size >= table.len() {
-                panic!("Block table is too small (completion)! start_pos={} block_size={} table_len={}", position, self.cache_config.block_size, table.len());
-            } else {
-                table.get(position / self.cache_config.block_size).unwrap()
-            };
-            let block_offset = position % self.cache_config.block_size;
-            let slot = block_number * self.cache_config.block_size + block_offset;
-            let slot = slot.try_into().unwrap();
-            slot_mappings.push(vec![slot]);
-
-            if let Some(sliding_window) = self.sliding_window {
-                let sliding_window_blocks = sliding_window / self.cache_config.block_size;
-                let slide_idx = if table.len() > sliding_window_blocks {
-                    table.len() - sliding_window_blocks
+                let context_len = if let Some(sliding_window) = self.sliding_window {
+                    seq.deref_mut().get_len().min(sliding_window)
                 } else {
-                    0
+                    seq.deref_mut().get_len()
                 };
-                block_tables.push(table.get(slide_idx..).unwrap().to_vec());
-            } else {
-                block_tables.push(table);
+                context_lens.push(context_len);
+
+                let table = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.deref_mut().get_id())
+                    .unwrap();
+                let table = table
+                    .iter()
+                    .map(|block| block.deref_mut().block_id)
+                    .collect::<Vec<_>>();
+
+                let block_number = if position / self.cache_config.block_size >= table.len() {
+                    panic!("Block table is too small (completion)! start_pos={} block_size={} table_len={}", position, self.cache_config.block_size, table.len());
+                } else {
+                    table.get(position / self.cache_config.block_size).unwrap()
+                };
+                let block_offset = position % self.cache_config.block_size;
+                let slot = block_number * self.cache_config.block_size + block_offset;
+                let slot = slot.try_into().unwrap();
+                slot_mappings.push(vec![slot]);
+
+                if let Some(sliding_window) = self.sliding_window {
+                    let sliding_window_blocks = sliding_window / self.cache_config.block_size;
+                    let slide_idx = if table.len() > sliding_window_blocks {
+                        table.len() - sliding_window_blocks
+                    } else {
+                        0
+                    };
+                    block_tables.push(table.get(slide_idx..).unwrap().to_vec());
+                } else {
+                    block_tables.push(table);
+                }
             }
         }
-        // }
 
         let input_tokens = _make_tensor_with_pad(
             input_tokens
@@ -547,7 +567,7 @@ impl LLMEngine {
             0,
             &self.pipeline.device(),
         )?;
-        let input_positions = _make_tensor_with_pad(
+        let input_positions_tensor = _make_tensor_with_pad(
             input_positions
                 .iter()
                 .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
@@ -580,6 +600,7 @@ impl LLMEngine {
         Ok(PreparedInputs {
             tokens: input_tokens,
             positions: input_positions,
+            positions_tensor: input_positions_tensor,
             metadata: InputMetadata {
                 prompt_lens: vec![],
                 slot_mapping,
@@ -602,6 +623,7 @@ impl LLMEngine {
         use_logprobs: bool,
         sender: Option<Sender<ChatResponse>>,
     ) {
+        let prompt_len = prompt.get_ids().len();
         let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
             prompt
                 .get_ids()
@@ -617,7 +639,7 @@ impl LLMEngine {
             &[seq],
             get_created_time_secs(),
             self.group_id,
-            request_id,
+            request_id.clone(),
             created,
             sampling_params,
             use_logprobs,
@@ -626,5 +648,10 @@ impl LLMEngine {
         self.group_id += 1;
 
         self.scheduler.add_sequence(seq_group);
+        println!(
+            "Request {} with length {} added to sequence group.",
+            request_id.clone(),
+            prompt_len
+        );
     }
 }

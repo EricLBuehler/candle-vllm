@@ -49,6 +49,7 @@ pub struct OpenAIServerData {
 }
 
 pub mod conversation;
+pub mod logits_processor;
 pub mod models;
 pub mod openai_server;
 pub mod pipelines;

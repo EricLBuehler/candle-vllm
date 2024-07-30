@@ -70,9 +70,7 @@ impl PagedAttention {
     ) -> Result<Tensor> {
         let dims = input_metadata.slot_mapping.dims();
         let slot_mapping = if dims.len() > 1 {
-            input_metadata
-                .slot_mapping
-                .flatten(0, input_metadata.slot_mapping.dims().len())?
+            input_metadata.slot_mapping.flatten_all()?
         } else {
             input_metadata.slot_mapping.clone()
         };
