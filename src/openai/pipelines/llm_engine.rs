@@ -121,14 +121,14 @@ impl LLMEngine {
                     };
 
                     println!(
-                        "\r\n [{} requets] Prefilling: {} prompt tokens processed in {} seconds",
+                        "\r\n [{} requests] Prefilling: {} prompt tokens processed in {} seconds",
                         result.len(),
                         overall_usage.prompt_tokens,
                         overall_usage.prompt_time_costs / 1000
                     );
 
                     println!(
-                        "\r\n [{} requets] Decoding: {} tokens processed in {} seconds ({} tokens/s)",
+                        "\r\n [{} requests] Decoding: {} tokens processed in {} seconds ({} tokens/s)",
                         result.len(),
                         overall_usage.completion_tokens,
                         overall_usage.completion_time_costs / 1000,
