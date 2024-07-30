@@ -1,4 +1,5 @@
 use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
+use crate::openai::logits_processor::{LogitsProcessor, Sampling};
 use crate::openai::models::TokenID;
 use crate::openai::sampling_params::{Logprobs, TopLogprob};
 use crate::scheduler::sequence::SequenceGroup;
@@ -22,19 +23,18 @@ use crate::{
             Config,
         },
         responses::APIError,
-        sampling_params::SamplingParams,
         PipelineConfig,
     },
     paged_attention::input_metadata::InputMetadata,
     try_api,
 };
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_nn::VarBuilder;
-use candle_transformers::generation::{LogitsProcessor, Sampling};
 use either::Either;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
+use std::collections::VecDeque;
 use std::{path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
 const EOS_TOKEN: &str = "</s>";
@@ -92,7 +92,6 @@ pub struct DefaultPipeline {
     name: String,
     dtype: DType,
     device: Device,
-    cur_idx: usize,
     config: Config,
     stop_token_ids: Vec<u32>,
 }
@@ -377,7 +376,6 @@ impl ModelLoader for DefaultLoader {
                 name: self.name.clone(),
                 dtype,
                 device: device.clone(),
-                cur_idx: 0,
                 config: config.clone(),
                 stop_token_ids,
             }),
@@ -390,159 +388,147 @@ impl ModulePipeline for DefaultPipeline {
     fn forward(
         &mut self,
         input_tokens: Tensor,
-        _input_positions: Tensor,
+        input_positions: &Vec<Vec<usize>>,
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         mut input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError> {
-        let length = input_tokens.shape().dims()[0];
-        if length > 1 {
-            self.cur_idx = 0;
-        }
+        let input_tokens = if input_tokens.shape().dims().len() < 2 {
+            input_tokens
+                .reshape((1, input_tokens.shape().dims()[0]))
+                .unwrap()
+        } else {
+            input_tokens
+        };
+
         let ret = match &mut self.model {
             LLMModel::LLAMA(llama) => llama
                 .forward(
-                    &input_tokens
-                        .reshape((1, input_tokens.shape().dims()[0]))
-                        .unwrap(),
-                    self.cur_idx,
+                    &input_tokens,
+                    &input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
             LLMModel::Phi2(phi) => phi
                 .forward(
-                    &input_tokens
-                        .reshape((1, input_tokens.shape().dims()[0]))
-                        .unwrap(),
-                    self.cur_idx,
+                    &input_tokens,
+                    &input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
             LLMModel::Phi3(phi) => phi
                 .forward(
-                    &input_tokens
-                        .reshape((1, input_tokens.shape().dims()[0]))
-                        .unwrap(),
-                    self.cur_idx,
+                    &input_tokens,
+                    input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
             LLMModel::Qwen2(qwen2) => qwen2
                 .forward(
-                    &input_tokens
-                        .reshape((1, input_tokens.shape().dims()[0]))
-                        .unwrap(),
-                    self.cur_idx,
+                    &input_tokens,
+                    &input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
             LLMModel::Gemma(gemma) => gemma
                 .forward(
-                    &input_tokens
-                        .reshape((1, input_tokens.shape().dims()[0]))
-                        .unwrap(),
-                    self.cur_idx,
+                    &input_tokens,
+                    &input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
             LLMModel::Mistral(mistral) => mistral
                 .forward(
-                    &input_tokens
-                        .reshape((1, input_tokens.shape().dims()[0]))
-                        .unwrap(),
-                    self.cur_idx,
+                    &input_tokens,
+                    &input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
             LLMModel::Yi(yi) => yi
                 .forward(
-                    &input_tokens
-                        .reshape((1, input_tokens.shape().dims()[0]))
-                        .unwrap(),
-                    self.cur_idx,
+                    &input_tokens,
+                    &input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
             LLMModel::StableLM(stablelm) => stablelm
                 .forward(
-                    &input_tokens
-                        .reshape((1, input_tokens.shape().dims()[0]))
-                        .unwrap(),
-                    self.cur_idx,
+                    &input_tokens,
+                    input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
         };
 
-        self.cur_idx += length;
         return ret;
     }
 
     fn sample(
         &mut self,
         logits: Tensor,
-        sampling_params: &SamplingParams,
-        seqs: &Arc<SequenceGroup>,
+        groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        // let n_seqs = logits.dims()[0];
-
         let mut result = Vec::new();
-        for (_, seq) in seqs.get_seqs() {
-            let logits = logits.squeeze(0).unwrap();
-            let sq = seq.deref_mut();
-            let tokens = sq
-                .get_token_ids()
-                .iter()
-                .map(|x| *x as u32)
-                .collect::<Vec<_>>();
-            let tokens_generated = sq.get_len() - sq.get_prompt_len();
+        let mut group_idx = 0;
+        for group in groups {
+            let sampling_params = &group.sampling_params;
+            for (_, seq) in group.get_seqs() {
+                let logits = logits.i((group_idx, ..)).unwrap().squeeze(0).unwrap();
+                let sq = seq.deref_mut();
+                let tokens = sq
+                    .get_token_ids()
+                    .iter()
+                    .map(|x| *x as u32)
+                    .collect::<Vec<_>>();
+                let tokens_generated = sq.get_len() - sq.get_prompt_len();
 
-            if tokens_generated > sampling_params.max_tokens {
-                result.push(Right("length".to_string()));
-                break;
+                if tokens_generated > sampling_params.max_tokens {
+                    result.push(Right("length".to_string()));
+                    break;
+                }
+
+                let logits = if sampling_params.repetition_penalty == 1.
+                    || self.args.repeat_last_n.unwrap_or(16) >= tokens.len()
+                {
+                    logits
+                } else {
+                    let start_at = tokens
+                        .len()
+                        .saturating_sub(self.args.repeat_last_n.unwrap_or(16));
+                    try_api!(candle_transformers::utils::apply_repeat_penalty(
+                        &logits,
+                        sampling_params.repetition_penalty,
+                        &tokens[start_at..],
+                    ))
+                };
+
+                let next_token = try_api!(self.logits_processor.sample(&logits));
+                let text = self
+                    .tokenizer
+                    .next_token(next_token)
+                    .unwrap()
+                    .unwrap_or("".to_string());
+                if self.stop_token_ids.contains(&next_token) && tokens_generated > 1 {
+                    result.push(Right("stop".to_string()));
+                    break;
+                }
+                let logprob = Logprobs {
+                    token: next_token as usize,
+                    logprob: 0.0,
+                    top_logprobs: Vec::<TopLogprob>::new(),
+                    bytes: text,
+                };
+                result.push(Left(logprob));
             }
-
-            let logits = if sampling_params.repetition_penalty == 1.
-                || self.args.repeat_last_n.unwrap_or(16) >= tokens.len()
-            {
-                logits
-            } else {
-                let start_at = tokens
-                    .len()
-                    .saturating_sub(self.args.repeat_last_n.unwrap_or(16));
-                try_api!(candle_transformers::utils::apply_repeat_penalty(
-                    &logits,
-                    sampling_params.repetition_penalty,
-                    &tokens[start_at..],
-                ))
-            };
-
-            let next_token = try_api!(self.logits_processor.sample(&logits));
-            let text = self
-                .tokenizer
-                .next_token(next_token)
-                .unwrap()
-                .unwrap_or("".to_string());
-            if self.stop_token_ids.contains(&next_token) && tokens_generated > 1 {
-                result.push(Right("stop".to_string()));
-                break;
-            }
-            let logprob = Logprobs {
-                token: next_token as usize,
-                logprob: 0.0,
-                top_logprobs: Vec::<TopLogprob>::new(),
-                bytes: text,
-            };
-            result.push(Left(logprob));
+            group_idx += 1;
         }
-
         Ok(result)
     }
 

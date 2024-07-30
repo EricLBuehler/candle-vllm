@@ -1,10 +1,12 @@
 use super::Config;
+use crate::openai::models::linear::{linear_no_bias as linear, Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::{embedding, Embedding, Module, VarBuilder};
-use candle_transformers::models::with_tracing::{linear_no_bias as linear, Linear, RmsNorm};
+use candle_transformers::models::with_tracing::RmsNorm;
+
 pub const MAX_SEQ_LEN: usize = 4096;
 use crate::openai::models::TokenID;
 use std::iter::zip;
@@ -98,19 +100,31 @@ struct CausalSelfAttention {
 }
 
 impl CausalSelfAttention {
-    fn apply_rotary_emb(&self, x: &Tensor, index_pos: usize) -> Result<Tensor> {
+    fn apply_rotary_emb(&self, x: &Tensor, input_positions: &Vec<Vec<usize>>) -> Result<Tensor> {
         let _enter = self.span_rot.enter();
-        let (_b_sz, _, seq_len, _hidden_size) = x.dims4()?;
-        let cos = self.cos_sin_cache.cos.narrow(0, index_pos, seq_len)?;
-        let sin = self.cos_sin_cache.sin.narrow(0, index_pos, seq_len)?;
-        candle_nn::rotary_emb::rope(x, &cos, &sin)
+        let (b_sz, _, seq_len, _hidden_size) = x.dims4()?;
+        let mut embeds = Vec::new();
+        for (b, seqlen_offset) in zip(0..b_sz, input_positions) {
+            let cos = self
+                .cos_sin_cache
+                .cos
+                .narrow(0, seqlen_offset[0], seq_len)?;
+            let sin = self
+                .cos_sin_cache
+                .sin
+                .narrow(0, seqlen_offset[0], seq_len)?;
+            let x_b = x.narrow(0, b, 1)?;
+            let embed = candle_nn::rotary_emb::rope(&x_b, &cos, &sin).unwrap();
+            embeds.push(embed);
+        }
+        Tensor::cat(&embeds, 0)
     }
 
     fn forward(
         &mut self,
         x: &Tensor,
         attention_mask: Option<&Tensor>,
-        index_pos: usize,
+        input_positions: &Vec<Vec<usize>>,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -142,8 +156,8 @@ impl CausalSelfAttention {
             (q, k, v)
         };
 
-        let q = self.apply_rotary_emb(&q, index_pos)?;
-        let k = self.apply_rotary_emb(&k, index_pos)?;
+        let q = self.apply_rotary_emb(&q, input_positions)?;
+        let k = self.apply_rotary_emb(&k, input_positions)?;
 
         let y = self.attn.forward(
             &q,
@@ -243,7 +257,7 @@ impl Block {
         &mut self,
         x: &Tensor,
         attention_mask: Option<&Tensor>,
-        index_pos: usize,
+        input_positions: &Vec<Vec<usize>>,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -252,7 +266,7 @@ impl Block {
         let x = self.rms_1.forward(x)?;
         let x = (self
             .attn
-            .forward(&x, attention_mask, index_pos, cache, input_metadata)?
+            .forward(&x, attention_mask, input_positions, cache, input_metadata)?
             + residual)?;
         let residual = &x;
         let x = (self.mlp.forward(&self.rms_2.forward(&x)?)? + residual)?;
@@ -290,12 +304,8 @@ pub struct Llama {
 }
 
 impl Llama {
-    fn prepare_decoder_attention_mask(
-        &self,
-        b_size: usize,
-        tgt_len: usize,
-        seqlen_offset: usize,
-    ) -> Result<Tensor> {
+    fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
+        let seqlen_offset = 0;
         let mask: Vec<_> = (0..tgt_len)
             .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
             .collect();
@@ -313,7 +323,7 @@ impl Llama {
     pub fn forward(
         &mut self,
         x: &Tensor,
-        index_pos: usize,
+        input_positions: &Vec<Vec<usize>>,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -321,7 +331,7 @@ impl Llama {
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = self.prepare_decoder_attention_mask(_b_sz, seq_len, index_pos)?;
+            let mask = self.prepare_decoder_attention_mask(_b_sz, seq_len)?;
             Some(mask)
         };
         let mut x = self.wte.forward(x)?;
@@ -330,14 +340,20 @@ impl Llama {
                 x = block.forward(
                     &x,
                     attention_mask.as_ref(),
-                    index_pos,
+                    input_positions,
                     Some((k_cache, v_cache)),
                     input_metadata,
                 )?;
             }
         } else {
             for block in &mut self.blocks {
-                x = block.forward(&x, attention_mask.as_ref(), index_pos, None, input_metadata)?;
+                x = block.forward(
+                    &x,
+                    attention_mask.as_ref(),
+                    input_positions,
+                    None,
+                    input_metadata,
+                )?;
             }
         }
         let x = self.ln_f.forward(&x)?;

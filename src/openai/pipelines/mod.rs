@@ -6,10 +6,7 @@ use std::{env, fs, path::PathBuf, sync::Arc};
 
 use crate::{paged_attention::input_metadata::InputMetadata, try_api};
 
-use super::{
-    conversation::Conversation, models::Config, responses::APIError,
-    sampling_params::SamplingParams, PipelineConfig,
-};
+use super::{conversation::Conversation, models::Config, responses::APIError, PipelineConfig};
 use candle_examples::token_output_stream::TokenOutputStream;
 /// The LLMEngine is effectively a wrapper around a ModulePipeline. It contains a Scheduler and a CacheEngine
 /// which are used to scheduler and manage the cache during generation requests, respectively.
@@ -17,12 +14,12 @@ pub mod llm_engine;
 pub mod pipeline;
 use crate::scheduler::sequence::SequenceGroup;
 type TokenOrFinishReason = Either<Logprobs, String>;
-
+use std::collections::VecDeque;
 pub trait ModulePipeline: Send + Sync {
     fn forward(
         &mut self,
         input_tokens: Tensor,
-        input_positions: Tensor,
+        input_positions: &Vec<Vec<usize>>,
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError>;
@@ -30,8 +27,7 @@ pub trait ModulePipeline: Send + Sync {
     fn sample(
         &mut self,
         logits: Tensor,
-        sampling_params: &SamplingParams,
-        seqs: &Arc<SequenceGroup>,
+        groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError>;
 
     fn name(&self) -> &str;
@@ -60,7 +56,7 @@ fn _make_tensor_with_pad<D: WithDType>(
     for mut x_i in x {
         assert!(x_i.len() <= max_len);
         x_i.extend([pad].repeat(max_len - x_i.len()));
-        let shape = (x_i.len(),);
+        let shape = (1, x_i.len());
         padded_x.push(try_api!(Tensor::from_vec(x_i, shape, device)));
     }
     Tensor::cat(&padded_x[..], 0).map_err(APIError::from)

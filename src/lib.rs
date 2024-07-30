@@ -452,10 +452,6 @@ pub fn get_model_loader(
     }
 }
 
-pub fn log_warning(message: &str) {
-    eprintln!("Warning at {:?}: '{}'", chrono::offset::Utc::now(), message);
-}
-
 pub fn hub_load_local_safetensors(
     path: &String,
     json_file: &str,

@@ -280,7 +280,7 @@ impl SamplingParams {
                 "top_p must be 1 when using greedy sampling.",
             ));
         }
-        if self.top_p != -1.0 {
+        if self.top_k != -1 {
             return Err(APIError::new_str(
                 "top_k must be -1 when using greedy sampling.",
             ));

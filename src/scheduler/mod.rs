@@ -23,10 +23,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::{
-    log_warning,
-    scheduler::{block_engine::AllocStatus, sequence::SequenceStatus},
-};
+use crate::scheduler::{block_engine::AllocStatus, sequence::SequenceStatus};
 
 use self::{block_engine::BlockEngine, cache_engine::CacheConfig, sequence::SequenceGroup};
 
@@ -96,9 +93,9 @@ impl Scheduler {
                 match can_allocate {
                     AllocStatus::Later => break, //If we can only allocate later, do not bother iterating over the rest.
                     AllocStatus::Impossible => {
-                        log_warning(
-                            &format!("Input prompt with length of {} tokens is too long and exceeds capacity of block engine.",
-                            seq_group.get_prompt_len())
+                        println!(
+                            "Input prompt with length of {} tokens is too long and exceeds capacity of block engine.",
+                            seq_group.get_prompt_len()
                         );
                         seq_group.set_status(SequenceStatus::FinishedIgnored);
                         ignored_seq_groups.push_back(self.waiting.pop_front().unwrap());

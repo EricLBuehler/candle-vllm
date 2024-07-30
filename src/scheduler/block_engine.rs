@@ -203,14 +203,14 @@ impl BlockEngine {
 
     pub fn can_allocate(&self, seq_group: &SequenceGroup) -> AllocStatus {
         let num_required_blocks = seq_group.get_total_logical_token_blocks();
-        let num_free_gpu_blocks = self.gpu_allocator.get_num_free_blocks();
+        let num_free_gpu_blocks = *self.gpu_allocator.get_num_free_blocks();
 
-        if self.num_gpu_blocks > *num_free_gpu_blocks + num_required_blocks {
-            AllocStatus::Later
-        } else if self.num_gpu_blocks < num_required_blocks {
+        if self.num_gpu_blocks < num_required_blocks {
             AllocStatus::Impossible
-        } else {
+        } else if num_free_gpu_blocks > num_required_blocks {
             AllocStatus::Ok
+        } else {
+            AllocStatus::Later
         }
     }
 

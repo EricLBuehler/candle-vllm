@@ -17,20 +17,20 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 
 Currently, candle-vllm supports chat serving for the following models.
 
-| Model ID | Model Type | Supported | Speed (A100, BF16)
-|--|--|--|--|
-| #1 | **LLAMA/LLAMA2/LLaMa3/LLaMa3.1** |✅|74 tks/s (7B), 65 tks/s (LLaMa3.1 8B)|
-| #2 | **Mistral** |✅|70 tks/s (7B)|
-| #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|
-| #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)|
-| #5 | **Yi** |✅|75 tks/s (6B)|
-| #6 | **StableLM** |✅|99 tks/s (3B)|
-| #7 | BigCode/StarCode |TBD|TBD|
-| #8 | ChatGLM |TBD|TBD|
-| #9 | **QWen2 (1.8B, 7B)** |✅|148 tks/s (1.8B)|
-| #10 | **Google Gemma** |✅|130 tks/s (2B)|
-| #11 | Blip-large (Multimodal) |TBD|TBD|
-| #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|
+| Model ID | Model Type | Supported | Speed (A100, BF16) | Throughput (bs=16)
+|--|--|--|--|--|
+| #1 | **LLAMA/LLAMA2/LLaMa3/LLaMa3.1** |✅|74 tks/s (7B), 65 tks/s (LLaMa3.1 8B)| 386 tks/s (7B) |
+| #2 | **Mistral** |✅|70 tks/s (7B)| 291 tks/s (7B) |
+| #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|TBD|
+| #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)| 467 tks/s (3.8B)|
+| #5 | **Yi** |✅|75 tks/s (6B)| 375 tks/s (6B) |
+| #6 | **StableLM** |✅|99 tks/s (3B)|TBD|
+| #7 | BigCode/StarCode |TBD|TBD|TBD |
+| #8 | ChatGLM |TBD|TBD|TBD |
+| #9 | **QWen2 (1.8B, 7B)** |✅|148 tks/s (1.8B)|TBD |
+| #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |
+| #11 | Blip-large (Multimodal) |TBD|TBD|TBD |
+| #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |
 
 
 ## Demo Chat with candle-vllm (61-65 tokens/s, LLaMa3.1 8B, bf16, on A100)
@@ -131,6 +131,61 @@ print(completion.choices[0].message.content)
 After the `candle-vllm` service is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 
 
+## Batched requests
+
+Refer to `examples/benchmark.py`
+
+``` python
+async def benchmark():
+    model = "mistral7b"
+    max_tokens = 1024
+    # 16 requests
+    prompts = ["Explain how to best learn Rust.", 
+               "Please talk about deep learning in 100 words.", 
+               "Do you know the capital city of China? Talk the details of you known.", 
+               "Who is the best female actor in the world? Explain why.",
+               "How to dealing with depression?",
+               "How to make money in short time?",
+               "What is the future trend of large language model?",
+               "The famous tech companies in the world.",
+               "Explain how to best learn Rust.", 
+               "Please talk about deep learning in 100 words.", 
+               "Do you know the capital city of China? Talk the details of you known.", 
+               "Who is the best female actor in the world? Explain why.",
+               "How to dealing with depression?",
+               "How to make money in short time?",
+               "What is the future trend of large language model?",
+               "The famous tech companies in the world."]
+    
+    # send 16 chat requests at the same time
+    tasks: List[asyncio.Task] = []
+    for i in range(len(prompts)):
+        tasks.append(
+            asyncio.create_task(
+                chat_completion(model, max_tokens, prompts[i]))
+        )
+
+    # obtain the correspond stream object for each request
+    outputs: List[Stream[ChatCompletionChunk]] = await asyncio.gather(*tasks)
+
+    # tasks to streaming chat responses
+    tasks_stream: List[asyncio.Task] = []
+    for i in range(len(outputs)):
+        tasks_stream.append(
+            asyncio.create_task(
+                stream_response(i, outputs[i]))
+        )
+
+    # gathering the response texts
+    outputs: List[(int, str)] = await asyncio.gather(*tasks_stream)
+
+    # print the results, you may find chat completion statistics in the backend server (i.e., candle-vllm)
+    for idx, output in outputs:
+        print("\n\n Response {}: \n\n {}".format(idx, output))
+
+
+asyncio.run(benchmark())
+```
 
 
 ## Usage Help
@@ -140,7 +195,7 @@ For model-specific help, run `cargo run -- --port 2000 <MODEL_TYPE> --help`
 
 For local model weights, run `cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama --repeat-last-n 64`, change the path when needed.
 
-`MODEL_TYPE` = ["llama", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm"]
+`MODEL_TYPE` = ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm"]
 
 `WEIGHT_FILE_PATH` = Corresponding weight path for the given model type
 
