@@ -480,7 +480,8 @@ impl ModulePipeline for DefaultPipeline {
         for group in groups {
             let sampling_params = &group.sampling_params;
             for (_, seq) in group.get_seqs() {
-                let logits = logits.i((group_idx, ..)).unwrap().squeeze(0).unwrap();
+                let logits = logits.i((group_idx, ..)).unwrap().contiguous();
+                let logits = logits.unwrap().squeeze(0).unwrap();
                 let sq = seq.deref_mut();
                 let tokens = sq
                     .get_token_ids()
@@ -512,9 +513,11 @@ impl ModulePipeline for DefaultPipeline {
                 let next_token = try_api!(self.logits_processor.sample(&logits));
                 let text = self
                     .tokenizer
-                    .next_token(next_token)
-                    .unwrap()
-                    .unwrap_or("".to_string());
+                    .tokenizer()
+                    .id_to_token(next_token)
+                    .unwrap_or("".to_string())
+                    .replace("▁", " ")
+                    .replace("<0x0A>", "\n");
                 if self.stop_token_ids.contains(&next_token) && tokens_generated > 1 {
                     result.push(Right("stop".to_string()));
                     break;
