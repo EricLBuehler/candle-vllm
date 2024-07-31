@@ -2,7 +2,7 @@ use super::Config;
 use crate::openai::models::linear::{linear, linear_no_bias, Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
+use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::VarBuilder;
 use candle_transformers::models::with_tracing::RmsNorm;
@@ -345,7 +345,6 @@ impl Qwen2 {
 
     fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
         // Sliding window mask?
-        let seqlen_offset = 0;
         let mask: Vec<_> = if self.sliding_window.is_some() {
             let sliding_window = self.sliding_window.unwrap();
             (0..tgt_len)
@@ -366,13 +365,7 @@ impl Qwen2 {
         };
 
         let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
-        let mask = if seqlen_offset > 0 {
-            let mask0 = Tensor::zeros((tgt_len, seqlen_offset), DType::F32, &self.device)?;
-            Tensor::cat(&[&mask0, &mask], D::Minus1)?
-        } else {
-            mask
-        };
-        mask.expand((b_size, 1, tgt_len, tgt_len + seqlen_offset))?
+        mask.expand((b_size, 1, tgt_len, tgt_len))?
             .to_dtype(self.dtype)
     }
 

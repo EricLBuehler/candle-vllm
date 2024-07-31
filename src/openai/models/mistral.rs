@@ -2,7 +2,7 @@ use super::Config;
 use crate::openai::models::linear::{linear_no_bias, Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
+use candle_core::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_nn::{Activation, VarBuilder};
 use candle_transformers::models::with_tracing::RmsNorm;
 use either::Either;
@@ -335,8 +335,7 @@ impl Mistral {
         })
     }
 
-    fn prepare_decoder_attention_mask(&self, tgt_len: usize) -> Result<Tensor> {
-        let seqlen_offset = 0;
+    fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
         let sliding_window = self.sliding_window.unwrap_or(tgt_len + 1);
         let mask: Vec<_> = (0..tgt_len)
             .flat_map(|i| {
@@ -350,13 +349,7 @@ impl Mistral {
             })
             .collect();
         let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
-        let mask = if seqlen_offset > 0 {
-            let mask0 = Tensor::zeros((tgt_len, seqlen_offset), DType::F32, &self.device)?;
-            Tensor::cat(&[&mask0, &mask], D::Minus1)?
-        } else {
-            mask
-        };
-        mask.expand((1, 1, tgt_len, tgt_len + seqlen_offset))?
+        mask.expand((b_size, 1, tgt_len, tgt_len))?
             .to_dtype(self.dtype)
     }
 
@@ -367,11 +360,11 @@ impl Mistral {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
-        let (_b_size, seq_len) = input_ids.dims2()?;
+        let (b_size, seq_len) = input_ids.dims2()?;
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = self.prepare_decoder_attention_mask(seq_len)?;
+            let mask = self.prepare_decoder_attention_mask(b_size, seq_len)?;
             Some(mask)
         };
         let mut xs = self.embed_tokens.forward(input_ids)?;

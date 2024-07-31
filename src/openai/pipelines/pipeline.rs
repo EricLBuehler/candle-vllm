@@ -511,13 +511,20 @@ impl ModulePipeline for DefaultPipeline {
                 };
 
                 let next_token = try_api!(self.logits_processor.sample(&logits));
-                let text = self
+                let mut text = self
+                    .tokenizer
+                    .tokenizer()
+                    .decode(&[next_token], false)
+                    .unwrap_or(" ".to_string());
+                let origin_text = self
                     .tokenizer
                     .tokenizer()
                     .id_to_token(next_token)
-                    .unwrap_or("".to_string())
-                    .replace("▁", " ")
-                    .replace("<0x0A>", "\n");
+                    .unwrap_or("".to_string());
+                //properly handle space token
+                if origin_text.contains("▁") && origin_text.replace("▁", "") == text {
+                    text = origin_text.replace("▁", " ");
+                }
                 if self.stop_token_ids.contains(&next_token) && tokens_generated > 1 {
                     result.push(Right("stop".to_string()));
                     break;

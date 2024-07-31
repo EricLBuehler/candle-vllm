@@ -2,7 +2,7 @@ use super::Config;
 use crate::openai::models::linear::{linear_b, linear_no_bias as linear, Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
+use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::Activation;
 use candle_nn::{RmsNorm, VarBuilder};
@@ -354,18 +354,11 @@ impl Gemma {
     }
 
     fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
-        let seqlen_offset = 0;
         let mask: Vec<_> = (0..tgt_len)
             .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
             .collect();
         let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
-        let mask = if seqlen_offset > 0 {
-            let mask0 = Tensor::zeros((tgt_len, seqlen_offset), DType::F32, &self.device)?;
-            Tensor::cat(&[&mask0, &mask], D::Minus1)?
-        } else {
-            mask
-        };
-        mask.expand((b_size, 1, tgt_len, tgt_len + seqlen_offset))?
+        mask.expand((b_size, 1, tgt_len, tgt_len))?
             .to_dtype(self.dtype)
     }
 
