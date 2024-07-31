@@ -165,10 +165,10 @@ async def benchmark():
                 chat_completion(model, max_tokens, prompts[i]))
         )
 
-    # obtain the correspond stream object for each request
+    # obtain the corresponding stream object for each request
     outputs: List[Stream[ChatCompletionChunk]] = await asyncio.gather(*tasks)
 
-    # tasks to streaming chat responses
+    # tasks for streaming chat responses
     tasks_stream: List[asyncio.Task] = []
     for i in range(len(outputs)):
         tasks_stream.append(

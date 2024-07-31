@@ -138,17 +138,8 @@ pub async fn chat_completions(
     if token_ids.is_err() {
         return ChatResponder::ValidationError(token_ids.err().unwrap());
     }
-    let mut token_ids: Encoding = token_ids.unwrap();
-    if token_ids.len() % 2 == 0 {
-        //padding to avoid block allocation issue
-        token_ids.pad(
-            token_ids.len() + 1,
-            0,
-            0,
-            "\n",
-            tokenizers::PaddingDirection::Right,
-        );
-    }
+    let token_ids: Encoding = token_ids.unwrap();
+
     println!("\n\n\nPrompt {:?}", prompt);
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
