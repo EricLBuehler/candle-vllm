@@ -35,7 +35,6 @@ use tokio::sync::Notify;
 struct PreparedInputs {
     tokens: Tensor,
     positions: Vec<Vec<usize>>,
-    positions_tensor: Tensor,
     metadata: InputMetadata,
 }
 
@@ -204,7 +203,6 @@ impl LLMEngine {
             let PreparedInputs {
                 tokens,
                 positions,
-                positions_tensor,
                 metadata,
             } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
                 self.prepare_prompt(scheduled)
@@ -466,15 +464,6 @@ impl LLMEngine {
             0,
             &self.pipeline.device(),
         )?;
-        let input_positions_tensor = _make_tensor_with_pad(
-            input_positions
-                .iter()
-                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
-                .collect::<Vec<_>>(),
-            *max_prompt_len,
-            0,
-            &self.pipeline.device(),
-        )?;
         let slot_mapping = _make_tensor_with_pad(
             slot_mappings,
             *max_prompt_len,
@@ -484,7 +473,6 @@ impl LLMEngine {
 
         Ok(PreparedInputs {
             tokens: input_tokens,
-            positions_tensor: input_positions_tensor,
             positions: input_positions,
             metadata: InputMetadata {
                 prompt_lens,
@@ -567,15 +555,6 @@ impl LLMEngine {
             0,
             &self.pipeline.device(),
         )?;
-        let input_positions_tensor = _make_tensor_with_pad(
-            input_positions
-                .iter()
-                .map(|x| x.iter().map(|x| *x as i64).collect::<Vec<_>>())
-                .collect::<Vec<_>>(),
-            1,
-            0,
-            &self.pipeline.device(),
-        )?;
         let slot_mapping =
             _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID, &self.pipeline.device())?;
 
@@ -600,7 +579,6 @@ impl LLMEngine {
         Ok(PreparedInputs {
             tokens: input_tokens,
             positions: input_positions,
-            positions_tensor: input_positions_tensor,
             metadata: InputMetadata {
                 prompt_lens: vec![],
                 slot_mapping,
