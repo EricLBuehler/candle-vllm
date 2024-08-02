@@ -34,6 +34,7 @@ use candle_nn::VarBuilder;
 use either::Either;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
+use rayon::prelude::*;
 use std::collections::VecDeque;
 use std::{path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
@@ -339,7 +340,7 @@ impl ModelLoader for DefaultLoader {
         println!("{:?}", specific_args);
 
         let logits_processor = {
-            let temperature = specific_args.temperature.unwrap_or(0.) as f64;
+            let temperature = pipeline_config.temperature as f64;
             let sampling = if temperature <= 0. {
                 Sampling::ArgMax
             } else {
@@ -475,9 +476,18 @@ impl ModulePipeline for DefaultPipeline {
         logits: Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        let mut result = Vec::new();
-        let mut group_idx = 0;
-        for group in groups {
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+        let shared_result = Arc::new(Mutex::new(HashMap::<usize, TokenOrFinishReason>::new()));
+        let shared_group_idx = Arc::new(Mutex::new(0));
+        groups.par_iter().for_each(|group| {
+            let mut group_idx = 0;
+            {
+                let mut groupidx = shared_group_idx.lock().unwrap();
+                group_idx = *groupidx;
+                *groupidx += 1;
+            }
+
             let sampling_params = &group.sampling_params;
             for (_, seq) in group.get_seqs() {
                 let logits = logits.i((group_idx, ..)).unwrap().contiguous();
@@ -491,7 +501,8 @@ impl ModulePipeline for DefaultPipeline {
                 let tokens_generated = sq.get_len() - sq.get_prompt_len();
 
                 if tokens_generated > sampling_params.max_tokens {
-                    result.push(Right("length".to_string()));
+                    let mut result = shared_result.lock().unwrap();
+                    result.insert(group_idx, Right("length".to_string()));
                     break;
                 }
 
@@ -503,14 +514,15 @@ impl ModulePipeline for DefaultPipeline {
                     let start_at = tokens
                         .len()
                         .saturating_sub(self.args.repeat_last_n.unwrap_or(64));
-                    try_api!(candle_transformers::utils::apply_repeat_penalty(
+                    candle_transformers::utils::apply_repeat_penalty(
                         &logits,
                         sampling_params.repetition_penalty,
                         &tokens[start_at..],
-                    ))
+                    )
+                    .unwrap_or(logits)
                 };
 
-                let next_token = try_api!(self.logits_processor.sample(&logits));
+                let next_token = self.logits_processor.sample(&logits).unwrap();
                 let mut text = self
                     .tokenizer
                     .tokenizer()
@@ -526,19 +538,34 @@ impl ModulePipeline for DefaultPipeline {
                     text = origin_text.replace("▁", " ");
                 }
                 if self.stop_token_ids.contains(&next_token) && tokens_generated > 1 {
-                    result.push(Right("stop".to_string()));
+                    let mut result = shared_result.lock().unwrap();
+                    result.insert(group_idx, Right("stop".to_string()));
                     break;
                 }
-                let logprob = Logprobs {
-                    token: next_token as usize,
-                    logprob: 0.0,
-                    top_logprobs: Vec::<TopLogprob>::new(),
-                    bytes: text,
-                };
-                result.push(Left(logprob));
+                {
+                    let logprob = Logprobs {
+                        token: next_token as usize,
+                        logprob: 0.0,
+                        top_logprobs: Vec::<TopLogprob>::new(),
+                        bytes: text,
+                    };
+                    let mut result = shared_result.lock().unwrap();
+                    result.insert(group_idx, Left(logprob));
+                }
             }
-            group_idx += 1;
-        }
+        });
+
+        let final_result = Arc::try_unwrap(shared_result)
+            .expect("Arc should have only one reference left")
+            .into_inner()
+            .expect("Mutex should not be poisoned");
+
+        let mut sorted_vec: Vec<_> = final_result.into_iter().collect();
+        sorted_vec.sort_by_key(|&(key, _)| key);
+
+        let result: Vec<TokenOrFinishReason> =
+            sorted_vec.into_iter().map(|(_, value)| value).collect();
+
         Ok(result)
     }
 

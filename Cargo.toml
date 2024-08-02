@@ -13,6 +13,7 @@ flume = "0.10.14"
 #actix-web = "4.8.0"
 anyhow = "1.0.75"
 rand = "0.8.5"
+rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
 candle-core = { git = "https://github.com/huggingface/candle.git", version = "0.6.0" }
 candle-examples = { git = "https://github.com/huggingface/candle.git", version = "0.6.0" }

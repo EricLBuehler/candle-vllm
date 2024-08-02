@@ -1,6 +1,8 @@
 use crate::candle::D;
 use crate::candle::{DType, Error, Result, Tensor};
 use rand::{distributions::Distribution, SeedableRng};
+use std::sync::Arc;
+use std::sync::Mutex;
 #[derive(Clone, PartialEq, Debug)]
 pub enum Sampling {
     ArgMax,
@@ -11,14 +13,17 @@ pub enum Sampling {
 }
 
 pub struct LogitsProcessor {
-    rng: rand::rngs::StdRng,
+    rng: Arc<Mutex<rand::rngs::StdRng>>,
     sampling: Sampling,
 }
 
 impl LogitsProcessor {
     pub fn from_sampling(seed: u64, sampling: Sampling) -> Self {
         let rng = rand::rngs::StdRng::seed_from_u64(seed);
-        Self { rng, sampling }
+        Self {
+            rng: Arc::new(Mutex::new(rng)),
+            sampling,
+        }
     }
 
     pub fn new(seed: u64, temperature: Option<f64>, top_p: Option<f64>) -> Self {
@@ -33,7 +38,7 @@ impl LogitsProcessor {
         Self::from_sampling(seed, sampling)
     }
 
-    fn sample_argmax(&mut self, logits: Tensor) -> Result<u32> {
+    fn sample_argmax(&self, logits: Tensor) -> Result<u32> {
         // let logits_v: Vec<f32> = logits.to_vec1()?;
         // Use gpu kernel
         let next_token = logits.argmax(D::Minus1)?.to_scalar::<u32>()?;
@@ -46,16 +51,17 @@ impl LogitsProcessor {
         Ok(next_token)
     }
 
-    fn sample_multinomial(&mut self, prs: &Vec<f32>) -> Result<u32> {
+    fn sample_multinomial(&self, prs: &Vec<f32>) -> Result<u32> {
         let distr = rand::distributions::WeightedIndex::new(prs).map_err(Error::wrap)?;
-        let next_token = distr.sample(&mut self.rng) as u32;
+        let mut rng = self.rng.lock().unwrap();
+        let next_token = distr.sample(&mut *rng) as u32;
         Ok(next_token)
     }
 
     /// top-p sampling (or "nucleus sampling") samples from the smallest set of tokens that exceed
     /// probability top_p. This way we never sample tokens that have very low probabilities and are
     /// less likely to go "off the rails".
-    fn sample_topp(&mut self, prs: &mut Vec<f32>, top_p: f32) -> Result<u32> {
+    fn sample_topp(&self, prs: &mut Vec<f32>, top_p: f32) -> Result<u32> {
         let mut argsort_indices = (0..prs.len()).collect::<Vec<_>>();
 
         // Sort by descending probability.
@@ -75,7 +81,7 @@ impl LogitsProcessor {
     }
 
     // top-k sampling samples from the k tokens with the largest probabilities.
-    fn sample_topk(&mut self, prs: &mut Vec<f32>, top_k: usize) -> Result<u32> {
+    fn sample_topk(&self, prs: &mut Vec<f32>, top_k: usize) -> Result<u32> {
         if top_k >= prs.len() {
             self.sample_multinomial(prs)
         } else {
@@ -90,7 +96,7 @@ impl LogitsProcessor {
 
     // top-k sampling samples from the k tokens with the largest probabilities.
     // then top-p sampling.
-    fn sample_topk_topp(&mut self, prs: &mut Vec<f32>, top_k: usize, top_p: f32) -> Result<u32> {
+    fn sample_topk_topp(&self, prs: &mut Vec<f32>, top_k: usize, top_p: f32) -> Result<u32> {
         if top_k >= prs.len() {
             self.sample_topp(prs, top_p)
         } else {
@@ -108,11 +114,11 @@ impl LogitsProcessor {
         }
     }
 
-    pub fn sample(&mut self, logits: &Tensor) -> Result<u32> {
+    pub fn sample(&self, logits: &Tensor) -> Result<u32> {
         self.sample_f(logits, |_| {})
     }
 
-    pub fn sample_f(&mut self, logits: &Tensor, f: impl FnOnce(&mut [f32])) -> Result<u32> {
+    pub fn sample_f(&self, logits: &Tensor, f: impl FnOnce(&mut [f32])) -> Result<u32> {
         let logits = logits.to_dtype(DType::F32)?;
         let prs = |temperature: f64| -> Result<Vec<f32>> {
             let logits = (&logits / temperature)?;

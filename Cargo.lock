@@ -449,6 +449,7 @@ dependencies = [
  "kernels",
  "rand",
  "range-checked",
+ "rayon",
  "serde",
  "serde_json",
  "tokenizers",
