@@ -294,9 +294,9 @@ impl ModelLoader for DefaultLoader {
         let pipeline_config = PipelineConfig {
             max_model_len: config.max_seq_len,
             default_max_tokens,
-            penalty: specific_args.penalty.unwrap_or(1.1),
-            repeat_last_n: specific_args.repeat_last_n.unwrap_or(32),
-            temperature: specific_args.temperature.unwrap_or(0.),
+            penalty: specific_args.penalty.unwrap_or(1.),
+            repeat_last_n: specific_args.repeat_last_n.unwrap_or(64),
+            temperature: specific_args.temperature.unwrap_or(0.7),
         };
 
         println!("{:?}", pipeline_config);
@@ -496,13 +496,13 @@ impl ModulePipeline for DefaultPipeline {
                 }
 
                 let logits = if sampling_params.repetition_penalty == 1.
-                    || self.args.repeat_last_n.unwrap_or(16) >= tokens.len()
+                    || self.args.repeat_last_n.unwrap_or(64) >= tokens_generated
                 {
                     logits
                 } else {
                     let start_at = tokens
                         .len()
-                        .saturating_sub(self.args.repeat_last_n.unwrap_or(16));
+                        .saturating_sub(self.args.repeat_last_n.unwrap_or(64));
                     try_api!(candle_transformers::utils::apply_repeat_penalty(
                         &logits,
                         sampling_params.repetition_penalty,
