@@ -340,7 +340,7 @@ impl ModelLoader for DefaultLoader {
         println!("{:?}", specific_args);
 
         let logits_processor = {
-            let temperature = specific_args.temperature.unwrap_or(0.) as f64;
+            let temperature = pipeline_config.temperature as f64;
             let sampling = if temperature <= 0. {
                 Sampling::ArgMax
             } else {

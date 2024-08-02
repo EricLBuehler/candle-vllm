@@ -1,4 +1,4 @@
-use candle_core::{Device, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
 
 use crate::backend::{paged_attention, reshape_and_cache};
 
@@ -96,7 +96,8 @@ impl PagedAttention {
                 };
 
                 let att = att.broadcast_add(mask)?;
-                let att = candle_nn::ops::softmax_last_dim(&att)?;
+                let att = candle_nn::ops::softmax_last_dim(&att.to_dtype(DType::F32)?)?
+                    .to_dtype(att.dtype())?;
                 if key_value_heads != attention_heads {
                     let value_repeat = if key_value_heads == 1 {
                         value.broadcast_as((batch_size, attention_heads, seq_len, head_size))?
