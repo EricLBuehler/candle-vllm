@@ -346,7 +346,7 @@ impl LLMEngine {
                 }
             }
         }
-
+        self.pipeline.reset_decoder();
         Ok(responses)
     }
 }
