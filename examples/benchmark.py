@@ -39,22 +39,26 @@ async def benchmark():
     max_tokens = 1024
     # 16 requests
     prompts = ["Explain how to best learn Rust.", 
-               "Please talk about deep learning in 100 words.", 
+               "Please talk about deep learning.", 
                "Do you know the capital city of China? Talk the details of you known.", 
                "Who is the best female actor in the world? Explain why.",
-               "How to dealing with depression?",
+               "Let me know how to deal with depression?",
                "How to make money in short time?",
                "What is the future trend of large language model?",
                "The famous tech companies in the world.",
                "Explain how to best learn Rust.", 
-               "Please talk about deep learning in 100 words.", 
+               "Please talk about deep learning.", 
                "Do you know the capital city of China? Talk the details of you known.", 
                "Who is the best female actor in the world? Explain why.",
-               "How to dealing with depression?",
+               "Let me know how to deal with depression?",
                "How to make money in short time?",
                "What is the future trend of large language model?",
                "The famous tech companies in the world."]
-    
+
+    # avoid generating very short answers
+    for i in range(len(prompts)):
+        prompts[i] = prompts[i] + " Describe in about {} words.".format((int(max_tokens / 1.3 / 10) + 1) * 10)
+
     # send 16 chat requests at the same time
     tasks: List[asyncio.Task] = []
     for i in range(len(prompts)):

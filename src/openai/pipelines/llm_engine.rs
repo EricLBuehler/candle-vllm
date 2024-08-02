@@ -341,18 +341,6 @@ impl LLMEngine {
                     responses.insert(group.request_id.clone(), (choices, usage));
 
                     if let Some(sender) = &group.sender {
-                        //reset tokenizer decoder after processing each request
-                        //respond the remaining characters in the decoder
-                        if let Some(remain) = self.pipeline.reset_decoder() {
-                            let chunk = self.get_stream_response(
-                                group.request_id.clone(),
-                                group.arrival_time,
-                                Some(remain),
-                                None,
-                            );
-                            let _ = sender.send(ChatResponse::Chunk(chunk));
-                        };
-
                         let _ = sender.send(ChatResponse::Done);
                     };
                 }
