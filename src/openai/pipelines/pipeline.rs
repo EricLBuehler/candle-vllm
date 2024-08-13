@@ -26,7 +26,7 @@ use crate::{
         PipelineConfig,
     },
     paged_attention::input_metadata::InputMetadata,
-    try_api,
+    try_api, SpecificConfig,
 };
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
@@ -42,37 +42,6 @@ const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
 const MIN_GEN_TOKENS: usize = 128;
 const MAX_GEN_TOKENS: usize = 4096;
-
-#[derive(Debug, Clone)]
-pub struct SpecificConfig {
-    repeat_last_n: Option<usize>,
-    temperature: Option<f32>,
-    top_k: Option<usize>,
-    top_p: Option<f64>,
-    penalty: Option<f32>,
-    max_gen_tokens: Option<usize>,
-}
-
-impl SpecificConfig {
-    pub fn new(
-        repeat_last_n: Option<usize>,
-        temperature: Option<f32>,
-        top_k: Option<usize>,
-        top_p: Option<f64>,
-        penalty: Option<f32>,
-        max_gen_tokens: Option<usize>,
-    ) -> Self {
-        Self {
-            repeat_last_n,
-            temperature,
-            top_k,
-            top_p,
-            penalty,
-            max_gen_tokens,
-        }
-    }
-}
-
 enum LLMModel {
     LLAMA(Llama),
     Phi2(Phi2),
@@ -176,50 +145,50 @@ impl ModelLoader for DefaultLoader {
                 let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
                 ),));
-                config.into_config(false, dtype)
+                config.into_config(false, dtype, &specific_args)
             }
             "phi2" => {
                 let config: Phi2Config = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
                 ),));
                 //Phi2 use F32 type for kvcache
-                config.into_config(false, DType::F32)
+                config.into_config(false, DType::F32, &specific_args)
             }
             "phi3" => {
                 let config: PhiConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
                     paths.get_config_filename()
                 )),));
-                config.into_config(false, dtype)
+                config.into_config(false, dtype, &specific_args)
             }
             "qwen2" => {
                 let config: QwenConfig = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
                 ),));
-                config.into_config(false, dtype)
+                config.into_config(false, dtype, &specific_args)
             }
             "gemma" => {
                 let config: GemmaConfig = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
                 ),));
-                config.into_config(false, dtype)
+                config.into_config(false, dtype, &specific_args)
             }
             "mistral" => {
                 let config: MistralConfig = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
                 ),));
-                config.into_config(false, dtype)
+                config.into_config(false, dtype, &specific_args)
             }
             "yi" => {
                 let config: YiConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
                     paths.get_config_filename()
                 )),));
-                config.into_config(false, dtype)
+                config.into_config(false, dtype, &specific_args)
             }
             "stablelm" => {
                 let config: StableLMConfig = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
                 ),));
-                config.into_config(false, dtype)
+                config.into_config(false, dtype, &specific_args)
             }
             _ => panic!("Model not supported!"),
         };

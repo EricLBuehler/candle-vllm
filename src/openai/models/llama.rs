@@ -1,15 +1,16 @@
 use super::Config;
-use crate::openai::models::linear::{linear_no_bias as linear, Linear};
+use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
+use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{embedding, Embedding, Module, VarBuilder};
 use candle_transformers::models::with_tracing::RmsNorm;
-
 pub const MAX_SEQ_LEN: usize = 4096;
 use crate::openai::models::TokenID;
 use std::iter::zip;
+
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct LlamaConfig {
     pub hidden_size: usize,
@@ -31,7 +32,12 @@ fn default_rope() -> f32 {
 }
 
 impl LlamaConfig {
-    pub fn into_config(self, use_flash_attn: bool, kv_cache_dtype: DType) -> Config {
+    pub fn into_config(
+        self,
+        use_flash_attn: bool,
+        kv_cache_dtype: DType,
+        scfg: &SpecificConfig,
+    ) -> Config {
         Config {
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -56,6 +62,7 @@ impl LlamaConfig {
             kv_cache_dtype,
             use_qkv_bias: None,
             custom_stop_tokens: None,
+            specifi_config: scfg.clone(),
         }
     }
 }
@@ -184,10 +191,10 @@ impl CausalSelfAttention {
         let size_in = cfg.hidden_size;
         let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
         let size_kv = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads;
-        let q_proj = linear(size_in, size_q, vb.pp("q_proj"))?;
-        let k_proj = linear(size_in, size_kv, vb.pp("k_proj"))?;
-        let v_proj = linear(size_in, size_kv, vb.pp("v_proj"))?;
-        let o_proj = linear(size_q, size_in, vb.pp("o_proj"))?;
+        let q_proj = linear(size_in, size_q, vb.pp("q_proj"), &cfg.specifi_config.quant)?;
+        let k_proj = linear(size_in, size_kv, vb.pp("k_proj"), &cfg.specifi_config.quant)?;
+        let v_proj = linear(size_in, size_kv, vb.pp("v_proj"), &cfg.specifi_config.quant)?;
+        let o_proj = linear(size_q, size_in, vb.pp("o_proj"), &cfg.specifi_config.quant)?;
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         Ok(Self {
             q_proj,
@@ -232,9 +239,19 @@ impl Mlp {
         let span = tracing::span!(tracing::Level::TRACE, "mlp");
         let h_size = cfg.hidden_size;
         let i_size = cfg.intermediate_size;
-        let c_fc1 = linear(h_size, i_size, vb.pp("gate_proj"))?;
-        let c_fc2 = linear(h_size, i_size, vb.pp("up_proj"))?;
-        let c_proj = linear(i_size, h_size, vb.pp("down_proj"))?;
+        let c_fc1 = linear(
+            h_size,
+            i_size,
+            vb.pp("gate_proj"),
+            &cfg.specifi_config.quant,
+        )?;
+        let c_fc2 = linear(h_size, i_size, vb.pp("up_proj"), &cfg.specifi_config.quant)?;
+        let c_proj = linear(
+            i_size,
+            h_size,
+            vb.pp("down_proj"),
+            &cfg.specifi_config.quant,
+        )?;
         Ok(Self {
             c_fc1,
             c_fc2,
@@ -358,7 +375,12 @@ impl Llama {
 
     pub fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
         let wte = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
-        let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
+        let lm_head = linear(
+            cfg.hidden_size,
+            cfg.vocab_size,
+            vb.pp("lm_head"),
+            &cfg.specifi_config.quant,
+        )?;
         let ln_f = RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
         let blocks: Vec<_> = (0..cfg.num_hidden_layers)
             .map(|i| Block::load(vb.pp(&format!("model.layers.{i}")), cfg, dtype, device).unwrap())

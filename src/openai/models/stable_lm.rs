@@ -1,7 +1,10 @@
 use super::Config;
-use crate::openai::models::linear::{linear, linear_no_bias, Linear};
+use crate::openai::models::linear::{
+    linear_no_bias_x as linear_no_bias, linear_x as linear, LinearX as Linear,
+};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
+use crate::SpecificConfig;
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_nn::{Activation, LayerNorm, VarBuilder};
 use either::Either;
@@ -31,7 +34,12 @@ pub struct StableLMConfig {
 }
 
 impl StableLMConfig {
-    pub fn into_config(self, use_flash_attn: bool, kv_cache_dtype: DType) -> Config {
+    pub fn into_config(
+        self,
+        use_flash_attn: bool,
+        kv_cache_dtype: DType,
+        scfg: &SpecificConfig,
+    ) -> Config {
         Config {
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -59,6 +67,7 @@ impl StableLMConfig {
             kv_cache_dtype,
             use_qkv_bias: Some(self.use_qkv_bias.unwrap_or(false)),
             custom_stop_tokens: None,
+            specifi_config: scfg.clone(),
         }
     }
 }
@@ -125,9 +134,24 @@ impl MLP {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
-        let gate_proj = linear_no_bias(hidden_sz, intermediate_sz, vb.pp("gate_proj"))?;
-        let up_proj = linear_no_bias(hidden_sz, intermediate_sz, vb.pp("up_proj"))?;
-        let down_proj = linear_no_bias(intermediate_sz, hidden_sz, vb.pp("down_proj"))?;
+        let gate_proj = linear_no_bias(
+            hidden_sz,
+            intermediate_sz,
+            vb.pp("gate_proj"),
+            &cfg.specifi_config.quant,
+        )?;
+        let up_proj = linear_no_bias(
+            hidden_sz,
+            intermediate_sz,
+            vb.pp("up_proj"),
+            &cfg.specifi_config.quant,
+        )?;
+        let down_proj = linear_no_bias(
+            intermediate_sz,
+            hidden_sz,
+            vb.pp("down_proj"),
+            &cfg.specifi_config.quant,
+        )?;
         Ok(Self {
             gate_proj,
             up_proj,
@@ -173,10 +197,30 @@ impl Attention {
             linear_no_bias
         };
 
-        let q_proj = linear_layer(hidden_sz, num_heads * head_dim, vb.pp("q_proj"))?;
-        let k_proj = linear_layer(hidden_sz, num_kv_heads * head_dim, vb.pp("k_proj"))?;
-        let v_proj = linear_layer(hidden_sz, num_kv_heads * head_dim, vb.pp("v_proj"))?;
-        let o_proj = linear_no_bias(num_heads * head_dim, hidden_sz, vb.pp("o_proj"))?;
+        let q_proj = linear_layer(
+            hidden_sz,
+            num_heads * head_dim,
+            vb.pp("q_proj"),
+            &cfg.specifi_config.quant,
+        )?;
+        let k_proj = linear_layer(
+            hidden_sz,
+            num_kv_heads * head_dim,
+            vb.pp("k_proj"),
+            &cfg.specifi_config.quant,
+        )?;
+        let v_proj = linear_layer(
+            hidden_sz,
+            num_kv_heads * head_dim,
+            vb.pp("v_proj"),
+            &cfg.specifi_config.quant,
+        )?;
+        let o_proj = linear_no_bias(
+            num_heads * head_dim,
+            hidden_sz,
+            vb.pp("o_proj"),
+            &cfg.specifi_config.quant,
+        )?;
         Ok(Self {
             q_proj,
             k_proj,
@@ -333,7 +377,12 @@ impl StableLM {
             layers.push(layer)
         }
         let norm = candle_nn::layer_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
+        let lm_head = linear_no_bias(
+            cfg.hidden_size,
+            cfg.vocab_size,
+            vb.pp("lm_head"),
+            &cfg.specifi_config.quant,
+        )?;
         Ok(Self {
             embed_tokens,
             layers,
