@@ -1,7 +1,8 @@
 use super::Config;
-use crate::openai::models::linear::{linear_no_bias as linear, Linear};
+use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
+use crate::SpecificConfig;
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_nn::{Activation, VarBuilder};
 use candle_transformers::models::with_tracing::{layer_norm, Embedding, LayerNorm};
@@ -32,7 +33,12 @@ pub struct Phi2Config {
 }
 
 impl Phi2Config {
-    pub fn into_config(self, use_flash_attn: bool, kv_cache_dtype: DType) -> Config {
+    pub fn into_config(
+        self,
+        use_flash_attn: bool,
+        kv_cache_dtype: DType,
+        scfg: &SpecificConfig,
+    ) -> Config {
         Config {
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -57,6 +63,7 @@ impl Phi2Config {
             kv_cache_dtype,
             use_qkv_bias: None,
             custom_stop_tokens: None,
+            specific_config: scfg.clone(),
         }
     }
 }
@@ -115,8 +122,18 @@ struct MLP {
 
 impl MLP {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
-        let fc1 = linear(cfg.hidden_size, cfg.intermediate_size, vb.pp("fc1"))?;
-        let fc2 = linear(cfg.intermediate_size, cfg.hidden_size, vb.pp("fc2"))?;
+        let fc1 = linear(
+            cfg.hidden_size,
+            cfg.intermediate_size,
+            vb.pp("fc1"),
+            &cfg.specific_config.quant,
+        )?;
+        let fc2 = linear(
+            cfg.intermediate_size,
+            cfg.hidden_size,
+            vb.pp("fc2"),
+            &cfg.specific_config.quant,
+        )?;
         Ok(Self {
             fc1,
             fc2,
@@ -153,10 +170,30 @@ impl Attention {
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
-        let q_proj = linear(cfg.hidden_size, num_heads * head_dim, vb.pp("q_proj"))?;
-        let k_proj = linear(cfg.hidden_size, num_kv_heads * head_dim, vb.pp("k_proj"))?;
-        let v_proj = linear(cfg.hidden_size, num_kv_heads * head_dim, vb.pp("v_proj"))?;
-        let dense = linear(num_heads * head_dim, cfg.hidden_size, vb.pp("dense"))?;
+        let q_proj = linear(
+            cfg.hidden_size,
+            num_heads * head_dim,
+            vb.pp("q_proj"),
+            &cfg.specific_config.quant,
+        )?;
+        let k_proj = linear(
+            cfg.hidden_size,
+            num_kv_heads * head_dim,
+            vb.pp("k_proj"),
+            &cfg.specific_config.quant,
+        )?;
+        let v_proj = linear(
+            cfg.hidden_size,
+            num_kv_heads * head_dim,
+            vb.pp("v_proj"),
+            &cfg.specific_config.quant,
+        )?;
+        let dense = linear(
+            num_heads * head_dim,
+            cfg.hidden_size,
+            vb.pp("dense"),
+            &cfg.specific_config.quant,
+        )?;
         // Alternative rope scalings are not supported.
         let rotary_emb = RotaryEmbedding::new(cfg, dtype, vb.device())?;
         let (q_layernorm, k_layernorm) = if cfg.qk_layer_rms_norm.unwrap() {
@@ -324,7 +361,12 @@ impl Phi2 {
             let layer = DecoderLayer::new(cfg, dtype, vb_m.pp(layer_idx))?;
             layers.push(layer)
         }
-        let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
+        let lm_head = linear(
+            cfg.hidden_size,
+            cfg.vocab_size,
+            vb.pp("lm_head"),
+            &cfg.specific_config.quant,
+        )?;
         Ok(Self {
             embed_tokens,
             layers,

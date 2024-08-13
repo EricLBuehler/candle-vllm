@@ -1,9 +1,10 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
 use super::{Config, RopeScaling};
-use crate::openai::models::linear::{linear_no_bias as linear, Linear};
+use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
+use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::VarBuilder;
@@ -33,7 +34,12 @@ pub struct PhiConfig {
 }
 
 impl PhiConfig {
-    pub fn into_config(self, use_flash_attn: bool, kv_cache_dtype: DType) -> Config {
+    pub fn into_config(
+        self,
+        use_flash_attn: bool,
+        kv_cache_dtype: DType,
+        scfg: &SpecificConfig,
+    ) -> Config {
         Config {
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -58,6 +64,7 @@ impl PhiConfig {
             kv_cache_dtype,
             use_qkv_bias: None,
             custom_stop_tokens: None,
+            specific_config: scfg.clone(),
         }
     }
 }
@@ -235,8 +242,18 @@ impl Attention {
         let num_kv_heads = cfg.num_key_value_heads;
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         let op_size = num_heads * head_dim + 2 * num_kv_heads * head_dim;
-        let qkv_proj = linear(cfg.hidden_size, op_size, vb.pp("qkv_proj"))?;
-        let o_proj = linear(num_heads * head_dim, cfg.hidden_size, vb.pp("o_proj"))?;
+        let qkv_proj = linear(
+            cfg.hidden_size,
+            op_size,
+            vb.pp("qkv_proj"),
+            &cfg.specific_config.quant,
+        )?;
+        let o_proj = linear(
+            num_heads * head_dim,
+            cfg.hidden_size,
+            vb.pp("o_proj"),
+            &cfg.specific_config.quant,
+        )?;
         Ok(Self {
             qkv_proj,
             o_proj,
@@ -340,8 +357,18 @@ impl Mlp {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let hidden_size = cfg.hidden_size;
         let i_size = cfg.intermediate_size;
-        let gate_up_proj = linear(hidden_size, 2 * i_size, vb.pp("gate_up_proj"))?;
-        let down_proj = linear(i_size, hidden_size, vb.pp("down_proj"))?;
+        let gate_up_proj = linear(
+            hidden_size,
+            2 * i_size,
+            vb.pp("gate_up_proj"),
+            &cfg.specific_config.quant,
+        )?;
+        let down_proj = linear(
+            i_size,
+            hidden_size,
+            vb.pp("down_proj"),
+            &cfg.specific_config.quant,
+        )?;
         Ok(Self {
             gate_up_proj,
             down_proj,
@@ -430,7 +457,12 @@ impl Phi {
             layers.push(layer)
         }
         let norm = RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
+        let lm_head = linear(
+            cfg.hidden_size,
+            cfg.vocab_size,
+            vb.pp("lm_head"),
+            &cfg.specific_config.quant,
+        )?;
         Ok(Self {
             embed_tokens,
             layers,

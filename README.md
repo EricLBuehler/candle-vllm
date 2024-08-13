@@ -12,25 +12,26 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Streaming support in generation.
 - Efficient management of key-value cache with PagedAttention.
 - Continuous batching.
+- In-situ quantization
 
 ## Develop Status
 
 Currently, candle-vllm supports chat serving for the following models.
 
-| Model ID | Model Type | Supported | Speed (A100, BF16) | Throughput (bs=16)
-|--|--|--|--|--|
-| #1 | **LLAMA/LLAMA2/LLaMa3/LLaMa3.1** |✅|74 tks/s (7B), 65 tks/s (LLaMa3.1 8B)| 553 tks/s (LLaMa3.1 8B) |
-| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) |
-| #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|TBD|
-| #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|
-| #5 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) |
-| #6 | **StableLM** |✅|99 tks/s (3B)|TBD|
-| #7 | BigCode/StarCode |TBD|TBD|TBD |
-| #8 | ChatGLM |TBD|TBD|TBD |
-| #9 | **QWen2 (1.8B, 7B)** |✅|148 tks/s (1.8B)|784 tks/s (1.8B) |
-| #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |
-| #11 | Blip-large (Multimodal) |TBD|TBD|TBD |
-| #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |
+| Model ID | Model Type | Supported | Speed (A100, BF16) | Throughput (bs=16) | Quantized (A100, Q8_0) |
+|--|--|--|--|--|--|
+| #1 | **LLAMA/LLAMA2/LLaMa3/LLaMa3.1** |✅|74 tks/s (7B), 65 tks/s (LLaMa3.1 8B)| 553 tks/s (LLaMa3.1 8B) | 65 tks/s (LLaMa3.1 8B) |
+| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 78 tks/s (7B) |
+| #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|TBD|-|
+| #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|116 tks/s (3.8B)|
+| #5 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 79 tks/s (6B)|
+| #6 | **StableLM** |✅|99 tks/s (3B)|TBD|-|
+| #7 | BigCode/StarCode |TBD|TBD|TBD |-|
+| #8 | ChatGLM |TBD|TBD|TBD |-|
+| #9 | **QWen2 (1.8B, 7B)** |✅|148 tks/s (1.8B)|784 tks/s (1.8B) |-|
+| #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |-|
+| #11 | Blip-large (Multimodal) |TBD|TBD|TBD |-|
+| #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|
 
 
 ## Demo Chat with candle-vllm (61-65 tokens/s, LLaMa3.1 8B, bf16, on A100)
@@ -187,6 +188,17 @@ async def benchmark():
 asyncio.run(benchmark())
 ```
 
+## In-situ quantization for consumer-grade GPUs
+
+Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) into any GGML format during model loading. This feature helps conserve GPU memory, making it more efficient for consumer-grade GPUs (e.g., RTX 4090). For example, 8-bit quantization can reduce memory usage to less than 20GB for 8B models, while 4-bit quantization can bring it down to under 22GB for 13B models. To use this feature, simply supply the quant parameter when running candle-vllm.
+
+```
+cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q8_0
+```
+
+Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
+
+**Please note** that batched processing still requires optimization when operating in quantization mode.
 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.

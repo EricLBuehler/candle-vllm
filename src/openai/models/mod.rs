@@ -7,6 +7,7 @@ pub mod phi3;
 pub mod qwen2;
 pub mod stable_lm;
 pub mod yi;
+use crate::SpecificConfig;
 use candle_core::DType;
 use either::Either;
 use serde::Deserialize;
@@ -45,6 +46,7 @@ pub struct Config {
     pub kv_cache_dtype: DType,
     pub use_qkv_bias: Option<bool>,
     pub custom_stop_tokens: Option<Vec<String>>,
+    pub specific_config: SpecificConfig,
 }
 
 impl Config {

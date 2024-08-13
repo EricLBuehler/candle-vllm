@@ -2,10 +2,7 @@
 use candle::Result;
 use candle_core as candle;
 use clap::Subcommand;
-use openai::pipelines::{
-    pipeline::{DefaultLoader, SpecificConfig},
-    ModelLoader,
-};
+use openai::pipelines::{pipeline::DefaultLoader, ModelLoader};
 
 #[derive(Debug, Subcommand)]
 pub enum ModelSelected {
@@ -23,6 +20,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 
     /// Select the llama3 model (default llama3.1-8b).
@@ -39,6 +39,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 
     /// Select the phi2 model (default 2.7b).
@@ -55,6 +58,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 
     /// Select the phi3 model (default 3.8b).
@@ -77,6 +83,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 
     /// Select the qwen model (default 1.8b).
@@ -99,6 +108,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 
     /// Select the gemma model (default 2b).
@@ -115,6 +127,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 
     /// Select the mistral model (default 7b).
@@ -131,6 +146,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 
     /// Select the Yi model (default 6b).
@@ -147,6 +165,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 
     /// Select the stable-lm model (default zephyr-3b).
@@ -163,6 +184,9 @@ pub enum ModelSelected {
 
         #[arg(long)]
         max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
     },
 }
 
@@ -174,18 +198,21 @@ impl ToString for ModelSelected {
                 temperature: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "llama".to_string(),
             ModelSelected::Llama3 {
                 repeat_last_n: _,
                 temperature: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "llama3".to_string(),
             ModelSelected::Phi2 {
                 repeat_last_n: _,
                 temperature: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "phi2".to_string(),
             ModelSelected::Phi3 {
                 repeat_last_n: _,
@@ -194,6 +221,7 @@ impl ToString for ModelSelected {
                 top_p: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "phi3".to_string(),
             ModelSelected::Qwen2 {
                 repeat_last_n: _,
@@ -202,31 +230,69 @@ impl ToString for ModelSelected {
                 top_p: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "qwen2".to_string(),
             ModelSelected::Gemma {
                 repeat_last_n: _,
                 temperature: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "gemma".to_string(),
             ModelSelected::Mistral {
                 repeat_last_n: _,
                 temperature: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "mistral".to_string(),
             ModelSelected::Yi {
                 repeat_last_n: _,
                 temperature: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "yi".to_string(),
             ModelSelected::StableLM {
                 repeat_last_n: _,
                 temperature: _,
                 penalty: _,
                 max_gen_tokens: _,
+                quant: _,
             } => "stablelm".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecificConfig {
+    repeat_last_n: Option<usize>,
+    temperature: Option<f32>,
+    top_k: Option<usize>,
+    top_p: Option<f64>,
+    penalty: Option<f32>,
+    max_gen_tokens: Option<usize>,
+    quant: Option<String>,
+}
+
+impl SpecificConfig {
+    pub fn new(
+        repeat_last_n: Option<usize>,
+        temperature: Option<f32>,
+        top_k: Option<usize>,
+        top_p: Option<f64>,
+        penalty: Option<f32>,
+        max_gen_tokens: Option<usize>,
+        quant: Option<String>,
+    ) -> Self {
+        Self {
+            repeat_last_n,
+            temperature,
+            top_k,
+            top_p,
+            penalty,
+            max_gen_tokens,
+            quant,
         }
     }
 }
@@ -241,6 +307,7 @@ pub fn get_model_loader(
             temperature,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -250,6 +317,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "llama".to_string(),
             )),
@@ -264,6 +332,7 @@ pub fn get_model_loader(
             temperature,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -273,6 +342,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "llama3".to_string(),
             )),
@@ -287,6 +357,7 @@ pub fn get_model_loader(
             temperature,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -296,6 +367,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "phi2".to_string(),
             )),
@@ -312,6 +384,7 @@ pub fn get_model_loader(
             top_p,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -321,6 +394,7 @@ pub fn get_model_loader(
                     top_p,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "phi3".to_string(),
             )),
@@ -337,6 +411,7 @@ pub fn get_model_loader(
             top_p,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -346,6 +421,7 @@ pub fn get_model_loader(
                     top_p,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "qwen2".to_string(),
             )),
@@ -360,6 +436,7 @@ pub fn get_model_loader(
             temperature,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -369,6 +446,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "gemma".to_string(),
             )),
@@ -383,6 +461,7 @@ pub fn get_model_loader(
             temperature,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -392,6 +471,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "mistral".to_string(),
             )),
@@ -407,6 +487,7 @@ pub fn get_model_loader(
             temperature,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -416,6 +497,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "yi".to_string(),
             )),
@@ -431,6 +513,7 @@ pub fn get_model_loader(
             temperature,
             penalty,
             max_gen_tokens,
+            quant,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -440,6 +523,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
+                    quant,
                 ),
                 "stablelm".to_string(),
             )),

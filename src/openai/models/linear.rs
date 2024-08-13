@@ -18,8 +18,15 @@
 //! # Ok(()) }
 //! ```
 use crate::candle::Module;
-use crate::candle::{Result, Tensor};
+use crate::candle::{
+    quantized::{gguf_file, QMatMul, QTensor},
+    DType, Device, Result, Tensor,
+};
+use candle_core::quantized;
 use candle_nn::init;
+use either::Either;
+use std::sync::Arc;
+
 #[derive(Clone, Debug)]
 pub struct Linear {
     weight: Tensor,
@@ -124,5 +131,259 @@ pub fn linear_b(
         linear(in_dim, out_dim, vb)
     } else {
         linear_no_bias(in_dim, out_dim, vb)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QLinear {
+    inner: QMatMul,
+    bias: Option<Tensor>,
+    dtype: DType,
+}
+
+impl QLinear {
+    pub fn new<R: std::io::Read + std::io::Seek>(
+        ct: &gguf_file::Content,
+        r: &mut R,
+        name: &str,
+        device: &Device,
+    ) -> Result<Self> {
+        let w = ct.tensor(r, &format!("{name}.weight"), device)?;
+        let b = ct.tensor(r, &format!("{name}.bias"), device)?;
+        let inner = QMatMul::from_qtensor(w)?;
+        let bias = b.dequantize(device)?;
+        Ok(Self {
+            inner,
+            bias: Some(bias),
+            dtype: DType::F32,
+        })
+    }
+
+    pub fn from_linear(linear: Linear) -> Self {
+        Self {
+            inner: QMatMul::Tensor(linear.weight().clone()),
+            bias: linear.bias().cloned(),
+            dtype: linear.weight().dtype(),
+        }
+    }
+
+    pub fn from_parts(w: Tensor, b: Option<Tensor>) -> Self {
+        let dtype = w.dtype();
+        Self {
+            inner: QMatMul::Tensor(w),
+            bias: b,
+            dtype,
+        }
+    }
+
+    pub fn from_qparts(w: QTensor, b: Option<Tensor>) -> Self {
+        if let Some(ref b) = b {
+            assert_eq!(b.dtype(), DType::F32);
+        }
+        Self {
+            inner: QMatMul::QTensor(Arc::new(w)),
+            bias: b,
+            dtype: DType::F32,
+        }
+    }
+
+    pub fn from_qparts_x(w: QTensor, b: Option<Tensor>, dtype: DType) -> Self {
+        let bx = match b {
+            Some(b_) => {
+                if b_.dtype() != DType::F32 {
+                    Some(b_.to_dtype(DType::F32).unwrap())
+                } else {
+                    Some(b_)
+                }
+            }
+            _ => None,
+        };
+
+        Self {
+            inner: QMatMul::QTensor(Arc::new(w)),
+            bias: bx,
+            dtype: dtype,
+        }
+    }
+
+    pub fn from_linear_x(linear: Linear, quant: String) -> Self {
+        let weight = linear.weight();
+        let dtype = weight.dtype();
+        use quantized::GgmlDType;
+
+        let ggml_dtype = match quant.as_str() {
+            "q4_0" => GgmlDType::Q4_0,
+            "q4_1" => GgmlDType::Q4_1,
+            "q5_0" => GgmlDType::Q5_0,
+            "q5_1" => GgmlDType::Q5_1,
+            "q8_0" => GgmlDType::Q8_0,
+            "q2k" => GgmlDType::Q2K,
+            "q3k" => GgmlDType::Q3K,
+            "q4k" => GgmlDType::Q4K,
+            "q5k" => GgmlDType::Q5K,
+            "q6k" => GgmlDType::Q6K,
+            _ => panic!("Unsupported GGML data type!"),
+        };
+        let qtensor = QTensor::quantize(weight, ggml_dtype).unwrap();
+        let qbias = match linear.bias() {
+            Some(b) => Some(b.clone()),
+            _ => None,
+        };
+
+        QLinear::from_qparts_x(qtensor, qbias, dtype)
+    }
+
+    pub fn from_old_and_qmatmul(inner: QMatMul, old: &Self) -> Self {
+        Self {
+            inner,
+            bias: old.bias.clone(),
+            dtype: old.dtype,
+        }
+    }
+
+    pub fn inner(&mut self) -> &mut QMatMul {
+        &mut self.inner
+    }
+
+    pub fn inner_ref(&self) -> &QMatMul {
+        &self.inner
+    }
+
+    pub fn is_quant(&self) -> bool {
+        matches!(self.inner, QMatMul::QTensor(_))
+    }
+
+    pub fn bias(&self) -> Option<&Tensor> {
+        self.bias.as_ref()
+    }
+
+    pub fn bias_mut(&mut self) -> Option<&mut Tensor> {
+        self.bias.as_mut()
+    }
+}
+
+impl Module for QLinear {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let xs = if self.is_quant() {
+            let x1 = match *x.dims() {
+                [bsize, seq_len, dim1, dim2] => {
+                    if seq_len > 1 {
+                        x.to_dtype(DType::F32)?
+                    } else {
+                        x.reshape((bsize, dim1, dim2))?.to_dtype(DType::F32)?
+                    }
+                }
+                [bsize, seq_len, dim] => {
+                    if seq_len > 1 {
+                        x.to_dtype(DType::F32)?
+                    } else {
+                        x.reshape((bsize, dim))?.to_dtype(DType::F32)?
+                    }
+                }
+                _ => x.to_dtype(DType::F32)?,
+            };
+            x1
+        } else {
+            x.clone()
+        };
+
+        let xs = match *x.dims() {
+            [bsize, seq_len, dim1, _] => {
+                if seq_len > 1 {
+                    QMatMul::forward(&self.inner, &xs)?
+                } else {
+                    QMatMul::forward(&self.inner, &xs)?.reshape((bsize, seq_len, dim1, ()))?
+                }
+            }
+            [bsize, seq_len, _] => {
+                if seq_len > 1 {
+                    QMatMul::forward(&self.inner, &xs)?
+                } else {
+                    QMatMul::forward(&self.inner, &xs)?.reshape((bsize, seq_len, ()))?
+                }
+            }
+            _ => QMatMul::forward(&self.inner, &xs)?,
+        };
+
+        if let Some(bias) = &self.bias {
+            xs.broadcast_add(bias)?.to_dtype(self.dtype)
+        } else {
+            xs.to_dtype(self.dtype)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LinearX(Either<Linear, QLinear>);
+
+impl Module for LinearX {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        match &self.0 {
+            Either::Left(ln) => ln.forward(x),
+            Either::Right(ln) => ln.forward(x),
+        }
+    }
+}
+impl LinearX {
+    pub fn new(weight: Tensor, bias: Option<Tensor>, quant: &Option<String>) -> Self {
+        let ln = Linear::new(weight, bias);
+        if let Some(quatized_type) = quant {
+            LinearX(Either::Right(QLinear::from_linear_x(
+                ln,
+                quatized_type.clone(),
+            )))
+        } else {
+            LinearX(Either::Left(ln))
+        }
+    }
+}
+
+pub fn linear_x(
+    in_dim: usize,
+    out_dim: usize,
+    vb: candle_nn::VarBuilder,
+    quant: &Option<String>,
+) -> Result<LinearX> {
+    let ln = linear(in_dim, out_dim, vb).unwrap();
+    if let Some(quatized_type) = quant {
+        Ok(LinearX(Either::Right(QLinear::from_linear_x(
+            ln,
+            quatized_type.clone(),
+        ))))
+    } else {
+        Ok(LinearX(Either::Left(ln)))
+    }
+}
+
+pub fn linear_no_bias_x(
+    in_dim: usize,
+    out_dim: usize,
+    vb: candle_nn::VarBuilder,
+    quant: &Option<String>,
+) -> Result<LinearX> {
+    let init_ws = init::DEFAULT_KAIMING_NORMAL;
+    let ws = vb.get_with_hints((out_dim, in_dim), "weight", init_ws)?;
+    let ln = Linear::new(ws, None);
+    if let Some(quatized_type) = quant {
+        Ok(LinearX(Either::Right(QLinear::from_linear_x(
+            ln,
+            quatized_type.clone(),
+        ))))
+    } else {
+        Ok(LinearX(Either::Left(ln)))
+    }
+}
+
+pub fn linear_b_x(
+    in_dim: usize,
+    out_dim: usize,
+    bias: bool,
+    vb: candle_nn::VarBuilder,
+    quant: &Option<String>,
+) -> Result<LinearX> {
+    if bias {
+        linear_x(in_dim, out_dim, vb, quant)
+    } else {
+        linear_no_bias_x(in_dim, out_dim, vb, quant)
     }
 }
