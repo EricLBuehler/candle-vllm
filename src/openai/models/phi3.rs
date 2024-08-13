@@ -64,7 +64,7 @@ impl PhiConfig {
             kv_cache_dtype,
             use_qkv_bias: None,
             custom_stop_tokens: None,
-            specifi_config: scfg.clone(),
+            specific_config: scfg.clone(),
         }
     }
 }
@@ -246,13 +246,13 @@ impl Attention {
             cfg.hidden_size,
             op_size,
             vb.pp("qkv_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         let o_proj = linear(
             num_heads * head_dim,
             cfg.hidden_size,
             vb.pp("o_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         Ok(Self {
             qkv_proj,
@@ -361,13 +361,13 @@ impl Mlp {
             hidden_size,
             2 * i_size,
             vb.pp("gate_up_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         let down_proj = linear(
             i_size,
             hidden_size,
             vb.pp("down_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         Ok(Self {
             gate_up_proj,
@@ -461,7 +461,7 @@ impl Phi {
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         Ok(Self {
             embed_tokens,

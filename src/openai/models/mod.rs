@@ -46,7 +46,7 @@ pub struct Config {
     pub kv_cache_dtype: DType,
     pub use_qkv_bias: Option<bool>,
     pub custom_stop_tokens: Option<Vec<String>>,
-    pub specifi_config: SpecificConfig,
+    pub specific_config: SpecificConfig,
 }
 
 impl Config {

@@ -59,7 +59,7 @@ impl MistralConfig {
             kv_cache_dtype,
             use_qkv_bias: None,
             custom_stop_tokens: None,
-            specifi_config: scfg.clone(),
+            specific_config: scfg.clone(),
         }
     }
 }
@@ -135,19 +135,19 @@ impl MLP {
             hidden_sz,
             intermediate_sz,
             vb.pp("gate_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         let up_proj = linear_no_bias(
             hidden_sz,
             intermediate_sz,
             vb.pp("up_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         let down_proj = linear_no_bias(
             intermediate_sz,
             hidden_sz,
             vb.pp("down_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         Ok(Self {
             gate_proj,
@@ -189,25 +189,25 @@ impl Attention {
             hidden_sz,
             num_heads * head_dim,
             vb.pp("q_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         let k_proj = linear_no_bias(
             hidden_sz,
             num_kv_heads * head_dim,
             vb.pp("k_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         let v_proj = linear_no_bias(
             hidden_sz,
             num_kv_heads * head_dim,
             vb.pp("v_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         let o_proj = linear_no_bias(
             num_heads * head_dim,
             hidden_sz,
             vb.pp("o_proj"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         Ok(Self {
             q_proj,
@@ -368,7 +368,7 @@ impl Mistral {
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
-            &cfg.specifi_config.quant,
+            &cfg.specific_config.quant,
         )?;
         Ok(Self {
             embed_tokens,
