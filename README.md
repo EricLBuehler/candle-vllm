@@ -12,19 +12,19 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Streaming support in generation.
 - Efficient management of key-value cache with PagedAttention.
 - Continuous batching.
-- In-situ quantization
+- `In-situ` quantization
 
 ## Develop Status
 
 Currently, candle-vllm supports chat serving for the following models.
 
-| Model ID | Model Type | Supported | Speed (A100, BF16) | Throughput (bs=16) | Quantized (A100, Q8_0) |
+| Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K`) |
 |--|--|--|--|--|--|
-| #1 | **LLAMA/LLAMA2/LLaMa3/LLaMa3.1** |✅|74 tks/s (7B), 65 tks/s (LLaMa3.1 8B)| 553 tks/s (LLaMa3.1 8B) | 65 tks/s (LLaMa3.1 8B) |
-| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 78 tks/s (7B) |
+| #1 | **LLAMA/LLAMA2/LLaMa3/LLaMa3.1** |✅|74 tks/s (7B), 65 tks/s (LLaMa3.1 8B)| 553 tks/s (LLaMa3.1 8B) | 75 tks/s (LLaMa3.1 8B) |
+| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B) |
 | #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|TBD|-|
-| #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|116 tks/s (3.8B)|
-| #5 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 79 tks/s (6B)|
+| #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|
+| #5 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|
 | #6 | **StableLM** |✅|99 tks/s (3B)|TBD|-|
 | #7 | BigCode/StarCode |TBD|TBD|TBD |-|
 | #8 | ChatGLM |TBD|TBD|TBD |-|
@@ -190,15 +190,19 @@ asyncio.run(benchmark())
 
 ## In-situ quantization for consumer-grade GPUs
 
-Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) into any GGML format during model loading. This feature helps conserve GPU memory, making it more efficient for consumer-grade GPUs (e.g., RTX 4090). For example, 8-bit quantization can reduce memory usage to less than 20GB for 8B models, while 4-bit quantization can bring it down to under 22GB for 13B models. To use this feature, simply supply the quant parameter when running candle-vllm.
+Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) into any GGML format during model loading. This feature helps conserve GPU memory, making it more efficient for consumer-grade GPUs (e.g., RTX 4090). For example, 4-bit quantization can reduce GPU memory usage to less than 12GB for 8B models, while bring 13B models down to 24GB. To use this feature, simply supply the quant parameter when running candle-vllm.
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q8_0
+cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
 ```
 
 Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
 
-**Please note** that batched processing still requires optimization when operating in quantization mode.
+**Please note**:
+
+1) It may takes few minutes to load F32/F16/BF16 models into quantized;
+
+2) Batched processing still requires further optimizations when operating in quantization mode.
 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.
@@ -236,6 +240,14 @@ cargo run --release -- --port 2000 --weight-path /home/mistral_7b/ mistral --rep
 ```
 
 `--max-gen-tokens` parameter is used to control the maximum output tokens per chat response. The value will be set to 1/5 of max_sequence_len by default.
+
+For `consumer GPUs`, it is suggested to run the models under GGML formats, e.g.,
+
+```
+cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+```
+
+where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"].
 
 ## Report issue
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
