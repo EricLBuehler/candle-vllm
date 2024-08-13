@@ -192,8 +192,18 @@ impl CausalSelfAttention {
         let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
         let size_kv = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads;
         let q_proj = linear(size_in, size_q, vb.pp("q_proj"), &cfg.specific_config.quant)?;
-        let k_proj = linear(size_in, size_kv, vb.pp("k_proj"), &cfg.specific_config.quant)?;
-        let v_proj = linear(size_in, size_kv, vb.pp("v_proj"), &cfg.specific_config.quant)?;
+        let k_proj = linear(
+            size_in,
+            size_kv,
+            vb.pp("k_proj"),
+            &cfg.specific_config.quant,
+        )?;
+        let v_proj = linear(
+            size_in,
+            size_kv,
+            vb.pp("v_proj"),
+            &cfg.specific_config.quant,
+        )?;
         let o_proj = linear(size_q, size_in, vb.pp("o_proj"), &cfg.specific_config.quant)?;
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         Ok(Self {
