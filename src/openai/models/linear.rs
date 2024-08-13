@@ -262,31 +262,25 @@ impl QLinear {
     }
 }
 
-impl Module for QLinear {
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let xs = if self.is_quant() {
-            let x1 = match *x.dims() {
-                [bsize, seq_len, dim1, dim2] => {
-                    if seq_len > 1 {
-                        x.to_dtype(DType::F32)?
-                    } else {
-                        x.reshape((bsize, dim1, dim2))?.to_dtype(DType::F32)?
-                    }
+impl QLinear {
+    pub fn forward_no_dequant(&self, x: &Tensor) -> Result<Tensor> {
+        let xs = match *x.dims() {
+            [bsize, seq_len, dim1, dim2] => {
+                if seq_len > 1 {
+                    x.to_dtype(DType::F32)?
+                } else {
+                    x.reshape((bsize, dim1, dim2))?.to_dtype(DType::F32)?
                 }
-                [bsize, seq_len, dim] => {
-                    if seq_len > 1 {
-                        x.to_dtype(DType::F32)?
-                    } else {
-                        x.reshape((bsize, dim))?.to_dtype(DType::F32)?
-                    }
+            }
+            [bsize, seq_len, dim] => {
+                if seq_len > 1 {
+                    x.to_dtype(DType::F32)?
+                } else {
+                    x.reshape((bsize, dim))?.to_dtype(DType::F32)?
                 }
-                _ => x.to_dtype(DType::F32)?,
-            };
-            x1
-        } else {
-            x.clone()
+            }
+            _ => x.to_dtype(DType::F32)?,
         };
-
         let xs = match *x.dims() {
             [bsize, seq_len, dim1, _] => {
                 if seq_len > 1 {
@@ -309,6 +303,69 @@ impl Module for QLinear {
             xs.broadcast_add(bias)?.to_dtype(self.dtype)
         } else {
             xs.to_dtype(self.dtype)
+        }
+    }
+
+    pub fn forward_via_f16(&self, x: &Tensor) -> Result<Tensor> {
+        let in_dtype = x.dtype();
+        let w = self.inner.dequantize_f16()?;
+        let w = match *x.dims() {
+            [b1, seq_len, _, _] => {
+                if seq_len > 1 {
+                    w.broadcast_left((b1, seq_len))?.t()?
+                } else {
+                    w.t()?
+                }
+            }
+            [bsize, seq_len, _] => {
+                if seq_len > 1 {
+                    w.broadcast_left(bsize)?.t()?
+                } else {
+                    w.t()?
+                }
+            }
+            _ => w.t()?,
+        };
+        let x = x.to_dtype(DType::F16)?;
+        let x = match *x.dims() {
+            [bsize, seq_len, dim1, dim2] => {
+                if seq_len > 1 {
+                    x.matmul(&w)?
+                } else {
+                    let wdim = w.dims()[w.dims().len() - 1];
+                    x.reshape((bsize * seq_len, dim1, dim2))?
+                        .matmul(&w)?
+                        .reshape((bsize, seq_len, dim1, wdim))?
+                }
+            }
+            [bsize, seq_len, dim] => {
+                if seq_len > 1 {
+                    x.matmul(&w)?
+                } else {
+                    let wdim = w.dims()[w.dims().len() - 1];
+                    x.reshape((bsize * seq_len, dim))?
+                        .matmul(&w)?
+                        .reshape((bsize, seq_len, wdim))?
+                }
+            }
+            _ => x.matmul(&w)?,
+        };
+
+        if let Some(bias) = &self.bias {
+            x.broadcast_add(bias)?.to_dtype(in_dtype)
+        } else {
+            x.to_dtype(in_dtype)
+        }
+    }
+}
+
+impl Module for QLinear {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let batch = x.dims()[0];
+        if batch > 4 {
+            self.forward_via_f16(x) //suitable for batched
+        } else {
+            self.forward_no_dequant(x) //faster in single-query
         }
     }
 }
