@@ -93,9 +93,9 @@ impl LLMEngine {
                     if result.len() == 0 {
                         continue;
                     }
-
-                    let _ = result.values()
-                    .map(|usage| e.completion_records.insert(usage.1.request_id.clone(), usage.clone()));
+                    for request_id in result.keys() {
+                        e.completion_records.insert(request_id.to_string(), result[request_id].clone());
+                    }
                     finish_notify.notify_one();
 
                     //chat completion statistics
