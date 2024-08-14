@@ -57,7 +57,7 @@ async def benchmark():
 
     # avoid generating very short answers
     for i in range(len(prompts)):
-        prompts[i] = prompts[i] + " Describe in about {} words.".format((int(max_tokens / 1.3 / 10) + 1) * 10)
+        prompts[i] = prompts[i] + " Respond in more than {} words.".format((int(max_tokens / 10) + 1) * 10)
 
     # send 16 chat requests at the same time
     tasks: List[asyncio.Task] = []
