@@ -41,7 +41,10 @@ impl GemmaConfig {
     ) -> Config {
         let hidden_act = match (self.hidden_act, self.hidden_activation) {
             (None, Some(act)) | (Some(act), None) => Some(act),
-            (Some(_), Some(_)) => panic!("both hidden_act and hidden_activation are set"),
+            (Some(act), Some(_)) => {
+                println!("both hidden_act and hidden_activation are set");
+                Some(act)
+            }
             (None, None) => panic!("none of hidden_act and hidden_activation are set"),
         };
         Config {
