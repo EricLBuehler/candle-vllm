@@ -272,9 +272,12 @@ impl LLMEngine {
                         .duration_since(prompt_finish_time)
                         .unwrap()
                         .as_millis();
+                    let seq = group.get_seqs().values().nth(0).unwrap();
+                    let decoded_tokens = seq.deref().get_len() - seq.deref().get_prompt_len();
                     println!(
-                        "Request {} decoding finished in {} seconds",
+                        "Request {} decoding {} tokens finished in {} seconds",
                         group.request_id,
+                        decoded_tokens,
                         completion_time_costs / 1000
                     );
                     // Create choices from the group
