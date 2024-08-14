@@ -178,24 +178,30 @@ pub async fn chat_completions(
     let (response_tx, rx) = flume::unbounded();
     // println!("{:?}", sampling_params);
 
-    if request.stream.is_some_and(|x| x) {
-        let _ = tokio::task::spawn_blocking(move || {
-            tokio::runtime::Handle::current().block_on(async move {
-                {
-                    //send completion request to inference engine
-                    let mut model = data.model.lock().await;
-                    model.add_request(
-                        token_ids,
-                        request_id.clone(),
-                        SystemTime::now(),
-                        sampling_params,
-                        request.logprobs.unwrap_or(false),
-                        Some(response_tx),
-                    );
-                    model.notify.notify_one();
-                }
-            });
+    let finish_notify = data.finish_notify.clone();
+    let data_clone = data.clone();
+    let request_id_clone = request_id.clone();
+    let stream_request = request.stream.is_some_and(|x| x);
+    let model_name = request.model.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            {
+                //send completion request to inference engine
+                let mut model = data.model.lock().await;
+                model.add_request(
+                    token_ids,
+                    request_id.clone(),
+                    SystemTime::now(),
+                    sampling_params,
+                    request.logprobs.unwrap_or(false),
+                    Some(response_tx),
+                );
+                model.notify.notify_one();
+            }
         });
+    });
+
+    if stream_request {
         ChatResponder::Streamer(
             Sse::new(Streamer {
                 rx,
@@ -212,35 +218,24 @@ pub async fn chat_completions(
             ),
         )
     } else {
-        //send completion request to inference engine
-        let mut model = data.model.lock().await;
-        model.add_request(
-            token_ids,
-            request_id.clone(),
-            SystemTime::now(),
-            sampling_params,
-            request.logprobs.unwrap_or(false),
-            Some(response_tx),
-        );
-        model.notify.notify_one();
         // wait until current response finished
-        data.finish_notify.notified().await;
-        let model = data.model.lock().await;
-        if !model.completion_records.contains_key(&request_id) {
+        finish_notify.notified().await;
+        let model = data_clone.model.lock().await;
+        if !model.completion_records.contains_key(&request_id_clone) {
             return ChatResponder::ModelError(APIError::from(format!(
                 "Unable to generate response for request {}",
-                request_id
+                request_id_clone
             )));
         }
 
-        let choices = &model.completion_records[&request_id].0;
-        let usage = &model.completion_records[&request_id].1;
+        let choices = &model.completion_records[&request_id_clone].0;
+        let usage = &model.completion_records[&request_id_clone].1;
 
         ChatResponder::Completion(ChatCompletionResponse {
-            id: request_id,
+            id: request_id_clone,
             choices: choices.to_vec(),
             created: usage.created,
-            model: request.model.clone(),
+            model: model_name,
             object: "chat.completion",
             usage: usage.clone(),
         })
