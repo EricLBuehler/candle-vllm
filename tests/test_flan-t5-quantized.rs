@@ -230,12 +230,12 @@ fn generate_answer(_prompt: String, args: &Args) -> Result<String> {
 
 // request struct
 #[derive(Deserialize)]
-struct Request {
+pub struct Request {
     prompt: String,
 }
 
 #[derive(Serialize)]
-struct Response {
+pub struct Response {
     answer: String,
 }
 

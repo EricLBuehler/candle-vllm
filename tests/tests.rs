@@ -16,7 +16,8 @@ use candle_vllm::{
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-#[tokio::main]
+
+#[tokio::test]
 async fn test_llama() -> Result<(), APIError> {
     let (loader, model_id) = get_model_loader(
         ModelSelected::Llama {

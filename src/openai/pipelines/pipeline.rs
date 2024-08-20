@@ -62,7 +62,6 @@ pub struct DefaultPipeline {
     name: String,
     dtype: DType,
     device: Device,
-    config: Config,
     stop_token_ids: Vec<u32>,
 }
 
@@ -346,7 +345,6 @@ impl ModelLoader for DefaultLoader {
                 name: self.name.clone(),
                 dtype,
                 device: device.clone(),
-                config: config.clone(),
                 stop_token_ids,
             }),
             pipeline_config,
@@ -450,12 +448,12 @@ impl ModulePipeline for DefaultPipeline {
         let shared_result = Arc::new(Mutex::new(HashMap::<usize, TokenOrFinishReason>::new()));
         let shared_group_idx = Arc::new(Mutex::new(0));
         groups.par_iter().for_each(|group| {
-            let mut group_idx = 0;
-            {
+            let group_idx = {
                 let mut groupidx = shared_group_idx.lock().unwrap();
-                group_idx = *groupidx;
+                let group_idx = *groupidx;
                 *groupidx += 1;
-            }
+                group_idx
+            };
 
             let sampling_params = &group.sampling_params;
             for (_, seq) in group.get_seqs() {
