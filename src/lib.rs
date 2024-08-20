@@ -1,4 +1,6 @@
 #![warn(clippy::cast_lossless)]
+use std::fmt::Display;
+
 use candle::Result;
 use candle_core as candle;
 use clap::Subcommand;
@@ -190,30 +192,12 @@ pub enum ModelSelected {
     },
 }
 
-impl ToString for ModelSelected {
-    fn to_string(&self) -> String {
+impl Display for ModelSelected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ModelSelected::Llama {
-                repeat_last_n: _,
-                temperature: _,
-                penalty: _,
-                max_gen_tokens: _,
-                quant: _,
-            } => "llama".to_string(),
-            ModelSelected::Llama3 {
-                repeat_last_n: _,
-                temperature: _,
-                penalty: _,
-                max_gen_tokens: _,
-                quant: _,
-            } => "llama3".to_string(),
-            ModelSelected::Phi2 {
-                repeat_last_n: _,
-                temperature: _,
-                penalty: _,
-                max_gen_tokens: _,
-                quant: _,
-            } => "phi2".to_string(),
+            ModelSelected::Llama { .. } => write!(f, "llama"),
+            ModelSelected::Llama3 { .. } => write!(f, "llama3"),
+            ModelSelected::Phi2 { .. } => write!(f, "phi2"),
             ModelSelected::Phi3 {
                 repeat_last_n: _,
                 temperature: _,
@@ -222,7 +206,7 @@ impl ToString for ModelSelected {
                 penalty: _,
                 max_gen_tokens: _,
                 quant: _,
-            } => "phi3".to_string(),
+            } => write!(f, "phi3"),
             ModelSelected::Qwen2 {
                 repeat_last_n: _,
                 temperature: _,
@@ -231,35 +215,11 @@ impl ToString for ModelSelected {
                 penalty: _,
                 max_gen_tokens: _,
                 quant: _,
-            } => "qwen2".to_string(),
-            ModelSelected::Gemma {
-                repeat_last_n: _,
-                temperature: _,
-                penalty: _,
-                max_gen_tokens: _,
-                quant: _,
-            } => "gemma".to_string(),
-            ModelSelected::Mistral {
-                repeat_last_n: _,
-                temperature: _,
-                penalty: _,
-                max_gen_tokens: _,
-                quant: _,
-            } => "mistral".to_string(),
-            ModelSelected::Yi {
-                repeat_last_n: _,
-                temperature: _,
-                penalty: _,
-                max_gen_tokens: _,
-                quant: _,
-            } => "yi".to_string(),
-            ModelSelected::StableLM {
-                repeat_last_n: _,
-                temperature: _,
-                penalty: _,
-                max_gen_tokens: _,
-                quant: _,
-            } => "stablelm".to_string(),
+            } => write!(f, "qwen2"),
+            ModelSelected::Gemma { .. } => write!(f, "gemma"),
+            ModelSelected::Mistral { .. } => write!(f, "mistral"),
+            ModelSelected::Yi { .. } => write!(f, "yi"),
+            ModelSelected::StableLM { .. } => write!(f, "stablelm"),
         }
     }
 }
@@ -321,8 +281,8 @@ pub fn get_model_loader(
                 ),
                 "llama".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "meta-llama/Llama-2-7b-chat-hf".to_string()
             },
@@ -346,8 +306,8 @@ pub fn get_model_loader(
                 ),
                 "llama3".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "meta-llama/Meta-Llama-3.1-8B-Instruct".to_string()
             },
@@ -371,8 +331,8 @@ pub fn get_model_loader(
                 ),
                 "phi2".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "microsoft/microsoft/phi-2".to_string()
             },
@@ -398,8 +358,8 @@ pub fn get_model_loader(
                 ),
                 "phi3".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "microsoft/Phi-3-mini-4k-instruct".to_string()
             },
@@ -425,8 +385,8 @@ pub fn get_model_loader(
                 ),
                 "qwen2".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "Qwen/Qwen1.5-1.8B-Chat".to_string()
             },
@@ -450,8 +410,8 @@ pub fn get_model_loader(
                 ),
                 "gemma".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "google/gemma-2b-it".to_string()
             },
@@ -475,8 +435,8 @@ pub fn get_model_loader(
                 ),
                 "mistral".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "mistralai/Mistral-7B-Instruct-v0.3".to_string()
             },
@@ -501,8 +461,8 @@ pub fn get_model_loader(
                 ),
                 "yi".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "01-ai/Yi-6B-Chat".to_string()
             },
@@ -527,8 +487,8 @@ pub fn get_model_loader(
                 ),
                 "stablelm".to_string(),
             )),
-            if model_id.is_some() {
-                model_id.unwrap()
+            if let Some(model_id) = model_id {
+                model_id
             } else {
                 "stabilityai/stablelm-zephyr-3b".to_string()
             },

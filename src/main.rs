@@ -4,7 +4,6 @@ use axum::{
     Router,
 };
 use candle_core::{DType, Device};
-use candle_examples;
 use candle_vllm::openai::openai_server::chat_completions;
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::pipelines::pipeline::DefaultModelPaths;

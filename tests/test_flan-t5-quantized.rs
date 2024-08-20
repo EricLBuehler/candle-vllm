@@ -230,12 +230,12 @@ fn generate_answer(_prompt: String, args: &Args) -> Result<String> {
 
 // request struct
 #[derive(Deserialize)]
-struct Request {
+pub struct Request {
     prompt: String,
 }
 
 #[derive(Serialize)]
-struct Response {
+pub struct Response {
     answer: String,
 }
 
@@ -273,7 +273,7 @@ async fn main() -> Result<(), APIError> {
         .layer(cors_layer)
         .route("/v1/chat/completions", post(generate));
 
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:2000"))
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:2000".to_string())
         .await
         .map_err(|e| APIError::new(e.to_string()))?;
     axum::serve(listener, app)

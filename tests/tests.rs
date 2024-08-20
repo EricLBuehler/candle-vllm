@@ -16,7 +16,8 @@ use candle_vllm::{
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tower_http::cors::{AllowOrigin, CorsLayer};
-#[tokio::main]
+
+#[tokio::test]
 async fn test_llama() -> Result<(), APIError> {
     let (loader, model_id) = get_model_loader(
         ModelSelected::Llama {
@@ -69,7 +70,7 @@ async fn test_llama() -> Result<(), APIError> {
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(Arc::new(server_data));
 
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:2000"))
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:2000".to_string())
         .await
         .map_err(|e| APIError::new(e.to_string()))?;
     axum::serve(listener, app)

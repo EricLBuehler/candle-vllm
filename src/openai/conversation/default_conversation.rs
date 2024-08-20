@@ -235,7 +235,7 @@ impl Conversation for DefaultConversation {
                         if let Some(message) = message {
                             accum += &format!("[INST] {message} [/INST]");
                         } else {
-                            accum += &format!("[INST] [/INST]");
+                            accum += "[INST] [/INST]";
                         }
                     } else if _role.clone() == self.roles.1 {
                         //assistant message
@@ -260,8 +260,7 @@ impl Conversation for DefaultConversation {
                                 "<|start_header_id|>user<|end_header_id|>\n\n {message} <|eot_id|>"
                             );
                         } else {
-                            accum +=
-                                &format!("<|start_header_id|>user<|end_header_id|>\n\n <|eot_id|>");
+                            accum += "<|start_header_id|>user<|end_header_id|>\n\n <|eot_id|>";
                         }
                     } else if _role.clone() == self.roles.1 {
                         //assistant message
@@ -284,7 +283,7 @@ impl Conversation for DefaultConversation {
                         if let Some(message) = message {
                             accum += &format!("<|user|> {message}<|end|>");
                         } else {
-                            accum += &format!("<|user|> <|end|");
+                            accum += "<|user|> <|end|";
                         }
                     } else if _role.clone() == self.roles.1 {
                         //assistant message
@@ -307,7 +306,7 @@ impl Conversation for DefaultConversation {
                         if let Some(message) = message {
                             accum += &format!("<|im_start|>user\n {message} <|im_end|>");
                         } else {
-                            accum += &format!("<|im_start|> <|im_end|>");
+                            accum += "<|im_start|> <|im_end|>";
                         }
                     } else if _role.clone() == self.roles.1 {
                         //assistant message
@@ -323,7 +322,7 @@ impl Conversation for DefaultConversation {
 
             SeparatorStyle::Gemma => {
                 let mut accum = "".to_string();
-                for (_, message) in self.messages.iter().enumerate() {
+                for message in self.messages.iter() {
                     let Message((_role, message)) = message;
                     if let Some(message) = message {
                         accum +=
@@ -345,7 +344,7 @@ impl Conversation for DefaultConversation {
                         if let Some(message) = message {
                             accum += &format!("<|user|>user\n {message}<|endoftext|>");
                         } else {
-                            accum += &format!("<|user|> <|endoftext|>");
+                            accum += "<|user|> <|endoftext|>";
                         }
                     } else if _role.clone() == self.roles.1 {
                         //assistant message

@@ -19,7 +19,7 @@ pub trait ModulePipeline: Send + Sync {
     fn forward(
         &mut self,
         input_tokens: Tensor,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError>;

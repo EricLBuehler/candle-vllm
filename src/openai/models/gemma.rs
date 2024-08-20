@@ -61,7 +61,7 @@ impl GemmaConfig {
             eos_token_id: super::TokenID(Either::Left(Some(self.eos_token_id as u32))),
             max_seq_len: self.max_position_embeddings.unwrap_or(4096),
             sliding_window: None,
-            hidden_act: hidden_act,
+            hidden_act,
             tie_word_embeddings: false,
             rope_scaling: None,
             original_max_position_embeddings: None,
@@ -111,7 +111,7 @@ impl RotaryEmbedding {
         &self,
         q: &Tensor,
         k: &Tensor,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
     ) -> Result<(Tensor, Tensor)> {
         let (b_sz, _h, seq_len, _n_embd) = q.dims4()?;
         let mut q_embeds = Vec::new();
@@ -255,7 +255,7 @@ impl Attention {
         &mut self,
         xs: &Tensor,
         attention_mask: Option<&Tensor>,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -350,7 +350,7 @@ impl DecoderLayer {
         &mut self,
         xs: &Tensor,
         attention_mask: Option<&Tensor>,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -401,7 +401,7 @@ impl Gemma {
             norm,
             lm_head,
             device: device.clone(),
-            dtype: dtype,
+            dtype,
             hidden_size: cfg.hidden_size,
             cfg: cfg.clone(),
         })
@@ -419,7 +419,7 @@ impl Gemma {
     pub fn forward(
         &mut self,
         input_ids: &Tensor,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {

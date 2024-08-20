@@ -183,23 +183,18 @@ pub async fn chat_completions(
     let request_id_clone = request_id.clone();
     let stream_request = request.stream.is_some_and(|x| x);
     let model_name = request.model.clone();
-    let _ = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(async move {
-            {
-                //send completion request to inference engine
-                let mut model = data.model.lock().await;
-                model.add_request(
-                    token_ids,
-                    request_id.clone(),
-                    SystemTime::now(),
-                    sampling_params,
-                    request.logprobs.unwrap_or(false),
-                    Some(response_tx),
-                );
-                model.notify.notify_one();
-            }
-        });
-    });
+
+    //send completion request to inference engine
+    let mut model = data.model.lock().await;
+    model.add_request(
+        token_ids,
+        request_id.clone(),
+        SystemTime::now(),
+        sampling_params,
+        request.logprobs.unwrap_or(false),
+        Some(response_tx),
+    );
+    model.notify.notify_one();
 
     if stream_request {
         ChatResponder::Streamer(
