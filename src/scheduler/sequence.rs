@@ -242,6 +242,7 @@ pub struct SequenceGroup {
 }
 
 impl SequenceGroup {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         seqs: &[Arc<Sequence>],
         arrival_time: u64,

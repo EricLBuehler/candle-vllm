@@ -46,7 +46,7 @@ impl LlamaConfig {
             num_attention_heads: self.num_attention_heads,
             num_key_value_heads: self.num_key_value_heads.unwrap_or(self.num_attention_heads),
             rms_norm_eps: self.rms_norm_eps,
-            rope_theta: self.rope_theta as f64,
+            rope_theta: f64::from(self.rope_theta),
             use_flash_attn,
             bos_token_id: self.bos_token_id,
             eos_token_id: self.eos_token_id,
@@ -107,7 +107,7 @@ struct CausalSelfAttention {
 }
 
 impl CausalSelfAttention {
-    fn apply_rotary_emb(&self, x: &Tensor, input_positions: &Vec<Vec<usize>>) -> Result<Tensor> {
+    fn apply_rotary_emb(&self, x: &Tensor, input_positions: &[Vec<usize>]) -> Result<Tensor> {
         let _enter = self.span_rot.enter();
         let (b_sz, _, seq_len, _hidden_size) = x.dims4()?;
         let mut embeds = Vec::new();
@@ -131,7 +131,7 @@ impl CausalSelfAttention {
         &mut self,
         x: &Tensor,
         attention_mask: Option<&Tensor>,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -213,7 +213,7 @@ impl CausalSelfAttention {
             o_proj,
             num_attention_heads: cfg.num_attention_heads,
             num_key_value_heads: cfg.num_key_value_heads,
-            head_dim: head_dim,
+            head_dim,
             span,
             span_rot,
             attn: PagedAttention::new(
@@ -225,7 +225,7 @@ impl CausalSelfAttention {
                 vb.device().clone(),
                 None,
             )?,
-            cos_sin_cache: Cache::new(dtype, &cfg, device)?,
+            cos_sin_cache: Cache::new(dtype, cfg, device)?,
         })
     }
 }
@@ -284,7 +284,7 @@ impl Block {
         &mut self,
         x: &Tensor,
         attention_mask: Option<&Tensor>,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -344,7 +344,7 @@ impl Llama {
     pub fn forward(
         &mut self,
         x: &Tensor,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -402,7 +402,7 @@ impl Llama {
             ln_f,
             lm_head,
             cfg: cfg.clone(),
-            dtype: dtype,
+            dtype,
             device: device.clone(),
         })
     }
