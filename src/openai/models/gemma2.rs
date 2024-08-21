@@ -98,7 +98,7 @@ struct RotaryEmbedding {
 
 impl RotaryEmbedding {
     fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
-        let dim = cfg.hidden_size / cfg.num_attention_heads;
+        let dim = cfg.get_head_size();
         let max_seq_len = cfg.max_seq_len;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
