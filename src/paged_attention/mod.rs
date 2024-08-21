@@ -67,6 +67,7 @@ impl PagedAttention {
         mut key_cache: Option<Tensor>,
         mut value_cache: Option<Tensor>,
         input_metadata: &mut InputMetadata,
+        softcapping: Option<f64>,
     ) -> Result<Tensor> {
         let dims = input_metadata.slot_mapping.dims();
         let slot_mapping = if dims.len() > 1 {
@@ -93,6 +94,10 @@ impl PagedAttention {
                     (query.matmul(&key_repeat.t()?.contiguous()?)? * f64::from(self.scale))?
                 } else {
                     (query.matmul(&key.t()?)? * f64::from(self.scale))?
+                };
+                let att = match softcapping {
+                    None => att,
+                    Some(sc) => ((att / sc)?.tanh()? * sc)?,
                 };
 
                 let att = att.broadcast_add(mask)?;
@@ -173,6 +178,7 @@ impl PagedAttention {
             input_metadata.context_lens.as_ref().unwrap(),
             input_metadata.max_context_len.unwrap(),
             self.scale,
+            softcapping.unwrap_or(1.0f64) as f32,
         )
     }
 }

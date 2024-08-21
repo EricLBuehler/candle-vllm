@@ -24,6 +24,7 @@ pub struct TokenID(
 #[derive(Debug, Clone)]
 pub struct Config {
     pub hidden_size: usize,
+    pub head_dim: Option<usize>,
     pub intermediate_size: usize,
     pub vocab_size: usize,
     pub num_hidden_layers: usize,
@@ -47,10 +48,13 @@ pub struct Config {
     pub use_qkv_bias: Option<bool>,
     pub custom_stop_tokens: Option<Vec<String>>,
     pub specific_config: SpecificConfig,
+    pub attn_logit_softcapping: Option<f64>,
+    pub final_logit_softcapping: Option<f64>,
 }
 
 impl Config {
     pub fn get_head_size(&self) -> usize {
-        self.hidden_size / self.num_attention_heads
+        self.head_dim
+            .unwrap_or(self.hidden_size / self.num_attention_heads)
     }
 }

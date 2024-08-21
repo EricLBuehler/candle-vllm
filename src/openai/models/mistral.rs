@@ -37,6 +37,7 @@ impl MistralConfig {
     ) -> Config {
         Config {
             hidden_size: self.hidden_size,
+            head_dim: Some(self.hidden_size / self.num_attention_heads),
             intermediate_size: self.intermediate_size,
             vocab_size: self.vocab_size,
             num_hidden_layers: self.num_hidden_layers,
@@ -60,6 +61,8 @@ impl MistralConfig {
             use_qkv_bias: None,
             custom_stop_tokens: None,
             specific_config: scfg.clone(),
+            attn_logit_softcapping: None,
+            final_logit_softcapping: None,
         }
     }
 }
@@ -281,6 +284,7 @@ impl Attention {
             cache.map(|(k_, _)| k_.clone()),
             cache.map(|(_, v_)| v_.clone()),
             input_metadata,
+            None,
         )?;
 
         let y = if attention_mask.is_some() {

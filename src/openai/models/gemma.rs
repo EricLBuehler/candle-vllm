@@ -15,7 +15,7 @@ use std::sync::Arc;
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct GemmaConfig {
     pub attention_bias: bool,
-    pub head_dim: usize,
+    pub head_dim: Option<usize>,
     // The code gemma configs include both hidden_act and hidden_activation.
     pub hidden_act: Option<Activation>,
     pub hidden_activation: Option<Activation>,
@@ -30,6 +30,8 @@ pub struct GemmaConfig {
     pub bos_token_id: usize,
     pub eos_token_id: usize,
     pub max_position_embeddings: Option<usize>,
+    pub attn_logit_softcapping: Option<f64>,
+    pub final_logit_softcapping: Option<f64>,
 }
 
 impl GemmaConfig {
@@ -49,6 +51,10 @@ impl GemmaConfig {
         };
         Config {
             hidden_size: self.hidden_size,
+            head_dim: Some(
+                self.head_dim
+                    .unwrap_or(self.hidden_size / self.num_attention_heads),
+            ),
             intermediate_size: self.intermediate_size,
             vocab_size: self.vocab_size,
             num_hidden_layers: self.num_hidden_layers,
@@ -72,6 +78,8 @@ impl GemmaConfig {
             use_qkv_bias: None,
             custom_stop_tokens: None,
             specific_config: scfg.clone(),
+            attn_logit_softcapping: self.attn_logit_softcapping,
+            final_logit_softcapping: self.final_logit_softcapping,
         }
     }
 }
@@ -89,7 +97,7 @@ struct RotaryEmbedding {
 
 impl RotaryEmbedding {
     fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
-        let dim = cfg.hidden_size / cfg.num_attention_heads;
+        let dim = cfg.get_head_size();
         let max_seq_len = cfg.max_seq_len;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
@@ -199,7 +207,7 @@ impl Attention {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
-        let head_dim = cfg.hidden_size / cfg.num_attention_heads;
+        let head_dim = cfg.head_dim.unwrap();
         let bias = cfg.attention_bias;
         let q_proj = linear_b(
             hidden_sz,
@@ -258,6 +266,7 @@ impl Attention {
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
+        softcapping: Option<f64>,
     ) -> Result<Tensor> {
         let (b_sz, seq_len, _) = xs.dims3()?;
 
@@ -307,13 +316,13 @@ impl Attention {
             cache.map(|(k_, _)| k_.clone()),
             cache.map(|(_, v_)| v_.clone()),
             input_metadata,
+            softcapping,
         )?;
 
         let y = if attention_mask.is_some() {
-            y.transpose(1, 2)?
-                .reshape(&[b_sz, seq_len, self.hidden_size])?
+            y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))?
         } else {
-            y.reshape(&[b_sz, seq_len, self.hidden_size])?
+            y.reshape((b_sz, seq_len, ()))?
         };
         let y = self.o_proj.forward(&y)?;
         Ok(y)
@@ -324,6 +333,8 @@ struct DecoderLayer {
     self_attn: Attention,
     mlp: MLP,
     input_layernorm: RmsNorm,
+    post_feedforward_layernorm: Option<RmsNorm>,
+    pre_feedforward_layernorm: Option<RmsNorm>,
     post_attention_layernorm: RmsNorm,
 }
 
@@ -333,6 +344,27 @@ impl DecoderLayer {
         let mlp = MLP::new(cfg, vb.pp("mlp"))?;
         let input_layernorm =
             rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
+
+        let pre_feedforward_layernorm = if cfg.attn_logit_softcapping.is_some() {
+            Some(rms_norm(
+                cfg.hidden_size,
+                cfg.rms_norm_eps,
+                vb.pp("pre_feedforward_layernorm"),
+            )?)
+        } else {
+            None
+        };
+
+        let post_feedforward_layernorm = if cfg.attn_logit_softcapping.is_some() {
+            Some(rms_norm(
+                cfg.hidden_size,
+                cfg.rms_norm_eps,
+                vb.pp("post_feedforward_layernorm"),
+            )?)
+        } else {
+            None
+        };
+
         let post_attention_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
@@ -342,6 +374,8 @@ impl DecoderLayer {
             self_attn,
             mlp,
             input_layernorm,
+            pre_feedforward_layernorm,
+            post_feedforward_layernorm,
             post_attention_layernorm,
         })
     }
@@ -353,16 +387,38 @@ impl DecoderLayer {
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
+        softcapping: Option<f64>,
     ) -> Result<Tensor> {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs)?;
-        let xs =
-            self.self_attn
-                .forward(&xs, attention_mask, input_positions, cache, input_metadata)?;
-        let xs = (xs + residual)?;
-        let residual = &xs;
-        let xs = xs.apply(&self.post_attention_layernorm)?.apply(&self.mlp)?;
-        residual + xs
+        let xs = self.self_attn.forward(
+            &xs,
+            attention_mask,
+            input_positions,
+            cache,
+            input_metadata,
+            softcapping,
+        )?;
+
+        if softcapping.is_some() {
+            let xs = xs.apply(&self.post_attention_layernorm)?;
+            let xs = (xs + residual)?;
+            let residual = &xs;
+            let xs = match &self.pre_feedforward_layernorm {
+                Some(l) => l.forward(&xs)?,
+                None => xs.clone(),
+            };
+            let xs = xs.apply(&self.mlp)?;
+            let xs = match &self.post_feedforward_layernorm {
+                Some(l) => l.forward(&xs)?,
+                None => xs,
+            };
+            residual + xs
+        } else {
+            let xs = (xs + residual)?;
+            let residual = &xs;
+            residual + xs.apply(&self.post_attention_layernorm)?.apply(&self.mlp)?
+        }
     }
 }
 
@@ -440,6 +496,7 @@ impl Gemma {
                     input_positions,
                     Some((k_cache, v_cache)),
                     input_metadata,
+                    self.cfg.attn_logit_softcapping,
                 )?
             }
         } else {
@@ -450,14 +507,21 @@ impl Gemma {
                     input_positions,
                     None,
                     input_metadata,
+                    self.cfg.attn_logit_softcapping,
                 )?
             }
         }
 
-        xs.i((.., seq_len - 1, ..))?
+        let logits = xs
+            .i((.., seq_len - 1, ..))?
             .apply(&self.norm)?
-            .apply(&self.lm_head)?
-            .to_dtype(DType::F32)
+            .apply(&self.lm_head)?;
+
+        let logits = match self.cfg.final_logit_softcapping {
+            None => logits,
+            Some(sc) => ((logits / sc)?.tanh()? * sc)?,
+        };
+        logits.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {
