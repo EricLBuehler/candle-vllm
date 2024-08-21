@@ -199,7 +199,6 @@ struct Attention {
     num_kv_heads: usize,
     head_dim: usize,
     rotary_emb: Arc<RotaryEmbedding>,
-    hidden_size: usize,
     attn: PagedAttention,
 }
 
@@ -252,7 +251,6 @@ impl Attention {
             num_kv_heads,
             head_dim,
             rotary_emb,
-            hidden_size: hidden_sz,
             attn: PagedAttention::new(
                 cfg.num_attention_heads,
                 head_dim,
@@ -324,10 +322,9 @@ impl Attention {
         )?;
 
         let y = if attention_mask.is_some() {
-            y.transpose(1, 2)?
-                .reshape(&[b_sz, seq_len, self.hidden_size])?
+            y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))?
         } else {
-            y.reshape(&[b_sz, seq_len, self.hidden_size])?
+            y.reshape((b_sz, seq_len, ()))?
         };
         let y = self.o_proj.forward(&y)?;
         Ok(y)
