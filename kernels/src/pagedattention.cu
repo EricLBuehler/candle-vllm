@@ -73,6 +73,20 @@ inline __device__ float block_sum(float* red_smem, float sum) {
   return VLLM_SHFL_SYNC(sum, 0);
 }
 
+inline __device__ float fast_tanh(float x) {
+  #if defined(__CUDA_ARCH__)
+    #if (__CUDACC_VER_MAJOR__ >= 11) && (__CUDA_ARCH__ >= 750)
+      float y;
+      asm volatile ( "tanh.approx.f32 %0, %1; " : "=f"(y) : "f"(x));
+      return y;
+    #else
+      return ::tanhf(x);
+    #endif
+  #else
+  return std::tanh(x);
+  #endif
+}
+
 // TODO(woosuk): Merge the last two dimensions of the grid.
 // Grid: (num_heads, num_seqs, max_num_partitions).
 template<
@@ -96,7 +110,8 @@ __device__ void paged_attention_kernel(
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
   const int kv_block_stride,
-  const int kv_head_stride) {
+  const int kv_head_stride,
+  const float softscapping) {
   const int seq_idx = blockIdx.y;
   const int partition_idx = blockIdx.z;
   const int max_num_partitions = gridDim.z;
@@ -212,6 +227,10 @@ __device__ void paged_attention_kernel(
       // Compute dot product.
       // This includes a reduction across the threads in the same thread group.
       float qk = scale * Qk_dot<scalar_t, THREAD_GROUP_SIZE>::dot(q_vecs[thread_group_offset], k_vecs);
+
+      if (softscapping != 1.0) {
+        qk = fast_tanh(qk / softscapping) * softscapping;
+      }
       // Add the ALiBi bias if slopes are given.
       qk += (alibi_slope != 0) ? alibi_slope * (token_idx - context_len + 1) : 0;
 
@@ -409,11 +428,12 @@ __global__ void paged_attention_v1_kernel(
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
   const int kv_block_stride,
-  const int kv_head_stride) {
+  const int kv_head_stride,
+  const float softscapping) {
   paged_attention_kernel<scalar_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS>(
     /* exp_sums */ nullptr, /* max_logits */ nullptr,
     out, q, k_cache, v_cache, num_kv_heads, scale, block_tables, context_lens,
-    max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride, kv_head_stride);
+    max_num_blocks_per_seq, alibi_slopes, q_stride, kv_block_stride, kv_head_stride, softscapping);
 }
 
 // Grid: (num_heads, num_seqs, max_num_partitions).
@@ -438,11 +458,12 @@ __global__ void paged_attention_v2_kernel(
   const float* __restrict__ alibi_slopes, // [num_heads]
   const int q_stride,
   const int kv_block_stride,
-  const int kv_head_stride) {
+  const int kv_head_stride,
+  const float softscapping) {
   paged_attention_kernel<scalar_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, PARTITION_SIZE>(
     exp_sums, max_logits, tmp_out, q, k_cache, v_cache, num_kv_heads, scale,
     block_tables, context_lens, max_num_blocks_per_seq, alibi_slopes,
-    q_stride, kv_block_stride, kv_head_stride);
+    q_stride, kv_block_stride, kv_head_stride, softscapping);
 }
 
 // Grid: (num_heads, num_seqs).
@@ -564,7 +585,8 @@ __global__ void paged_attention_v2_reduce_kernel(
     alibi_slopes_ptr,                                                                         \
     q_stride,                                                                                 \
     kv_block_stride,                                                                          \
-    kv_head_stride);
+    kv_head_stride,\
+    softscapping);
 
 // TODO(woosuk): Tune NUM_THREADS.
 template<
@@ -588,7 +610,8 @@ void paged_attention_v1_launcher(
   int max_num_blocks_per_seq,
   int q_stride,
   int kv_block_stride,
-  int kv_head_stride
+  int kv_head_stride,
+  float softscapping
   ) {
 
   // int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
@@ -652,7 +675,8 @@ void paged_attention_v1_launcher(
     max_num_blocks_per_seq,                                         \
     q_stride,                                                       \
     kv_block_stride,                                                \
-    kv_head_stride);
+    kv_head_stride, \
+    softscapping);
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
 // 1, 2, 4, 64, 128, 256.
@@ -691,7 +715,8 @@ extern "C" void paged_attention_v1(
   int32_t kv_block_stride,
   int32_t kv_head_stride,
 
-  uint32_t dtype      // 0 => f16; 1 => bf16; 2 => f32
+  uint32_t dtype,      // 0 => f16; 1 => bf16; 2 => f32
+  float softscapping
   ) {
   if (dtype == 2) {
     CALL_V1_LAUNCHER_BLOCK_SIZE(float);
@@ -719,7 +744,8 @@ extern "C" void paged_attention_v1(
     alibi_slopes,                                                                             \
     q_stride,                                                                                 \
     kv_block_stride,                                                                          \
-    kv_head_stride);                                                                          \
+    kv_head_stride,\
+    softscapping);                                                                          \
   vllm::paged_attention_v2_reduce_kernel<T, HEAD_SIZE, NUM_THREADS, PARTITION_SIZE>           \
   <<<reduce_grid, block, reduce_shared_mem_size, stream>>>(                                   \
     reinterpret_cast<T*>(out),                                                                \
@@ -754,8 +780,8 @@ void paged_attention_v2_launcher(
   int max_num_blocks_per_seq,
   int q_stride,
   int kv_block_stride,
-  int kv_head_stride
-
+  int kv_head_stride,
+  float softscapping
   ) {
   // int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
 
@@ -825,7 +851,8 @@ void paged_attention_v2_launcher(
     max_num_blocks_per_seq,                                         \
     q_stride,                                                       \
     kv_block_stride,                                                \
-    kv_head_stride);
+    kv_head_stride,\
+    softscapping);
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
 // 1, 2, 4, 64, 128, 256.
@@ -867,7 +894,8 @@ extern "C" void paged_attention_v2(
   int32_t kv_block_stride,
   int32_t kv_head_stride,
 
-  uint32_t dtype      // 0 => f16; 1 => bf16; 2 => f32
+  uint32_t dtype,      // 0 => f16; 1 => bf16; 2 => f32
+  float softscapping
   ) {
   if (dtype == 2) {
     CALL_V2_LAUNCHER_BLOCK_SIZE(float);

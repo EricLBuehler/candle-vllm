@@ -11,7 +11,7 @@ use std::ffi::c_int;
 
 struct PagedAttention {
     softmax_scale: f32,
-
+    softcapping: f32,
     key_cache: Tensor,
     value_cache: Tensor,
     block_tables: Tensor,
@@ -187,6 +187,7 @@ impl PagedAttention {
                     kv_block_stride as c_int,
                     kv_head_stride as c_int,
                     internal_type,
+                    self.softcapping,
                 )
             }
         } else {
@@ -223,6 +224,7 @@ impl PagedAttention {
                     kv_block_stride as c_int,
                     kv_head_stride as c_int,
                     internal_type,
+                    self.softcapping,
                 )
             }
         }
@@ -277,6 +279,7 @@ pub fn paged_attention(
     context_lens: &Tensor,
     max_context_len: usize,
     softmax_scale: f32,
+    softcapping: f32,
 ) -> Result<Tensor> {
     let op = PagedAttention {
         softmax_scale,
@@ -285,6 +288,7 @@ pub fn paged_attention(
         block_tables: block_tables.clone(),
         context_lens: context_lens.clone(),
         max_context_len,
+        softcapping,
     };
     q.apply_op1(op)
 }

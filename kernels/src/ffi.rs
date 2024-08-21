@@ -40,6 +40,7 @@ extern "C" {
         kv_head_stride: c_int,
 
         dtype: u32,
+        softscapping: f32,
     );
 
     pub fn paged_attention_v2(
@@ -66,5 +67,6 @@ extern "C" {
         kv_head_stride: c_int,
 
         dtype: u32,
+        softscapping: f32,
     );
 }
