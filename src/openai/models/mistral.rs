@@ -96,7 +96,7 @@ impl RotaryEmbedding {
         &self,
         q: &Tensor,
         k: &Tensor,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
     ) -> Result<(Tensor, Tensor)> {
         let (b_sz, _h, seq_len, _n_embd) = q.dims4()?;
         let mut q_embeds = Vec::new();
@@ -235,7 +235,7 @@ impl Attention {
         &mut self,
         xs: &Tensor,
         attention_mask: Option<&Tensor>,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -324,7 +324,7 @@ impl DecoderLayer {
         &mut self,
         xs: &Tensor,
         attention_mask: Option<&Tensor>,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -377,7 +377,7 @@ impl Mistral {
             lm_head,
             sliding_window: cfg.sliding_window,
             device: device.clone(),
-            dtype: dtype,
+            dtype,
             cfg: cfg.clone(),
         })
     }
@@ -403,7 +403,7 @@ impl Mistral {
     pub fn forward(
         &mut self,
         input_ids: &Tensor,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {

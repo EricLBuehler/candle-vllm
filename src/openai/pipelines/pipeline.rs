@@ -43,7 +43,7 @@ const SAMPLING_SEED: u64 = 299792458;
 const MIN_GEN_TOKENS: usize = 128;
 const MAX_GEN_TOKENS: usize = 4096;
 enum LLMModel {
-    LLAMA(Llama),
+    Llama(Llama),
     Phi2(Phi2),
     Phi3(Phi),
     Qwen2(Qwen2),
@@ -62,7 +62,6 @@ pub struct DefaultPipeline {
     name: String,
     dtype: DType,
     device: Device,
-    config: Config,
     stop_token_ids: Vec<u32>,
 }
 
@@ -198,7 +197,7 @@ impl ModelLoader for DefaultLoader {
         println!("Loading {} model.", self.name);
 
         let vb = match unsafe {
-            VarBuilder::from_mmaped_safetensors(&paths.get_weight_filenames(), dtype, &device)
+            VarBuilder::from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device)
         } {
             Ok(vb_) => vb_,
             _ => panic!("Load model weights failed!"),
@@ -206,11 +205,11 @@ impl ModelLoader for DefaultLoader {
 
         let (model, sep_style) = match self.name.as_str() {
             "llama" => (
-                LLMModel::LLAMA(try_api!(Llama::load(vb, &config, dtype, &device))),
+                LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
                 SeparatorStyle::Llama,
             ),
             "llama3" => (
-                LLMModel::LLAMA(try_api!(Llama::load(vb, &config, dtype, &device))),
+                LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
                 SeparatorStyle::Llama3,
             ),
             "phi2" => (
@@ -252,14 +251,10 @@ impl ModelLoader for DefaultLoader {
         println!("Done loading.");
 
         //max and min number of tokens generated per request
-        let mut default_max_tokens = specific_args
+        let default_max_tokens = specific_args
             .max_gen_tokens
-            .unwrap_or(config.max_seq_len / 5);
-        if default_max_tokens < MIN_GEN_TOKENS {
-            default_max_tokens = MIN_GEN_TOKENS;
-        } else if default_max_tokens > MAX_GEN_TOKENS {
-            default_max_tokens = MAX_GEN_TOKENS;
-        }
+            .unwrap_or(config.max_seq_len / 5)
+            .clamp(MIN_GEN_TOKENS, MAX_GEN_TOKENS);
 
         let pipeline_config = PipelineConfig {
             max_model_len: config.max_seq_len,
@@ -287,7 +282,7 @@ impl ModelLoader for DefaultLoader {
             }
         }
 
-        if stop_token_ids.len() == 0 {
+        if stop_token_ids.is_empty() {
             //if no eos_token defined in the config, use default
             let eos_token = match tokenizer.get_token("<|endoftext|>") {
                 Some(token) => token,
@@ -299,9 +294,8 @@ impl ModelLoader for DefaultLoader {
         //custom stop tokens
         if let Some(custom_stop) = &config.custom_stop_tokens {
             for stop in custom_stop {
-                match tokenizer.get_token(&stop) {
-                    Some(token) => stop_token_ids.push(token),
-                    None => {}
+                if let Some(token) = tokenizer.get_token(stop) {
+                    stop_token_ids.push(token)
                 };
             }
         }
@@ -309,7 +303,7 @@ impl ModelLoader for DefaultLoader {
         println!("{:?}", specific_args);
 
         let logits_processor = {
-            let temperature = pipeline_config.temperature as f64;
+            let temperature = f64::from(pipeline_config.temperature);
             let sampling = if temperature <= 0. {
                 Sampling::ArgMax
             } else {
@@ -328,7 +322,7 @@ impl ModelLoader for DefaultLoader {
                 model,
                 args: specific_args,
                 tokenizer,
-                logits_processor: logits_processor,
+                logits_processor,
                 conversation: DefaultConversation::new(
                     self.name.to_string(),
                     "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string(),
@@ -346,7 +340,6 @@ impl ModelLoader for DefaultLoader {
                 name: self.name.clone(),
                 dtype,
                 device: device.clone(),
-                config: config.clone(),
                 stop_token_ids,
             }),
             pipeline_config,
@@ -358,7 +351,7 @@ impl ModulePipeline for DefaultPipeline {
     fn forward(
         &mut self,
         input_tokens: Tensor,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         mut input_metadata: InputMetadata,
     ) -> Result<Tensor, APIError> {
@@ -370,11 +363,11 @@ impl ModulePipeline for DefaultPipeline {
             input_tokens
         };
 
-        let ret = match &mut self.model {
-            LLMModel::LLAMA(llama) => llama
+        match &mut self.model {
+            LLMModel::Llama(llama) => llama
                 .forward(
                     &input_tokens,
-                    &input_positions,
+                    input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
@@ -382,7 +375,7 @@ impl ModulePipeline for DefaultPipeline {
             LLMModel::Phi2(phi) => phi
                 .forward(
                     &input_tokens,
-                    &input_positions,
+                    input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
@@ -398,7 +391,7 @@ impl ModulePipeline for DefaultPipeline {
             LLMModel::Qwen2(qwen2) => qwen2
                 .forward(
                     &input_tokens,
-                    &input_positions,
+                    input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
@@ -406,7 +399,7 @@ impl ModulePipeline for DefaultPipeline {
             LLMModel::Gemma(gemma) => gemma
                 .forward(
                     &input_tokens,
-                    &input_positions,
+                    input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
@@ -414,7 +407,7 @@ impl ModulePipeline for DefaultPipeline {
             LLMModel::Mistral(mistral) => mistral
                 .forward(
                     &input_tokens,
-                    &input_positions,
+                    input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
@@ -422,7 +415,7 @@ impl ModulePipeline for DefaultPipeline {
             LLMModel::Yi(yi) => yi
                 .forward(
                     &input_tokens,
-                    &input_positions,
+                    input_positions,
                     kv_cache,
                     &mut input_metadata,
                 )
@@ -435,9 +428,7 @@ impl ModulePipeline for DefaultPipeline {
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
-        };
-
-        return ret;
+        }
     }
 
     fn sample(
@@ -450,15 +441,15 @@ impl ModulePipeline for DefaultPipeline {
         let shared_result = Arc::new(Mutex::new(HashMap::<usize, TokenOrFinishReason>::new()));
         let shared_group_idx = Arc::new(Mutex::new(0));
         groups.par_iter().for_each(|group| {
-            let mut group_idx = 0;
-            {
+            let group_idx = {
                 let mut groupidx = shared_group_idx.lock().unwrap();
-                group_idx = *groupidx;
+                let group_idx = *groupidx;
                 *groupidx += 1;
-            }
+                group_idx
+            };
 
             let sampling_params = &group.sampling_params;
-            for (_, seq) in group.get_seqs() {
+            for seq in group.get_seqs().values() {
                 let logits = logits.i((group_idx, ..)).unwrap().contiguous();
                 let logits = logits.unwrap().squeeze(0).unwrap();
                 let sq = seq.deref_mut();
@@ -555,7 +546,7 @@ impl ModulePipeline for DefaultPipeline {
 
     fn get_model_config(&self) -> Config {
         match &self.model {
-            LLMModel::LLAMA(llama) => llama.get_config().clone(),
+            LLMModel::Llama(llama) => llama.get_config().clone(),
             LLMModel::Phi2(phi) => phi.get_config().clone(),
             LLMModel::Phi3(phi) => phi.get_config().clone(),
             LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),

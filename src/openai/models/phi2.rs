@@ -96,7 +96,7 @@ impl RotaryEmbedding {
         })
     }
 
-    fn apply_rotary_emb(&self, xs: &Tensor, input_positions: &Vec<Vec<usize>>) -> Result<Tensor> {
+    fn apply_rotary_emb(&self, xs: &Tensor, input_positions: &[Vec<usize>]) -> Result<Tensor> {
         let (b_size, _num_heads, seq_len, _headdim) = xs.dims4()?;
         let mut embeds = Vec::new();
         for (b, seqlen_offset) in zip(0..b_size, input_positions) {
@@ -231,7 +231,7 @@ impl Attention {
         &mut self,
         xs: &Tensor,
         attention_mask: Option<&Tensor>,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -321,7 +321,7 @@ impl DecoderLayer {
         &mut self,
         xs: &Tensor,
         mask: Option<&Tensor>,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
@@ -389,7 +389,7 @@ impl Phi2 {
     pub fn forward(
         &mut self,
         xs: &Tensor,
-        input_positions: &Vec<Vec<usize>>,
+        input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &mut InputMetadata,
     ) -> Result<Tensor> {
