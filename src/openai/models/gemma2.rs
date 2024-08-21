@@ -33,7 +33,7 @@ pub struct Gemma2Config {
     pub final_logit_softcapping: Option<f64>,
     pub query_pre_attn_scalar: usize,
     pub bos_token_id: usize,
-    pub eos_token_id: Either<u32, Vec<u32>>,
+    pub eos_token_id: super::TokenID,
     pub max_position_embeddings: Option<usize>,
 }
 
@@ -63,7 +63,7 @@ impl Gemma2Config {
             rope_theta: self.rope_theta,
             use_flash_attn,
             bos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
-            eos_token_id: super::TokenID(self.eos_token_id.map_left(Some).map_right(Some)),
+            eos_token_id: self.eos_token_id,
             max_seq_len: self.max_position_embeddings.unwrap_or(4096),
             sliding_window: Some(self.sliding_window),
             hidden_act,
