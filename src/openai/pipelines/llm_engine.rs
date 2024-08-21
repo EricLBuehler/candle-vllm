@@ -83,63 +83,63 @@ impl LLMEngine {
         }));
         let engine_clone = engine.clone();
 
-        tokio::runtime::Handle::current().block_on(async move {
-            loop {
-                notify.notified().await; // Blocking call to wait for notification
-                let _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                let mut e = engine.lock().await;
-                let result = e.generate_once().unwrap();
-                if result.is_empty() {
-                    continue;
+        let _ = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                loop {
+                    notify.notified().await; // Blocking call to wait for notification
+                    let _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    let mut e = engine.lock().await;
+                    let result = e.generate_once().unwrap();
+                    if result.len() == 0 {
+                        continue;
+                    }
+                    for request_id in result.keys() {
+                        e.completion_records.insert(request_id.to_string(), result[request_id].clone());
+                    }
+                    finish_notify.notify_one();
+
+                    //chat completion statistics
+                    let overall_usage = ChatCompletionUsageResponse {
+                        request_id: "".to_string(),
+                        created: 0,
+                        completion_tokens: result.values()
+                            .map(|(_, usage)| usage.completion_tokens)
+                            .sum(),
+                        prompt_tokens: result.values().map(|(_, usage)| usage.prompt_tokens).sum(),
+                        total_tokens: result.values().map(|(_, usage)| usage.total_tokens).sum(),
+                        prompt_time_costs: result
+                            .values()
+                            .map(|(_, usage)| usage.prompt_time_costs)
+                            .max()
+                            .unwrap_or(0),
+                        completion_time_costs: result
+                            .values()
+                            .map(|(_, usage)| usage.completion_time_costs)
+                            .max()
+                            .unwrap_or(0),
+                    };
+
+                    println!(
+                        "\r\n [{} requests] Prefilling: {} prompt tokens processed in {} seconds",
+                        result.len(),
+                        overall_usage.prompt_tokens,
+                        overall_usage.prompt_time_costs / 1000
+                    );
+
+                    println!(
+                        "\r\n [{} requests] Decoding: {} tokens processed in {} seconds ({} tokens/s)",
+                        result.len(),
+                        overall_usage.completion_tokens,
+                        overall_usage.completion_time_costs / 1000,
+                        overall_usage.completion_tokens * 1000
+                            / if overall_usage.completion_time_costs > 0 {
+                                overall_usage.completion_time_costs
+                            } else {
+                                1
+                            }
+                    );
                 }
-                for request_id in result.keys() {
-                    e.completion_records
-                        .insert(request_id.to_string(), result[request_id].clone());
-                }
-                finish_notify.notify_one();
-
-                //chat completion statistics
-                let overall_usage = ChatCompletionUsageResponse {
-                    request_id: "".to_string(),
-                    created: 0,
-                    completion_tokens: result
-                        .values()
-                        .map(|(_, usage)| usage.completion_tokens)
-                        .sum(),
-                    prompt_tokens: result.values().map(|(_, usage)| usage.prompt_tokens).sum(),
-                    total_tokens: result.values().map(|(_, usage)| usage.total_tokens).sum(),
-                    prompt_time_costs: result
-                        .values()
-                        .map(|(_, usage)| usage.prompt_time_costs)
-                        .max()
-                        .unwrap_or(0),
-                    completion_time_costs: result
-                        .values()
-                        .map(|(_, usage)| usage.completion_time_costs)
-                        .max()
-                        .unwrap_or(0),
-                };
-
-                println!(
-                    "\r\n [{} requests] Prefilling: {} prompt tokens processed in {} seconds",
-                    result.len(),
-                    overall_usage.prompt_tokens,
-                    overall_usage.prompt_time_costs / 1000
-                );
-
-                println!(
-                    "\r\n [{} requests] Decoding: {} tokens processed in {} seconds ({} tokens/s)",
-                    result.len(),
-                    overall_usage.completion_tokens,
-                    overall_usage.completion_time_costs / 1000,
-                    overall_usage.completion_tokens * 1000
-                        / if overall_usage.completion_time_costs > 0 {
-                            overall_usage.completion_time_costs
-                        } else {
-                            1
-                        }
-                );
-            }
+            });
         });
 
         Ok(engine_clone)
