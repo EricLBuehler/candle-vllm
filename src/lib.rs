@@ -134,6 +134,25 @@ pub enum ModelSelected {
         quant: Option<String>,
     },
 
+    /// Select the gemma 2 model (default 2b).
+    Gemma2 {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        temperature: Option<f32>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
+
+        #[arg(long)]
+        max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
+    },
+
     /// Select the mistral model (default 7b).
     Mistral {
         /// Control the application of repeat penalty for the last n tokens
@@ -217,6 +236,7 @@ impl Display for ModelSelected {
                 quant: _,
             } => write!(f, "qwen2"),
             ModelSelected::Gemma { .. } => write!(f, "gemma"),
+            ModelSelected::Gemma2 { .. } => write!(f, "gemma2"),
             ModelSelected::Mistral { .. } => write!(f, "mistral"),
             ModelSelected::Yi { .. } => write!(f, "yi"),
             ModelSelected::StableLM { .. } => write!(f, "stablelm"),
@@ -414,6 +434,31 @@ pub fn get_model_loader(
                 model_id
             } else {
                 "google/gemma-2b-it".to_string()
+            },
+        ),
+        ModelSelected::Gemma2 {
+            repeat_last_n,
+            temperature,
+            penalty,
+            max_gen_tokens,
+            quant,
+        } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(
+                    repeat_last_n,
+                    temperature,
+                    None,
+                    None,
+                    penalty,
+                    max_gen_tokens,
+                    quant,
+                ),
+                "gemma2".to_string(),
+            )),
+            if let Some(model_id) = model_id {
+                model_id
+            } else {
+                "google/gemma-2-2b-it".to_string()
             },
         ),
         ModelSelected::Mistral {
