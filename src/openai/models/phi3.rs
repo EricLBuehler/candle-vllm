@@ -65,6 +65,10 @@ impl PhiConfig {
             use_qkv_bias: None,
             custom_stop_tokens: None,
             specific_config: scfg.clone(),
+            query_pre_attn_scalar: None,
+            head_dim: None,
+            attn_logit_softcapping: None,
+            final_logit_softcapping: None,
         }
     }
 }

@@ -1,4 +1,5 @@
 pub mod gemma;
+pub mod gemma2;
 pub mod linear;
 pub mod llama;
 pub mod mistral;
@@ -47,10 +48,15 @@ pub struct Config {
     pub use_qkv_bias: Option<bool>,
     pub custom_stop_tokens: Option<Vec<String>>,
     pub specific_config: SpecificConfig,
+    pub head_dim: Option<usize>,
+    pub attn_logit_softcapping: Option<f64>,
+    pub final_logit_softcapping: Option<f64>,
+    pub query_pre_attn_scalar: Option<usize>,
 }
 
 impl Config {
     pub fn get_head_size(&self) -> usize {
-        self.hidden_size / self.num_attention_heads
+        self.head_dim
+            .unwrap_or(self.hidden_size / self.num_attention_heads)
     }
 }

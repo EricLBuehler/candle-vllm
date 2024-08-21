@@ -1,45 +1,57 @@
 use super::Config;
 use crate::openai::models::linear::{
-    linear_no_bias_x as linear_no_bias, linear_x as linear, LinearX as Linear,
+    linear_b_x as linear_b, linear_no_bias_x as linear, LinearX as Linear,
 };
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
-use candle_nn::VarBuilder;
-use candle_transformers::models::with_tracing::RmsNorm;
+use candle_nn::Activation;
+use candle_nn::{RmsNorm, VarBuilder};
 use either::Either;
 use std::iter::zip;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
-pub struct QwenConfig {
-    pub vocab_size: usize,
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct Gemma2Config {
+    pub attention_bias: bool,
+    pub head_dim: usize,
+    // The code gemma configs include both hidden_act and hidden_activation.
+    pub hidden_act: Option<Activation>,
+    pub hidden_activation: Option<Activation>,
     pub hidden_size: usize,
     pub intermediate_size: usize,
-    pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
+    pub num_hidden_layers: usize,
     pub num_key_value_heads: usize,
-    pub max_position_embeddings: usize,
-    pub sliding_window: usize,
-    pub max_window_layers: usize,
-    pub tie_word_embeddings: bool, //shared weights between input/output embeddings
-    pub rope_theta: f64,
     pub rms_norm_eps: f64,
-    pub use_sliding_window: bool,
-    pub hidden_act: candle_nn::Activation,
+    pub rope_theta: f64,
+    pub vocab_size: usize,
+    pub sliding_window: usize,
+    pub attn_logit_softcapping: Option<f64>,
+    pub final_logit_softcapping: Option<f64>,
+    pub query_pre_attn_scalar: usize,
     pub bos_token_id: usize,
     pub eos_token_id: usize,
+    pub max_position_embeddings: Option<usize>,
 }
 
-impl QwenConfig {
+impl Gemma2Config {
     pub fn into_config(
         self,
         use_flash_attn: bool,
         kv_cache_dtype: DType,
         scfg: &SpecificConfig,
     ) -> Config {
+        let hidden_act = match (self.hidden_act, self.hidden_activation) {
+            (None, Some(act)) | (Some(act), None) => Some(act),
+            (Some(act), Some(_)) => {
+                println!("both hidden_act and hidden_activation are set");
+                Some(act)
+            }
+            (None, None) => panic!("none of hidden_act and hidden_activation are set"),
+        };
         Config {
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -51,26 +63,31 @@ impl QwenConfig {
             rope_theta: self.rope_theta,
             use_flash_attn,
             bos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
-            eos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
-            max_seq_len: self.max_position_embeddings,
+            eos_token_id: super::TokenID(Either::Left(Some(self.eos_token_id as u32))),
+            max_seq_len: self.max_position_embeddings.unwrap_or(4096),
             sliding_window: Some(self.sliding_window),
-            hidden_act: Some(self.hidden_act),
-            tie_word_embeddings: self.tie_word_embeddings,
+            hidden_act,
+            tie_word_embeddings: false,
             rope_scaling: None,
             original_max_position_embeddings: None,
-            attention_bias: false,
+            attention_bias: self.attention_bias,
             partial_rotary_factor: None,
             qk_layer_rms_norm: None,
             kv_cache_dtype,
             use_qkv_bias: None,
             custom_stop_tokens: None,
             specific_config: scfg.clone(),
-            query_pre_attn_scalar: None,
-            head_dim: None,
-            attn_logit_softcapping: None,
-            final_logit_softcapping: None,
+            head_dim: Some(self.head_dim),
+            attn_logit_softcapping: self.attn_logit_softcapping,
+            final_logit_softcapping: self.final_logit_softcapping,
+            query_pre_attn_scalar: Some(self.query_pre_attn_scalar),
         }
     }
+}
+
+fn rms_norm(dim: usize, eps: f64, vb: VarBuilder) -> Result<RmsNorm> {
+    let weight = vb.get(dim, "weight")?;
+    Ok(RmsNorm::new((weight + 1.0f64)?, eps))
 }
 
 #[derive(Debug, Clone)]
@@ -138,19 +155,19 @@ impl MLP {
     fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
-        let gate_proj = linear_no_bias(
+        let gate_proj = linear(
             hidden_sz,
             intermediate_sz,
             vb.pp("gate_proj"),
             &cfg.specific_config.quant,
         )?;
-        let up_proj = linear_no_bias(
+        let up_proj = linear(
             hidden_sz,
             intermediate_sz,
             vb.pp("up_proj"),
             &cfg.specific_config.quant,
         )?;
-        let down_proj = linear_no_bias(
+        let down_proj = linear(
             intermediate_sz,
             hidden_sz,
             vb.pp("down_proj"),
@@ -181,8 +198,8 @@ struct Attention {
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
-    hidden_size: usize,
     rotary_emb: Arc<RotaryEmbedding>,
+    hidden_size: usize,
     attn: PagedAttention,
 }
 
@@ -191,31 +208,41 @@ impl Attention {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
-        let head_dim = hidden_sz / num_heads;
-        let q_proj = linear(
+        let head_dim = cfg.get_head_size();
+        let bias = cfg.attention_bias;
+        let q_proj = linear_b(
             hidden_sz,
             num_heads * head_dim,
+            bias,
             vb.pp("q_proj"),
             &cfg.specific_config.quant,
         )?;
-        let k_proj = linear(
+        let k_proj = linear_b(
             hidden_sz,
             num_kv_heads * head_dim,
+            bias,
             vb.pp("k_proj"),
             &cfg.specific_config.quant,
         )?;
-        let v_proj = linear(
+        let v_proj = linear_b(
             hidden_sz,
             num_kv_heads * head_dim,
+            bias,
             vb.pp("v_proj"),
             &cfg.specific_config.quant,
         )?;
-        let o_proj = linear_no_bias(
+        let o_proj = linear_b(
             num_heads * head_dim,
             hidden_sz,
+            bias,
             vb.pp("o_proj"),
             &cfg.specific_config.quant,
         )?;
+        let query_pre_attn_scalar = cfg
+            .query_pre_attn_scalar
+            .expect("Gemma 2 config must have `query_pre_attn_scalar`");
+        // FIXME: We don't correctly handle the sliding window attention.
+        // https://github.com/vllm-project/vllm/blob/b74a12580022039fc15fb54c7066cc13fdc96220/vllm/model_executor/models/gemma2.py#L141-L146
         Ok(Self {
             q_proj,
             k_proj,
@@ -224,12 +251,12 @@ impl Attention {
             num_heads,
             num_kv_heads,
             head_dim,
-            hidden_size: hidden_sz,
             rotary_emb,
+            hidden_size: hidden_sz,
             attn: PagedAttention::new(
                 cfg.num_attention_heads,
                 head_dim,
-                1. / ((head_dim as f32).sqrt()),
+                1. / ((query_pre_attn_scalar as f32).sqrt()),
                 Some(cfg.num_key_value_heads),
                 None,
                 vb.device().clone(),
@@ -276,8 +303,15 @@ impl Attention {
             &k.to_dtype(DType::F32)?,
             input_positions,
         )?;
+
         let q = q.to_dtype(v.dtype())?;
         let k = k.to_dtype(v.dtype())?;
+
+        // No need repeat_kv since we performed broadcasted matmul in the prefiling stage
+        // while, the decoding stage used paged-attention which also does not need kv stacking (to match query dim)
+        // let k = candle_transformers::utils::repeat_kv(k, self.num_kv_groups)?.contiguous()?;
+        // let v =
+        //     candle_transformers::utils::repeat_kv(v, self.num_kv_groups)?.contiguous()?;
 
         let y = self.attn.forward(
             &q,
@@ -312,8 +346,8 @@ impl DecoderLayer {
         let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"))?;
         let mlp = MLP::new(cfg, vb.pp("mlp"))?;
         let input_layernorm =
-            RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
-        let post_attention_layernorm = RmsNorm::new(
+            rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
+        let post_attention_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
@@ -346,73 +380,51 @@ impl DecoderLayer {
     }
 }
 
-pub struct Qwen2 {
+pub struct Gemma2 {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
     lm_head: Linear,
-    sliding_window: Option<usize>,
     device: Device,
     dtype: DType,
+    hidden_size: usize,
     cfg: Config,
 }
 
-impl Qwen2 {
+impl Gemma2 {
     pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens =
             candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let rotary_emb = Arc::new(RotaryEmbedding::new(dtype, cfg, device)?);
+        let rotary_emb = Arc::new(RotaryEmbedding::new(vb.dtype(), cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
             let layer = DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx))?;
             layers.push(layer)
         }
-        let norm = RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = linear_no_bias(
-            cfg.hidden_size,
-            cfg.vocab_size,
-            if cfg.tie_word_embeddings {
-                vb_m.pp("embed_tokens")
-            } else {
-                vb.pp("lm_head")
-            },
+        let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
+        let lm_head = Linear::new(
+            embed_tokens.embeddings().clone(),
+            None,
             &cfg.specific_config.quant,
-        )?;
+        );
         Ok(Self {
             embed_tokens,
             layers,
             norm,
             lm_head,
-            sliding_window: cfg.sliding_window,
             device: device.clone(),
             dtype,
+            hidden_size: cfg.hidden_size,
             cfg: cfg.clone(),
         })
     }
 
     fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
-        // Sliding window mask?
-        let mask: Vec<_> = if self.sliding_window.is_some() {
-            let sliding_window = self.sliding_window.unwrap();
-            (0..tgt_len)
-                .flat_map(|i| {
-                    (0..tgt_len).map(move |j| {
-                        if i < j || j + sliding_window < i {
-                            f32::NEG_INFINITY
-                        } else {
-                            0.
-                        }
-                    })
-                })
-                .collect()
-        } else {
-            (0..tgt_len)
-                .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
-                .collect()
-        };
-
+        let mask: Vec<_> = (0..tgt_len)
+            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
+            .collect();
         let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
         mask.expand((b_size, 1, tgt_len, tgt_len))?
             .to_dtype(self.dtype)
@@ -432,8 +444,8 @@ impl Qwen2 {
             let mask = self.prepare_decoder_attention_mask(b_size, seq_len)?;
             Some(mask)
         };
-        let mut xs = self.embed_tokens.forward(input_ids)?;
-
+        let xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = (xs * (self.hidden_size as f64).sqrt())?;
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter_mut()) {
                 xs = layer.forward(
@@ -456,10 +468,18 @@ impl Qwen2 {
             }
         }
 
-        xs.i((.., seq_len - 1, ..))?
+        let mut xs = xs
+            .i((.., seq_len - 1, ..))?
             .apply(&self.norm)?
-            .apply(&self.lm_head)?
-            .to_dtype(DType::F32)
+            .apply(&self.lm_head)?;
+
+        if let Some(final_logit_softcapping) = self.cfg.final_logit_softcapping {
+            xs = (xs / final_logit_softcapping)?;
+            xs = xs.tanh()?;
+            xs = (xs * final_logit_softcapping)?;
+        }
+
+        xs.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {

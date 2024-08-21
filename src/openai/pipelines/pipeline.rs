@@ -13,6 +13,7 @@ use crate::{
         },
         models::{
             gemma::{Gemma, GemmaConfig},
+            gemma2::{Gemma2, Gemma2Config},
             llama::{Llama, LlamaConfig},
             mistral::{Mistral, MistralConfig},
             phi2::{Phi2, Phi2Config},
@@ -48,6 +49,7 @@ enum LLMModel {
     Phi3(Phi),
     Qwen2(Qwen2),
     Gemma(Gemma),
+    Gemma2(Gemma2),
     Mistral(Mistral),
     Yi(Yi),
     StableLM(StableLM),
@@ -171,6 +173,12 @@ impl ModelLoader for DefaultLoader {
                 ),));
                 config.into_config(false, dtype, &specific_args)
             }
+            "gemma2" => {
+                let config: Gemma2Config = try_api!(serde_json::from_slice(&try_api!(
+                    std::fs::read(paths.get_config_filename())
+                ),));
+                config.into_config(false, dtype, &specific_args)
+            }
             "mistral" => {
                 let config: MistralConfig = try_api!(serde_json::from_slice(&try_api!(
                     std::fs::read(paths.get_config_filename())
@@ -226,6 +234,10 @@ impl ModelLoader for DefaultLoader {
             ),
             "gemma" => (
                 LLMModel::Gemma(try_api!(Gemma::new(vb, &config, dtype, &device))),
+                SeparatorStyle::Gemma,
+            ),
+            "gemma2" => (
+                LLMModel::Gemma2(try_api!(Gemma2::new(vb, &config, dtype, &device))),
                 SeparatorStyle::Gemma,
             ),
             "mistral" => (
@@ -404,6 +416,14 @@ impl ModulePipeline for DefaultPipeline {
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
+            LLMModel::Gemma2(gemma2) => gemma2
+                .forward(
+                    &input_tokens,
+                    input_positions,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
             LLMModel::Mistral(mistral) => mistral
                 .forward(
                     &input_tokens,
@@ -551,6 +571,7 @@ impl ModulePipeline for DefaultPipeline {
             LLMModel::Phi3(phi) => phi.get_config().clone(),
             LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),
             LLMModel::Gemma(gemma) => gemma.get_config().clone(),
+            LLMModel::Gemma2(gemma2) => gemma2.get_config().clone(),
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
             LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),

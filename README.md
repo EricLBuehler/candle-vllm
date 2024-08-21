@@ -30,6 +30,7 @@ Currently, candle-vllm supports chat serving for the following models.
 | #8 | ChatGLM |TBD|TBD|TBD |-|
 | #9 | **QWen2 (1.8B, 7B)** |✅|148 tks/s (1.8B)|784 tks/s (1.8B) |-|
 | #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |-|
+| #10 | **Google Gemma 2** |✅|TBD|TBD |-|
 | #11 | Blip-large (Multimodal) |TBD|TBD|TBD |-|
 | #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|
 
