@@ -2,6 +2,7 @@ use super::Config;
 use crate::openai::models::linear::{
     linear_b_x as linear_b, linear_no_bias_x as linear, LinearX as Linear,
 };
+use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
@@ -9,9 +10,9 @@ use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::Activation;
 use candle_nn::{RmsNorm, VarBuilder};
-use either::Either;
 use std::iter::zip;
 use std::sync::Arc;
+
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct GemmaConfig {
     pub attention_bias: bool,
@@ -27,8 +28,8 @@ pub struct GemmaConfig {
     pub rms_norm_eps: f64,
     pub rope_theta: f64,
     pub vocab_size: usize,
-    pub bos_token_id: usize,
-    pub eos_token_id: usize,
+    pub bos_token_id: TokenID,
+    pub eos_token_id: TokenID,
     pub max_position_embeddings: Option<usize>,
     pub attn_logit_softcapping: Option<f64>,
     pub final_logit_softcapping: Option<f64>,
@@ -63,8 +64,8 @@ impl GemmaConfig {
             rms_norm_eps: self.rms_norm_eps,
             rope_theta: self.rope_theta,
             use_flash_attn,
-            bos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
-            eos_token_id: super::TokenID(Either::Left(Some(self.eos_token_id as u32))),
+            bos_token_id: self.bos_token_id,
+            eos_token_id: self.eos_token_id,
             max_seq_len: self.max_position_embeddings.unwrap_or(4096),
             sliding_window: None,
             hidden_act,
@@ -198,7 +199,6 @@ struct Attention {
     num_kv_heads: usize,
     head_dim: usize,
     rotary_emb: Arc<RotaryEmbedding>,
-    hidden_size: usize,
     attn: PagedAttention,
 }
 
@@ -246,7 +246,6 @@ impl Attention {
             num_kv_heads,
             head_dim,
             rotary_emb,
-            hidden_size: hidden_sz,
             attn: PagedAttention::new(
                 cfg.num_attention_heads,
                 head_dim,
