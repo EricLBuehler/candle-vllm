@@ -84,10 +84,8 @@ async def benchmark(batch, max_tokens=1024):
 
 
 if __name__ == "__main__":
-    batch = 1
     parser = argparse.ArgumentParser(description="Using 'batch' and 'max_tokens' parameters for candle-vllm benchmark.")
     parser.add_argument('--batch', default=16, type=int)
     parser.add_argument('--max_tokens', default=1024, type=int)
-
     args = parser.parse_args()
     asyncio.run(benchmark(args.batch, args.max_tokens))
