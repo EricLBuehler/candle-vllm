@@ -50,11 +50,9 @@ impl Stream for Streamer {
                     Poll::Ready(Some(Ok(Event::default().data("[DONE]"))))
                 }
             },
-
             Err(e) => {
                 if self.status == StreamingStatus::Started && e == flume::TryRecvError::Disconnected
                 {
-                    //no TryRecvError::Disconnected returned even if the client closed the stream or disconnected
                     self.status = StreamingStatus::Interrupted;
                     Poll::Ready(None)
                 } else {

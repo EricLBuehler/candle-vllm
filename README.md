@@ -134,6 +134,9 @@ After the `candle-vllm` service is running, run the Python script and enjoy effi
 
 ## Batched requests
 
+``` shell
+python3 examples/benchmark.py --batch 16 --max_tokens 1024
+```
 Refer to `examples/benchmark.py`
 
 ``` python
