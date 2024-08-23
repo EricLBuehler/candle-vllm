@@ -3,14 +3,25 @@ import asyncio
 from openai import Stream
 from openai.types.chat import ChatCompletionChunk
 from typing import List
-# Run: cargo run --release -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE> --repeat-last-n 64
+import argparse
+# Run candle-vllm service: cargo run --release -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE> --repeat-last-n 64
 # MODEL_ID is the huggingface model id or local weight path
 # MODEL_TYPE is one of ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm"]
-
+# Then run this file: python3 examples/benchmark.py --batch 16
 
 openai.api_key = "EMPTY"
 
 openai.base_url = "http://localhost:2000/v1/"
+
+# You may add your custom prompts here
+PROMPT_CANDIDATES = ["Explain how to best learn Rust.", 
+            "Please talk about deep learning.", 
+            "Do you know the capital city of China? Talk the details of you known.", 
+            "Who is the best female actor in the world? Explain why.",
+            "Let me know how to deal with depression?",
+            "How to make money in short time?",
+            "What is the future trend of large language model?",
+            "The famous tech companies in the world."]
 
 async def chat_completion(model, max_tokens, prompt):
     completion = openai.chat.completions.create(
@@ -34,26 +45,12 @@ async def stream_response(response_idx, stream: Stream[ChatCompletionChunk]):
             result += r
     return (response_idx, result)
 
-async def benchmark():
-    model = "mistral7b"
-    max_tokens = 1024
-    # 16 requests
-    prompts = ["Explain how to best learn Rust.", 
-               "Please talk about deep learning.", 
-               "Do you know the capital city of China? Talk the details of you known.", 
-               "Who is the best female actor in the world? Explain why.",
-               "Let me know how to deal with depression?",
-               "How to make money in short time?",
-               "What is the future trend of large language model?",
-               "The famous tech companies in the world.",
-               "Explain how to best learn Rust.", 
-               "Please talk about deep learning.", 
-               "Do you know the capital city of China? Talk the details of you known.", 
-               "Who is the best female actor in the world? Explain why.",
-               "Let me know how to deal with depression?",
-               "How to make money in short time?",
-               "What is the future trend of large language model?",
-               "The famous tech companies in the world."]
+async def benchmark(batch, max_tokens=1024):
+    model = "any" # model used dependent on the server side
+    # candidate requests
+    prompts = []
+    for i in range(batch):
+        prompts.append(PROMPT_CANDIDATES[i % len(PROMPT_CANDIDATES)])
 
     # avoid generating very short answers
     for i in range(len(prompts)):
@@ -86,4 +83,11 @@ async def benchmark():
         print("\n\n Response {}: \n\n {}".format(idx, output))
 
 
-asyncio.run(benchmark())
+if __name__ == "__main__":
+    batch = 1
+    parser = argparse.ArgumentParser(description="Using 'batch' and 'max_tokens' parameters for candle-vllm benchmark.")
+    parser.add_argument('--batch', default=16, type=int)
+    parser.add_argument('--max_tokens', default=1024, type=int)
+
+    args = parser.parse_args()
+    asyncio.run(benchmark(args.batch, args.max_tokens))
