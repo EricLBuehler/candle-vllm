@@ -21,6 +21,16 @@ pub struct TokenID(
     #[serde(with = "either::serde_untagged")] pub Either<Option<u32>, Option<Vec<u32>>>,
 );
 
+#[derive(Deserialize, PartialEq, Debug, Clone)]
+pub struct QuantConfig {
+    pub quant_method: String,
+    pub bits: usize,
+    pub group_size: i32,
+    pub sym: bool,
+    pub desc_act: Option<bool>,
+    pub checkpoint_format: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub hidden_size: usize,
@@ -50,6 +60,7 @@ pub struct Config {
     pub specific_config: SpecificConfig,
     pub attn_logit_softcapping: Option<f64>,
     pub final_logit_softcapping: Option<f64>,
+    pub quantization_config: Option<QuantConfig>,
 }
 
 impl Config {

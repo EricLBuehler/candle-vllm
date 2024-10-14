@@ -1,4 +1,4 @@
-use super::Config;
+use super::{Config, QuantConfig};
 use crate::openai::models::linear::{
     linear_b_x as linear_b, linear_no_bias_x as linear, LinearX as Linear,
 };
@@ -33,6 +33,7 @@ pub struct GemmaConfig {
     pub max_position_embeddings: Option<usize>,
     pub attn_logit_softcapping: Option<f64>,
     pub final_logit_softcapping: Option<f64>,
+    pub quantization_config: Option<QuantConfig>,
 }
 
 impl GemmaConfig {
@@ -81,6 +82,7 @@ impl GemmaConfig {
             specific_config: scfg.clone(),
             attn_logit_softcapping: self.attn_logit_softcapping,
             final_logit_softcapping: self.final_logit_softcapping,
+            quantization_config: self.quantization_config,
         }
     }
 }
@@ -160,18 +162,21 @@ impl MLP {
             intermediate_sz,
             vb.pp("gate_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let up_proj = linear(
             hidden_sz,
             intermediate_sz,
             vb.pp("up_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let down_proj = linear(
             intermediate_sz,
             hidden_sz,
             vb.pp("down_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         Ok(Self {
             gate_proj,
@@ -215,6 +220,7 @@ impl Attention {
             bias,
             vb.pp("q_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let k_proj = linear_b(
             hidden_sz,
@@ -222,6 +228,7 @@ impl Attention {
             bias,
             vb.pp("k_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let v_proj = linear_b(
             hidden_sz,
@@ -229,6 +236,7 @@ impl Attention {
             bias,
             vb.pp("v_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let o_proj = linear_b(
             num_heads * head_dim,
@@ -236,6 +244,7 @@ impl Attention {
             bias,
             vb.pp("o_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         Ok(Self {
             q_proj,
@@ -448,7 +457,8 @@ impl Gemma {
         let lm_head = Linear::new(
             embed_tokens.embeddings().clone(),
             None,
-            &cfg.specific_config.quant,
+            &None, //no quant for lm_head
+            &None,
         );
         Ok(Self {
             embed_tokens,

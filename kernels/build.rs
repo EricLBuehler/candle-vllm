@@ -19,7 +19,9 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/pagedattention.cu");
     println!("cargo:rerun-if-changed=src/copy_blocks_kernel.cu");
     println!("cargo:rerun-if-changed=src/reshape_and_cache_kernel.cu");
-    let builder = bindgen_cuda::Builder::default();
+    println!("cargo:rerun-if-changed=src/marlin_cuda_kernel.cu");
+
+    let builder = bindgen_cuda::Builder::default().arg("--expt-relaxed-constexpr");
     println!("cargo:info={builder:?}");
     builder.build_lib("libpagedattention.a");
 

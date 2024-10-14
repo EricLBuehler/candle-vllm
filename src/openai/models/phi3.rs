@@ -1,6 +1,6 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
-use super::{Config, RopeScaling};
+use super::{Config, QuantConfig, RopeScaling};
 use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
@@ -31,6 +31,7 @@ pub struct PhiConfig {
     pub max_position_embeddings: usize,
     pub original_max_position_embeddings: Option<usize>,
     pub sliding_window: Option<usize>,
+    pub quantization_config: Option<QuantConfig>,
 }
 
 impl PhiConfig {
@@ -68,6 +69,7 @@ impl PhiConfig {
             specific_config: scfg.clone(),
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
+            quantization_config: self.quantization_config,
         }
     }
 }
@@ -250,12 +252,14 @@ impl Attention {
             op_size,
             vb.pp("qkv_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let o_proj = linear(
             num_heads * head_dim,
             cfg.hidden_size,
             vb.pp("o_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         Ok(Self {
             qkv_proj,
@@ -366,12 +370,14 @@ impl Mlp {
             2 * i_size,
             vb.pp("gate_up_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let down_proj = linear(
             i_size,
             hidden_size,
             vb.pp("down_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         Ok(Self {
             gate_up_proj,
@@ -465,7 +471,8 @@ impl Phi {
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
-            &cfg.specific_config.quant,
+            &None, //no quant for lm_head
+            &None,
         )?;
         Ok(Self {
             embed_tokens,
