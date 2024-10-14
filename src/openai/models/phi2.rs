@@ -1,4 +1,4 @@
-use super::Config;
+use super::{Config, QuantConfig};
 use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
@@ -30,6 +30,7 @@ pub struct Phi2Config {
     pub eos_token_id: Option<u32>,
     pub sliding_window: Option<usize>,
     pub original_max_position_embeddings: Option<usize>,
+    pub quantization_config: Option<QuantConfig>,
 }
 
 impl Phi2Config {
@@ -67,6 +68,7 @@ impl Phi2Config {
             specific_config: scfg.clone(),
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
+            quantization_config: self.quantization_config,
         }
     }
 }
@@ -130,12 +132,14 @@ impl MLP {
             cfg.intermediate_size,
             vb.pp("fc1"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let fc2 = linear(
             cfg.intermediate_size,
             cfg.hidden_size,
             vb.pp("fc2"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         Ok(Self {
             fc1,
@@ -178,24 +182,28 @@ impl Attention {
             num_heads * head_dim,
             vb.pp("q_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let k_proj = linear(
             cfg.hidden_size,
             num_kv_heads * head_dim,
             vb.pp("k_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let v_proj = linear(
             cfg.hidden_size,
             num_kv_heads * head_dim,
             vb.pp("v_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let dense = linear(
             num_heads * head_dim,
             cfg.hidden_size,
             vb.pp("dense"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         // Alternative rope scalings are not supported.
         let rotary_emb = RotaryEmbedding::new(cfg, dtype, vb.device())?;
@@ -369,7 +377,8 @@ impl Phi2 {
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
-            &cfg.specific_config.quant,
+            &None, //no quant for lm_head
+            &None,
         )?;
         Ok(Self {
             embed_tokens,

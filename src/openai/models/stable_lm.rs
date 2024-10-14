@@ -1,4 +1,4 @@
-use super::Config;
+use super::{Config, QuantConfig};
 use crate::openai::models::linear::{
     linear_no_bias_x as linear_no_bias, linear_x as linear, LinearX as Linear,
 };
@@ -31,6 +31,7 @@ pub struct StableLMConfig {
     pub bos_token_id: usize,
     pub eos_token_id: usize,
     pub sliding_window: Option<usize>,
+    pub quantization_config: Option<QuantConfig>,
 }
 
 impl StableLMConfig {
@@ -71,6 +72,7 @@ impl StableLMConfig {
             specific_config: scfg.clone(),
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
+            quantization_config: self.quantization_config,
         }
     }
 }
@@ -142,18 +144,21 @@ impl MLP {
             intermediate_sz,
             vb.pp("gate_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let up_proj = linear_no_bias(
             hidden_sz,
             intermediate_sz,
             vb.pp("up_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let down_proj = linear_no_bias(
             intermediate_sz,
             hidden_sz,
             vb.pp("down_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         Ok(Self {
             gate_proj,
@@ -205,24 +210,28 @@ impl Attention {
             num_heads * head_dim,
             vb.pp("q_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let k_proj = linear_layer(
             hidden_sz,
             num_kv_heads * head_dim,
             vb.pp("k_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let v_proj = linear_layer(
             hidden_sz,
             num_kv_heads * head_dim,
             vb.pp("v_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let o_proj = linear_no_bias(
             num_heads * head_dim,
             hidden_sz,
             vb.pp("o_proj"),
             &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         Ok(Self {
             q_proj,
@@ -385,7 +394,8 @@ impl StableLM {
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
-            &cfg.specific_config.quant,
+            &None, //no quant for lm_head
+            &None,
         )?;
         Ok(Self {
             embed_tokens,

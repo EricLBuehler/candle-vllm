@@ -17,6 +17,8 @@
 //! assert_eq!(ys.to_vec2::<f32>()?, &[[210.0, 430.0, 650.0]]);
 //! # Ok(()) }
 //! ```
+use super::QuantConfig;
+use crate::backend::gptq::{gptq_matmul, gptq_weight_repack};
 use crate::candle::Module;
 use crate::candle::{
     quantized::{gguf_file, QMatMul, QTensor},
@@ -31,11 +33,24 @@ use std::sync::Arc;
 pub struct Linear {
     weight: Tensor,
     bias: Option<Tensor>,
+    scales: Option<Tensor>,
+    qzeros: Option<Tensor>,
+    g_idx: Option<Tensor>,
+    perm: Option<Tensor>,
+    workspace: Option<Tensor>,
 }
 
 impl Linear {
     pub fn new(weight: Tensor, bias: Option<Tensor>) -> Self {
-        Self { weight, bias }
+        Self {
+            weight,
+            bias,
+            scales: None,
+            qzeros: None,
+            g_idx: None,
+            perm: None,
+            workspace: None,
+        }
     }
 
     pub fn weight(&self) -> &Tensor {
@@ -44,6 +59,26 @@ impl Linear {
 
     pub fn bias(&self) -> Option<&Tensor> {
         self.bias.as_ref()
+    }
+
+    pub fn scales(&self) -> Option<&Tensor> {
+        self.scales.as_ref()
+    }
+
+    pub fn qzeros(&self) -> Option<&Tensor> {
+        self.qzeros.as_ref()
+    }
+
+    pub fn g_idx(&self) -> Option<&Tensor> {
+        self.g_idx.as_ref()
+    }
+
+    pub fn perm(&self) -> Option<&Tensor> {
+        self.perm.as_ref()
+    }
+
+    pub fn workspace(&self) -> Option<&Tensor> {
+        self.workspace.as_ref()
     }
 }
 
@@ -134,10 +169,156 @@ pub fn linear_b(
     }
 }
 
+pub fn qlinear(
+    in_dim: usize,
+    out_dim: usize,
+    vb: candle_nn::VarBuilder,
+    quant_config: &Option<QuantConfig>,
+    bias: bool,
+) -> Result<Linear> {
+    match quant_config {
+        Some(cfg) => {
+            let marlin_compatible =
+                if cfg.quant_method != "gptq" || (cfg.bits != 4 && cfg.bits != 8) {
+                    false
+                } else {
+                    true
+                };
+            let marlin_format = if cfg.checkpoint_format.is_some()
+                && cfg.checkpoint_format.as_ref().unwrap() == "marlin"
+            {
+                true
+            } else {
+                false
+            };
+            let ws = vb.get_with_hints_dtype(
+                (in_dim / (32 / cfg.bits) / 2, out_dim * 2),
+                if marlin_format { "B" } else { "qweight" },
+                Default::default(),
+                DType::U32,
+            )?;
+
+            let scale_and_zero_size = in_dim / (cfg.group_size as usize);
+            let scales = vb.get_with_hints_dtype(
+                (scale_and_zero_size, out_dim),
+                if marlin_format { "s" } else { "scales" },
+                Default::default(),
+                DType::F16,
+            )?;
+
+            let workspace = Tensor::zeros(out_dim / (32 / cfg.bits), DType::U32, vb.device())?;
+            let bs = if bias {
+                Some(vb.get_with_hints_dtype((out_dim,), "bias", Default::default(), DType::F16)?)
+            } else {
+                None
+            };
+            if marlin_format {
+                //marlin weight file
+                Ok(Linear {
+                    weight: ws,
+                    bias: bs,
+                    scales: Some(scales),
+                    qzeros: None,
+                    g_idx: None,
+                    perm: None,
+                    workspace: Some(workspace),
+                })
+            } else {
+                fn get_scale_perms() -> (Vec<u32>, Vec<u32>) {
+                    let mut scale_perm: Vec<u32> = Vec::new();
+                    for i in 0..8 {
+                        scale_perm.extend((0..8).map(|j| i + 8 * j));
+                    }
+                    let mut scale_perm_single: Vec<u32> = Vec::new();
+                    for i in 0..4 {
+                        scale_perm_single
+                            .extend([0, 1, 8, 9, 16, 17, 24, 25].iter().map(|&j| 2 * i + j));
+                    }
+                    (scale_perm, scale_perm_single)
+                }
+
+                fn marlin_permute_scales(
+                    s: &Tensor,
+                    size_k: usize,
+                    size_n: usize,
+                    group_size: i32,
+                    _num_bits: u32,
+                ) -> Result<Tensor> {
+                    let (scale_perm, scale_perm_single) = get_scale_perms();
+                    let s = if (group_size as usize) < size_k && group_size != -1 {
+                        let s = s.reshape(((), scale_perm.len()))?;
+                        let scale_perm_tensor =
+                            Tensor::from_slice(&scale_perm, (scale_perm.len()), s.device())?;
+                        s.index_select(&scale_perm_tensor, 1)?
+                    } else {
+                        let s = s.reshape(((), scale_perm_single.len()))?;
+                        let scale_perm_single_tensor = Tensor::from_slice(
+                            &scale_perm_single,
+                            (scale_perm_single.len()),
+                            s.device(),
+                        )?;
+                        s.index_select(&scale_perm_single_tensor, 1)?
+                    };
+
+                    let s = s.reshape(((), size_n))?.contiguous()?;
+                    Ok(s)
+                }
+                let qzeros = vb.get_with_hints_dtype(
+                    (scale_and_zero_size, out_dim / (32 / cfg.bits)),
+                    "qzeros",
+                    Default::default(),
+                    DType::U32,
+                )?;
+                //in-situ quantization to marlin format (under development)
+                let g_idx =
+                    vb.get_with_hints_dtype((in_dim,), "g_idx", Default::default(), DType::U32)?;
+                let perm = g_idx
+                    .to_device(&Device::Cpu)?
+                    .arg_sort_last_dim(true)?
+                    .to_device(g_idx.device())?;
+                let ws = if marlin_compatible {
+                    gptq_weight_repack(&ws, &perm, in_dim)?
+                } else {
+                    ws
+                }; //repack to marlin format
+
+                let scales = if marlin_compatible {
+                    marlin_permute_scales(
+                        &scales,
+                        in_dim / (32 / cfg.bits) as usize,
+                        out_dim as usize,
+                        cfg.group_size,
+                        cfg.bits as u32,
+                    )?
+                } else {
+                    scales
+                };
+                Ok(Linear {
+                    weight: ws,
+                    bias: bs,
+                    scales: Some(scales),
+                    qzeros: Some(qzeros),
+                    g_idx: Some(g_idx),
+                    perm: Some(perm),
+                    workspace: Some(workspace),
+                })
+            }
+        }
+        None => linear_b(in_dim, out_dim, bias, vb),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct QLinear {
     inner: QMatMul,
     bias: Option<Tensor>,
+    scales: Option<Tensor>,
+    qzeros: Option<Tensor>,
+    g_idx: Option<Tensor>,
+    perm: Option<Tensor>,
+    workspace: Option<Tensor>,
+    group_size: i32,
+    bits: i32,
     dtype: DType,
 }
 
@@ -155,14 +336,28 @@ impl QLinear {
         Ok(Self {
             inner,
             bias: Some(bias),
+            scales: None,
+            qzeros: None,
+            g_idx: None,
+            perm: None,
+            workspace: None,
+            group_size: 0,
+            bits: 0,
             dtype: DType::F32,
         })
     }
 
-    pub fn from_linear(linear: Linear) -> Self {
+    pub fn from_linear(linear: Linear, group_size: i32, bits: i32) -> Self {
         Self {
             inner: QMatMul::Tensor(linear.weight().clone()),
             bias: linear.bias().cloned(),
+            scales: linear.scales().cloned(),
+            qzeros: linear.qzeros().cloned(),
+            g_idx: linear.g_idx().cloned(),
+            perm: linear.perm().cloned(),
+            workspace: linear.workspace().cloned(),
+            group_size,
+            bits,
             dtype: linear.weight().dtype(),
         }
     }
@@ -172,6 +367,13 @@ impl QLinear {
         Self {
             inner: QMatMul::Tensor(w),
             bias: b,
+            scales: None,
+            qzeros: None,
+            g_idx: None,
+            perm: None,
+            workspace: None,
+            group_size: 0,
+            bits: 0,
             dtype,
         }
     }
@@ -183,6 +385,13 @@ impl QLinear {
         Self {
             inner: QMatMul::QTensor(Arc::new(w)),
             bias: b,
+            scales: None,
+            qzeros: None,
+            g_idx: None,
+            perm: None,
+            workspace: None,
+            group_size: 0,
+            bits: 0,
             dtype: DType::F32,
         }
     }
@@ -202,38 +411,64 @@ impl QLinear {
         Self {
             inner: QMatMul::QTensor(Arc::new(w)),
             bias: bx,
+            scales: None,
+            qzeros: None,
+            g_idx: None,
+            perm: None,
+            workspace: None,
+            group_size: 0,
+            bits: 0,
             dtype,
         }
     }
 
-    pub fn from_linear_x(linear: Linear, quant: String) -> Self {
+    pub fn from_linear_x(
+        linear: Linear,
+        quant: String,
+        quant_config: &Option<QuantConfig>,
+    ) -> Self {
         let weight = linear.weight();
-        let dtype = weight.dtype();
-        use quantized::GgmlDType;
-
-        let ggml_dtype = match quant.as_str() {
-            "q4_0" => GgmlDType::Q4_0,
-            "q4_1" => GgmlDType::Q4_1,
-            "q5_0" => GgmlDType::Q5_0,
-            "q5_1" => GgmlDType::Q5_1,
-            "q8_0" => GgmlDType::Q8_0,
-            "q2k" => GgmlDType::Q2K,
-            "q3k" => GgmlDType::Q3K,
-            "q4k" => GgmlDType::Q4K,
-            "q5k" => GgmlDType::Q5K,
-            "q6k" => GgmlDType::Q6K,
-            _ => panic!("Unsupported GGML data type!"),
-        };
-        let qtensor = QTensor::quantize(weight, ggml_dtype).unwrap();
         let qbias = linear.bias().cloned();
-
-        QLinear::from_qparts_x(qtensor, qbias, dtype)
+        let dtype = weight.dtype();
+        match quant_config {
+            Some(cfg) => {
+                assert!(
+                    cfg.quant_method == "gptq" || cfg.quant_method == "marlin" || quant == "marlin"
+                );
+                QLinear::from_linear(linear, cfg.group_size as i32, cfg.bits as i32)
+            }
+            None => {
+                use quantized::GgmlDType;
+                let ggml_dtype = match quant.as_str() {
+                    "q4_0" => GgmlDType::Q4_0,
+                    "q4_1" => GgmlDType::Q4_1,
+                    "q5_0" => GgmlDType::Q5_0,
+                    "q5_1" => GgmlDType::Q5_1,
+                    "q8_0" => GgmlDType::Q8_0,
+                    "q2k" => GgmlDType::Q2K,
+                    "q3k" => GgmlDType::Q3K,
+                    "q4k" => GgmlDType::Q4K,
+                    "q5k" => GgmlDType::Q5K,
+                    "q6k" => GgmlDType::Q6K,
+                    _ => panic!("Unsupported GGML data type!"),
+                };
+                let qtensor = QTensor::quantize(weight, ggml_dtype).unwrap();
+                QLinear::from_qparts_x(qtensor, qbias, dtype)
+            }
+        }
     }
 
     pub fn from_old_and_qmatmul(inner: QMatMul, old: &Self) -> Self {
         Self {
             inner,
             bias: old.bias.clone(),
+            scales: None,
+            qzeros: None,
+            g_idx: None,
+            perm: None,
+            workspace: None,
+            group_size: 0,
+            bits: 0,
             dtype: old.dtype,
         }
     }
@@ -358,11 +593,42 @@ impl QLinear {
 
 impl Module for QLinear {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let batch = x.dims()[0];
-        if batch > 4 {
-            self.forward_via_f16(x) //suitable for batched
-        } else {
-            self.forward_no_dequant(x) //faster in single-query
+        match (
+            &self.inner,
+            &self.scales,
+            &self.qzeros,
+            &self.g_idx,
+            &self.perm,
+            &self.workspace,
+        ) {
+            (QMatMul::Tensor(qw), Some(scale), qzeros, g_idx, perm, workspace) => {
+                //gptq (only f16 inputs for marlin format)
+                let x = match *x.dims() {
+                    [bsize, seq_len, dim1, dim2] => {
+                        let x = x.reshape((bsize * seq_len, dim1, dim2))?;
+                        let o =
+                            gptq_matmul(&x, qw, scale, qzeros, g_idx, perm, workspace, self.bits)?;
+                        o.reshape((bsize, seq_len, dim1, ()))?
+                    }
+                    [_, _, _] => {
+                        gptq_matmul(&x, qw, scale, qzeros, g_idx, perm, workspace, self.bits)?
+                    }
+                    [seq_len, dim] => {
+                        let x = x.reshape((1, seq_len, dim))?;
+                        let o =
+                            gptq_matmul(&x, qw, scale, qzeros, g_idx, perm, workspace, self.bits)?;
+                        o.reshape((seq_len, ()))?
+                    }
+                    _ => panic!("Invalid input format!"),
+                };
+
+                if let Some(bias) = &self.bias {
+                    x.broadcast_add(bias)
+                } else {
+                    Ok(x)
+                }
+            }
+            _ => self.forward_no_dequant(x),
         }
     }
 }
@@ -379,12 +645,18 @@ impl Module for LinearX {
     }
 }
 impl LinearX {
-    pub fn new(weight: Tensor, bias: Option<Tensor>, quant: &Option<String>) -> Self {
+    pub fn new(
+        weight: Tensor,
+        bias: Option<Tensor>,
+        quant: &Option<String>,
+        quant_config: &Option<QuantConfig>,
+    ) -> Self {
         let ln = Linear::new(weight, bias);
         if let Some(quatized_type) = quant {
             LinearX(Either::Right(QLinear::from_linear_x(
                 ln,
                 quatized_type.clone(),
+                quant_config,
             )))
         } else {
             LinearX(Either::Left(ln))
@@ -397,14 +669,17 @@ pub fn linear_x(
     out_dim: usize,
     vb: candle_nn::VarBuilder,
     quant: &Option<String>,
+    quant_config: &Option<QuantConfig>,
 ) -> Result<LinearX> {
-    let ln = linear(in_dim, out_dim, vb).unwrap();
     if let Some(quatized_type) = quant {
+        let ln = qlinear(in_dim, out_dim, vb, quant_config, true).unwrap();
         Ok(LinearX(Either::Right(QLinear::from_linear_x(
             ln,
             quatized_type.clone(),
+            quant_config,
         ))))
     } else {
+        let ln = linear(in_dim, out_dim, vb).unwrap();
         Ok(LinearX(Either::Left(ln)))
     }
 }
@@ -414,16 +689,19 @@ pub fn linear_no_bias_x(
     out_dim: usize,
     vb: candle_nn::VarBuilder,
     quant: &Option<String>,
+    quant_config: &Option<QuantConfig>,
 ) -> Result<LinearX> {
-    let init_ws = init::DEFAULT_KAIMING_NORMAL;
-    let ws = vb.get_with_hints((out_dim, in_dim), "weight", init_ws)?;
-    let ln = Linear::new(ws, None);
     if let Some(quatized_type) = quant {
+        let ln = qlinear(in_dim, out_dim, vb, quant_config, false).unwrap();
         Ok(LinearX(Either::Right(QLinear::from_linear_x(
             ln,
             quatized_type.clone(),
+            quant_config,
         ))))
     } else {
+        let init_ws = init::DEFAULT_KAIMING_NORMAL;
+        let ws = vb.get_with_hints((out_dim, in_dim), "weight", init_ws)?;
+        let ln = Linear::new(ws, None);
         Ok(LinearX(Either::Left(ln)))
     }
 }
@@ -434,10 +712,11 @@ pub fn linear_b_x(
     bias: bool,
     vb: candle_nn::VarBuilder,
     quant: &Option<String>,
+    quant_config: &Option<QuantConfig>,
 ) -> Result<LinearX> {
     if bias {
-        linear_x(in_dim, out_dim, vb, quant)
+        linear_x(in_dim, out_dim, vb, quant, quant_config)
     } else {
-        linear_no_bias_x(in_dim, out_dim, vb, quant)
+        linear_no_bias_x(in_dim, out_dim, vb, quant, quant_config)
     }
 }

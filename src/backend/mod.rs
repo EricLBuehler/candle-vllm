@@ -1,4 +1,5 @@
 mod cache;
+pub mod gptq;
 mod paged_attention;
 
 const COPY_BLOCKS_KERNEL_NAME: &str = "copy_blocks_kernel";
@@ -62,6 +63,7 @@ use candle_core::{
     cuda_backend::cudarc::driver::{CudaFunction, DeviceRepr},
     CudaDevice, DType,
 };
+pub use gptq::*;
 pub use paged_attention::*;
 pub use std::ops::Deref;
 use std::{
