@@ -126,13 +126,14 @@ struct MLP {
 }
 
 impl MLP {
-    fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
+    fn new(cfg: &Config, dtype: DType, vb: VarBuilder) -> Result<Self> {
         let fc1 = linear(
             cfg.hidden_size,
             cfg.intermediate_size,
             vb.pp("fc1"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let fc2 = linear(
             cfg.intermediate_size,
@@ -140,6 +141,7 @@ impl MLP {
             vb.pp("fc2"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         Ok(Self {
             fc1,
@@ -183,6 +185,7 @@ impl Attention {
             vb.pp("q_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let k_proj = linear(
             cfg.hidden_size,
@@ -190,6 +193,7 @@ impl Attention {
             vb.pp("k_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let v_proj = linear(
             cfg.hidden_size,
@@ -197,6 +201,7 @@ impl Attention {
             vb.pp("v_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let dense = linear(
             num_heads * head_dim,
@@ -204,6 +209,7 @@ impl Attention {
             vb.pp("dense"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         // Alternative rope scalings are not supported.
         let rotary_emb = RotaryEmbedding::new(cfg, dtype, vb.device())?;
@@ -318,7 +324,7 @@ struct DecoderLayer {
 impl DecoderLayer {
     fn new(cfg: &Config, dtype: DType, vb: VarBuilder) -> Result<Self> {
         let self_attn = Attention::new(cfg, dtype, vb.pp("self_attn"))?;
-        let mlp = MLP::new(cfg, vb.pp("mlp"))?;
+        let mlp = MLP::new(cfg, dtype, vb.pp("mlp"))?;
         let input_layernorm =
             layer_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         Ok(Self {
@@ -379,6 +385,7 @@ impl Phi2 {
             vb.pp("lm_head"),
             &None, //no quant for lm_head
             &None,
+            dtype,
         )?;
         Ok(Self {
             embed_tokens,

@@ -13,7 +13,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Efficient management of key-value cache with PagedAttention.
 - Continuous batching.
 - `In-situ` quantization
-- `GPTQ/Marlin` format quantization
+- `GPTQ/Marlin` format quantization (4-bit)
 
 ## Develop Status
 
@@ -192,15 +192,15 @@ async def benchmark():
 asyncio.run(benchmark())
 ```
 
-## GPTQ/Marlin quantization
-Candle-vllm now supports GPTQ (Marlin kernel), you may supply the `quant` (marlin) and `dtype` (f16) parameters if you have `Marlin` format quantized weights, such as:
+## GPTQ/Marlin 4-bit quantization
+Candle-vllm now supports GPTQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
 
 ```
 cargo run --release -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin
 ```
-You may also use `AutoGPTQ` to transform a model to marlin format by loading the model and supply the `use_marlin=True` in `AutoGPTQ`. 
+You may also use `AutoGPTQ` to transform a model to marlin format by loading the (quantized) model, supplying the `use_marlin=True` in `AutoGPTQ` and resaving it with "save_pretrained". 
 
-**Note:** only 4bit GPTQ quantization supported for marlin format at the moment, and the input data type should be `f16` (--dtype f16). You need also renamed the transformed marlin format weight to "model.safetensors" and copy the "tokenizer.json" from the source model folder.
+**Note:** only 4-bit GPTQ (marlin format) quantization supported at the moment, and the input data type should be `f16` (--dtype f16) or `bf16` (--dtype bf16). You need rename the transformed marlin weight to "model.safetensors" and copy the "tokenizer.json" from the source model folder.
 
 ## In-situ quantization for consumer-grade GPUs
 

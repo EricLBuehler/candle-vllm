@@ -175,6 +175,7 @@ pub fn qlinear(
     vb: candle_nn::VarBuilder,
     quant_config: &Option<QuantConfig>,
     bias: bool,
+    dtype: DType,
 ) -> Result<Linear> {
     match quant_config {
         Some(cfg) => {
@@ -212,6 +213,13 @@ pub fn qlinear(
             } else {
                 None
             };
+
+            let scales = if dtype != scales.dtype() {
+                scales.to_dtype(dtype)?
+            } else {
+                scales
+            };
+
             if marlin_format {
                 //marlin weight file
                 Ok(Linear {
@@ -248,13 +256,13 @@ pub fn qlinear(
                     let s = if (group_size as usize) < size_k && group_size != -1 {
                         let s = s.reshape(((), scale_perm.len()))?;
                         let scale_perm_tensor =
-                            Tensor::from_slice(&scale_perm, (scale_perm.len()), s.device())?;
+                            Tensor::from_slice(&scale_perm, scale_perm.len(), s.device())?;
                         s.index_select(&scale_perm_tensor, 1)?
                     } else {
                         let s = s.reshape(((), scale_perm_single.len()))?;
                         let scale_perm_single_tensor = Tensor::from_slice(
                             &scale_perm_single,
-                            (scale_perm_single.len()),
+                            scale_perm_single.len(),
                             s.device(),
                         )?;
                         s.index_select(&scale_perm_single_tensor, 1)?
@@ -670,9 +678,10 @@ pub fn linear_x(
     vb: candle_nn::VarBuilder,
     quant: &Option<String>,
     quant_config: &Option<QuantConfig>,
+    dtype: DType,
 ) -> Result<LinearX> {
     if let Some(quatized_type) = quant {
-        let ln = qlinear(in_dim, out_dim, vb, quant_config, true).unwrap();
+        let ln = qlinear(in_dim, out_dim, vb, quant_config, true, dtype).unwrap();
         Ok(LinearX(Either::Right(QLinear::from_linear_x(
             ln,
             quatized_type.clone(),
@@ -690,9 +699,10 @@ pub fn linear_no_bias_x(
     vb: candle_nn::VarBuilder,
     quant: &Option<String>,
     quant_config: &Option<QuantConfig>,
+    dtype: DType,
 ) -> Result<LinearX> {
     if let Some(quatized_type) = quant {
-        let ln = qlinear(in_dim, out_dim, vb, quant_config, false).unwrap();
+        let ln = qlinear(in_dim, out_dim, vb, quant_config, false, dtype).unwrap();
         Ok(LinearX(Either::Right(QLinear::from_linear_x(
             ln,
             quatized_type.clone(),
@@ -713,10 +723,11 @@ pub fn linear_b_x(
     vb: candle_nn::VarBuilder,
     quant: &Option<String>,
     quant_config: &Option<QuantConfig>,
+    dtype: DType,
 ) -> Result<LinearX> {
     if bias {
-        linear_x(in_dim, out_dim, vb, quant, quant_config)
+        linear_x(in_dim, out_dim, vb, quant, quant_config, dtype)
     } else {
-        linear_no_bias_x(in_dim, out_dim, vb, quant, quant_config)
+        linear_no_bias_x(in_dim, out_dim, vb, quant, quant_config, dtype)
     }
 }

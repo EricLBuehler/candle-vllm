@@ -154,7 +154,7 @@ struct MLP {
 }
 
 impl MLP {
-    fn new(cfg: &Config, vb: VarBuilder) -> Result<Self> {
+    fn new(cfg: &Config, dtype: DType, vb: VarBuilder) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
         let gate_proj = linear(
@@ -163,6 +163,7 @@ impl MLP {
             vb.pp("gate_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let up_proj = linear(
             hidden_sz,
@@ -170,6 +171,7 @@ impl MLP {
             vb.pp("up_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let down_proj = linear(
             intermediate_sz,
@@ -177,6 +179,7 @@ impl MLP {
             vb.pp("down_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         Ok(Self {
             gate_proj,
@@ -208,7 +211,12 @@ struct Attention {
 }
 
 impl Attention {
-    fn new(rotary_emb: Arc<RotaryEmbedding>, cfg: &Config, vb: VarBuilder) -> Result<Self> {
+    fn new(
+        rotary_emb: Arc<RotaryEmbedding>,
+        cfg: &Config,
+        dtype: DType,
+        vb: VarBuilder,
+    ) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
@@ -221,6 +229,7 @@ impl Attention {
             vb.pp("q_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let k_proj = linear_b(
             hidden_sz,
@@ -229,6 +238,7 @@ impl Attention {
             vb.pp("k_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let v_proj = linear_b(
             hidden_sz,
@@ -237,6 +247,7 @@ impl Attention {
             vb.pp("v_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         let o_proj = linear_b(
             num_heads * head_dim,
@@ -245,6 +256,7 @@ impl Attention {
             vb.pp("o_proj"),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
+            dtype,
         )?;
         Ok(Self {
             q_proj,
@@ -347,9 +359,14 @@ struct DecoderLayer {
 }
 
 impl DecoderLayer {
-    fn new(rotary_emb: Arc<RotaryEmbedding>, cfg: &Config, vb: VarBuilder) -> Result<Self> {
-        let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"))?;
-        let mlp = MLP::new(cfg, vb.pp("mlp"))?;
+    fn new(
+        rotary_emb: Arc<RotaryEmbedding>,
+        cfg: &Config,
+        dtype: DType,
+        vb: VarBuilder,
+    ) -> Result<Self> {
+        let self_attn = Attention::new(rotary_emb, cfg, dtype, vb.pp("self_attn"))?;
+        let mlp = MLP::new(cfg, dtype, vb.pp("mlp"))?;
         let input_layernorm =
             rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
 
@@ -450,7 +467,7 @@ impl Gemma {
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
-            let layer = DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx))?;
+            let layer = DecoderLayer::new(rotary_emb.clone(), cfg, dtype, vb_l.pp(layer_idx))?;
             layers.push(layer)
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;

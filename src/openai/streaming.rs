@@ -9,7 +9,7 @@ use std::{
 
 #[derive(PartialEq)]
 pub enum StreamingStatus {
-    Uninitilized,
+    Uninitialized,
     Started,
     Interrupted,
     Stopped,

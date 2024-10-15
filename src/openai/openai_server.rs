@@ -206,7 +206,7 @@ pub async fn chat_completions(
         ChatResponder::Streamer(
             Sse::new(Streamer {
                 rx,
-                status: StreamingStatus::Uninitilized,
+                status: StreamingStatus::Uninitialized,
             })
             .keep_alive(
                 KeepAlive::new()

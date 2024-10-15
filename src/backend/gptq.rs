@@ -4,7 +4,7 @@ use candle::cuda_backend::WrapErr;
 use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
 use half::{bf16, f16};
-use kernels::ffi::{gptq_marlin_repack, marlin_4bit_f16};
+use kernels::ffi::{gptq_marlin_repack, marlin_4bit_bf16, marlin_4bit_f16};
 
 struct GPTQMatMul {
     qzeros: Option<Tensor>,
@@ -26,14 +26,7 @@ impl GPTQMatMul {
         scale: &CudaStorage,
         scale_l: &Layout,
     ) -> Result<(CudaStorage, Shape)> {
-        let internal_type = match x.dtype() {
-            DType::F16 => 0,
-            DType::BF16 => 1,
-            DType::F32 => 2,
-            dtype => candle::bail!("dtype {dtype:?} is not supported"),
-        };
         let dev = qweight.device();
-
         let x_shape = x_l.dims();
         let weight_shape = qweight_l.dims();
         // let zero_shape = self.qzeros.shape().dims();
@@ -50,7 +43,7 @@ impl GPTQMatMul {
         // Get cuda slices for all tensors
         let input = x.as_cuda_slice::<T>()?;
         let qw = qweight.as_cuda_slice::<u32>()?;
-        let qs = scale.as_cuda_slice::<f16>()?;
+        let qs = scale.as_cuda_slice::<T>()?;
 
         // Get cuda views for all tensors
         let input = input.slice(x_l.start_offset()..);
@@ -74,25 +67,40 @@ impl GPTQMatMul {
             let workspace_ = workspace_.slice(workspace_l.start_offset()..);
             *workspace_.device_ptr() as *const core::ffi::c_void
         } else {
-            out_ptr
+            candle::bail!("workspace is required for marlin matmul!")
         };
+
         unsafe {
             let groupsize: i32 = if scale_shape[0] == 1 {
                 -1i32
             } else {
                 (size_k / scale_shape[0]) as i32
             };
-            marlin_4bit_f16(
-                in_ptr,
-                qw_ptr as *const i32,
-                qs_ptr,
-                out_ptr,
-                (x_shape[0] * x_shape[1]) as i32, //m
-                size_k as i32,                    //k
-                size_n as i32,                    //n
-                workspace_ptr,
-                groupsize as i32,
-            );
+            if x.dtype() == DType::F16 {
+                marlin_4bit_f16(
+                    in_ptr,
+                    qw_ptr as *const i32,
+                    qs_ptr,
+                    out_ptr,
+                    (x_shape[0] * x_shape[1]) as i32, //m
+                    size_k as i32,                    //k
+                    size_n as i32,                    //n
+                    workspace_ptr,
+                    groupsize as i32,
+                );
+            } else if x.dtype() == DType::BF16 {
+                marlin_4bit_bf16(
+                    in_ptr,
+                    qw_ptr as *const i32,
+                    qs_ptr,
+                    out_ptr,
+                    (x_shape[0] * x_shape[1]) as i32, //m
+                    size_k as i32,                    //k
+                    size_n as i32,                    //n
+                    workspace_ptr,
+                    groupsize as i32,
+                );
+            }
         }
 
         let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
@@ -129,8 +137,7 @@ impl candle::CustomOp3 for GPTQMatMul {
         match x.dtype() {
             DType::F16 => self.cuda_fwd_t::<f16>(x, x_l, qweight, qweight_l, scale, scale_l),
             DType::BF16 => self.cuda_fwd_t::<bf16>(x, x_l, qweight, qweight_l, scale, scale_l),
-            DType::F32 => self.cuda_fwd_t::<f32>(x, x_l, qweight, qweight_l, scale, scale_l),
-            dt => candle::bail!("GPTQMatMul is only supported for f16, bf16 and f32 ({dt:?})"),
+            dt => candle::bail!("GPTQMatMul is only supported for f16 and bf16 ({dt:?})"),
         }
     }
 }
@@ -173,8 +180,8 @@ impl GPTQRepack {
         let dev = qweight.device();
         let q_shape = qweight_l.dims();
         let mut out_shape: Vec<usize> = q_shape.to_vec();
-        // out_shape[0] = (q_shape[0] / 2) as usize;
-        // out_shape[1] = (q_shape[1] * 2) as usize;
+        out_shape[0] = (q_shape[0] / 2) as usize;
+        out_shape[1] = (q_shape[1] * 2) as usize;
 
         let oshape: Shape = out_shape.into();
 

@@ -75,20 +75,31 @@ extern "C" {
         weight: *const c_int,
         scales: *const c_void,
         out: *const c_void,
-        m: c_int, 
-        k: c_int, 
-        n: c_int, 
+        m: c_int,
+        k: c_int,
+        n: c_int,
         workspace: *const c_void, //tensor with at least `n / 128 * max_par` entries that are all zero
         groupsize: c_int,
-      ) -> i32;
+    );
+
+    pub fn marlin_4bit_bf16(
+        inputs: *const c_void,
+        weight: *const c_int,
+        scales: *const c_void,
+        out: *const c_void,
+        m: c_int,
+        k: c_int,
+        n: c_int,
+        workspace: *const c_void, //tensor with at least `n / 128 * max_par` entries that are all zero
+        groupsize: c_int,
+    );
 
     pub fn gptq_marlin_repack(
         weight: *const c_void,
         perm: *const c_void,
         result: *const c_void,
-        k: c_int, 
+        k: c_int,
         n: c_int,
         bits: c_int,
     );
-    
 }
