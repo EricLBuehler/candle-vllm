@@ -19,9 +19,9 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 
 Currently, candle-vllm supports chat serving for the following models.
 
-| Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
+| Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K` or `Marlin`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
 |--|--|--|--|--|--|--|
-| #1 | **LLAMA/LLAMA2/LLaMa3/LLaMa3.1** |✅|65 tks/s (LLaMa3.1 8B), **115 tks/s (LLaMa3.1 8B, Marlin)** | 553 tks/s (LLaMa3.1 8B) | 75 tks/s (LLaMa3.1 8B) |**755 tks/s (LLaMa3.1 8B)**|
+| #1 | **LLAMA** |✅|65 tks/s (LLaMa3.1 8B) | 553 tks/s (LLaMa3.1 8B) | 75 tks/s (LLaMa3.1 8B), **115 tks/s (LLaMa3.1 8B, Marlin)** |**755 tks/s (LLaMa3.1 8B)**|
 | #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B) |TBD|
 | #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|TBD|-|TBD|
 | #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
@@ -35,10 +35,9 @@ Currently, candle-vllm supports chat serving for the following models.
 | #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|TBD|
 
 
-## Demo Chat with candle-vllm (61-65 tokens/s, LLaMa3.1 8B, bf16, on A100)
+## Demo Chat with candle-vllm (~110 tokens/s, LLaMa3.1 8B, 4-bit Marlin, on A100)
 
-https://github.com/user-attachments/assets/290d72d8-d5e6-41a3-8bd8-1d9d732aee3b
-
+https://github.com/user-attachments/assets/66b5b90e-e2ca-4f0b-82d7-99aa9f85568c
 
 ## Usage
 See [this folder](examples/) for some examples.
