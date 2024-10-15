@@ -2,4 +2,5 @@
 extend-ignore-identifiers-re = [
     "mmaped",
     "arange",
+    "cudaDevAttrMaxSharedMemoryPerBlockOptin",
 ]
