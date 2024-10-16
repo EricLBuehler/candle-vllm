@@ -4,8 +4,8 @@ import shutil
 
 #pipeline to marlin format: pretrained model (f16/bf16/f32 format) -> gptq (4-bit quantization) -> gptq marlin
 
-#change the following pathes
-pretrained_model_dir = "/home/mistral_7b/" #path to orginal model (un-quantized model)
+#change the following paths
+pretrained_model_dir = "/home/mistral_7b/" #path to original model (un-quantized model)
 # saving path, save as gptq (4-bit quantization) model if needed 
 #(you may skip the quantization step if you have GPTQ model)
 quantized_model_dir = "/home/mistral_7b-int4/" 
