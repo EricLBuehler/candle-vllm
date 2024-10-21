@@ -74,7 +74,7 @@ extern "C" {
         inputs: *const c_void,
         weight: *const c_int,
         scales: *const c_void,
-        out: *const c_void,
+        out: *mut c_void,
         m: c_int,
         k: c_int,
         n: c_int,
@@ -86,7 +86,7 @@ extern "C" {
         inputs: *const c_void,
         weight: *const c_int,
         scales: *const c_void,
-        out: *const c_void,
+        out: *mut c_void,
         m: c_int,
         k: c_int,
         n: c_int,
@@ -94,12 +94,18 @@ extern "C" {
         groupsize: c_int,
     );
 
-    pub fn gptq_marlin_repack(
-        weight: *const c_void,
-        perm: *const c_void,
-        result: *const c_void,
-        k: c_int,
-        n: c_int,
-        bits: c_int,
+    pub fn gptq_repack(weight: *const c_void, result: *const c_void, m: c_int, n: c_int);
+
+    pub fn gemm_half_q_half_alt(
+        a: *const c_void,
+        weight: *const u32,
+        qzeros: *const u32,
+        scales: *const c_void,
+        g_idx: *const i32,
+        out: *mut c_void,
+        m: i32,
+        n: i32,
+        k: i32,
+        bit: i32,
     );
 }

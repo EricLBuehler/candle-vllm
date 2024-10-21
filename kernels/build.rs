@@ -20,6 +20,7 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/copy_blocks_kernel.cu");
     println!("cargo:rerun-if-changed=src/reshape_and_cache_kernel.cu");
     println!("cargo:rerun-if-changed=src/marlin_cuda_kernel.cu");
+    println!("cargo:rerun-if-changed=src/gptq_cuda_kernel.cu");
 
     let builder = bindgen_cuda::Builder::default().arg("--expt-relaxed-constexpr");
     println!("cargo:info={builder:?}");
