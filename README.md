@@ -12,7 +12,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Streaming support in generation.
 - Efficient management of key-value cache with PagedAttention.
 - Continuous batching.
-- `In-situ` quantization
+- `In-situ` quantization (and `In-situ` marlin format conversion)
 - `GPTQ/Marlin` format quantization (4-bit)
 
 ## Develop Status
@@ -201,21 +201,29 @@ You may also use `AutoGPTQ` to transform a model to marlin format by loading the
 
 **Note:** only 4-bit GPTQ (marlin format) quantization supported at the moment, and the input data type should be `f16` (--dtype f16) or `bf16` (--dtype bf16). You need rename the transformed marlin weight to "model.safetensors" and copy the "tokenizer.json" from the source model folder.
 
-## In-situ quantization for consumer-grade GPUs
+## In-situ quantization (or in-situ marlin conversion)
 
-Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) into any GGML format during model loading. This feature helps conserve GPU memory, making it more efficient for consumer-grade GPUs (e.g., RTX 4090). For example, 4-bit quantization can reduce GPU memory usage to less than 12GB for 8B models, while bring 13B models down to 24GB. To use this feature, simply supply the quant parameter when running candle-vllm.
+Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) or `4-bit GPTQ` weights into any GGML format (or `marlin format`) during model loading. This feature helps conserve GPU memory (or speedup inference performance through marlin kernel), making it more efficient for consumer-grade GPUs (e.g., RTX 4090). To use this feature, simply supply the quant parameter when running candle-vllm.
+
+For unquantized models:
 
 ```
 cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
 ```
 
-Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
+For quantized 4-bit GPTQ model:
+
+```
+cargo run --release -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
+```
+
+Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin"]
 
 **Please note**:
 
 1) It may takes few minutes to load F32/F16/BF16 models into quantized;
 
-2) Batched processing still requires further optimizations when operating in quantization mode.
+2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`).
 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.
@@ -254,13 +262,13 @@ cargo run --release -- --port 2000 --weight-path /home/mistral_7b/ mistral --rep
 
 `--max-gen-tokens` parameter is used to control the maximum output tokens per chat response. The value will be set to 1/5 of max_sequence_len by default.
 
-For `consumer GPUs`, it is suggested to run the models under GGML formats, e.g.,
+For `consumer GPUs`, it is suggested to run the models under GGML formats (or Marlin format), e.g.,
 
 ```
 cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
 ```
 
-where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"].
+where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin"].
 
 ## Report issue
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
