@@ -45,6 +45,17 @@ pub trait ModulePipeline: Send + Sync {
     fn reset_decoder(&mut self) -> Option<String>;
 }
 
+fn _make_tensor_fast<D: WithDType>(x: Vec<Vec<D>>, device: &Device) -> Result<Tensor, APIError> {
+    let rows = x.len();
+    let cols = if rows > 0 { x[0].len() } else { 0 };
+    let flattened: Vec<_> = x
+        .iter()
+        .flat_map(|slice| slice.iter())
+        .map(|&xx| xx)
+        .collect();
+    Tensor::from_vec(flattened, (rows, cols), device).map_err(APIError::from)
+}
+
 // TODO(EricLBuehler): Ensure the padding token matches tokenizer
 fn _make_tensor_with_pad<D: WithDType>(
     x: Vec<Vec<D>>,
@@ -52,14 +63,21 @@ fn _make_tensor_with_pad<D: WithDType>(
     pad: D,
     device: &Device,
 ) -> Result<Tensor, APIError> {
-    let mut padded_x = Vec::new();
-    for mut x_i in x {
-        assert!(x_i.len() <= max_len);
-        x_i.extend([pad].repeat(max_len - x_i.len()));
-        let shape = (1, x_i.len());
-        padded_x.push(try_api!(Tensor::from_vec(x_i, shape, device)));
+    let all_same_size = x.iter().map(|v| v.len()).all(|len| len == x[0].len());
+    if all_same_size {
+        //fast if no padding
+        return _make_tensor_fast(x, device);
+    } else {
+        //slow with concat
+        let mut padded_x = Vec::new();
+        for mut x_i in x {
+            assert!(x_i.len() <= max_len);
+            x_i.extend([pad].repeat(max_len - x_i.len()));
+            let shape = (1, x_i.len());
+            padded_x.push(try_api!(Tensor::from_vec(x_i, shape, device)));
+        }
+        Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
     }
-    Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
 }
 
 pub(crate) fn get_token(
