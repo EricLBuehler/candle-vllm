@@ -9,7 +9,6 @@ use kernels::ffi::{gemm_half_q_half_alt, gptq_repack, marlin_4bit_bf16, marlin_4
 struct GPTQMatMul {
     qzeros: Option<Tensor>,
     g_idx: Option<Tensor>,
-    perm: Option<Tensor>,
     workspace: Option<Tensor>,
     bits: i32,
 }
@@ -106,38 +105,28 @@ impl GPTQMatMul {
                     );
                 }
             } else {
-                let (qzeros_ptr, qzeros_l, g_idx_ptr) =
-                    if self.qzeros.is_some() && self.g_idx.is_some() {
-                        let (qzeros, qzeros_l) = self.qzeros.as_ref().unwrap().storage_and_layout();
-                        let (g_idx, g_idx_l) = self.g_idx.as_ref().unwrap().storage_and_layout();
-                        let qzeros = match &*qzeros {
-                            Storage::Cuda(p) => p,
-                            _ => candle::bail!("qzeros must be a cuda tensor"),
-                        };
-                        let qzeros_ = qzeros.as_cuda_slice::<u32>()?;
-                        let qzeros_ = qzeros_.slice(qzeros_l.start_offset()..);
-                        let g_idx = match &*g_idx {
-                            Storage::Cuda(p) => p,
-                            _ => candle::bail!("g_idx must be a cuda tensor"),
-                        };
-                        let g_idx_ = g_idx.as_cuda_slice::<u32>()?;
-                        let g_idx_ = g_idx_.slice(g_idx_l.start_offset()..);
-
-                        (
-                            *qzeros_.device_ptr() as *const core::ffi::c_void,
-                            qzeros_l,
-                            *g_idx_.device_ptr() as *const core::ffi::c_void,
-                        )
-                    } else {
-                        candle::bail!("qzeros and g_idx are required for non-marlin matmul!")
+                let (qzeros_ptr, g_idx_ptr) = if self.qzeros.is_some() && self.g_idx.is_some() {
+                    let (qzeros, qzeros_l) = self.qzeros.as_ref().unwrap().storage_and_layout();
+                    let (g_idx, g_idx_l) = self.g_idx.as_ref().unwrap().storage_and_layout();
+                    let qzeros = match &*qzeros {
+                        Storage::Cuda(p) => p,
+                        _ => candle::bail!("qzeros must be a cuda tensor"),
                     };
+                    let qzeros_ = qzeros.as_cuda_slice::<u32>()?;
+                    let qzeros_ = qzeros_.slice(qzeros_l.start_offset()..);
+                    let g_idx = match &*g_idx {
+                        Storage::Cuda(p) => p,
+                        _ => candle::bail!("g_idx must be a cuda tensor"),
+                    };
+                    let g_idx_ = g_idx.as_cuda_slice::<u32>()?;
+                    let g_idx_ = g_idx_.slice(g_idx_l.start_offset()..);
 
-                let tp = if x.dtype() == DType::F16 {
-                    0
-                } else if x.dtype() == DType::BF16 {
-                    1
+                    (
+                        *qzeros_.device_ptr() as *const core::ffi::c_void,
+                        *g_idx_.device_ptr() as *const core::ffi::c_void,
+                    )
                 } else {
-                    2
+                    candle::bail!("qzeros and g_idx are required for non-marlin matmul!")
                 };
 
                 if x.dtype() == DType::F16 {
@@ -204,14 +193,12 @@ pub fn gptq_matmul(
     scale: &Tensor,
     qzeros: &Option<Tensor>,
     g_idx: &Option<Tensor>,
-    perm: &Option<Tensor>,
     workspace: &Option<Tensor>,
     bits: i32,
 ) -> Result<Tensor> {
     let op = GPTQMatMul {
         qzeros: qzeros.to_owned(),
         g_idx: g_idx.to_owned(),
-        perm: perm.to_owned(),
         workspace: workspace.to_owned(),
         bits,
     };

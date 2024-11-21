@@ -45,7 +45,6 @@ pub trait ModulePipeline: Send + Sync {
     fn reset_decoder(&mut self) -> Option<String>;
 }
 
-// TODO(EricLBuehler): Ensure the padding token matches tokenizer
 fn _make_tensor_with_pad<D: WithDType>(
     x: Vec<Vec<D>>,
     max_len: usize,
@@ -54,12 +53,17 @@ fn _make_tensor_with_pad<D: WithDType>(
 ) -> Result<Tensor, APIError> {
     let mut padded_x = Vec::new();
     for mut x_i in x {
-        assert!(x_i.len() <= max_len);
-        x_i.extend([pad].repeat(max_len - x_i.len()));
-        let shape = (1, x_i.len());
-        padded_x.push(try_api!(Tensor::from_vec(x_i, shape, device)));
+        if x_i.len() < max_len {
+            x_i.extend([pad].repeat(max_len - x_i.len()));
+        }
+        padded_x.push(x_i);
     }
-    Tensor::cat(&padded_x[..], 0).map_err(APIError::from)
+    let flattened: Vec<_> = padded_x
+        .iter()
+        .flat_map(|slice| slice.iter())
+        .map(|&xx| xx)
+        .collect();
+    Tensor::from_vec(flattened, (padded_x.len(), max_len), device).map_err(APIError::from)
 }
 
 pub(crate) fn get_token(

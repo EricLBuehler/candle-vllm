@@ -36,7 +36,6 @@ pub struct Linear {
     scales: Option<Tensor>,
     qzeros: Option<Tensor>,
     g_idx: Option<Tensor>,
-    perm: Option<Tensor>,
     workspace: Option<Tensor>,
 }
 
@@ -48,7 +47,6 @@ impl Linear {
             scales: None,
             qzeros: None,
             g_idx: None,
-            perm: None,
             workspace: None,
         }
     }
@@ -71,10 +69,6 @@ impl Linear {
 
     pub fn g_idx(&self) -> Option<&Tensor> {
         self.g_idx.as_ref()
-    }
-
-    pub fn perm(&self) -> Option<&Tensor> {
-        self.perm.as_ref()
     }
 
     pub fn workspace(&self) -> Option<&Tensor> {
@@ -231,7 +225,6 @@ pub fn qlinear(
                     scales: Some(scales),
                     qzeros: None,
                     g_idx: None,
-                    perm: None,
                     workspace: Some(workspace),
                 })
             } else {
@@ -258,7 +251,6 @@ pub fn qlinear(
                         scales: Some(scales),
                         qzeros: Some(qzeros),
                         g_idx: Some(g_idx),
-                        perm: None,
                         workspace: None,
                     })
                 } else {
@@ -329,7 +321,6 @@ pub fn qlinear(
                         scales: Some(scales),
                         qzeros: Some(qzeros),
                         g_idx: Some(g_idx),
-                        perm: None,
                         workspace: Some(workspace),
                     })
                 }
@@ -346,7 +337,6 @@ pub struct QLinear {
     scales: Option<Tensor>,
     qzeros: Option<Tensor>,
     g_idx: Option<Tensor>,
-    perm: Option<Tensor>,
     workspace: Option<Tensor>,
     group_size: i32,
     bits: i32,
@@ -370,7 +360,6 @@ impl QLinear {
             scales: None,
             qzeros: None,
             g_idx: None,
-            perm: None,
             workspace: None,
             group_size: 0,
             bits: 0,
@@ -385,7 +374,6 @@ impl QLinear {
             scales: linear.scales().cloned(),
             qzeros: linear.qzeros().cloned(),
             g_idx: linear.g_idx().cloned(),
-            perm: linear.perm().cloned(),
             workspace: linear.workspace().cloned(),
             group_size,
             bits,
@@ -401,7 +389,6 @@ impl QLinear {
             scales: None,
             qzeros: None,
             g_idx: None,
-            perm: None,
             workspace: None,
             group_size: 0,
             bits: 0,
@@ -419,7 +406,6 @@ impl QLinear {
             scales: None,
             qzeros: None,
             g_idx: None,
-            perm: None,
             workspace: None,
             group_size: 0,
             bits: 0,
@@ -445,7 +431,6 @@ impl QLinear {
             scales: None,
             qzeros: None,
             g_idx: None,
-            perm: None,
             workspace: None,
             group_size: 0,
             bits: 0,
@@ -496,7 +481,6 @@ impl QLinear {
             scales: None,
             qzeros: None,
             g_idx: None,
-            perm: None,
             workspace: None,
             group_size: 0,
             bits: 0,
@@ -613,25 +597,20 @@ impl Module for QLinear {
             &self.scales,
             &self.qzeros,
             &self.g_idx,
-            &self.perm,
             &self.workspace,
         ) {
-            (QMatMul::Tensor(qw), Some(scale), qzeros, g_idx, perm, workspace) => {
+            (QMatMul::Tensor(qw), Some(scale), qzeros, g_idx, workspace) => {
                 //gptq (only f16/bf16 inputs for marlin format)
                 let x = match *x.dims() {
                     [bsize, seq_len, dim1, dim2] => {
                         let x = x.reshape((bsize * seq_len, dim1, dim2))?;
-                        let o =
-                            gptq_matmul(&x, qw, scale, qzeros, g_idx, perm, workspace, self.bits)?;
+                        let o = gptq_matmul(&x, qw, scale, qzeros, g_idx, workspace, self.bits)?;
                         o.reshape((bsize, seq_len, dim1, ()))?
                     }
-                    [_, _, _] => {
-                        gptq_matmul(&x, qw, scale, qzeros, g_idx, perm, workspace, self.bits)?
-                    }
+                    [_, _, _] => gptq_matmul(&x, qw, scale, qzeros, g_idx, workspace, self.bits)?,
                     [seq_len, dim] => {
                         let x = x.reshape((1, seq_len, dim))?;
-                        let o =
-                            gptq_matmul(&x, qw, scale, qzeros, g_idx, perm, workspace, self.bits)?;
+                        let o = gptq_matmul(&x, qw, scale, qzeros, g_idx, workspace, self.bits)?;
                         o.reshape((seq_len, ()))?
                     }
                     _ => panic!("Invalid input format!"),
