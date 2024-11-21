@@ -30,6 +30,12 @@ pub trait ModulePipeline: Send + Sync {
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError>;
 
+    fn sample_batch(
+        &mut self,
+        logits: Tensor,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+    ) -> Result<Vec<TokenOrFinishReason>, APIError>;
+
     fn name(&self) -> &str;
 
     fn tokenizer(&self) -> &TokenOutputStream;

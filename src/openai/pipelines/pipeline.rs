@@ -438,6 +438,13 @@ impl ModulePipeline for DefaultPipeline {
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         use std::collections::HashMap;
         use std::sync::Mutex;
+
+        if logits.dims()[0] > 1
+            && self.logits_processor.sampling == Sampling::ArgMax
+            && groups[0].sampling_params.repetition_penalty == 1.
+        {
+            return self.sample_batch(logits, groups);
+        }
         let shared_result = Arc::new(Mutex::new(HashMap::<usize, TokenOrFinishReason>::new()));
         let shared_group_idx = Arc::new(Mutex::new(0));
         groups.par_iter().for_each(|group| {
@@ -526,6 +533,62 @@ impl ModulePipeline for DefaultPipeline {
         let result: Vec<TokenOrFinishReason> =
             sorted_vec.into_iter().map(|(_, value)| value).collect();
 
+        Ok(result)
+    }
+
+    fn sample_batch(
+        &mut self,
+        logits: Tensor,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+    ) -> Result<Vec<TokenOrFinishReason>, APIError> {
+        use std::collections::HashMap;
+        let mut result = Vec::<TokenOrFinishReason>::new();
+        let mut tokens_generated = HashMap::<usize, i32>::new();
+        for (i, group) in groups.iter().enumerate() {
+            let sampling_params = &group.sampling_params;
+            for seq in group.get_seqs().values() {
+                let sq = seq.deref_mut();
+                let _tokens_generated = sq.get_len() - sq.get_prompt_len();
+                if _tokens_generated > sampling_params.max_tokens {
+                    tokens_generated.insert(i, -1);
+                } else {
+                    tokens_generated.insert(i, _tokens_generated as i32);
+                }
+                break;
+            }
+        }
+
+        let next_tokens = self.logits_processor.sample_batch(&logits).unwrap();
+        for (i, next_token) in next_tokens.iter().enumerate() {
+            let mut text = self
+                .tokenizer
+                .tokenizer()
+                .decode(&[*next_token], false)
+                .unwrap_or(" ".to_string());
+            let origin_text = self
+                .tokenizer
+                .tokenizer()
+                .id_to_token(*next_token)
+                .unwrap_or("".to_string());
+            //properly handle space token
+            if origin_text.contains("▁") && origin_text.replace("▁", "") == text {
+                text = origin_text.replace("▁", " ");
+            }
+
+            if tokens_generated[&i] < 0 {
+                result.push(Right("length".to_string()));
+            } else if tokens_generated[&i] > 0 && self.stop_token_ids.contains(&next_token) {
+                result.push(Right("stop".to_string()));
+            } else {
+                let logprob = Logprobs {
+                    token: *next_token as usize,
+                    logprob: 0.0,
+                    top_logprobs: Vec::<TopLogprob>::new(),
+                    bytes: text,
+                };
+                result.push(Left(logprob));
+            }
+        }
         Ok(result)
     }
 
