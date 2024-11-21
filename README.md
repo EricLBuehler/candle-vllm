@@ -21,8 +21,8 @@ Currently, candle-vllm supports chat serving for the following models.
 
 | Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K` or `Marlin`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
 |--|--|--|--|--|--|--|
-| #1 | **LLAMA** |✅|65 tks/s (LLaMa3.1 8B) | 553 tks/s (LLaMa3.1 8B) | 75 tks/s (LLaMa3.1 8B), **115 tks/s (LLaMa3.1 8B, Marlin)** |**755 tks/s (LLaMa3.1 8B)**|
-| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), **113 tks/s (7B, Marlin)** |**764 tks/s (7B)**|
+| #1 | **LLAMA** |✅|65 tks/s (LLaMa3.1 8B) | 553 tks/s (LLaMa3.1 8B) | 75 tks/s (LLaMa3.1 8B), **115 tks/s (LLaMa3.1 8B, Marlin)** |**968 tks/s (LLaMa3.1 8B)**|
+| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), **115 tks/s (7B, Marlin)** |**981 tks/s (7B)**|
 | #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|TBD|-|TBD|
 | #4 | **Phi-3 （3.8B, 7B）** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
 | #5 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|TBD|
@@ -30,7 +30,7 @@ Currently, candle-vllm supports chat serving for the following models.
 | #7 | BigCode/StarCode |TBD|TBD|TBD |-|TBD|
 | #8 | ChatGLM |TBD|TBD|TBD |-|TBD|
 | #9 | **QWen2 (1.8B, 7B)** |✅|148 tks/s (1.8B)|784 tks/s (1.8B) |-|TBD|
-| #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |**73 tks/s (Gemma2-9B, Marlin)** |**512 tks/s (Gemma2-9B)**|
+| #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |**73 tks/s (Gemma2-9B, Marlin)** |**587 tks/s (Gemma2-9B)**|
 | #11 | Blip-large (Multimodal) |TBD|TBD|TBD |-|TBD|
 | #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|TBD|
 
@@ -61,8 +61,11 @@ cargo run --release -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llam
 Run latest LLaMa3.1 using local weights
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3
+cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
+
+__Refer to Marlin quantization below for running quantized GPTQ models.__
+
 ### Step 2:
 
 #### Option 1: Chat with ChatUI (recommended)
@@ -81,6 +84,12 @@ pnpm install #install ChatUI dependencies
 Launching the ChatUI:
 ```
 pnpm run dev # run the ChatUI
+```
+
+#### Trouble shooting for Nodejs error
+`ENOSPC: System limit for number of file watchers reached`
+```
+echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
 ```
 
 #### Option 2: Chat completion request with HTTP post
@@ -134,6 +143,12 @@ After the `candle-vllm` service is running, run the Python script and enjoy effi
 
 ## Batched requests
 
+Install openai API first
+```
+python3 -m pip install openai
+```
+
+Run the benchmark test
 ``` shell
 python3 examples/benchmark.py --batch 16 --max_tokens 1024
 ```
@@ -195,7 +210,7 @@ asyncio.run(benchmark())
 Candle-vllm now supports GPTQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
 
 ```
-cargo run --release -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin
+cargo run --release -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
 ```
 You may also use `AutoGPTQ` to transform a model to marlin format by loading the (quantized) model, supplying the `use_marlin=True` in `AutoGPTQ` and resaving it with "save_pretrained". 
 
