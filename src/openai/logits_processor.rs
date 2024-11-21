@@ -14,7 +14,7 @@ pub enum Sampling {
 
 pub struct LogitsProcessor {
     rng: Arc<Mutex<rand::rngs::StdRng>>,
-    sampling: Sampling,
+    pub sampling: Sampling,
 }
 
 impl LogitsProcessor {
@@ -39,16 +39,13 @@ impl LogitsProcessor {
     }
 
     fn sample_argmax(&self, logits: Tensor) -> Result<u32> {
-        // let logits_v: Vec<f32> = logits.to_vec1()?;
-        // Use gpu kernel
         let next_token = logits.argmax(D::Minus1)?.to_scalar::<u32>()?;
-        // let next_token = logits_v
-        //     .iter()
-        //     .enumerate()
-        //     .max_by(|(_, u), (_, v)| u.total_cmp(v))
-        //     .map(|(i, _)| i as u32)
-        //     .unwrap();
         Ok(next_token)
+    }
+
+    fn sample_argmax_batch(&self, logits: &Tensor) -> Result<Vec<u32>> {
+        let next_tokens = logits.argmax(D::Minus1)?.to_vec1::<u32>()?;
+        Ok(next_tokens)
     }
 
     fn sample_multinomial(&self, prs: &Vec<f32>) -> Result<u32> {
@@ -116,6 +113,16 @@ impl LogitsProcessor {
 
     pub fn sample(&self, logits: &Tensor) -> Result<u32> {
         self.sample_f(logits, |_| {})
+    }
+
+    pub fn sample_batch(&self, logits: &Tensor) -> Result<Vec<u32>> {
+        let next_tokens = match &self.sampling {
+            Sampling::ArgMax => self.sample_argmax_batch(logits)?,
+            _ => {
+                crate::candle::bail!("Batch sampling is only supported for argmax strategy!");
+            }
+        };
+        Ok(next_tokens)
     }
 
     pub fn sample_f(&self, logits: &Tensor, f: impl FnOnce(&mut [f32])) -> Result<u32> {
