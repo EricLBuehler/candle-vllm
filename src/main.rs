@@ -88,14 +88,17 @@ async fn main() -> Result<(), APIError> {
 
     let paths = match &args.weight_path {
         Some(path) => Box::new(DefaultModelPaths {
-            tokenizer_filename: (path.to_owned() + "tokenizer.json").into(),
-            config_filename: (path.to_owned() + "config.json").into(),
-            filenames: if Path::new(&(path.to_owned() + "model.safetensors.index.json")).exists() {
+            tokenizer_filename: Path::new(path).join("tokenizer.json"),
+            config_filename: Path::new(path).join("config.json"),
+            filenames: if Path::new(path)
+                .join("model.safetensors.index.json")
+                .exists()
+            {
                 hub_load_local_safetensors(path, "model.safetensors.index.json").unwrap()
             } else {
                 //a single weight file case
                 let mut safetensors_files = Vec::<std::path::PathBuf>::new();
-                safetensors_files.insert(0, (path.to_owned() + "model.safetensors").into());
+                safetensors_files.insert(0, Path::new(path).join("model.safetensors"));
                 safetensors_files
             },
         }),

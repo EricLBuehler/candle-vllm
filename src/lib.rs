@@ -5,6 +5,7 @@ use candle::Result;
 use candle_core as candle;
 use clap::Subcommand;
 use openai::pipelines::{pipeline::DefaultLoader, ModelLoader};
+use std::path::Path;
 
 #[derive(Debug, Subcommand)]
 pub enum ModelSelected {
@@ -501,7 +502,7 @@ pub fn hub_load_local_safetensors(
     json_file: &str,
 ) -> Result<Vec<std::path::PathBuf>> {
     println!("{:}", path.to_owned() + json_file);
-    let jsfile = std::fs::File::open(path.to_owned() + json_file)?;
+    let jsfile = std::fs::File::open(Path::new(path).join(json_file))?;
     let json: serde_json::Value = serde_json::from_reader(&jsfile).map_err(candle::Error::wrap)?;
     let weight_map = match json.get("weight_map") {
         None => panic!("no weight map in {json_file:?}"),
