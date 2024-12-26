@@ -622,6 +622,10 @@ impl Module for QLinear {
                     Ok(x)
                 }
             }
+            // (QMatMul::Tensor(qw), Some(scale), qzeros, g_idx, perm, workspace) => {
+            //     let qw = gptq_dequant(qw, scale, qzeros, g_idx, self.bits)?;
+            //     self.forward_via_dequant(x, &qw)
+            // }
             _ => self.forward_no_dequant(x),
         }
     }
