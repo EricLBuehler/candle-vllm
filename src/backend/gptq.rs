@@ -1,9 +1,8 @@
 use candle::backend::BackendStorage;
-use candle::cuda_backend::cudarc::driver::DevicePtr;
-use candle::cuda_backend::WrapErr;
 use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
 use half::{bf16, f16};
+#[cfg(feature = "cuda")]
 use kernels::ffi::{gemm_half_q_half_alt, gptq_repack, marlin_4bit_bf16, marlin_4bit_f16};
 
 struct GPTQMatMul {
@@ -14,6 +13,7 @@ struct GPTQMatMul {
 }
 
 impl GPTQMatMul {
+    #[cfg(feature = "cuda")]
     fn cuda_fwd_t<
         T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
     >(
@@ -25,6 +25,8 @@ impl GPTQMatMul {
         scale: &CudaStorage,
         scale_l: &Layout,
     ) -> Result<(CudaStorage, Shape)> {
+        use candle::cuda_backend::cudarc::driver::DevicePtr;
+        use candle::cuda_backend::WrapErr;
         let dev = qweight.device();
         let x_shape = x_l.dims();
         let weight_shape = qweight_l.dims();
@@ -169,7 +171,7 @@ impl candle::CustomOp3 for GPTQMatMul {
     ) -> Result<(CpuStorage, Shape)> {
         candle::bail!("no cpu support for GPTQMatMul")
     }
-
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(
         &self,
         x: &CudaStorage,
@@ -210,6 +212,7 @@ struct GPTQRepack {
 }
 
 impl GPTQRepack {
+    #[cfg(feature = "cuda")]
     fn cuda_fwd_t<
         T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
     >(
@@ -217,6 +220,8 @@ impl GPTQRepack {
         qweight: &CudaStorage,
         qweight_l: &Layout,
     ) -> Result<(CudaStorage, Shape)> {
+        use candle::cuda_backend::cudarc::driver::DevicePtr;
+        use candle::cuda_backend::WrapErr;
         let dev = qweight.device();
         let q_shape = qweight_l.dims();
         let mut out_shape: Vec<usize> = q_shape.to_vec();
@@ -252,7 +257,7 @@ impl candle::CustomOp1 for GPTQRepack {
     fn cpu_fwd(&self, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
         candle::bail!("no cpu support for GPTQRepack")
     }
-
+    #[cfg(feature = "cuda")]
     fn cuda_fwd(&self, qweight: &CudaStorage, qweight_l: &Layout) -> Result<(CudaStorage, Shape)> {
         match qweight.dtype() {
             DType::U32 => self.cuda_fwd_t::<u32>(qweight, qweight_l),
