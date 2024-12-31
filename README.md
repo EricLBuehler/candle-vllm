@@ -51,18 +51,12 @@ sudo apt install libssl-dev
 sudo apt install pkg-config
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
-cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama
+cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
 
 You may also run specific model using huggingface model-id, e.g.,
 ```shell
 cargo run --release -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama
-```
-
-Run latest LLaMa3.1 using local weights
-
-```shell
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
 
 Run models on Mac/Metal devices (assume gguf model downloaded in `/Users/Downloads`)
@@ -76,8 +70,24 @@ cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /
 __Refer to Marlin quantization below for running quantized GPTQ models.__
 
 ### Step 2:
+#### Option 1: Chat with Chat.py (recommended)
+Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
 
-#### Option 1: Chat with ChatUI (recommended)
+```shell
+python3 -m pip install openai
+python3 -m pip install rich
+```
+
+Chat with the mini chatbot
+```shell
+python3 examples/chat.py
+```
+
+Chat demo on GPU (A100, LLaMa3.1 8B)
+
+<img src="res/LLaMa3.1-8B-Chatbot-A100.gif" width="65%" height="65%" >
+
+#### Option 2: Chat with ChatUI
 Install ChatUI and its dependencies:
 
 ```
@@ -101,7 +111,7 @@ pnpm run dev # run the ChatUI
 echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
 ```
 
-#### Option 2: Chat completion request with HTTP post
+#### Option 3: Chat completion request with HTTP post
 
 ``` shell
 curl -X POST "http://127.0.0.1:2000/v1/chat/completions" \
@@ -123,7 +133,7 @@ Sample response:
 {"id":"cmpl-53092967-c9cf-40e0-ae26-d7ac786d59e8","choices":[{"message":{"content":" Learning any programming language requires a combination of theory, practice, and dedication. Here are some steps and resources to help you learn Rust effectively:\n\n1. Start with the basics:\n\t* Understand the syntax and basic structure of Rust programs.\n\t* Learn about variables, data types, loops, and control structures.\n\t* Familiarize yourself with Rust's ownership system and borrowing mechanism.\n2. Read the Rust book:\n\t* The Rust book is an official resource that provides a comprehensive introduction to the language.\n\t* It covers topics such","role":"[INST]"},"finish_reason":"length","index":0,"logprobs":null}],"created":1718784498,"model":"llama7b","object":"chat.completion","usage":{"completion_tokens":129,"prompt_tokens":29,"total_tokens":158}}
 ```
 
-#### Option 3: Chat completion with with openai package
+#### Option 4: Chat completion with with openai package
 
 In your terminal, install the `openai` Python package by running `pip install openai`. I use version `1.3.5`.
 
