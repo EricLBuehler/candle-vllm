@@ -48,7 +48,7 @@ kernels = {path = "./kernels", version="0.1.0", optional = true}
 metal-kernels = {path = "./metal-kernels", version="0.1.0", optional = true}
 
 [features]
-default = ["cuda"]
+#default = ["metal"]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:kernels"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "dep:metal-kernels", "dep:metal"]

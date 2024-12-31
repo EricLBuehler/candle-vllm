@@ -51,12 +51,12 @@ sudo apt install libssl-dev
 sudo apt install pkg-config
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
+cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
 
 You may also run specific model using huggingface model-id, e.g.,
 ```shell
-cargo run --release -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama
+cargo run --release --features cuda -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama
 ```
 
 Run models on Mac/Metal devices (assume gguf model downloaded in `/Users/Downloads`)
@@ -76,6 +76,7 @@ Install API and chatbot dependencies (openai package is only used for local chat
 ```shell
 python3 -m pip install openai
 python3 -m pip install rich
+python3 -m pip install click
 ```
 
 Chat with the mini chatbot
@@ -86,6 +87,10 @@ python3 examples/chat.py
 Chat demo on GPU (A100, LLaMa3.1 8B)
 
 <img src="res/LLaMa3.1-8B-Chatbot-A100.gif" width="65%" height="65%" >
+
+Chat demo on Apple M4 (Phi3 3.8B)
+
+<img src="res/Phi3-3.8B-Chatbot-Apple-M4.gif" width="65%" height="65%" >
 
 #### Option 2: Chat with ChatUI
 Install ChatUI and its dependencies:
@@ -242,13 +247,13 @@ Candle-vllm now supports in-situ quantization, allowing the transformation of de
 For unquantized models:
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
 ```
 
 For quantized 4-bit GPTQ model:
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
+cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
 ```
 
 Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml"]
@@ -264,16 +269,18 @@ Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.
 
-For model-specific help, run `cargo run -- --port 2000 <MODEL_TYPE> --help`
+For model-specific help, run `cargo run --features <PLATFORM> -- --port 2000 <MODEL_TYPE> --help`
 
-For local model weights, run `cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama`, change the path when needed.
+For local model weights, run `cargo run --release --features cuda -- --port 2000 --weight-path /home/llama2_7b/ llama`, change the path when needed.
+
+`PLATFORM`=["cuda", "metal"]
 
 `MODEL_TYPE` = ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm"]
 
 `WEIGHT_FILE_PATH` = Corresponding weight path for the given model type
 
 ```
-cargo run --release -- --port 2000 --weight-path <WEIGHT_FILE_PATH> <MODEL_TYPE>
+cargo run --release --features cuda -- --port 2000 --weight-path <WEIGHT_FILE_PATH> <MODEL_TYPE>
 ```
 
 or
@@ -281,7 +288,7 @@ or
 `MODEL_ID` = Huggingface model id
 
 ```
-cargo run --release -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE>
+cargo run --release --features cuda -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE>
 ```
 
 For kvcache configuration, set `kvcache_mem_cpu` and `kvcache_mem_gpu`, default 4GB CPU memory and 4GB GPU memory for kvcache. 
@@ -293,7 +300,7 @@ For chat streaming, the `stream` flag in chat request need to be set to `True`.
 You may supply `penalty` and `temperature` to the model to **prevent potential repetitions**, for example:
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
+cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
 ```
 
 `--max-gen-tokens` parameter is used to control the maximum output tokens per chat response. The value will be set to 1/5 of max_sequence_len by default.
@@ -301,7 +308,7 @@ cargo run --release -- --port 2000 --weight-path /home/mistral_7b/ mistral --rep
 For `consumer GPUs`, it is suggested to run the models under GGML formats (or Marlin format), e.g.,
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
 ```
 
 where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml"].
