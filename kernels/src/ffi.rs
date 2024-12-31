@@ -1,7 +1,7 @@
 use core::ffi::{c_int, c_long, c_void};
 
 extern "C" {
-    pub fn reshape_and_cache(
+    pub fn call_reshape_and_cache(
         key: *const c_void,
         value: *const c_void,
         key_cache: *const c_void,

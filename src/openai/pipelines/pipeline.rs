@@ -17,6 +17,8 @@ use crate::{
             mistral::{Mistral, MistralConfig},
             phi2::{Phi2, Phi2Config},
             phi3::{Phi, PhiConfig},
+            quantized_llama::GGUFLLaMa,
+            quantized_phi3::GGUFPhi3,
             qwen2::{Qwen2, QwenConfig},
             stable_lm::{StableLM, StableLMConfig},
             yi::{Yi, YiConfig},
@@ -28,6 +30,7 @@ use crate::{
     paged_attention::input_metadata::InputMetadata,
     try_api, SpecificConfig,
 };
+use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_nn::VarBuilder;
@@ -51,6 +54,8 @@ enum LLMModel {
     Mistral(Mistral),
     Yi(Yi),
     StableLM(StableLM),
+    LlamaGGUF(GGUFLLaMa),
+    Phi3GGUF(GGUFPhi3),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -135,118 +140,187 @@ impl ModelLoader for DefaultLoader {
         &self,
         paths: Box<dyn ModelPaths>,
         dtype: DType,
+        quant: Option<String>,
         device: Device,
     ) -> Result<(Box<dyn ModulePipeline>, PipelineConfig), APIError> {
         let specific_args = self.config.clone();
+        let mut stop_token_ids = Vec::<u32>::new();
 
-        let config = match self.name.as_str() {
-            "llama" | "llama3" => {
-                let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
-                    std::fs::read(paths.get_config_filename())
-                ),));
-                config.into_config(false, dtype, &specific_args)
+        let (model, config, tokenizer, sep_style) = if quant.is_some()
+            && matches!(quant.unwrap().as_str(), "ggml" | "gguf")
+        {
+            let path = paths.get_weight_filenames()[0].clone();
+            println!(
+                "Loading quantized {} model from file {}",
+                self.name,
+                path.display()
+            );
+            let mut file = try_api!(std::fs::File::open(&path));
+            let content =
+                try_api!(gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path)));
+            let s_cfg = specific_args.clone();
+            let (model, config, sep_style) = match self.name.as_str() {
+                "llama" => {
+                    let model = try_api!(GGUFLLaMa::from_gguf(
+                        content, &mut file, &device, dtype, s_cfg
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama)
+                }
+                "llama3" => {
+                    let model = try_api!(GGUFLLaMa::from_gguf(
+                        content, &mut file, &device, dtype, s_cfg
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama3)
+                }
+                "phi3" => {
+                    let model = try_api!(GGUFPhi3::from_gguf(
+                        content, &mut file, &device, dtype, s_cfg
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::Phi3GGUF(model), cfg, SeparatorStyle::Phi)
+                }
+                _ => panic!("Model not supported!"),
+            };
+            let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
+                .map_err(|x| APIError::new(x.to_string()))?;
+            let tokenizer =
+                candle_examples::token_output_stream::TokenOutputStream::new(tokenizer_);
+            (model, config.to_owned(), tokenizer, sep_style)
+        } else {
+            let config = match self.name.as_str() {
+                "llama" | "llama3" => {
+                    let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "phi2" => {
+                    let config: Phi2Config = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    //Phi2 use F32 type for kvcache
+                    config.into_config(false, DType::F32, &specific_args)
+                }
+                "phi3" => {
+                    let config: PhiConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "qwen2" => {
+                    let config: QwenConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "gemma" => {
+                    let config: GemmaConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "mistral" => {
+                    let config: MistralConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "yi" => {
+                    let config: YiConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "stablelm" => {
+                    let config: StableLMConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                _ => panic!("Model not supported!"),
+            };
+
+            println!("Model {:?}", config);
+
+            println!("Loading {} model.", self.name);
+
+            let vb = match unsafe {
+                VarBuilder::from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device)
+            } {
+                Ok(vb_) => vb_,
+                _ => panic!("Load model weights failed!"),
+            };
+
+            let (model, sep_style) = match self.name.as_str() {
+                "llama" => (
+                    LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
+                    SeparatorStyle::Llama,
+                ),
+                "llama3" => (
+                    LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
+                    SeparatorStyle::Llama3,
+                ),
+                "phi2" => (
+                    LLMModel::Phi2(try_api!(Phi2::new(vb, &config, dtype, &device))),
+                    SeparatorStyle::Phi,
+                ),
+                "phi3" => (
+                    LLMModel::Phi3(try_api!(Phi::new(vb, &config, dtype, &device))),
+                    SeparatorStyle::Phi,
+                ),
+                "qwen2" => (
+                    LLMModel::Qwen2(try_api!(Qwen2::new(vb, &config, dtype, &device))),
+                    SeparatorStyle::Qwen2,
+                ),
+                "gemma" => (
+                    LLMModel::Gemma(try_api!(Gemma::new(vb, &config, dtype, &device))),
+                    SeparatorStyle::Gemma,
+                ),
+                "mistral" => (
+                    LLMModel::Mistral(try_api!(Mistral::new(vb, &config, dtype, &device))),
+                    SeparatorStyle::Mistral,
+                ),
+                "yi" => (
+                    LLMModel::Yi(try_api!(Yi::new(vb, &config, dtype, &device))),
+                    SeparatorStyle::Yi,
+                ),
+                "stablelm" => (
+                    LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
+                    SeparatorStyle::StableLM,
+                ),
+                _ => panic!("Model not supported!"),
+            };
+            match &config.eos_token_id {
+                //eos_token defined in the config
+                TokenID(Either::Left(eos_token)) => {
+                    if let Some(tk) = eos_token {
+                        stop_token_ids.push(*tk);
+                    }
+                }
+                TokenID(Either::Right(eos_token_list)) => {
+                    if let Some(tks) = eos_token_list {
+                        stop_token_ids.extend(tks)
+                    }
+                }
             }
-            "phi2" => {
-                let config: Phi2Config = try_api!(serde_json::from_slice(&try_api!(
-                    std::fs::read(paths.get_config_filename())
-                ),));
-                //Phi2 use F32 type for kvcache
-                config.into_config(false, DType::F32, &specific_args)
+
+            let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
+                .map_err(|x| APIError::new(x.to_string()))?;
+            let tokenizer =
+                candle_examples::token_output_stream::TokenOutputStream::new(tokenizer_);
+
+            //custom stop tokens
+            if let Some(custom_stop) = &config.custom_stop_tokens {
+                for stop in custom_stop {
+                    if let Some(token) = tokenizer.get_token(stop) {
+                        stop_token_ids.push(token)
+                    };
+                }
             }
-            "phi3" => {
-                let config: PhiConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
-                    paths.get_config_filename()
-                )),));
-                config.into_config(false, dtype, &specific_args)
-            }
-            "qwen2" => {
-                let config: QwenConfig = try_api!(serde_json::from_slice(&try_api!(
-                    std::fs::read(paths.get_config_filename())
-                ),));
-                config.into_config(false, dtype, &specific_args)
-            }
-            "gemma" => {
-                let config: GemmaConfig = try_api!(serde_json::from_slice(&try_api!(
-                    std::fs::read(paths.get_config_filename())
-                ),));
-                config.into_config(false, dtype, &specific_args)
-            }
-            "mistral" => {
-                let config: MistralConfig = try_api!(serde_json::from_slice(&try_api!(
-                    std::fs::read(paths.get_config_filename())
-                ),));
-                config.into_config(false, dtype, &specific_args)
-            }
-            "yi" => {
-                let config: YiConfig = try_api!(serde_json::from_slice(&try_api!(std::fs::read(
-                    paths.get_config_filename()
-                )),));
-                config.into_config(false, dtype, &specific_args)
-            }
-            "stablelm" => {
-                let config: StableLMConfig = try_api!(serde_json::from_slice(&try_api!(
-                    std::fs::read(paths.get_config_filename())
-                ),));
-                config.into_config(false, dtype, &specific_args)
-            }
-            _ => panic!("Model not supported!"),
+            (model, config, tokenizer, sep_style)
         };
-
-        println!("Model {:?}", config);
-
-        println!("Loading {} model.", self.name);
-
-        let vb = match unsafe {
-            VarBuilder::from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device)
-        } {
-            Ok(vb_) => vb_,
-            _ => panic!("Load model weights failed!"),
-        };
-
-        let (model, sep_style) = match self.name.as_str() {
-            "llama" => (
-                LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
-                SeparatorStyle::Llama,
-            ),
-            "llama3" => (
-                LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
-                SeparatorStyle::Llama3,
-            ),
-            "phi2" => (
-                LLMModel::Phi2(try_api!(Phi2::new(vb, &config, dtype, &device))),
-                SeparatorStyle::Phi,
-            ),
-            "phi3" => (
-                LLMModel::Phi3(try_api!(Phi::new(vb, &config, dtype, &device))),
-                SeparatorStyle::Phi,
-            ),
-            "qwen2" => (
-                LLMModel::Qwen2(try_api!(Qwen2::new(vb, &config, dtype, &device))),
-                SeparatorStyle::Qwen2,
-            ),
-            "gemma" => (
-                LLMModel::Gemma(try_api!(Gemma::new(vb, &config, dtype, &device))),
-                SeparatorStyle::Gemma,
-            ),
-            "mistral" => (
-                LLMModel::Mistral(try_api!(Mistral::new(vb, &config, dtype, &device))),
-                SeparatorStyle::Mistral,
-            ),
-            "yi" => (
-                LLMModel::Yi(try_api!(Yi::new(vb, &config, dtype, &device))),
-                SeparatorStyle::Yi,
-            ),
-            "stablelm" => (
-                LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
-                SeparatorStyle::StableLM,
-            ),
-            _ => panic!("Model not supported!"),
-        };
-
-        let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
-            .map_err(|x| APIError::new(x.to_string()))?;
-
-        let tokenizer = candle_examples::token_output_stream::TokenOutputStream::new(tokenizer_);
 
         println!("Done loading.");
 
@@ -266,37 +340,16 @@ impl ModelLoader for DefaultLoader {
 
         println!("{:?}", pipeline_config);
 
-        let mut stop_token_ids = Vec::<u32>::new();
-
-        match &config.eos_token_id {
-            //eos_token defined in the config
-            TokenID(Either::Left(eos_token)) => {
-                if let Some(tk) = eos_token {
-                    stop_token_ids.push(*tk);
-                }
-            }
-            TokenID(Either::Right(eos_token_list)) => {
-                if let Some(tks) = eos_token_list {
-                    stop_token_ids.extend(tks)
-                }
-            }
-        }
-
         if stop_token_ids.is_empty() {
             //if no eos_token defined in the config, use default
-            let eos_token = match tokenizer.get_token("<|endoftext|>") {
-                Some(token) => token,
-                _ => tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap_or(0),
-            };
-            stop_token_ids.push(eos_token);
-        }
-
-        //custom stop tokens
-        if let Some(custom_stop) = &config.custom_stop_tokens {
-            for stop in custom_stop {
-                if let Some(token) = tokenizer.get_token(stop) {
-                    stop_token_ids.push(token)
-                };
+            if let Some(token) = tokenizer.get_token("<|endoftext|>") {
+                stop_token_ids.push(token);
+            }
+            if let Some(token) = tokenizer.get_token("<|end|>") {
+                stop_token_ids.push(token);
+            } else if stop_token_ids.is_empty() {
+                let token = tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap_or(0);
+                stop_token_ids.push(token);
             }
         }
 
@@ -428,6 +481,22 @@ impl ModulePipeline for DefaultPipeline {
                     &mut input_metadata,
                 )
                 .map_err(APIError::from),
+            LLMModel::Phi3GGUF(phi3) => phi3
+                .forward(
+                    &input_tokens,
+                    input_positions,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
+            LLMModel::LlamaGGUF(llama) => llama
+                .forward(
+                    &input_tokens,
+                    input_positions,
+                    kv_cache,
+                    &mut input_metadata,
+                )
+                .map_err(APIError::from),
         }
     }
 
@@ -439,10 +508,7 @@ impl ModulePipeline for DefaultPipeline {
         use std::collections::HashMap;
         use std::sync::Mutex;
 
-        if logits.dims()[0] > 1
-            && self.logits_processor.sampling == Sampling::ArgMax
-            && groups[0].sampling_params.repetition_penalty == 1.
-        {
+        if logits.dims()[0] > 1 && groups[0].sampling_params.repetition_penalty == 1. {
             return self.sample_batch(logits, groups);
         }
         let shared_result = Arc::new(Mutex::new(HashMap::<usize, TokenOrFinishReason>::new()));
@@ -617,6 +683,8 @@ impl ModulePipeline for DefaultPipeline {
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
             LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),
+            LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
+            LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),
         }
     }
 

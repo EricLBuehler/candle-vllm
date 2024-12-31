@@ -114,6 +114,7 @@ pub trait ModelLoader {
         &self,
         paths: Box<dyn ModelPaths>,
         dtype: DType,
+        quant: Option<String>,
         device: Device,
     ) -> Result<(Box<dyn ModulePipeline>, PipelineConfig), APIError>;
 }

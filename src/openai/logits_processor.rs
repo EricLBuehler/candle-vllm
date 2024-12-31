@@ -115,12 +115,60 @@ impl LogitsProcessor {
         self.sample_f(logits, |_| {})
     }
 
+    pub fn sample_f_batch(&self, logits: &Tensor, f: impl FnOnce(&mut [f32])) -> Result<Vec<u32>> {
+        let logits = logits.to_dtype(DType::F32)?;
+        let tokens = match &self.sampling {
+            Sampling::ArgMax => self.sample_argmax_batch(&logits),
+            Sampling::All { temperature }
+            | Sampling::TopP { temperature, .. }
+            | Sampling::TopK { temperature, .. }
+            | Sampling::TopKThenTopP { temperature, .. } => {
+                let temper = if *temperature > 0. { *temperature } else { 1.0 };
+                let logits = (&logits / temper)?;
+                let prs = candle_nn::ops::softmax_last_dim(&logits)?;
+                let prs_vec = prs.to_vec2()?;
+                let mut vec_ret = Vec::<u32>::new();
+                for idx in 0..prs_vec.len() {
+                    let next_token = match &self.sampling {
+                        Sampling::All { .. } => {
+                            let prs = prs_vec[idx].clone();
+                            self.sample_multinomial(&prs)?
+                        }
+                        Sampling::TopP { p, .. } => {
+                            let mut prs = prs_vec[idx].clone();
+                            if *p <= 0.0 || *p >= 1.0 {
+                                // simply sample from the predicted probability distribution
+                                self.sample_multinomial(&prs)?
+                            } else {
+                                // top-p (nucleus) sampling, clamping the least likely tokens to zero
+                                self.sample_topp(&mut prs, *p as f32)?
+                            }
+                        }
+                        Sampling::TopK { k, .. } => {
+                            let mut prs = prs_vec[idx].clone();
+                            self.sample_topk(&mut prs, *k)?
+                        }
+                        Sampling::TopKThenTopP { k, p, .. } => {
+                            let mut prs = prs_vec[idx].clone();
+                            self.sample_topk_topp(&mut prs, *k, *p as f32)?
+                        }
+                        _ => {
+                            unreachable!();
+                        }
+                    };
+                    vec_ret.push(next_token);
+                }
+
+                Ok(vec_ret)
+            }
+        };
+        tokens
+    }
+
     pub fn sample_batch(&self, logits: &Tensor) -> Result<Vec<u32>> {
         let next_tokens = match &self.sampling {
             Sampling::ArgMax => self.sample_argmax_batch(logits)?,
-            _ => {
-                crate::candle::bail!("Batch sampling is only supported for argmax strategy!");
-            }
+            _ => self.sample_f_batch(logits, |_| {})?,
         };
         Ok(next_tokens)
     }

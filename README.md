@@ -14,6 +14,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Continuous batching.
 - `In-situ` quantization (and `In-situ` marlin format conversion)
 - `GPTQ/Marlin` format quantization (4-bit)
+- Support `Mac/Metal` devices
 
 ## Develop Status
 
@@ -54,15 +55,23 @@ cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama
 ```
 
 You may also run specific model using huggingface model-id, e.g.,
-```
+```shell
 cargo run --release -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama
 ```
 
 Run latest LLaMa3.1 using local weights
 
-```
+```shell
 cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
+
+Run models on Mac/Metal devices (assume gguf model downloaded in `/Users/Downloads`)
+
+```shell
+cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /Users/Downloads --weight-file Phi-3.5-mini-instruct-Q4_K_M.gguf phi3 --quant gguf --temperature 0. --penalty 1.0
+```
+
+**Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
 
 __Refer to Marlin quantization below for running quantized GPTQ models.__
 
@@ -232,13 +241,15 @@ For quantized 4-bit GPTQ model:
 cargo run --release -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
 ```
 
-Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin"]
+Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml"]
 
 **Please note**:
 
 1) It may takes few minutes to load F32/F16/BF16 models into quantized;
 
-2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`).
+2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`);
+
+3) Marlin format only supported in CUDA platform.
 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.
@@ -283,7 +294,7 @@ For `consumer GPUs`, it is suggested to run the models under GGML formats (or Ma
 cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
 ```
 
-where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin"].
+where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml"].
 
 ## Report issue
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an

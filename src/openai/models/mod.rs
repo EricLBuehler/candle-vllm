@@ -4,6 +4,8 @@ pub mod llama;
 pub mod mistral;
 pub mod phi2;
 pub mod phi3;
+pub mod quantized_llama;
+pub mod quantized_phi3;
 pub mod qwen2;
 pub mod stable_lm;
 pub mod yi;
