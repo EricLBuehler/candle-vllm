@@ -86,11 +86,11 @@ python3 examples/chat.py
 
 Chat demo on GPU (A100, LLaMa3.1 8B)
 
-<img src="res/LLaMa3.1-8B-Chatbot-A100.gif" width="65%" height="65%" >
+<img src="res/LLaMa3.1-8B-Chatbot-A100.gif" width="75%" height="75%" >
 
 Chat demo on Apple M4 (Phi3 3.8B)
 
-<img src="res/Phi3-3.8B-Chatbot-Apple-M4.gif" width="65%" height="65%" >
+<img src="res/Phi3-3.8B-Chatbot-Apple-M4.gif" width="75%" height="75%" >
 
 #### Option 2: Chat with ChatUI
 Install ChatUI and its dependencies:
@@ -234,7 +234,7 @@ asyncio.run(benchmark())
 Candle-vllm now supports GPTQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
 
 ```
-cargo run --release -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
+cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
 ```
 You may also use `AutoGPTQ` to transform a model to marlin format by loading the (quantized) model, supplying the `use_marlin=True` in `AutoGPTQ` and resaving it with "save_pretrained". 
 
@@ -269,9 +269,11 @@ Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.
 
-For model-specific help, run `cargo run --features <PLATFORM> -- --port 2000 <MODEL_TYPE> --help`
+For model-specific help, run `cargo run --<MODE> --features <PLATFORM> -- --port 2000 <MODEL_TYPE> --help`
 
 For local model weights, run `cargo run --release --features cuda -- --port 2000 --weight-path /home/llama2_7b/ llama`, change the path when needed.
+
+`MODE`=["debug", "release"]
 
 `PLATFORM`=["cuda", "metal"]
 
