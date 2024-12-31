@@ -115,7 +115,7 @@ impl LogitsProcessor {
         self.sample_f(logits, |_| {})
     }
 
-    pub fn sample_f_batch(&self, logits: &Tensor, f: impl FnOnce(&mut [f32])) -> Result<Vec<u32>> {
+    pub fn sample_f_batch(&self, logits: &Tensor) -> Result<Vec<u32>> {
         let logits = logits.to_dtype(DType::F32)?;
         let tokens = match &self.sampling {
             Sampling::ArgMax => self.sample_argmax_batch(&logits),
@@ -168,7 +168,7 @@ impl LogitsProcessor {
     pub fn sample_batch(&self, logits: &Tensor) -> Result<Vec<u32>> {
         let next_tokens = match &self.sampling {
             Sampling::ArgMax => self.sample_argmax_batch(logits)?,
-            _ => self.sample_f_batch(logits, |_| {})?,
+            _ => self.sample_f_batch(logits)?,
         };
         Ok(next_tokens)
     }
