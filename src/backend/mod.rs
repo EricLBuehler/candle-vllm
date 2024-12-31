@@ -1,9 +1,7 @@
 mod cache;
 pub mod gptq;
 mod paged_attention;
-
-const COPY_BLOCKS_KERNEL_NAME: &str = "copy_blocks_kernel";
-
+#[cfg(feature = "cuda")]
 pub fn get_or_load_func(
     ptx_file: &'static str,
     kernel_base: &str,
@@ -31,12 +29,14 @@ pub fn get_or_load_func(
         .map_err(APIError::from)
 }
 
+#[cfg(feature = "cuda")]
 #[repr(transparent)]
 struct Conjoined<'a, T, R> {
     raw: *mut T,
     _ref: PhantomData<&'a mut R>,
 }
 
+#[cfg(feature = "cuda")]
 impl<'a, T, R> Conjoined<'a, T, R> {
     fn new(raw: NonNull<T>, _ref: &'a mut R) -> Self {
         Self {
@@ -52,6 +52,7 @@ impl<'a, T, R> Conjoined<'a, T, R> {
 ///
 /// ## Safety
 /// - The returned pointer **must not** outlive the &self reference. Otherwise, a dangling pointer is created.
+#[cfg(feature = "cuda")]
 unsafe impl<'a, T, R> DeviceRepr for Conjoined<'a, T, R> {
     fn as_kernel_param(&self) -> *mut std::ffi::c_void {
         addr_of!(self.raw) as *mut _
@@ -59,13 +60,16 @@ unsafe impl<'a, T, R> DeviceRepr for Conjoined<'a, T, R> {
 }
 
 pub use cache::*;
+use candle_core::DType;
+#[cfg(feature = "cuda")]
 use candle_core::{
     cuda_backend::cudarc::driver::{CudaFunction, DeviceRepr},
-    CudaDevice, DType,
+    CudaDevice,
 };
 pub use gptq::*;
 pub use paged_attention::*;
 pub use std::ops::Deref;
+#[cfg(feature = "cuda")]
 use std::{
     marker::PhantomData,
     ptr::{addr_of, NonNull},

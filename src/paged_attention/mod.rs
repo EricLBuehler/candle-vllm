@@ -176,6 +176,7 @@ impl PagedAttention {
             value_cache.as_ref().unwrap(),
             input_metadata.block_tables.as_ref().unwrap(),
             input_metadata.context_lens.as_ref().unwrap(),
+            None,
             input_metadata.max_context_len.unwrap(),
             self.scale,
             softcapping.unwrap_or(1.0f64) as f32,

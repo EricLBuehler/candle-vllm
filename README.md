@@ -14,6 +14,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Continuous batching.
 - `In-situ` quantization (and `In-situ` marlin format conversion)
 - `GPTQ/Marlin` format quantization (4-bit)
+- Support `Mac/Metal` devices
 
 ## Develop Status
 
@@ -50,25 +51,48 @@ sudo apt install libssl-dev
 sudo apt install pkg-config
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
-cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama
+cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
 
 You may also run specific model using huggingface model-id, e.g.,
-```
-cargo run --release -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama
+```shell
+cargo run --release --features cuda -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama
 ```
 
-Run latest LLaMa3.1 using local weights
+Run models on Mac/Metal devices (assume gguf model downloaded in `/Users/Downloads`)
 
+```shell
+cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /Users/Downloads --weight-file Phi-3.5-mini-instruct-Q4_K_M.gguf phi3 --quant gguf --temperature 0. --penalty 1.0
 ```
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
-```
+
+**Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
 
 __Refer to Marlin quantization below for running quantized GPTQ models.__
 
 ### Step 2:
+#### Option 1: Chat with Chat.py (recommended)
+Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
 
-#### Option 1: Chat with ChatUI (recommended)
+```shell
+python3 -m pip install openai
+python3 -m pip install rich
+python3 -m pip install click
+```
+
+Chat with the mini chatbot
+```shell
+python3 examples/chat.py
+```
+
+Chat demo on GPU (A100, LLaMa3.1 8B)
+
+<img src="res/LLaMa3.1-8B-Chatbot-A100.gif" width="75%" height="75%" >
+
+Chat demo on Apple M4 (Phi3 3.8B)
+
+<img src="res/Phi3-3.8B-Chatbot-Apple-M4.gif" width="75%" height="75%" >
+
+#### Option 2: Chat with ChatUI
 Install ChatUI and its dependencies:
 
 ```
@@ -92,7 +116,7 @@ pnpm run dev # run the ChatUI
 echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
 ```
 
-#### Option 2: Chat completion request with HTTP post
+#### Option 3: Chat completion request with HTTP post
 
 ``` shell
 curl -X POST "http://127.0.0.1:2000/v1/chat/completions" \
@@ -114,7 +138,7 @@ Sample response:
 {"id":"cmpl-53092967-c9cf-40e0-ae26-d7ac786d59e8","choices":[{"message":{"content":" Learning any programming language requires a combination of theory, practice, and dedication. Here are some steps and resources to help you learn Rust effectively:\n\n1. Start with the basics:\n\t* Understand the syntax and basic structure of Rust programs.\n\t* Learn about variables, data types, loops, and control structures.\n\t* Familiarize yourself with Rust's ownership system and borrowing mechanism.\n2. Read the Rust book:\n\t* The Rust book is an official resource that provides a comprehensive introduction to the language.\n\t* It covers topics such","role":"[INST]"},"finish_reason":"length","index":0,"logprobs":null}],"created":1718784498,"model":"llama7b","object":"chat.completion","usage":{"completion_tokens":129,"prompt_tokens":29,"total_tokens":158}}
 ```
 
-#### Option 3: Chat completion with with openai package
+#### Option 4: Chat completion with with openai package
 
 In your terminal, install the `openai` Python package by running `pip install openai`. I use version `1.3.5`.
 
@@ -210,7 +234,7 @@ asyncio.run(benchmark())
 Candle-vllm now supports GPTQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
 
 ```
-cargo run --release -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
+cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
 ```
 You may also use `AutoGPTQ` to transform a model to marlin format by loading the (quantized) model, supplying the `use_marlin=True` in `AutoGPTQ` and resaving it with "save_pretrained". 
 
@@ -223,36 +247,42 @@ Candle-vllm now supports in-situ quantization, allowing the transformation of de
 For unquantized models:
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
 ```
 
 For quantized 4-bit GPTQ model:
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
+cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
 ```
 
-Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin"]
+Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml"]
 
 **Please note**:
 
 1) It may takes few minutes to load F32/F16/BF16 models into quantized;
 
-2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`).
+2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`);
+
+3) Marlin format only supported in CUDA platform.
 
 ## Usage Help
 For general configuration help, run `cargo run -- --help`.
 
-For model-specific help, run `cargo run -- --port 2000 <MODEL_TYPE> --help`
+For model-specific help, run `cargo run --<MODE> --features <PLATFORM> -- --port 2000 <MODEL_TYPE> --help`
 
-For local model weights, run `cargo run --release -- --port 2000 --weight-path /home/llama2_7b/ llama`, change the path when needed.
+For local model weights, run `cargo run --release --features cuda -- --port 2000 --weight-path /home/llama2_7b/ llama`, change the path when needed.
+
+`MODE`=["debug", "release"]
+
+`PLATFORM`=["cuda", "metal"]
 
 `MODEL_TYPE` = ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm"]
 
 `WEIGHT_FILE_PATH` = Corresponding weight path for the given model type
 
 ```
-cargo run --release -- --port 2000 --weight-path <WEIGHT_FILE_PATH> <MODEL_TYPE>
+cargo run --release --features cuda -- --port 2000 --weight-path <WEIGHT_FILE_PATH> <MODEL_TYPE>
 ```
 
 or
@@ -260,7 +290,7 @@ or
 `MODEL_ID` = Huggingface model id
 
 ```
-cargo run --release -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE>
+cargo run --release --features cuda -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE>
 ```
 
 For kvcache configuration, set `kvcache_mem_cpu` and `kvcache_mem_gpu`, default 4GB CPU memory and 4GB GPU memory for kvcache. 
@@ -272,7 +302,7 @@ For chat streaming, the `stream` flag in chat request need to be set to `True`.
 You may supply `penalty` and `temperature` to the model to **prevent potential repetitions**, for example:
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
+cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
 ```
 
 `--max-gen-tokens` parameter is used to control the maximum output tokens per chat response. The value will be set to 1/5 of max_sequence_len by default.
@@ -280,10 +310,10 @@ cargo run --release -- --port 2000 --weight-path /home/mistral_7b/ mistral --rep
 For `consumer GPUs`, it is suggested to run the models under GGML formats (or Marlin format), e.g.,
 
 ```
-cargo run --release -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
 ```
 
-where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin"].
+where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml"].
 
 ## Report issue
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an

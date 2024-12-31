@@ -1,5 +1,7 @@
 use candle::backend::BackendStorage;
-use candle::{CpuStorage, CudaStorage, DType, Layout, Result, Shape, Storage, Tensor};
+#[cfg(feature = "cuda")]
+use candle::CudaStorage;
+use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
 use half::{bf16, f16};
 #[cfg(feature = "cuda")]

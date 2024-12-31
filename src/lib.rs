@@ -261,7 +261,7 @@ impl SpecificConfig {
 pub fn get_model_loader(
     selected_model: ModelSelected,
     model_id: Option<String>,
-) -> (Box<dyn ModelLoader>, String) {
+) -> (Box<dyn ModelLoader>, String, Option<String>) {
     match selected_model {
         ModelSelected::Llama {
             repeat_last_n,
@@ -278,7 +278,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "llama".to_string(),
             )),
@@ -287,6 +287,7 @@ pub fn get_model_loader(
             } else {
                 "meta-llama/Llama-2-7b-chat-hf".to_string()
             },
+            quant,
         ),
         ModelSelected::Llama3 {
             repeat_last_n,
@@ -303,7 +304,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "llama3".to_string(),
             )),
@@ -312,6 +313,7 @@ pub fn get_model_loader(
             } else {
                 "meta-llama/Meta-Llama-3.1-8B-Instruct".to_string()
             },
+            quant,
         ),
         ModelSelected::Phi2 {
             repeat_last_n,
@@ -328,7 +330,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "phi2".to_string(),
             )),
@@ -337,6 +339,7 @@ pub fn get_model_loader(
             } else {
                 "microsoft/microsoft/phi-2".to_string()
             },
+            quant,
         ),
         ModelSelected::Phi3 {
             repeat_last_n,
@@ -355,7 +358,7 @@ pub fn get_model_loader(
                     top_p,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "phi3".to_string(),
             )),
@@ -364,6 +367,7 @@ pub fn get_model_loader(
             } else {
                 "microsoft/Phi-3-mini-4k-instruct".to_string()
             },
+            quant,
         ),
         ModelSelected::Qwen2 {
             repeat_last_n,
@@ -382,7 +386,7 @@ pub fn get_model_loader(
                     top_p,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "qwen2".to_string(),
             )),
@@ -391,6 +395,7 @@ pub fn get_model_loader(
             } else {
                 "Qwen/Qwen1.5-1.8B-Chat".to_string()
             },
+            quant,
         ),
         ModelSelected::Gemma {
             repeat_last_n,
@@ -407,7 +412,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "gemma".to_string(),
             )),
@@ -416,6 +421,7 @@ pub fn get_model_loader(
             } else {
                 "google/gemma-2b-it".to_string()
             },
+            quant,
         ),
         ModelSelected::Mistral {
             repeat_last_n,
@@ -432,7 +438,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "mistral".to_string(),
             )),
@@ -441,6 +447,7 @@ pub fn get_model_loader(
             } else {
                 "mistralai/Mistral-7B-Instruct-v0.3".to_string()
             },
+            quant,
         ),
 
         ModelSelected::Yi {
@@ -458,7 +465,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "yi".to_string(),
             )),
@@ -467,6 +474,7 @@ pub fn get_model_loader(
             } else {
                 "01-ai/Yi-6B-Chat".to_string()
             },
+            quant,
         ),
 
         ModelSelected::StableLM {
@@ -484,7 +492,7 @@ pub fn get_model_loader(
                     None,
                     penalty,
                     max_gen_tokens,
-                    quant,
+                    quant.clone(),
                 ),
                 "stablelm".to_string(),
             )),
@@ -493,6 +501,7 @@ pub fn get_model_loader(
             } else {
                 "stabilityai/stablelm-zephyr-3b".to_string()
             },
+            quant,
         ),
     }
 }

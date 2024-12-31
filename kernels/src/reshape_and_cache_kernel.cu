@@ -75,7 +75,7 @@ __global__ void reshape_and_cache_kernel(
 
 } // namespace vllm
 
-extern "C" void reshape_and_cache(
+extern "C" void call_reshape_and_cache(
   void *key,              // [num_tokens, num_heads, head_size]
   void *value,            // [num_tokens, num_heads, head_size]
   void *key_cache,        // [num_blocks, num_heads, head_size/x, block_size, x]

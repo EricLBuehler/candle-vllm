@@ -13,7 +13,7 @@ use candle_vllm::scheduler::cache_engine::CacheConfig;
 use candle_vllm::scheduler::SchedulerConfig;
 use candle_vllm::{get_model_loader, hub_load_local_safetensors, ModelSelected};
 use clap::Parser;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 const SIZE_IN_MB: usize = 1024 * 1024;
 use candle_vllm::openai::models::Config;
 use std::path::Path;
@@ -59,6 +59,10 @@ struct Args {
     #[arg(long)]
     weight_path: Option<String>,
 
+    /// The quantized weight file name (for gguf/ggml file)
+    #[arg(long)]
+    weight_file: Option<String>,
+
     #[arg(long)]
     dtype: Option<String>,
 
@@ -81,13 +85,14 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
-    let (loader, model_id) = get_model_loader(args.command, args.model_id.clone());
+    let (loader, model_id, quant) = get_model_loader(args.command, args.model_id.clone());
     if args.model_id.is_none() {
         println!("No model id specified, using the default model or specified in the weight_path!");
     }
 
-    let paths = match &args.weight_path {
-        Some(path) => Box::new(DefaultModelPaths {
+    let paths = match (&args.weight_path, &args.weight_file) {
+        //model in a folder (safetensor format, huggingface folder structure)
+        (Some(path), None) => Box::new(DefaultModelPaths {
             tokenizer_filename: Path::new(path).join("tokenizer.json"),
             config_filename: Path::new(path).join("config.json"),
             filenames: if Path::new(path)
@@ -100,6 +105,21 @@ async fn main() -> Result<(), APIError> {
                 let mut safetensors_files = Vec::<std::path::PathBuf>::new();
                 safetensors_files.insert(0, Path::new(path).join("model.safetensors"));
                 safetensors_files
+            },
+        }),
+        //model in a quantized file (gguf/ggml format)
+        (Some(path), Some(file)) => Box::new(DefaultModelPaths {
+            tokenizer_filename: {
+                //we need to download tokenizer for the ggufl/ggml model
+                let api = hf_hub::api::sync::Api::new().unwrap();
+                let api = api.model(model_id);
+                api.get("tokenizer.json").unwrap()
+            },
+            config_filename: PathBuf::new(),
+            filenames: if Path::new(path).join(file).exists() {
+                vec![Path::new(path).join(file).into()]
+            } else {
+                panic!("Model file not found {}", file);
             },
         }),
         _ => {
@@ -137,7 +157,7 @@ async fn main() -> Result<(), APIError> {
     };
 
     let device = candle_examples::device(args.cpu).unwrap();
-    let model = loader.load_model(paths, dtype, device)?;
+    let model = loader.load_model(paths, dtype, quant, device)?;
     let config: Config = model.0.get_model_config();
     let dsize = config.kv_cache_dtype.size_in_bytes();
     let num_gpu_blocks = args.kvcache_mem_gpu * SIZE_IN_MB
