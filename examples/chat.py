@@ -55,7 +55,7 @@ def chatloop(system_prompt: str, stream: bool, max_tokens: int):
                 console.print(Rule(title="Candle-vLLM:", align="left", style="cyan"))
                 # Handle streaming response
                 msg = ""
-                with Live(console=console, auto_refresh=False) as live:
+                with Live(console=console, auto_refresh=False, vertical_overflow="visible") as live:
                     for chunk in response:
                         content = chunk.choices[0].delta.content
                         if content != None:
