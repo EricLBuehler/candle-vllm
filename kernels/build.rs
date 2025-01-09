@@ -21,10 +21,10 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/reshape_and_cache_kernel.cu");
     println!("cargo:rerun-if-changed=src/marlin_cuda_kernel.cu");
     println!("cargo:rerun-if-changed=src/gptq_cuda_kernel.cu");
-
+    let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap_or("".to_string()));
     let builder = bindgen_cuda::Builder::default().arg("--expt-relaxed-constexpr");
     println!("cargo:info={builder:?}");
-    builder.build_lib("libpagedattention.a");
+    builder.build_lib(build_dir.join("libpagedattention.a"));
 
     let bindings = builder.build_ptx().unwrap();
     bindings.write("src/lib.rs").unwrap();
@@ -36,6 +36,7 @@ fn main() -> Result<()> {
         "cargo:rustc-link-search=native={}",
         absolute_kernel_dir.display()
     );
+    println!("cargo:rustc-link-search={}", build_dir.display());
     println!("cargo:rustc-link-lib=pagedattention");
     println!("cargo:rustc-link-lib=dylib=cudart");
 
