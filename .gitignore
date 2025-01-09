@@ -4,3 +4,5 @@ __pycache__
 *.ptx
 launch.json
 libpagedattention.a
+*.gz
+kernels/src/lib.rs
