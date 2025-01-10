@@ -14,25 +14,29 @@ pub mod llm_engine;
 pub mod pipeline;
 use crate::scheduler::sequence::SequenceGroup;
 type TokenOrFinishReason = Either<Logprobs, String>;
+#[cfg(feature = "nccl")]
+pub use cudarc::nccl::safe::Comm;
 use std::collections::VecDeque;
+pub use std::rc::Rc;
+
 pub trait ModulePipeline: Send + Sync {
     fn forward(
         &mut self,
         input_tokens: Tensor,
         input_positions: &[Vec<usize>],
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
-        input_metadata: InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor, APIError>;
 
     fn sample(
         &mut self,
-        logits: Tensor,
+        logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError>;
 
     fn sample_batch(
         &mut self,
-        logits: Tensor,
+        logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError>;
 
@@ -112,9 +116,10 @@ pub trait ModelLoader {
 
     fn load_model(
         &self,
-        paths: Box<dyn ModelPaths>,
+        paths: &Box<dyn ModelPaths>,
         dtype: DType,
-        quant: Option<String>,
+        quant: &Option<String>,
         device: Device,
+        #[cfg(feature = "nccl")] comm: Option<Rc<Comm>>,
     ) -> Result<(Box<dyn ModulePipeline>, PipelineConfig), APIError>;
 }

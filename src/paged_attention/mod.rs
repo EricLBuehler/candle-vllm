@@ -66,7 +66,7 @@ impl PagedAttention {
         attention_mask: Option<&Tensor>,
         mut key_cache: Option<Tensor>,
         mut value_cache: Option<Tensor>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
         softcapping: Option<f64>,
     ) -> Result<Tensor> {
         let dims = input_metadata.slot_mapping.dims();

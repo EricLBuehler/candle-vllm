@@ -45,19 +45,19 @@ pub struct CacheEngine {
 
 impl CacheEngine {
     pub fn new(
-        model_config: Config,
-        cache_config: CacheConfig,
+        model_config: &Config,
+        cache_config: &CacheConfig,
         dtype: DType,
         device: &Device,
     ) -> Result<Self, APIError> {
         Ok(Self {
             gpu_cache: Arc::new(Mutex::new(Self::allocate_gpu_cache(
-                &model_config,
-                &cache_config,
+                model_config,
+                cache_config,
                 dtype,
                 device,
             )?)),
-            cpu_cache: Self::allocate_cpu_cache(&model_config, &cache_config, dtype, device)?,
+            cpu_cache: Self::allocate_cpu_cache(model_config, cache_config, dtype, device)?,
             num_layers: model_config.num_hidden_layers,
         })
     }

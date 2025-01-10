@@ -9,6 +9,7 @@ use crate::openai::streaming::ChatResponse;
 use crate::scheduler::Scheduler;
 use crate::{
     openai::{
+        models::Config,
         responses::{
             APIError, ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionUsageResponse,
             Choice, ChoiceData, WrapperLogprobs,
@@ -41,13 +42,12 @@ struct PreparedInputs {
 const _PAD_SLOT_ID: i64 = -1;
 
 pub struct LLMEngine {
-    pipeline: Box<dyn ModulePipeline>,
+    pipelines: HashMap<usize, (Box<dyn ModulePipeline>, CacheEngine)>,
     scheduler: Scheduler,
     seq_id: usize,
     cache_config: CacheConfig,
+    config: Config,
     group_id: usize,
-    cache_engine: CacheEngine,
-    sliding_window: Option<usize>,
     pub notify: Arc<Notify>,
     pub finish_notify: Arc<Notify>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
@@ -55,28 +55,20 @@ pub struct LLMEngine {
 
 impl LLMEngine {
     pub fn new(
-        pipeline: Box<dyn ModulePipeline>,
+        pipelines: HashMap<usize, (Box<dyn ModulePipeline>, CacheEngine)>,
         scheduler_config: SchedulerConfig,
-        cache_config: CacheConfig,
+        cache_config: &CacheConfig,
+        config: &Config,
         notify: Arc<Notify>,
         finish_notify: Arc<Notify>,
     ) -> Result<Arc<Mutex<Self>>, APIError> {
-        let cache_engine = CacheEngine::new(
-            pipeline.get_model_config(),
-            cache_config.clone(),
-            cache_config.dtype,
-            pipeline.device(),
-        )?;
-        let sliding_window = pipeline.get_model_config().sliding_window;
-
         let engine = Arc::new(Mutex::new(Self {
-            pipeline,
-            scheduler: Scheduler::new(scheduler_config, &cache_config),
+            pipelines,
+            scheduler: Scheduler::new(scheduler_config, cache_config),
             seq_id: 0,
-            cache_config,
+            cache_config: cache_config.clone(),
+            config: config.clone(),
             group_id: 0,
-            cache_engine,
-            sliding_window,
             notify: notify.clone(),
             finish_notify: finish_notify.clone(),
             completion_records: HashMap::new(),
@@ -145,12 +137,15 @@ impl LLMEngine {
         Ok(engine_clone)
     }
 
-    pub fn get_pipeline(&self) -> &dyn ModulePipeline {
-        &*self.pipeline
+    pub fn get_pipeline(&self, rank: usize) -> Option<&(Box<dyn ModulePipeline>, CacheEngine)> {
+        self.pipelines.get(&rank)
     }
 
-    pub fn get_mut_pipeline(&mut self) -> &mut dyn ModulePipeline {
-        &mut *self.pipeline
+    pub fn get_mut_pipeline(
+        &mut self,
+        rank: usize,
+    ) -> Option<&mut (Box<dyn ModulePipeline>, CacheEngine)> {
+        self.pipelines.get_mut(&rank)
     }
 
     fn get_stream_response(
@@ -161,9 +156,10 @@ impl LLMEngine {
         finish_reason: Option<String>,
     ) -> ChatCompletionChunk {
         let mut choices = Vec::new();
+        let pipline = self.get_mut_pipeline(0).unwrap().0.as_mut();
         let choice = Choice {
             delta: ChoiceData {
-                role: self.pipeline.get_conversation(true).get_roles().0.clone(),
+                role: pipline.get_conversation(true).get_roles().0.clone(),
                 content,
             },
             finish_reason,
@@ -175,7 +171,7 @@ impl LLMEngine {
             id: request_id,
             choices,
             created,
-            model: self.pipeline.name().to_string(),
+            model: pipline.name().to_string(),
             object: "chat.completion.chunk",
             system_fingerprint: None,
         }
@@ -194,7 +190,7 @@ impl LLMEngine {
                 todo!();
             }
 
-            self.execute_scheduler_ops(&scheduler_outputs).unwrap();
+            self.execute_scheduler_ops(&scheduler_outputs, 0).unwrap();
 
             let scheduled: &VecDeque<Arc<SequenceGroup>> = &scheduler_outputs.scheduled;
             // for group in scheduled.iter() {
@@ -205,22 +201,68 @@ impl LLMEngine {
                 positions,
                 metadata,
             } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
-                self.prepare_prompt(scheduled)
+                self.prepare_prompt(scheduled, 0)
             } else {
-                self.prepare_decode(scheduled)
+                self.prepare_decode(scheduled, 0)
             }
             .unwrap();
+            use rayon::iter::IntoParallelRefMutIterator;
+            use rayon::iter::ParallelIterator;
+            let vec_logits: Vec<Tensor> = self
+                .pipelines
+                .par_iter_mut()
+                .map(|(rank, (pipeline, cache_engine))| {
+                    let device = pipeline.device();
+                    let metadata_ = if *rank == 0 {
+                        &metadata
+                    } else {
+                        let context_lens = if metadata.context_lens.is_some() {
+                            Some(
+                                metadata
+                                    .context_lens
+                                    .as_ref()
+                                    .unwrap()
+                                    .to_device(device)
+                                    .unwrap(),
+                            )
+                        } else {
+                            metadata.context_lens.clone()
+                        };
+                        let block_tables = if metadata.block_tables.is_some() {
+                            Some(
+                                metadata
+                                    .block_tables
+                                    .as_ref()
+                                    .unwrap()
+                                    .to_device(device)
+                                    .unwrap(),
+                            )
+                        } else {
+                            metadata.block_tables.clone()
+                        };
 
-            let logits = self
-                .pipeline
-                .forward(
-                    tokens,
-                    &positions,
-                    Some(&*self.cache_engine.get_kv_cache()),
-                    metadata,
-                )
-                .unwrap();
-            let results = self.pipeline.sample(logits, scheduled).unwrap();
+                        &InputMetadata {
+                            //for other rank, some tensors need to be moved
+                            slot_mapping: metadata.slot_mapping.to_device(device).unwrap(),
+                            context_lens,
+                            block_tables,
+                            kv_cache_dtype: metadata.kv_cache_dtype.clone(),
+                            prompt_lens: metadata.prompt_lens.clone(),
+                            ..metadata
+                        }
+                    };
+                    pipeline
+                        .forward(
+                            tokens.clone(),
+                            &positions,
+                            Some(&*cache_engine.get_kv_cache()),
+                            metadata_,
+                        )
+                        .unwrap()
+                })
+                .collect();
+            let pipeline = self.get_mut_pipeline(0).unwrap().0.as_mut();
+            let results = pipeline.sample(&vec_logits[0], scheduled).unwrap();
 
             for (result_, group) in zip(results, scheduled) {
                 match result_ {
@@ -298,15 +340,15 @@ impl LLMEngine {
                             .iter()
                             .map(|x| x.token.try_into().unwrap())
                             .collect::<Vec<_>>();
-                        let data = self
-                            .pipeline
+                        let pipeline = self.get_mut_pipeline(0usize).unwrap().0.as_mut();
+                        let data = pipeline
                             .tokenizer()
                             .tokenizer()
                             .decode(&data, false)
                             .unwrap();
                         let choice = ChatChoice {
                             message: ChatChoiceData {
-                                role: self.pipeline.get_conversation(true).get_roles().0.clone(),
+                                role: pipeline.get_conversation(true).get_roles().0.clone(),
                                 content: Some(data),
                             },
                             finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
@@ -349,7 +391,8 @@ impl LLMEngine {
                 }
             }
         }
-        self.pipeline.reset_decoder();
+        let default_pipeline = self.get_mut_pipeline(0usize).unwrap().0.as_mut();
+        default_pipeline.reset_decoder();
         Ok(responses)
     }
 }
@@ -358,21 +401,17 @@ impl LLMEngine {
     fn execute_scheduler_ops(
         &mut self,
         scheduler_output: &SchedulerOutput,
+        rank: usize,
     ) -> Result<(), APIError> {
+        let cache_engine = Box::new(&mut self.get_mut_pipeline(rank).unwrap().1);
         if !scheduler_output.blocks_to_swap_in.is_empty() {
-            try_api!(self
-                .cache_engine
-                .swap_in(scheduler_output.blocks_to_swap_in.clone()));
+            try_api!(cache_engine.swap_in(scheduler_output.blocks_to_swap_in.clone()));
         }
         if !scheduler_output.blocks_to_swap_out.is_empty() {
-            try_api!(self
-                .cache_engine
-                .swap_out(scheduler_output.blocks_to_swap_out.clone()));
+            try_api!(cache_engine.swap_out(scheduler_output.blocks_to_swap_out.clone()));
         }
         if !scheduler_output.blocks_to_copy.is_empty() {
-            try_api!(self
-                .cache_engine
-                .copy(scheduler_output.blocks_to_copy.clone()));
+            try_api!(cache_engine.copy(scheduler_output.blocks_to_copy.clone()));
         }
         Ok(())
     }
@@ -380,6 +419,7 @@ impl LLMEngine {
     fn prepare_prompt(
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
+        rank: usize,
     ) -> Result<PreparedInputs, APIError> {
         let mut prompt_lens = Vec::new();
         let mut input_tokens = Vec::new();
@@ -410,7 +450,7 @@ impl LLMEngine {
                     .map(|block| block.deref_mut().block_id)
                     .collect::<Vec<_>>();
 
-                let start_idx = if let Some(sliding_window) = self.sliding_window {
+                let start_idx = if let Some(sliding_window) = self.config.sliding_window {
                     if prompt_len > sliding_window {
                         0.min(prompt_len - sliding_window)
                     } else {
@@ -444,6 +484,7 @@ impl LLMEngine {
                 slot_mappings.push(slot_mapping);
             }
         }
+        let device = self.get_pipeline(rank).unwrap().0.device();
 
         let max_prompt_len = prompt_lens.iter().max().unwrap();
         let input_tokens = _make_tensor_with_pad(
@@ -453,14 +494,10 @@ impl LLMEngine {
                 .collect::<Vec<_>>(),
             *max_prompt_len,
             0,
-            self.pipeline.device(),
+            device,
         )?;
-        let slot_mapping = _make_tensor_with_pad(
-            slot_mappings,
-            *max_prompt_len,
-            _PAD_SLOT_ID,
-            self.pipeline.device(),
-        )?;
+        let slot_mapping =
+            _make_tensor_with_pad(slot_mappings, *max_prompt_len, _PAD_SLOT_ID, device)?;
 
         Ok(PreparedInputs {
             tokens: input_tokens,
@@ -471,7 +508,6 @@ impl LLMEngine {
                 max_context_len: None,
                 context_lens: None,
                 block_tables: None,
-                attn_bias: None,
                 is_prompt: true,
                 kv_cache_dtype: "auto".to_string(), // TODO(EricLBuehler): specialize for models
             },
@@ -481,6 +517,7 @@ impl LLMEngine {
     fn prepare_decode(
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
+        rank: usize,
     ) -> Result<PreparedInputs, APIError> {
         let mut input_tokens = Vec::new();
         let mut input_positions = Vec::new();
@@ -495,7 +532,7 @@ impl LLMEngine {
                 let position = seq.deref_mut().get_len() - 1;
                 input_positions.push(vec![position]);
 
-                let context_len = if let Some(sliding_window) = self.sliding_window {
+                let context_len = if let Some(sliding_window) = self.config.sliding_window {
                     seq.deref_mut().get_len().min(sliding_window)
                 } else {
                     seq.deref_mut().get_len()
@@ -523,7 +560,7 @@ impl LLMEngine {
                 let slot = slot.try_into().unwrap();
                 slot_mappings.push(vec![slot]);
 
-                if let Some(sliding_window) = self.sliding_window {
+                if let Some(sliding_window) = self.config.sliding_window {
                     let sliding_window_blocks = sliding_window / self.cache_config.block_size;
                     let slide_idx = if table.len() > sliding_window_blocks {
                         table.len() - sliding_window_blocks
@@ -536,6 +573,7 @@ impl LLMEngine {
                 }
             }
         }
+        let device = self.get_pipeline(rank).unwrap().0.device();
 
         let input_tokens = _make_tensor_with_pad(
             input_tokens
@@ -544,16 +582,15 @@ impl LLMEngine {
                 .collect::<Vec<_>>(),
             1,
             0,
-            self.pipeline.device(),
+            device,
         )?;
-        let slot_mapping =
-            _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID, self.pipeline.device())?;
+        let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID, device)?;
 
         let max_context_len = context_lens.iter().max().unwrap();
         let context_lens = try_api!(Tensor::from_vec(
             context_lens.iter().map(|x| *x as u32).collect::<Vec<_>>(),
             (context_lens.len(),),
-            self.pipeline.device(),
+            device,
         ));
 
         let max_block_table_len = block_tables.iter().map(|x| x.len()).max().unwrap();
@@ -564,7 +601,7 @@ impl LLMEngine {
                 .collect::<Vec<_>>(),
             max_block_table_len,
             0,
-            self.pipeline.device(),
+            device,
         )?;
         let block_tables = try_api!(block_tables.reshape(((), max_block_table_len)));
         Ok(PreparedInputs {
@@ -576,7 +613,6 @@ impl LLMEngine {
                 max_context_len: Some(*max_context_len),
                 context_lens: Some(context_lens),
                 block_tables: Some(block_tables),
-                attn_bias: None,
                 is_prompt: false,
                 kv_cache_dtype: "auto".to_string(), // TODO(EricLBuehler): specialize for models
             },

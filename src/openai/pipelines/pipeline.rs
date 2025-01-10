@@ -34,11 +34,14 @@ use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use candle_nn::VarBuilder;
+#[cfg(feature = "nccl")]
+pub use cudarc::nccl::safe::Comm;
 use either::Either;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use rayon::prelude::*;
 use std::collections::VecDeque;
+pub use std::rc::Rc;
 use std::{path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
 const EOS_TOKEN: &str = "</s>";
@@ -138,16 +141,17 @@ impl ModelLoader for DefaultLoader {
 
     fn load_model(
         &self,
-        paths: Box<dyn ModelPaths>,
+        paths: &Box<dyn ModelPaths>,
         dtype: DType,
-        quant: Option<String>,
+        quant: &Option<String>,
         device: Device,
+        #[cfg(feature = "nccl")] comm: Option<Rc<Comm>>,
     ) -> Result<(Box<dyn ModulePipeline>, PipelineConfig), APIError> {
         let specific_args = self.config.clone();
         let mut stop_token_ids = Vec::<u32>::new();
 
         let (model, config, tokenizer, sep_style) = if quant.is_some()
-            && matches!(quant.unwrap().as_str(), "ggml" | "gguf")
+            && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf")
         {
             let path = paths.get_weight_filenames()[0].clone();
             println!(
@@ -255,11 +259,11 @@ impl ModelLoader for DefaultLoader {
 
             let (model, sep_style) = match self.name.as_str() {
                 "llama" => (
-                    LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
+                    LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device, comm))),
                     SeparatorStyle::Llama,
                 ),
                 "llama3" => (
-                    LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
+                    LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device, comm))),
                     SeparatorStyle::Llama3,
                 ),
                 "phi2" => (
@@ -406,7 +410,7 @@ impl ModulePipeline for DefaultPipeline {
         input_tokens: Tensor,
         input_positions: &[Vec<usize>],
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
-        mut input_metadata: InputMetadata,
+        mut input_metadata: &InputMetadata,
     ) -> Result<Tensor, APIError> {
         let input_tokens = if input_tokens.shape().dims().len() < 2 {
             input_tokens
@@ -502,7 +506,7 @@ impl ModulePipeline for DefaultPipeline {
 
     fn sample(
         &mut self,
-        logits: Tensor,
+        logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         use std::collections::HashMap;
@@ -604,7 +608,7 @@ impl ModulePipeline for DefaultPipeline {
 
     fn sample_batch(
         &mut self,
-        logits: Tensor,
+        logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         use std::collections::HashMap;

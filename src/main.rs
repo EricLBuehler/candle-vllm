@@ -4,11 +4,11 @@ use axum::{
     Router,
 };
 use candle_core::{DType, Device};
-use candle_vllm::openai::openai_server::chat_completions;
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::pipelines::pipeline::DefaultModelPaths;
 use candle_vllm::openai::responses::APIError;
 use candle_vllm::openai::OpenAIServerData;
+use candle_vllm::openai::{openai_server::chat_completions, PipelineConfig};
 use candle_vllm::scheduler::cache_engine::CacheConfig;
 use candle_vllm::scheduler::SchedulerConfig;
 use candle_vllm::{get_model_loader, hub_load_local_safetensors, ModelSelected};
@@ -80,6 +80,39 @@ struct Args {
     /// Record conversation (default false, the client need to record chat history)
     #[arg(long)]
     record_conversation: bool,
+
+    #[arg(long, value_delimiter = ',')]
+    device_ids: Option<Vec<usize>>,
+}
+
+fn get_cache_config(
+    kvcache_mem_gpu: usize,
+    kvcache_mem_cpu: usize,
+    block_size: usize,
+    config: &Config,
+) -> CacheConfig {
+    let dsize = config.kv_cache_dtype.size_in_bytes();
+    let num_gpu_blocks = kvcache_mem_gpu * SIZE_IN_MB
+        / dsize
+        / block_size
+        / config.num_key_value_heads
+        / config.get_head_size()
+        / config.num_hidden_layers
+        / 2;
+    let num_cpu_blocks = kvcache_mem_cpu * SIZE_IN_MB
+        / dsize
+        / block_size
+        / config.num_key_value_heads
+        / config.get_head_size()
+        / config.num_hidden_layers
+        / 2;
+    CacheConfig {
+        block_size: block_size,
+        num_gpu_blocks: Some(num_gpu_blocks),
+        num_cpu_blocks: Some(num_cpu_blocks),
+        fully_init: true,
+        dtype: config.kv_cache_dtype,
+    }
 }
 
 #[tokio::main]
@@ -156,45 +189,85 @@ async fn main() -> Result<(), APIError> {
         None => DType::BF16,
     };
 
-    let device = candle_examples::device(args.cpu).unwrap();
-    let model = loader.load_model(paths, dtype, quant, device)?;
-    let config: Config = model.0.get_model_config();
-    let dsize = config.kv_cache_dtype.size_in_bytes();
-    let num_gpu_blocks = args.kvcache_mem_gpu * SIZE_IN_MB
-        / dsize
-        / args.block_size
-        / config.num_key_value_heads
-        / config.get_head_size()
-        / config.num_hidden_layers
-        / 2;
-    let num_cpu_blocks = args.kvcache_mem_cpu * SIZE_IN_MB
-        / dsize
-        / args.block_size
-        / config.num_key_value_heads
-        / config.get_head_size()
-        / config.num_hidden_layers
-        / 2;
-    let cache_config = CacheConfig {
-        block_size: args.block_size,
-        num_gpu_blocks: Some(num_gpu_blocks),
-        num_cpu_blocks: Some(num_cpu_blocks),
-        fully_init: true,
-        dtype: config.kv_cache_dtype,
+    let device_ids: Vec<usize> = match args.device_ids {
+        Some(ids) => ids,
+        _ => vec![0usize],
     };
+    use candle_vllm::openai::pipelines::ModulePipeline;
+    use candle_vllm::scheduler::cache_engine::CacheEngine;
+    use std::collections::HashMap;
+    let mut pipelines = HashMap::<usize, (Box<dyn ModulePipeline>, CacheEngine)>::new();
+    use std::rc::Rc;
+    let mut cache_config: Option<CacheConfig> = None;
+    let mut config: Option<Config> = None;
+    let mut pipeline_config: Option<PipelineConfig> = None;
+
+    let num_shards = device_ids.len();
+    #[cfg(feature = "nccl")]
+    use cudarc::nccl::safe::{Comm, Id};
+    #[cfg(feature = "nccl")]
+    let id = Id::new().unwrap();
+    for (rank, did) in device_ids.iter().enumerate() {
+        let device = candle_vllm::new_device(args.cpu, *did).unwrap();
+        // let device = device.as_cuda_device().unwrap();
+        #[cfg(feature = "nccl")]
+        let comm = match Comm::from_rank(
+            device.as_cuda_device().unwrap().cuda_device(),
+            rank,
+            num_shards,
+            id,
+        ) {
+            Ok(comm) => Rc::new(comm),
+            Err(err) => panic!("nccl error {:?}", err.0),
+        };
+        println!("Loading model on device rank {}", rank);
+        let model = loader.load_model(
+            &paths,
+            dtype,
+            &quant,
+            device.clone(),
+            #[cfg(feature = "nccl")]
+            Some(comm),
+        )?;
+        if config.is_none() {
+            config = Some(model.0.get_model_config());
+        }
+        if cache_config.is_none() {
+            cache_config = Some(get_cache_config(
+                args.kvcache_mem_gpu,
+                args.kvcache_mem_cpu,
+                args.block_size,
+                &config.as_ref().expect("invalid config!"),
+            ));
+        }
+        if pipeline_config.is_none() {
+            pipeline_config = Some(model.1);
+        }
+        let cache_engine = CacheEngine::new(
+            config.as_ref().expect("invalid config!"),
+            cache_config.as_ref().expect("invalid cache config!"),
+            cache_config.as_ref().expect("invalid cache config!").dtype,
+            &device,
+        )?;
+        pipelines.insert(rank, (model.0, cache_engine));
+    }
+    let cache_config = cache_config.as_ref().unwrap().clone();
+    let config = config.as_ref().unwrap().clone();
     println!("Cache config {:?}", cache_config);
     let finish_notify = Arc::new(Notify::new());
     let llm_engine = LLMEngine::new(
-        model.0,
+        pipelines,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
         },
-        cache_config,
+        &cache_config,
+        &config,
         Arc::new(Notify::new()),
         finish_notify.clone(),
     )?;
 
     let server_data = OpenAIServerData {
-        pipeline_config: model.1,
+        pipeline_config: pipeline_config.unwrap(),
         model: llm_engine,
         record_conversation: args.record_conversation,
         device: Device::Cpu,

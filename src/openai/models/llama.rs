@@ -9,7 +9,10 @@ use candle_nn::{embedding, Embedding, Module, VarBuilder};
 use candle_transformers::models::with_tracing::RmsNorm;
 pub const MAX_SEQ_LEN: usize = 4096;
 use crate::openai::models::TokenID;
+#[cfg(feature = "nccl")]
+pub use cudarc::nccl::safe::Comm;
 use std::iter::zip;
+pub use std::rc::Rc;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct LlamaConfig {
@@ -138,7 +141,7 @@ impl CausalSelfAttention {
         attention_mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
         let (b_sz, seq_len, hidden_size) = x.dims3()?;
@@ -321,7 +324,7 @@ impl Block {
         attention_mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
         let residual = x;
@@ -381,7 +384,7 @@ impl Llama {
         x: &Tensor,
         input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (_b_sz, seq_len) = x.dims2()?;
         let attention_mask = if seq_len <= 1 {
@@ -418,7 +421,13 @@ impl Llama {
         logits.to_dtype(DType::F32)
     }
 
-    pub fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Option<Rc<Comm>>,
+    ) -> Result<Self> {
         let wte = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
         let lm_head = linear(
             cfg.hidden_size,

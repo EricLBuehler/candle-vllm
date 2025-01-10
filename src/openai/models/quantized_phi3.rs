@@ -102,7 +102,7 @@ impl LayerWeights {
         mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_sz, seq_len, n_embd) = x.dims3()?;
         let qkv = self.attn_qkv.forward(x)?;
@@ -346,7 +346,7 @@ impl GGUFPhi3 {
         xs: &Tensor,
         input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_sz, seq_len) = xs.dims2()?;
         let mask = if seq_len == 1 {

@@ -5,6 +5,8 @@ use tokio::sync::{Mutex, Notify};
 
 use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
 
+#[cfg(feature = "nccl")]
+pub mod distributed;
 pub mod requests;
 pub mod responses;
 pub mod sampling_params;

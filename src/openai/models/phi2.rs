@@ -250,7 +250,7 @@ impl Attention {
         attention_mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_size, seq_len, _n_embd) = xs.dims3()?;
         let query_states = self.q_proj.forward(xs)?;
@@ -341,7 +341,7 @@ impl DecoderLayer {
         mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
         let residual = xs;
@@ -411,7 +411,7 @@ impl Phi2 {
         xs: &Tensor,
         input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_size, seq_len) = xs.dims2()?;
         let mut xs = xs.apply(&self.embed_tokens)?;
