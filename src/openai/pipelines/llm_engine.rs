@@ -155,10 +155,10 @@ impl LLMEngine {
         finish_reason: Option<String>,
     ) -> ChatCompletionChunk {
         let mut choices = Vec::new();
-        let pipline = self.get_mut_pipeline(0).unwrap().0.as_mut();
+        let pipeline = self.get_mut_pipeline(0).unwrap().0.as_mut();
         let choice = Choice {
             delta: ChoiceData {
-                role: pipline.get_conversation(true).get_roles().0.clone(),
+                role: pipeline.get_conversation(true).get_roles().0.clone(),
                 content,
             },
             finish_reason,
@@ -170,7 +170,7 @@ impl LLMEngine {
             id: request_id,
             choices,
             created,
-            model: pipline.name().to_string(),
+            model: pipeline.name().to_string(),
             object: "chat.completion.chunk",
             system_fingerprint: None,
         }

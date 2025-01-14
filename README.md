@@ -77,11 +77,11 @@ Run `Multi-GPU` inference with NCCL feature
 cargo run --release --features cuda,nccl -- --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
 
-If you encoutered problems under Multi-GPU setttings, you may:
+If you encountered problems under Multi-GPU settings, you may:
 ```shell
-export NCCL_P2P_LEVEL=LOC # use local devices (mutiple cards within a server, PCIE, etc.)
-export NCCL_P2P_DISABLE=1 # diable p2p cause this feature can cause illegal memory access in certain environments
-export NCCL_IB_DISABLE=1 # diable ibnet/infiniband (optional)
+export NCCL_P2P_LEVEL=LOC # use local devices (multiple cards within a server, PCIE, etc.)
+export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
+export NCCL_IB_DISABLE=1 # disable ibnet/infiniband (optional)
 ```
 **Note:** quantized models are not supported yet under multi-gpu setting.
 
