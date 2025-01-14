@@ -191,6 +191,7 @@ impl PagedAttention {
                     kv_head_stride as c_int,
                     internal_type,
                     self.softcapping,
+                    *dev.cu_stream() as i64,
                 )
             }
         } else {
@@ -228,6 +229,7 @@ impl PagedAttention {
                     kv_head_stride as c_int,
                     internal_type,
                     self.softcapping,
+                    *dev.cu_stream() as i64,
                 )
             }
         }
@@ -555,6 +557,7 @@ impl ReshapeCache {
     ) -> Result<()> {
         use candle::cuda_backend::cudarc::driver::DevicePtr;
         let dtype = k.dtype();
+        let dev = k.device();
         let internal_type = match dtype {
             DType::F16 => 0,
             DType::BF16 => 1,
@@ -663,7 +666,6 @@ impl ReshapeCache {
         let kc_ptr = *kc.device_ptr() as *const core::ffi::c_void;
         let vc_ptr = *vc.device_ptr() as *const core::ffi::c_void;
         let s_ptr = *s.device_ptr() as *const core::ffi::c_long;
-
         unsafe {
             kernels::ffi::call_reshape_and_cache(
                 k_ptr,
@@ -679,6 +681,7 @@ impl ReshapeCache {
                 key_stride,
                 value_stride,
                 internal_type,
+                *dev.cu_stream() as i64,
             )
         }
         Ok(())

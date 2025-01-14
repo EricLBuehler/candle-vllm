@@ -168,7 +168,7 @@ impl LayerWeights {
     }
 
     fn forward_attn(
-        &mut self,
+        &self,
         x: &Tensor,
         mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
@@ -520,7 +520,7 @@ impl GGUFLLaMa {
     }
 
     pub fn forward(
-        &mut self,
+        &self,
         x: &Tensor,
         input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
@@ -535,7 +535,7 @@ impl GGUFLLaMa {
         let mut layer_in = self.tok_embeddings.forward(x)?;
 
         if let Some(kv_caches) = kv_caches {
-            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter_mut()) {
+            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
                 let x = layer_in;
                 let residual = &x;
                 let x = layer.attention_norm.forward(&x)?;
@@ -556,7 +556,7 @@ impl GGUFLLaMa {
                 layer_in = x
             }
         } else {
-            for layer in self.layers.iter_mut() {
+            for layer in self.layers.iter() {
                 let x = layer_in;
                 let residual = &x;
                 let x = layer.attention_norm.forward(&x)?;

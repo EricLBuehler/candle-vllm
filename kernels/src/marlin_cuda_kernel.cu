@@ -865,11 +865,11 @@ thread_config_t determine_thread_config(int prob_m, int prob_n, int prob_k) {
 
 template<typename scalar_t>
 void marlin_matmul(const void* A, const void* B, void* s, void* C, int prob_m, int prob_k, 
-                 int prob_n, void* workspace, int groupsize
+                 int prob_n, void* workspace, int groupsize, int64_t stream_
                  ) {
   
   int dev = 0; 
-  cudaStream_t stream = 0; 
+  cudaStream_t stream = (cudaStream_t)stream_; 
   int thread_k = -1;
   int thread_n = -1; 
   int sms = -1; 
@@ -950,15 +950,15 @@ void marlin_matmul(const void* A, const void* B, void* s, void* C, int prob_m, i
 }
 
 extern "C" void marlin_4bit_f16(const void* A, const void* B, void* s, void* C, int prob_m, int prob_k, 
-                 int prob_n, void* workspace, int groupsize
+                 int prob_n, void* workspace, int groupsize, int64_t stream
                  ) {
-    marlin_matmul<half>(A, B, s, C, prob_m, prob_k, prob_n, workspace, groupsize);
+    marlin_matmul<half>(A, B, s, C, prob_m, prob_k, prob_n, workspace, groupsize, stream);
 }
 
 extern "C" void marlin_4bit_bf16(const void* A, const void* B, void* s, void* C, int prob_m, int prob_k, 
-                 int prob_n, void* workspace, int groupsize
+                 int prob_n, void* workspace, int groupsize, int64_t stream
                  ) {
-    marlin_matmul<nv_bfloat16>(A, B, s, C, prob_m, prob_k, prob_n, workspace, groupsize);
+    marlin_matmul<nv_bfloat16>(A, B, s, C, prob_m, prob_k, prob_n, workspace, groupsize, stream);
 }
 
 
@@ -1025,7 +1025,8 @@ extern "C" void gptq_repack(
   void* in,
   void* out,
   int m,
-  int n
+  int n,
+  int64_t stream_
 ) {
 
   assert(m % 2 == 0);
@@ -1033,7 +1034,7 @@ extern "C" void gptq_repack(
   const dim3 threads(32);
   // marlin packs 16 x 64 block and gptq packs 8 x 1
   const dim3 blocks(m / 2, n / 64);
-  cudaStream_t stream = 0;
+  cudaStream_t stream = (cudaStream_t)stream_;
   gptq_repack_kernel<<<blocks, threads, 0, stream>>>(
     (uint32_t*)in,
     (uint32_t*)out,

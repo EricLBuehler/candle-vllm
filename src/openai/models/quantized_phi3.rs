@@ -97,7 +97,7 @@ impl LayerWeights {
     }
 
     fn forward_attn(
-        &mut self,
+        &self,
         x: &Tensor,
         mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
@@ -342,7 +342,7 @@ impl GGUFPhi3 {
     }
 
     pub fn forward(
-        &mut self,
+        &self,
         xs: &Tensor,
         input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
@@ -357,7 +357,7 @@ impl GGUFPhi3 {
         let mut xs = self.tok_embeddings.forward(xs)?;
 
         if let Some(kv_caches) = kv_caches {
-            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter_mut()) {
+            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
                 let residual = &xs;
                 let ys = xs.apply(&layer.attn_norm)?;
                 let ys = layer.forward_attn(
@@ -374,7 +374,7 @@ impl GGUFPhi3 {
                 xs = (ys + residual)?
             }
         } else {
-            for layer in self.layers.iter_mut() {
+            for layer in self.layers.iter() {
                 let residual = &xs;
                 let ys = xs.apply(&layer.attn_norm)?;
                 let ys = layer.forward_attn(

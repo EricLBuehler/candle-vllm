@@ -1,10 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    iter::zip,
-    sync::Arc,
-};
-
-use super::{ModulePipeline, _make_tensor_with_pad};
+use super::{DefaultPipeline, _make_tensor_with_pad};
 use crate::openai::streaming::ChatResponse;
 use crate::scheduler::Scheduler;
 use crate::{
@@ -25,10 +19,15 @@ use crate::{
     },
     try_api,
 };
-use candle_core::Tensor;
+use candle_core::{Device, Tensor};
 use either::Either;
 use flume::Sender;
 use std::time::SystemTime;
+use std::{
+    collections::{HashMap, VecDeque},
+    iter::zip,
+    sync::Arc,
+};
 use tokenizers::Encoding;
 use tokio::sync::Mutex;
 use tokio::sync::Notify;
@@ -42,7 +41,7 @@ struct PreparedInputs {
 const _PAD_SLOT_ID: i64 = -1;
 
 pub struct LLMEngine {
-    pipelines: HashMap<usize, (Box<dyn ModulePipeline>, CacheEngine)>,
+    pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
     scheduler: Scheduler,
     seq_id: usize,
     cache_config: CacheConfig,
@@ -55,7 +54,7 @@ pub struct LLMEngine {
 
 impl LLMEngine {
     pub fn new(
-        pipelines: HashMap<usize, (Box<dyn ModulePipeline>, CacheEngine)>,
+        pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
         scheduler_config: SchedulerConfig,
         cache_config: &CacheConfig,
         config: &Config,
@@ -137,14 +136,14 @@ impl LLMEngine {
         Ok(engine_clone)
     }
 
-    pub fn get_pipeline(&self, rank: usize) -> Option<&(Box<dyn ModulePipeline>, CacheEngine)> {
+    pub fn get_pipeline(&self, rank: usize) -> Option<&(Box<DefaultPipeline>, CacheEngine)> {
         self.pipelines.get(&rank)
     }
 
     pub fn get_mut_pipeline(
         &mut self,
         rank: usize,
-    ) -> Option<&mut (Box<dyn ModulePipeline>, CacheEngine)> {
+    ) -> Option<&mut (Box<DefaultPipeline>, CacheEngine)> {
         self.pipelines.get_mut(&rank)
     }
 
@@ -183,7 +182,6 @@ impl LLMEngine {
         let mut responses =
             HashMap::<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>::new();
         let mut prompt_finish_times = HashMap::<usize, SystemTime>::new();
-        // let mut prompt_finish_time = SystemTime::now();
         while self.scheduler.has_unfinished_sequences() {
             let scheduler_outputs = self.scheduler.schedule();
             if !scheduler_outputs.ignored_seq_groups.is_empty() {
@@ -193,76 +191,74 @@ impl LLMEngine {
             self.execute_scheduler_ops(&scheduler_outputs, 0).unwrap();
 
             let scheduled: &VecDeque<Arc<SequenceGroup>> = &scheduler_outputs.scheduled;
-            // for group in scheduled.iter() {
             let seqs = scheduled[0].get_seqs();
 
-            let PreparedInputs {
-                tokens,
-                positions,
-                metadata,
-            } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
-                self.prepare_prompt(scheduled, 0)
-            } else {
-                self.prepare_decode(scheduled, 0)
-            }
-            .unwrap();
-            use rayon::iter::IntoParallelRefMutIterator;
+            #[cfg(feature = "nccl")]
+            use rayon::iter::IntoParallelRefIterator;
+            #[cfg(feature = "nccl")]
             use rayon::iter::ParallelIterator;
-            let vec_logits: Vec<Tensor> = self
+            #[cfg(feature = "nccl")]
+            let vec_logits: HashMap<usize, Tensor> = self
                 .pipelines
-                .par_iter_mut()
+                .par_iter()
                 .map(|(rank, (pipeline, cache_engine))| {
                     let device = pipeline.device();
-                    let metadata_ = if *rank == 0 {
-                        &metadata
+                    let PreparedInputs {
+                        tokens,
+                        positions,
+                        metadata,
+                    } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
+                        self.prepare_prompt(scheduled, device)
                     } else {
-                        let context_lens = if metadata.context_lens.is_some() {
-                            Some(
-                                metadata
-                                    .context_lens
-                                    .as_ref()
-                                    .unwrap()
-                                    .to_device(device)
-                                    .unwrap(),
+                        self.prepare_decode(scheduled, device)
+                    }
+                    .unwrap();
+                    (
+                        *rank,
+                        pipeline
+                            .forward(
+                                tokens,
+                                &positions,
+                                Some(&*cache_engine.get_kv_cache()),
+                                &metadata,
                             )
-                        } else {
-                            metadata.context_lens.clone()
-                        };
-                        let block_tables = if metadata.block_tables.is_some() {
-                            Some(
-                                metadata
-                                    .block_tables
-                                    .as_ref()
-                                    .unwrap()
-                                    .to_device(device)
-                                    .unwrap(),
-                            )
-                        } else {
-                            metadata.block_tables.clone()
-                        };
-
-                        &InputMetadata {
-                            //for other rank, some tensors need to be moved
-                            slot_mapping: metadata.slot_mapping.to_device(device).unwrap(),
-                            context_lens,
-                            block_tables,
-                            kv_cache_dtype: metadata.kv_cache_dtype.clone(),
-                            prompt_lens: metadata.prompt_lens.clone(),
-                            ..metadata
-                        }
-                    };
-                    pipeline
-                        .forward(
-                            tokens.clone(),
-                            &positions,
-                            Some(&*cache_engine.get_kv_cache()),
-                            metadata_,
-                        )
-                        .unwrap()
+                            .unwrap(),
+                    )
                 })
                 .collect();
+
+            #[cfg(not(feature = "nccl"))]
+            let vec_logits: HashMap<usize, Tensor> = self
+                .pipelines
+                .iter()
+                .map(|(rank, (pipeline, cache_engine))| {
+                    let device = pipeline.device();
+                    let PreparedInputs {
+                        tokens,
+                        positions,
+                        metadata,
+                    } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
+                        self.prepare_prompt(scheduled, device)
+                    } else {
+                        self.prepare_decode(scheduled, device)
+                    }
+                    .unwrap();
+                    (
+                        *rank,
+                        pipeline
+                            .forward(
+                                tokens,
+                                &positions,
+                                Some(&*cache_engine.get_kv_cache()),
+                                &metadata,
+                            )
+                            .unwrap(),
+                    )
+                })
+                .collect();
+
             let pipeline = self.get_mut_pipeline(0).unwrap().0.as_mut();
-            let results = pipeline.sample(&vec_logits[0], scheduled).unwrap();
+            let results = pipeline.sample(&vec_logits[&0], scheduled).unwrap();
 
             for (result_, group) in zip(results, scheduled) {
                 match result_ {
@@ -419,7 +415,7 @@ impl LLMEngine {
     fn prepare_prompt(
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
-        rank: usize,
+        device: &Device,
     ) -> Result<PreparedInputs, APIError> {
         let mut prompt_lens = Vec::new();
         let mut input_tokens = Vec::new();
@@ -484,7 +480,6 @@ impl LLMEngine {
                 slot_mappings.push(slot_mapping);
             }
         }
-        let device = self.get_pipeline(rank).unwrap().0.device();
 
         let max_prompt_len = prompt_lens.iter().max().unwrap();
         let input_tokens = _make_tensor_with_pad(
@@ -517,7 +512,7 @@ impl LLMEngine {
     fn prepare_decode(
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
-        rank: usize,
+        device: &Device,
     ) -> Result<PreparedInputs, APIError> {
         let mut input_tokens = Vec::new();
         let mut input_positions = Vec::new();
@@ -573,7 +568,6 @@ impl LLMEngine {
                 }
             }
         }
-        let device = self.get_pipeline(rank).unwrap().0.device();
 
         let input_tokens = _make_tensor_with_pad(
             input_tokens

@@ -15,6 +15,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - `In-situ` quantization (and `In-situ` marlin format conversion)
 - `GPTQ/Marlin` format quantization (4-bit)
 - Support `Mac/Metal` devices
+- Support `Multi-GPU` inference
 
 ## Develop Status
 
@@ -43,7 +44,7 @@ https://github.com/user-attachments/assets/66b5b90e-e2ca-4f0b-82d7-99aa9f85568c
 ## Usage
 See [this folder](examples/) for some examples.
 
-### Step 1: Run Candle-VLLM service (assume llama2-7b model weights downloaded)
+### Step 1: Run Candle-VLLM service
 
 ```
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -53,6 +54,7 @@ git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
 cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
+Note: assume Llama-3.1-8B model weights downloaded in folder `/home/Meta-Llama-3.1-8B-Instruct/`
 
 You may also run specific model using huggingface model-id, e.g.,
 ```shell
@@ -69,8 +71,22 @@ cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /
 
 __Refer to Marlin quantization below for running quantized GPTQ models.__
 
+Run `Multi-GPU` inference with NCCL feature
+
+```shell
+cargo run --release --features cuda,nccl -- --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
+```
+
+If you encoutered problems under Multi-GPU setttings, you may:
+```shell
+export NCCL_P2P_LEVEL=LOC # use local devices (mutiple cards within a server, PCIE, etc.)
+export NCCL_P2P_DISABLE=1 # diable p2p cause this feature can cause illegal memory access in certain environments
+export NCCL_IB_DISABLE=1 # diable ibnet/infiniband (optional)
+```
+**Note:** quantized models are not supported yet under multi-gpu setting.
+
 ### Step 2:
-#### Option 1: Chat with Chat.py (recommended)
+#### Option 1: Chat with Chat.py (for simple tests)
 Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
 
 ```shell
@@ -92,7 +108,7 @@ Chat demo on Apple M4 (Phi3 3.8B)
 
 <img src="res/Phi3-3.8B-Chatbot-Apple-M4.gif" width="75%" height="75%" >
 
-#### Option 2: Chat with ChatUI
+#### Option 2: Chat with ChatUI (recommended)
 Install ChatUI and its dependencies:
 
 ```

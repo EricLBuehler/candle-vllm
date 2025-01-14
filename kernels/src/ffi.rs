@@ -15,8 +15,8 @@ extern "C" {
         x: c_int,
         key_stride: c_int,
         value_stride: c_int,
-
         dtype: u32,
+        stream: i64,
     );
 
     pub fn paged_attention_v1(
@@ -41,6 +41,7 @@ extern "C" {
 
         dtype: u32,
         softscapping: f32,
+        stream: i64,
     );
 
     pub fn paged_attention_v2(
@@ -68,6 +69,7 @@ extern "C" {
 
         dtype: u32,
         softscapping: f32,
+        stream: i64,
     );
 
     pub fn marlin_4bit_f16(
@@ -80,6 +82,7 @@ extern "C" {
         n: c_int,
         workspace: *const c_void, //tensor with at least `n / 128 * max_par` entries that are all zero
         groupsize: c_int,
+        stream: i64,
     );
 
     pub fn marlin_4bit_bf16(
@@ -92,9 +95,16 @@ extern "C" {
         n: c_int,
         workspace: *const c_void, //tensor with at least `n / 128 * max_par` entries that are all zero
         groupsize: c_int,
+        stream: i64,
     );
 
-    pub fn gptq_repack(weight: *const c_void, result: *const c_void, m: c_int, n: c_int);
+    pub fn gptq_repack(
+        weight: *const c_void,
+        result: *const c_void,
+        m: c_int,
+        n: c_int,
+        stream: i64,
+    );
 
     pub fn gemm_half_q_half_alt(
         a: *const c_void,
@@ -107,5 +117,6 @@ extern "C" {
         n: i32,
         k: i32,
         bit: i32,
+        stream: i64,
     );
 }

@@ -1,59 +1,16 @@
+use super::responses::APIError;
 use crate::openai::sampling_params::Logprobs;
-use candle_core::{DType, Device, Tensor, WithDType};
+use crate::try_api;
+use candle_core::{Device, Tensor, WithDType};
 use dirs;
 use either::Either;
-use std::{env, fs, path::PathBuf, sync::Arc};
-
-use crate::{paged_attention::input_metadata::InputMetadata, try_api};
-
-use super::{conversation::Conversation, models::Config, responses::APIError, PipelineConfig};
-use candle_examples::token_output_stream::TokenOutputStream;
+use std::{env, fs};
 /// The LLMEngine is effectively a wrapper around a ModulePipeline. It contains a Scheduler and a CacheEngine
 /// which are used to scheduler and manage the cache during generation requests, respectively.
 pub mod llm_engine;
 pub mod pipeline;
-use crate::scheduler::sequence::SequenceGroup;
 type TokenOrFinishReason = Either<Logprobs, String>;
-#[cfg(feature = "nccl")]
-pub use cudarc::nccl::safe::Comm;
-use std::collections::VecDeque;
-pub use std::rc::Rc;
-
-pub trait ModulePipeline: Send + Sync {
-    fn forward(
-        &mut self,
-        input_tokens: Tensor,
-        input_positions: &[Vec<usize>],
-        kv_cache: Option<&Vec<(Tensor, Tensor)>>,
-        input_metadata: &InputMetadata,
-    ) -> Result<Tensor, APIError>;
-
-    fn sample(
-        &mut self,
-        logits: &Tensor,
-        groups: &VecDeque<Arc<SequenceGroup>>,
-    ) -> Result<Vec<TokenOrFinishReason>, APIError>;
-
-    fn sample_batch(
-        &mut self,
-        logits: &Tensor,
-        groups: &VecDeque<Arc<SequenceGroup>>,
-    ) -> Result<Vec<TokenOrFinishReason>, APIError>;
-
-    fn name(&self) -> &str;
-
-    fn tokenizer(&self) -> &TokenOutputStream;
-
-    fn get_conversation(&mut self, with_history: bool) -> &mut dyn Conversation;
-
-    fn get_model_config(&self) -> Config;
-
-    fn get_dtype(&self) -> DType;
-
-    fn device(&self) -> &Device;
-
-    fn reset_decoder(&mut self) -> Option<String>;
-}
+use crate::openai::pipelines::pipeline::DefaultPipeline;
 
 fn _make_tensor_with_pad<D: WithDType>(
     x: Vec<Vec<D>>,
@@ -97,29 +54,4 @@ pub(crate) fn get_token(
             ))
         }
     })
-}
-
-pub trait ModelPaths {
-    fn get_weight_filenames(&self) -> &Vec<PathBuf>;
-    fn get_config_filename(&self) -> &PathBuf;
-    fn get_tokenizer_filename(&self) -> &PathBuf;
-}
-
-pub trait ModelLoader {
-    fn download_model(
-        &self,
-        model_id: String,
-        revision: Option<String>,
-        hf_token: Option<String>,
-        hf_token_path: Option<String>,
-    ) -> Result<Box<dyn ModelPaths>, APIError>;
-
-    fn load_model(
-        &self,
-        paths: &Box<dyn ModelPaths>,
-        dtype: DType,
-        quant: &Option<String>,
-        device: Device,
-        #[cfg(feature = "nccl")] comm: Option<Rc<Comm>>,
-    ) -> Result<(Box<dyn ModulePipeline>, PipelineConfig), APIError>;
 }

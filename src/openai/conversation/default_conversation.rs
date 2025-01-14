@@ -7,7 +7,7 @@ pub const SYSTEM_TEMPLATE: &str = "{}";
 pub const DEFAULT_SEP: &str = "\n";
 
 /// Separator style for default conversation.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub enum SeparatorStyle {
     #[default]
     AddColonSingle,

@@ -611,7 +611,8 @@ void paged_attention_v1_launcher(
   int q_stride,
   int kv_block_stride,
   int kv_head_stride,
-  float softscapping
+  float softscapping,
+  int64_t stream_
   ) {
 
   // int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
@@ -630,7 +631,7 @@ void paged_attention_v1_launcher(
 
   dim3 grid(num_heads, num_seqs, 1);
   dim3 block(NUM_THREADS);
-  const cudaStream_t stream = 0;
+  const cudaStream_t stream = (cudaStream_t)stream_;
   switch (head_size) {
     // NOTE(woosuk): To reduce the compilation time, we only compile for the
     // head sizes that we use in the model. However, we can easily extend this
@@ -676,7 +677,8 @@ void paged_attention_v1_launcher(
     q_stride,                                                       \
     kv_block_stride,                                                \
     kv_head_stride, \
-    softscapping);
+    softscapping, \
+    stream);
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
 // 1, 2, 4, 64, 128, 256.
@@ -716,7 +718,8 @@ extern "C" void paged_attention_v1(
   int32_t kv_head_stride,
 
   uint32_t dtype,      // 0 => f16; 1 => bf16; 2 => f32
-  float softscapping
+  float softscapping,
+  int64_t stream
   ) {
   if (dtype == 2) {
     CALL_V1_LAUNCHER_BLOCK_SIZE(float);
@@ -781,7 +784,8 @@ void paged_attention_v2_launcher(
   int q_stride,
   int kv_block_stride,
   int kv_head_stride,
-  float softscapping
+  float softscapping,
+  int64_t stream_
   ) {
   // int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
 
@@ -803,7 +807,7 @@ void paged_attention_v2_launcher(
   int reduce_shared_mem_size = 2 * max_num_partitions * sizeof(float);
 
   dim3 block(NUM_THREADS);
-  const cudaStream_t stream = 0;
+  const cudaStream_t stream = (cudaStream_t)stream_;
   switch (head_size) {
     // NOTE(woosuk): To reduce the compilation time, we only compile for the
     // head sizes that we use in the model. However, we can easily extend this
@@ -852,7 +856,8 @@ void paged_attention_v2_launcher(
     q_stride,                                                       \
     kv_block_stride,                                                \
     kv_head_stride,\
-    softscapping);
+    softscapping, \
+    stream);
 
 // NOTE(woosuk): To reduce the compilation time, we omitted block sizes
 // 1, 2, 4, 64, 128, 256.
@@ -895,7 +900,8 @@ extern "C" void paged_attention_v2(
   int32_t kv_head_stride,
 
   uint32_t dtype,      // 0 => f16; 1 => bf16; 2 => f32
-  float softscapping
+  float softscapping,
+  int64_t stream
   ) {
   if (dtype == 2) {
     CALL_V2_LAUNCHER_BLOCK_SIZE(float);
