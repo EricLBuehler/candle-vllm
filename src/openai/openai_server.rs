@@ -37,7 +37,9 @@ async fn get_gen_prompt(
 ) -> Result<String, APIError> {
     let mut model = data.model.lock().await;
     let conversation = model
-        .get_mut_pipeline()
+        .get_mut_pipeline(0)
+        .unwrap()
+        .0
         .get_conversation(data.record_conversation);
 
     match &request.messages {
@@ -76,7 +78,9 @@ async fn check_length(
     let token_ids = {
         let model = data.model.lock().await;
         model
-            .get_pipeline()
+            .get_pipeline(0)
+            .unwrap()
+            .0
             .tokenizer()
             .tokenizer()
             .encode(prompt, false)

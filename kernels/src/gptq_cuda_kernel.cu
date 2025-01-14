@@ -199,7 +199,7 @@ extern "C" void gemm_half_q_half_alt(const void* a, const uint32_t* b_q_weight,
                           const uint32_t* b_gptq_qzeros,
                           const void* b_gptq_scales, const int* b_g_idx,
                           void* c, int size_m, int size_n, int size_k,
-                          int bit) {
+                          int bit, int64_t stream_) {
   dim3 blockDim, gridDim;
   blockDim.x = BLOCK_KN_SIZE;
   blockDim.y = 1;
@@ -213,7 +213,7 @@ extern "C" void gemm_half_q_half_alt(const void* a, const uint32_t* b_q_weight,
     kernel = gemm_half_q_half_alt_8bit_kernel;
   }
 
-  const cudaStream_t stream = 0;
+  const cudaStream_t stream = (cudaStream_t)stream_;
   kernel<<<gridDim, blockDim, 0, stream>>>(
       (const half2*)(const half*)a, b_q_weight, (half*)c, (const half*)b_gptq_scales, b_gptq_qzeros, b_g_idx,
       size_m, size_k / 32 * bit, size_n);

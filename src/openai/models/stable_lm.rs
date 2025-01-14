@@ -268,12 +268,12 @@ impl Attention {
     }
 
     fn forward(
-        &mut self,
+        &self,
         xs: &Tensor,
         attention_mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_sz, seq_len, _) = xs.dims3()?;
 
@@ -365,12 +365,12 @@ impl DecoderLayer {
     }
 
     fn forward(
-        &mut self,
+        &self,
         xs: &Tensor,
         attention_mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs)?;
@@ -437,11 +437,11 @@ impl StableLM {
     }
 
     pub fn forward(
-        &mut self,
+        &self,
         input_ids: &Tensor,
         input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_size, seq_len) = input_ids.dims2()?;
         let attention_mask = if seq_len <= 1 {
@@ -452,7 +452,7 @@ impl StableLM {
         };
         let mut xs = self.embed_tokens.forward(input_ids)?;
         if let Some(kv_caches) = kv_caches {
-            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter_mut()) {
+            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
                 xs = layer.forward(
                     &xs,
                     attention_mask.as_ref(),
@@ -462,7 +462,7 @@ impl StableLM {
                 )?
             }
         } else {
-            for layer in self.layers.iter_mut() {
+            for layer in self.layers.iter() {
                 xs = layer.forward(
                     &xs,
                     attention_mask.as_ref(),

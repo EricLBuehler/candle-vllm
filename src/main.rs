@@ -80,6 +80,40 @@ struct Args {
     /// Record conversation (default false, the client need to record chat history)
     #[arg(long)]
     record_conversation: bool,
+
+    #[arg(long, value_delimiter = ',')]
+    device_ids: Option<Vec<usize>>,
+}
+
+fn get_cache_config(
+    kvcache_mem_gpu: usize,
+    kvcache_mem_cpu: usize,
+    block_size: usize,
+    config: &Config,
+    num_shards: usize,
+) -> CacheConfig {
+    let dsize = config.kv_cache_dtype.size_in_bytes();
+    let num_gpu_blocks = kvcache_mem_gpu * SIZE_IN_MB
+        / dsize
+        / block_size
+        / (config.num_key_value_heads / num_shards)
+        / config.get_head_size()
+        / config.num_hidden_layers
+        / 2;
+    let num_cpu_blocks = kvcache_mem_cpu * SIZE_IN_MB
+        / dsize
+        / block_size
+        / (config.num_key_value_heads / num_shards)
+        / config.get_head_size()
+        / config.num_hidden_layers
+        / 2;
+    CacheConfig {
+        block_size: block_size,
+        num_gpu_blocks: Some(num_gpu_blocks),
+        num_cpu_blocks: Some(num_cpu_blocks),
+        fully_init: true,
+        dtype: config.kv_cache_dtype,
+    }
 }
 
 #[tokio::main]
@@ -92,7 +126,7 @@ async fn main() -> Result<(), APIError> {
 
     let paths = match (&args.weight_path, &args.weight_file) {
         //model in a folder (safetensor format, huggingface folder structure)
-        (Some(path), None) => Box::new(DefaultModelPaths {
+        (Some(path), None) => DefaultModelPaths {
             tokenizer_filename: Path::new(path).join("tokenizer.json"),
             config_filename: Path::new(path).join("config.json"),
             filenames: if Path::new(path)
@@ -106,9 +140,9 @@ async fn main() -> Result<(), APIError> {
                 safetensors_files.insert(0, Path::new(path).join("model.safetensors"));
                 safetensors_files
             },
-        }),
+        },
         //model in a quantized file (gguf/ggml format)
-        (Some(path), Some(file)) => Box::new(DefaultModelPaths {
+        (Some(path), Some(file)) => DefaultModelPaths {
             tokenizer_filename: {
                 //we need to download tokenizer for the ggufl/ggml model
                 let api = hf_hub::api::sync::Api::new().unwrap();
@@ -121,7 +155,7 @@ async fn main() -> Result<(), APIError> {
             } else {
                 panic!("Model file not found {}", file);
             },
-        }),
+        },
         _ => {
             if args.hf_token.is_none() && args.hf_token_path.is_none() {
                 //no token provided
@@ -156,45 +190,64 @@ async fn main() -> Result<(), APIError> {
         None => DType::BF16,
     };
 
-    let device = candle_examples::device(args.cpu).unwrap();
-    let model = loader.load_model(paths, dtype, quant, device)?;
-    let config: Config = model.0.get_model_config();
-    let dsize = config.kv_cache_dtype.size_in_bytes();
-    let num_gpu_blocks = args.kvcache_mem_gpu * SIZE_IN_MB
-        / dsize
-        / args.block_size
-        / config.num_key_value_heads
-        / config.get_head_size()
-        / config.num_hidden_layers
-        / 2;
-    let num_cpu_blocks = args.kvcache_mem_cpu * SIZE_IN_MB
-        / dsize
-        / args.block_size
-        / config.num_key_value_heads
-        / config.get_head_size()
-        / config.num_hidden_layers
-        / 2;
-    let cache_config = CacheConfig {
-        block_size: args.block_size,
-        num_gpu_blocks: Some(num_gpu_blocks),
-        num_cpu_blocks: Some(num_cpu_blocks),
-        fully_init: true,
-        dtype: config.kv_cache_dtype,
+    let device_ids: Vec<usize> = match args.device_ids {
+        Some(ids) => ids,
+        _ => vec![0usize],
     };
+    let num_shards = device_ids.len();
+    use candle_vllm::scheduler::cache_engine::CacheEngine;
+    let (default_pipelines, pipeline_config) =
+        loader.load_model(paths, dtype, &quant, device_ids).await?;
+
+    let mut config: Option<Config> = None;
+    let mut cache_config: Option<CacheConfig> = None;
+
+    let pipelines = default_pipelines
+        .into_iter()
+        .map(|pipeline| {
+            let cfg = pipeline.get_model_config();
+            let cache_cfg = get_cache_config(
+                args.kvcache_mem_gpu,
+                args.kvcache_mem_cpu,
+                args.block_size,
+                &cfg,
+                num_shards,
+            );
+            let cache_engine = CacheEngine::new(
+                &cfg,
+                &cache_cfg,
+                cache_cfg.dtype,
+                &pipeline.device(),
+                num_shards,
+            )
+            .unwrap();
+            if config.is_none() {
+                config = Some(cfg.clone());
+            }
+            if cache_config.is_none() {
+                cache_config = Some(cache_cfg.clone());
+            }
+            (pipeline.rank(), (pipeline, cache_engine))
+        })
+        .collect();
+
+    let cache_config = cache_config.as_ref().unwrap().clone();
+    let config = config.as_ref().unwrap().clone();
     println!("Cache config {:?}", cache_config);
     let finish_notify = Arc::new(Notify::new());
     let llm_engine = LLMEngine::new(
-        model.0,
+        pipelines,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
         },
-        cache_config,
+        &cache_config,
+        &config,
         Arc::new(Notify::new()),
         finish_notify.clone(),
     )?;
 
     let server_data = OpenAIServerData {
-        pipeline_config: model.1,
+        pipeline_config,
         model: llm_engine,
         record_conversation: args.record_conversation,
         device: Device::Cpu,

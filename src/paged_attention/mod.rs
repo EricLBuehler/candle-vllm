@@ -59,14 +59,14 @@ impl PagedAttention {
     ///     block_size]
     /// input_metadata: metadata for paged attention.
     pub fn forward(
-        &mut self,
+        &self,
         query: &Tensor,
         key: &Tensor,
         value: &Tensor,
         attention_mask: Option<&Tensor>,
-        mut key_cache: Option<Tensor>,
-        mut value_cache: Option<Tensor>,
-        input_metadata: &mut InputMetadata,
+        key_cache: Option<Tensor>,
+        value_cache: Option<Tensor>,
+        input_metadata: &InputMetadata,
         softcapping: Option<f64>,
     ) -> Result<Tensor> {
         let dims = input_metadata.slot_mapping.dims();
@@ -146,8 +146,8 @@ impl PagedAttention {
             reshape_and_cache(
                 &key,
                 &value,
-                key_cache.as_mut().unwrap(),
-                value_cache.as_mut().unwrap(),
+                key_cache.as_ref().unwrap(),
+                value_cache.as_ref().unwrap(),
                 &slot_mapping,
             )?;
         }

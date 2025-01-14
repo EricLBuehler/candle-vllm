@@ -1,12 +1,16 @@
 #![warn(clippy::cast_lossless)]
-use std::fmt::Display;
-
-use candle::Result;
+use candle::utils::{cuda_is_available, metal_is_available};
+use candle::{Device, Result};
 use candle_core as candle;
 use clap::Subcommand;
-use openai::pipelines::{pipeline::DefaultLoader, ModelLoader};
+use openai::pipelines::pipeline::DefaultLoader;
+use std::fmt::Display;
 use std::path::Path;
 
+pub mod backend;
+pub mod openai;
+pub mod paged_attention;
+pub mod scheduler;
 #[derive(Debug, Subcommand)]
 pub enum ModelSelected {
     /// Select the llama model (default llama2-7b).
@@ -261,7 +265,7 @@ impl SpecificConfig {
 pub fn get_model_loader(
     selected_model: ModelSelected,
     model_id: Option<String>,
-) -> (Box<dyn ModelLoader>, String, Option<String>) {
+) -> (Box<DefaultLoader>, String, Option<String>) {
     match selected_model {
         ModelSelected::Llama {
             repeat_last_n,
@@ -527,7 +531,24 @@ pub fn hub_load_local_safetensors(
     Ok(safetensors_files)
 }
 
-pub mod backend;
-pub mod openai;
-pub mod paged_attention;
-pub mod scheduler;
+pub fn new_device(ordinal: usize) -> Result<Device> {
+    if cuda_is_available() {
+        use candle_core::CudaDevice;
+        let device = Device::Cuda(CudaDevice::new_with_stream(ordinal).unwrap());
+        Ok(device)
+    } else if metal_is_available() {
+        Ok(Device::new_metal(ordinal)?)
+    } else {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            println!(
+                "Running on CPU, to run on GPU(metal), build this example with `--features metal`"
+            );
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        {
+            println!("Running on CPU, to run on GPU, build this example with `--features cuda`");
+        }
+        Ok(Device::Cpu)
+    }
+}

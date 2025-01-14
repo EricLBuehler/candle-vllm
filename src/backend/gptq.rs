@@ -94,6 +94,7 @@ impl GPTQMatMul {
                         size_n as i32,                    //n
                         workspace_ptr,
                         groupsize as i32,
+                        *dev.cu_stream() as i64,
                     );
                 } else if x.dtype() == DType::BF16 {
                     marlin_4bit_bf16(
@@ -106,6 +107,7 @@ impl GPTQMatMul {
                         size_n as i32,                    //n
                         workspace_ptr,
                         groupsize as i32,
+                        *dev.cu_stream() as i64,
                     );
                 }
             } else {
@@ -145,6 +147,7 @@ impl GPTQMatMul {
                         size_n as i32,
                         size_k as i32,
                         self.bits,
+                        *dev.cu_stream() as i64,
                     )
                 } else {
                     candle::bail!("GPTQMatMul is only supported for f16 non-marlin matmul. Use '--dtype f16' parameter instead.");
@@ -244,7 +247,15 @@ impl GPTQRepack {
         let out_ptr = *out.device_ptr() as *const core::ffi::c_void;
         let q_ptr = *q.device_ptr() as *const core::ffi::c_void;
 
-        unsafe { gptq_repack(q_ptr, out_ptr, q_shape[0] as i32, q_shape[1] as i32) }
+        unsafe {
+            gptq_repack(
+                q_ptr,
+                out_ptr,
+                q_shape[0] as i32,
+                q_shape[1] as i32,
+                *dev.cu_stream() as i64,
+            )
+        }
 
         let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
         Ok((out, oshape))

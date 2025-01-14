@@ -1,14 +1,11 @@
 use candle_core::Tensor;
-
-use super::attn_bias::AttentionBiasBlockDiagonal;
-
 pub struct InputMetadata {
     pub prompt_lens: Vec<usize>,
     pub max_context_len: Option<usize>,
     pub block_tables: Option<Tensor>,
     pub context_lens: Option<Tensor>,
     pub slot_mapping: Tensor,
-    pub attn_bias: Option<Box<dyn AttentionBiasBlockDiagonal>>,
+    // pub attn_bias: Option<AttentionBiasBlockDiagonal>,
     pub is_prompt: bool,
     pub kv_cache_dtype: String,
 }
@@ -35,7 +32,7 @@ impl InputMetadata {
             block_tables,
             context_lens,
             slot_mapping,
-            attn_bias: None,
+            // attn_bias: None,
             is_prompt,
             kv_cache_dtype,
         }

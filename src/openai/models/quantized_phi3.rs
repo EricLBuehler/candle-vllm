@@ -97,12 +97,12 @@ impl LayerWeights {
     }
 
     fn forward_attn(
-        &mut self,
+        &self,
         x: &Tensor,
         mask: Option<&Tensor>,
         input_positions: &[Vec<usize>],
         cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_sz, seq_len, n_embd) = x.dims3()?;
         let qkv = self.attn_qkv.forward(x)?;
@@ -342,11 +342,11 @@ impl GGUFPhi3 {
     }
 
     pub fn forward(
-        &mut self,
+        &self,
         xs: &Tensor,
         input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
-        input_metadata: &mut InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_sz, seq_len) = xs.dims2()?;
         let mask = if seq_len == 1 {
@@ -357,7 +357,7 @@ impl GGUFPhi3 {
         let mut xs = self.tok_embeddings.forward(xs)?;
 
         if let Some(kv_caches) = kv_caches {
-            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter_mut()) {
+            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
                 let residual = &xs;
                 let ys = xs.apply(&layer.attn_norm)?;
                 let ys = layer.forward_attn(
@@ -374,7 +374,7 @@ impl GGUFPhi3 {
                 xs = (ys + residual)?
             }
         } else {
-            for layer in self.layers.iter_mut() {
+            for layer in self.layers.iter() {
                 let residual = &xs;
                 let ys = xs.apply(&layer.attn_norm)?;
                 let ys = layer.forward_attn(

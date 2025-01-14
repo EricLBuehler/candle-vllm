@@ -1,4 +1,4 @@
-use super::{get_token, ModelLoader, ModelPaths, ModulePipeline, TokenOrFinishReason};
+use super::{get_token, TokenOrFinishReason};
 use crate::openai::logits_processor::{LogitsProcessor, Sampling};
 use crate::openai::models::TokenID;
 use crate::openai::sampling_params::{Logprobs, TopLogprob};
@@ -30,6 +30,10 @@ use crate::{
     paged_attention::input_metadata::InputMetadata,
     try_api, SpecificConfig,
 };
+
+#[cfg(feature = "nccl")]
+use crate::openai::models::llama_multi::LlamaMulti;
+
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
@@ -39,6 +43,7 @@ use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use rayon::prelude::*;
 use std::collections::VecDeque;
+pub use std::rc::Rc;
 use std::{path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
 const EOS_TOKEN: &str = "</s>";
@@ -56,6 +61,8 @@ enum LLMModel {
     StableLM(StableLM),
     LlamaGGUF(GGUFLLaMa),
     Phi3GGUF(GGUFPhi3),
+    #[cfg(feature = "nccl")]
+    LlamaMulti(LlamaMulti),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -68,6 +75,7 @@ pub struct DefaultPipeline {
     dtype: DType,
     device: Device,
     stop_token_ids: Vec<u32>,
+    rank: usize,
 }
 
 pub struct DefaultLoader {
@@ -75,21 +83,22 @@ pub struct DefaultLoader {
     name: String,
 }
 
-pub struct DefaultModelPaths<P> {
-    pub tokenizer_filename: P,
-    pub config_filename: P,
-    pub filenames: Vec<P>,
+#[derive(Debug, Clone)]
+pub struct DefaultModelPaths {
+    pub tokenizer_filename: PathBuf,
+    pub config_filename: PathBuf,
+    pub filenames: Vec<PathBuf>,
 }
 
-impl ModelPaths for DefaultModelPaths<PathBuf> {
-    fn get_config_filename(&self) -> &PathBuf {
-        &self.config_filename
+impl DefaultModelPaths {
+    fn get_config_filename(&self) -> PathBuf {
+        self.config_filename.clone()
     }
-    fn get_tokenizer_filename(&self) -> &PathBuf {
-        &self.tokenizer_filename
+    fn get_tokenizer_filename(&self) -> PathBuf {
+        self.tokenizer_filename.clone()
     }
-    fn get_weight_filenames(&self) -> &Vec<PathBuf> {
-        &self.filenames
+    fn get_weight_filenames(&self) -> Vec<PathBuf> {
+        self.filenames.clone()
     }
 }
 
@@ -99,14 +108,14 @@ impl DefaultLoader {
     }
 }
 
-impl ModelLoader for DefaultLoader {
-    fn download_model(
+impl DefaultLoader {
+    pub fn download_model(
         &self,
         model_id: String,
         revision: Option<String>,
         hf_token: Option<String>,
         hf_token_path: Option<String>,
-    ) -> Result<Box<dyn ModelPaths>, APIError> {
+    ) -> Result<DefaultModelPaths, APIError> {
         let api = try_api!(ApiBuilder::new()
             .with_progress(true)
             .with_token(Some(get_token(hf_token, hf_token_path)?))
@@ -129,26 +138,26 @@ impl ModelLoader for DefaultLoader {
             filenames.push(filename);
         }
 
-        Ok(Box::new(DefaultModelPaths {
+        Ok(DefaultModelPaths {
             tokenizer_filename,
             config_filename,
             filenames,
-        }))
+        })
     }
 
-    fn load_model(
+    pub async fn load_model(
         &self,
-        paths: Box<dyn ModelPaths>,
+        paths: DefaultModelPaths,
         dtype: DType,
-        quant: Option<String>,
-        device: Device,
-    ) -> Result<(Box<dyn ModulePipeline>, PipelineConfig), APIError> {
+        quant: &Option<String>,
+        device_ids: Vec<usize>,
+    ) -> Result<(Vec<Box<DefaultPipeline>>, PipelineConfig), APIError> {
         let specific_args = self.config.clone();
-        let mut stop_token_ids = Vec::<u32>::new();
 
-        let (model, config, tokenizer, sep_style) = if quant.is_some()
-            && matches!(quant.unwrap().as_str(), "ggml" | "gguf")
+        let (models, devices, config, sep_style) = if quant.is_some()
+            && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf")
         {
+            let device = crate::new_device(device_ids[0]).unwrap();
             let path = paths.get_weight_filenames()[0].clone();
             println!(
                 "Loading quantized {} model from file {}",
@@ -183,11 +192,7 @@ impl ModelLoader for DefaultLoader {
                 }
                 _ => panic!("Model not supported!"),
             };
-            let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
-                .map_err(|x| APIError::new(x.to_string()))?;
-            let tokenizer =
-                candle_examples::token_output_stream::TokenOutputStream::new(tokenizer_);
-            (model, config.to_owned(), tokenizer, sep_style)
+            (vec![model], vec![device], config.to_owned(), sep_style)
         } else {
             let config = match self.name.as_str() {
                 "llama" | "llama3" => {
@@ -245,81 +250,126 @@ impl ModelLoader for DefaultLoader {
             println!("Model {:?}", config);
 
             println!("Loading {} model.", self.name);
+            #[cfg(feature = "nccl")]
+            let (models, devices, sep_style) = if device_ids.len() > 1 {
+                use cudarc::nccl::safe::{Comm, Id};
+                let id = Id::new().unwrap();
+                let results: Vec<_> = device_ids
+                    .par_iter()
+                    .enumerate()
+                    .map(|(rank, dev_id)| {
+                        println!(
+                            "Loading partial model on device rank {} (ordinal {})",
+                            rank, *dev_id
+                        );
+                        let paths: Vec<PathBuf> = paths.get_weight_filenames();
+                        let device = crate::new_device(*dev_id).unwrap();
+                        let comm = Rc::new(
+                            Comm::from_rank(
+                                device.as_cuda_device().unwrap().cuda_device(),
+                                rank,
+                                device_ids.len(),
+                                id,
+                            )
+                            .unwrap(),
+                        );
+                        let vb = unsafe {
+                            candle_nn::var_builder::ShardedSafeTensors::var_builder(
+                                &paths, dtype, &device,
+                            )
+                            .unwrap()
+                        };
+                        match self.name.as_str() {
+                            "llama" | "llama3" => Ok((
+                                device.clone(),
+                                LLMModel::LlamaMulti(try_api!(LlamaMulti::load(
+                                    vb, &config, dtype, &device, comm
+                                ))),
+                            )),
+                            _ => panic!("Model not supported!"),
+                        }
+                    })
+                    .collect();
 
-            let vb = match unsafe {
-                VarBuilder::from_mmaped_safetensors(paths.get_weight_filenames(), dtype, &device)
-            } {
-                Ok(vb_) => vb_,
-                _ => panic!("Load model weights failed!"),
-            };
-
-            let (model, sep_style) = match self.name.as_str() {
-                "llama" => (
-                    LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
-                    SeparatorStyle::Llama,
-                ),
-                "llama3" => (
-                    LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
-                    SeparatorStyle::Llama3,
-                ),
-                "phi2" => (
-                    LLMModel::Phi2(try_api!(Phi2::new(vb, &config, dtype, &device))),
-                    SeparatorStyle::Phi,
-                ),
-                "phi3" => (
-                    LLMModel::Phi3(try_api!(Phi::new(vb, &config, dtype, &device))),
-                    SeparatorStyle::Phi,
-                ),
-                "qwen2" => (
-                    LLMModel::Qwen2(try_api!(Qwen2::new(vb, &config, dtype, &device))),
-                    SeparatorStyle::Qwen2,
-                ),
-                "gemma" => (
-                    LLMModel::Gemma(try_api!(Gemma::new(vb, &config, dtype, &device))),
-                    SeparatorStyle::Gemma,
-                ),
-                "mistral" => (
-                    LLMModel::Mistral(try_api!(Mistral::new(vb, &config, dtype, &device))),
-                    SeparatorStyle::Mistral,
-                ),
-                "yi" => (
-                    LLMModel::Yi(try_api!(Yi::new(vb, &config, dtype, &device))),
-                    SeparatorStyle::Yi,
-                ),
-                "stablelm" => (
-                    LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
-                    SeparatorStyle::StableLM,
-                ),
-                _ => panic!("Model not supported!"),
-            };
-            match &config.eos_token_id {
-                //eos_token defined in the config
-                TokenID(Either::Left(eos_token)) => {
-                    if let Some(tk) = eos_token {
-                        stop_token_ids.push(*tk);
+                // Separate devices and models from the results
+                let mut devices = Vec::new();
+                let mut models = Vec::new();
+                for result in results {
+                    match result {
+                        Ok((device, model)) => {
+                            devices.push(device);
+                            models.push(model);
+                        }
+                        Err(e) => {
+                            return Err(e.into());
+                        }
                     }
                 }
-                TokenID(Either::Right(eos_token_list)) => {
-                    if let Some(tks) = eos_token_list {
-                        stop_token_ids.extend(tks)
-                    }
-                }
-            }
 
-            let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
-                .map_err(|x| APIError::new(x.to_string()))?;
-            let tokenizer =
-                candle_examples::token_output_stream::TokenOutputStream::new(tokenizer_);
+                (models, devices, SeparatorStyle::Llama3)
+            } else {
+                panic!("You've enabled nccl feature for multi-gpu inference but only one device was given!");
+            };
 
-            //custom stop tokens
-            if let Some(custom_stop) = &config.custom_stop_tokens {
-                for stop in custom_stop {
-                    if let Some(token) = tokenizer.get_token(stop) {
-                        stop_token_ids.push(token)
-                    };
-                }
-            }
-            (model, config, tokenizer, sep_style)
+            #[cfg(not(feature = "nccl"))]
+            let (models, devices, sep_style) = if device_ids.len() < 2 {
+                let device = crate::new_device(device_ids[0]).unwrap();
+                let vb = match unsafe {
+                    VarBuilder::from_mmaped_safetensors(
+                        &paths.get_weight_filenames(),
+                        dtype,
+                        &device,
+                    )
+                } {
+                    Ok(vb_) => vb_,
+                    _ => panic!("Load model weights failed!"),
+                };
+
+                let (model, sep) = match self.name.as_str() {
+                    "llama" => (
+                        LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
+                        SeparatorStyle::Llama,
+                    ),
+                    "llama3" => (
+                        LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
+                        SeparatorStyle::Llama3,
+                    ),
+                    "phi2" => (
+                        LLMModel::Phi2(try_api!(Phi2::new(vb, &config, dtype, &device))),
+                        SeparatorStyle::Phi,
+                    ),
+                    "phi3" => (
+                        LLMModel::Phi3(try_api!(Phi::new(vb, &config, dtype, &device))),
+                        SeparatorStyle::Phi,
+                    ),
+                    "qwen2" => (
+                        LLMModel::Qwen2(try_api!(Qwen2::new(vb, &config, dtype, &device))),
+                        SeparatorStyle::Qwen2,
+                    ),
+                    "gemma" => (
+                        LLMModel::Gemma(try_api!(Gemma::new(vb, &config, dtype, &device))),
+                        SeparatorStyle::Gemma,
+                    ),
+                    "mistral" => (
+                        LLMModel::Mistral(try_api!(Mistral::new(vb, &config, dtype, &device))),
+                        SeparatorStyle::Mistral,
+                    ),
+                    "yi" => (
+                        LLMModel::Yi(try_api!(Yi::new(vb, &config, dtype, &device))),
+                        SeparatorStyle::Yi,
+                    ),
+                    "stablelm" => (
+                        LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
+                        SeparatorStyle::StableLM,
+                    ),
+                    _ => panic!("Model not supported!"),
+                };
+                (vec![model], vec![device], sep)
+            } else {
+                panic!("You've provided multiple devices for inference but nccl feature is not enabled!");
+            };
+
+            (models, devices, config, sep_style)
         };
 
         println!("Done loading.");
@@ -339,74 +389,106 @@ impl ModelLoader for DefaultLoader {
         };
 
         println!("{:?}", pipeline_config);
-
-        if stop_token_ids.is_empty() {
-            //if no eos_token defined in the config, use default
-            if let Some(token) = tokenizer.get_token("<|endoftext|>") {
-                stop_token_ids.push(token);
-            }
-            if let Some(token) = tokenizer.get_token("<|end|>") {
-                stop_token_ids.push(token);
-            } else if stop_token_ids.is_empty() {
-                let token = tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap_or(0);
-                stop_token_ids.push(token);
-            }
-        }
-
         println!("{:?}", specific_args);
 
-        let logits_processor = {
-            let temperature = f64::from(pipeline_config.temperature);
-            let sampling = if temperature <= 0. {
-                Sampling::ArgMax
-            } else {
-                match (specific_args.top_k, specific_args.top_p) {
-                    (None, None) => Sampling::All { temperature },
-                    (Some(k), None) => Sampling::TopK { k, temperature },
-                    (None, Some(p)) => Sampling::TopP { p, temperature },
-                    (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
-                }
-            };
-            LogitsProcessor::from_sampling(SAMPLING_SEED, sampling)
-        };
+        let pipelines = models
+            .into_iter()
+            .enumerate()
+            .map(|(rank, model)| {
+                let logits_processor = {
+                    let temperature = f64::from(pipeline_config.temperature);
+                    let sampling = if temperature <= 0. {
+                        Sampling::ArgMax
+                    } else {
+                        match (specific_args.top_k, specific_args.top_p) {
+                            (None, None) => Sampling::All { temperature },
+                            (Some(k), None) => Sampling::TopK { k, temperature },
+                            (None, Some(p)) => Sampling::TopP { p, temperature },
+                            (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
+                        }
+                    };
+                    LogitsProcessor::from_sampling(SAMPLING_SEED, sampling)
+                };
+                let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
+                    .map_err(|x| APIError::new(x.to_string()))
+                    .unwrap();
+                let tokenizer =
+                    candle_examples::token_output_stream::TokenOutputStream::new(tokenizer_);
 
-        Ok((
-            Box::new(DefaultPipeline {
-                model,
-                args: specific_args,
-                tokenizer,
-                logits_processor,
-                conversation: DefaultConversation::new(
-                    self.name.to_string(),
-                    "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string(),
-                    Vec::default(),
-                    0,
-                    sep_style,
-                    "".to_string(),
-                    stop_token_ids.clone(),
-                    ("user".to_string(), "assistant".to_string()),
-                    DefaultConversationSeparators {
-                        sep: " ".to_string(),
-                        sep2: Some(" </s></s>".to_string()),
-                    },
-                ),
-                name: self.name.clone(),
-                dtype,
-                device: device.clone(),
-                stop_token_ids,
-            }),
-            pipeline_config,
-        ))
+                let mut stop_token_ids = Vec::<u32>::new();
+                match &config.eos_token_id {
+                    //eos_token defined in the config
+                    TokenID(Either::Left(eos_token)) => {
+                        if let Some(tk) = eos_token {
+                            stop_token_ids.push(*tk);
+                        }
+                    }
+                    TokenID(Either::Right(eos_token_list)) => {
+                        if let Some(tks) = eos_token_list {
+                            stop_token_ids.extend(tks)
+                        }
+                    }
+                }
+                //custom stop tokens
+                if let Some(custom_stop) = &config.custom_stop_tokens {
+                    for stop in custom_stop {
+                        if let Some(token) = tokenizer.get_token(stop) {
+                            stop_token_ids.push(token)
+                        };
+                    }
+                }
+
+                if stop_token_ids.is_empty() {
+                    //if no eos_token defined in the config, use default
+                    if let Some(token) = tokenizer.get_token("<|endoftext|>") {
+                        stop_token_ids.push(token);
+                    }
+                    if let Some(token) = tokenizer.get_token("<|end|>") {
+                        stop_token_ids.push(token);
+                    } else if stop_token_ids.is_empty() {
+                        let token = tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap_or(0);
+                        stop_token_ids.push(token);
+                    }
+                }
+                Box::new(DefaultPipeline {
+                    model,
+                    args: specific_args.clone(),
+                    tokenizer,
+                    logits_processor,
+                    conversation: DefaultConversation::new(
+                        self.name.to_string(),
+                        "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string(),
+                        Vec::default(),
+                        0,
+                        sep_style.clone(),
+                        "".to_string(),
+                        stop_token_ids.clone(),
+                        ("user".to_string(), "assistant".to_string()),
+                        DefaultConversationSeparators {
+                            sep: " ".to_string(),
+                            sep2: Some(" </s></s>".to_string()),
+                        },
+                    ),
+                    name: self.name.clone(),
+                    dtype,
+                    device: devices[rank].clone(),
+                    stop_token_ids,
+                    rank,
+                })
+            })
+            .collect();
+
+        Ok((pipelines, pipeline_config))
     }
 }
 
-impl ModulePipeline for DefaultPipeline {
-    fn forward(
-        &mut self,
+impl DefaultPipeline {
+    pub fn forward(
+        &self,
         input_tokens: Tensor,
         input_positions: &[Vec<usize>],
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
-        mut input_metadata: InputMetadata,
+        input_metadata: &InputMetadata,
     ) -> Result<Tensor, APIError> {
         let input_tokens = if input_tokens.shape().dims().len() < 2 {
             input_tokens
@@ -416,93 +498,47 @@ impl ModulePipeline for DefaultPipeline {
             input_tokens
         };
 
-        match &mut self.model {
+        match &self.model {
             LLMModel::Llama(llama) => llama
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .map_err(APIError::from),
+            #[cfg(feature = "nccl")]
+            LLMModel::LlamaMulti(llama) => llama
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Phi2(phi) => phi
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Phi3(phi) => phi
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Qwen2(qwen2) => qwen2
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Gemma(gemma) => gemma
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Mistral(mistral) => mistral
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Yi(yi) => yi
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::StableLM(stablelm) => stablelm
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Phi3GGUF(phi3) => phi3
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::LlamaGGUF(llama) => llama
-                .forward(
-                    &input_tokens,
-                    input_positions,
-                    kv_cache,
-                    &mut input_metadata,
-                )
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
         }
     }
 
-    fn sample(
+    pub fn sample(
         &mut self,
-        logits: Tensor,
+        logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         use std::collections::HashMap;
@@ -602,9 +638,9 @@ impl ModulePipeline for DefaultPipeline {
         Ok(result)
     }
 
-    fn sample_batch(
+    pub fn sample_batch(
         &mut self,
-        logits: Tensor,
+        logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
         use std::collections::HashMap;
@@ -658,24 +694,26 @@ impl ModulePipeline for DefaultPipeline {
         Ok(result)
     }
 
-    fn name(&self) -> &str {
+    pub fn name(&self) -> &str {
         &self.name
     }
 
-    fn tokenizer(&self) -> &TokenOutputStream {
+    pub fn tokenizer(&self) -> &TokenOutputStream {
         &self.tokenizer
     }
 
-    fn get_conversation(&mut self, with_history: bool) -> &mut dyn Conversation {
+    pub fn get_conversation(&mut self, with_history: bool) -> &mut dyn Conversation {
         if !with_history {
             self.conversation.clear_message();
         }
         &mut self.conversation
     }
 
-    fn get_model_config(&self) -> Config {
+    pub fn get_model_config(&self) -> Config {
         match &self.model {
             LLMModel::Llama(llama) => llama.get_config().clone(),
+            #[cfg(feature = "nccl")]
+            LLMModel::LlamaMulti(llama) => llama.get_config().clone(),
             LLMModel::Phi2(phi) => phi.get_config().clone(),
             LLMModel::Phi3(phi) => phi.get_config().clone(),
             LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),
@@ -688,18 +726,22 @@ impl ModulePipeline for DefaultPipeline {
         }
     }
 
-    fn get_dtype(&self) -> DType {
+    pub fn get_dtype(&self) -> DType {
         self.dtype
     }
 
-    fn device(&self) -> &Device {
+    pub fn device(&self) -> &Device {
         &self.device
     }
 
-    fn reset_decoder(&mut self) -> Option<String> {
+    pub fn reset_decoder(&mut self) -> Option<String> {
         let ret = self.tokenizer.decode_rest().unwrap_or(None);
         self.tokenizer.clear();
         ret
+    }
+
+    pub fn rank(&self) -> usize {
+        self.rank
     }
 }
 
