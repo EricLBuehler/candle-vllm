@@ -262,7 +262,7 @@ impl DefaultLoader {
                             "Loading partial model on device rank {} (ordinal {})",
                             rank, *dev_id
                         );
-                        let pathes: Vec<PathBuf> = paths.get_weight_filenames();
+                        let paths: Vec<PathBuf> = paths.get_weight_filenames();
                         let device = crate::new_device(*dev_id).unwrap();
                         let comm = Rc::new(
                             Comm::from_rank(
@@ -275,7 +275,7 @@ impl DefaultLoader {
                         );
                         let vb = unsafe {
                             candle_nn::var_builder::ShardedSafeTensors::var_builder(
-                                &pathes, dtype, &device,
+                                &paths, dtype, &device,
                             )
                             .unwrap()
                         };
@@ -366,7 +366,7 @@ impl DefaultLoader {
                 };
                 (vec![model], vec![device], sep)
             } else {
-                panic!("You've provided multiple devices for inference but nccl feature is not enalbed!");
+                panic!("You've provided multiple devices for inference but nccl feature is not enabled!");
             };
 
             (models, devices, config, sep_style)
