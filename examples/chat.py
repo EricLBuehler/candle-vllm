@@ -2,7 +2,9 @@ import json
 import sys
 import readline  # Standard library imports
 import click
+import os
 import openai
+import time
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
@@ -11,13 +13,21 @@ from rich.rule import Rule
 openai.api_key = "EMPTY" # no key needed since we use local candle-vllm service
 openai.base_url = "http://localhost:2000/v1/"
 
+def clear_console():
+    """Clears the console."""
+    command = 'cls' if os.name in ('nt', 'dos') else 'clear'
+    os.system(command)
+    print("\n")
+
 @click.command()
 @click.argument("system_prompt", type=str, required=False)
 @click.option("--stream", is_flag=True, default=False,
               help="Enable streaming output for responses.")
-@click.option("--max_tokens", type=int, default=1024,
-              help="Maximum tokens for each response.")
-def chatloop(system_prompt: str, stream: bool, max_tokens: int):
+@click.option("--max_tokens", type=int, default=1024*16,
+              help="Maximum generated tokens for each response.")
+@click.option("--frequency", type=int, default=10,
+              help="Times per second for output refresh.")
+def chatloop(system_prompt: str, stream: bool, max_tokens: int, frequency: int):
     """
     A command-line chatbot interface using OpenAI API and candle-vllm as backend.
     
@@ -26,7 +36,7 @@ def chatloop(system_prompt: str, stream: bool, max_tokens: int):
     """
     console = Console()
     messages = []
-
+    clear_console()
     # Add a system prompt if provided
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -55,13 +65,15 @@ def chatloop(system_prompt: str, stream: bool, max_tokens: int):
                 console.print(Rule(title="Candle-vLLM:", align="left", style="cyan"))
                 # Handle streaming response
                 msg = ""
-                with Live(console=console, auto_refresh=False, vertical_overflow="visible") as live:
+                with Live(console=console, auto_refresh=True, refresh_per_second=frequency, vertical_overflow="visible") as live:
                     for chunk in response:
                         content = chunk.choices[0].delta.content
                         if content != None:
                             msg += content
-                            live.update(msg, refresh=True)
-  
+                            live.update(msg)
+                
+                clear_console() # clear repetitive live outputs
+                console.print(msg) #show final full results
                 console.print(Rule(style="cyan"), "")
                 # Save conversation history
                 messages.append(user_msg)

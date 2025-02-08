@@ -91,7 +91,7 @@ async fn check_length(
         .max_tokens
         .unwrap_or(data.pipeline_config.default_max_tokens);
 
-    if token_ids.len() + max_gen_tokens > data.pipeline_config.max_model_len {
+    if token_ids.len() > data.pipeline_config.max_model_len {
         Err(APIError::new(format!(
             "This model's maximum context length is {} tokens. \
             However, you requested {} tokens ({} in the messages, \

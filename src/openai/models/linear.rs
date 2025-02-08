@@ -205,7 +205,10 @@ pub fn qlinear(
             )?;
 
             let bs = if bias {
-                Some(vb.get_with_hints_dtype((out_dim,), "bias", Default::default(), DType::F16)?)
+                Some(
+                    vb.get_with_hints_dtype((out_dim,), "bias", Default::default(), DType::F16)?
+                        .to_dtype(dtype)?,
+                )
             } else {
                 None
             };
@@ -243,7 +246,9 @@ pub fn qlinear(
                     || (cfg.desc_act.is_some() && cfg.desc_act.unwrap() == true)
                 {
                     //only model with 4-bit and desc_act==false can be repacked to marlin format
-                    println!("The current GPTQ model does no compatible with marlin format because one of the following conditions: !cfg.sym || cfg.bits != 4 || (cfg.group_size != 128 && cfg.group_size != -1) || (cfg.desc_act == true)");
+                    if cfg.quant_method == "marlin" {
+                        println!("The current GPTQ model does no compatible with marlin format because one of the following conditions: !cfg.sym || cfg.bits != 4 || (cfg.group_size != 128 && cfg.group_size != -1) || (cfg.desc_act == true)");
+                    }
                     //conventional gptq format
                     Ok(Linear {
                         weight: ws,
