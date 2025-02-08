@@ -62,7 +62,7 @@ cargo run --release --features cuda -- --port 2000 --weight-path /home/DeepSeek-
 ```
 Note: assume model weights downloaded in folder `/home/DeepSeek-R1-Distill-Llama-8B/`
 
-Run **Marlin-compatible models**, e.g., **DeepSeek-R1-Distill-QWen-14B** (Suggested, Fatest approach)
+Run **Marlin-compatible models**, e.g., **DeepSeek-R1-Distill-QWen-14B** (Suggested, fastest approach)
 ```shell
 #model format (4-bit GPTQ, 128-group, desc_act=False)
 cargo run --release --features cuda -- --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
@@ -93,7 +93,7 @@ cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /
 ```
 **Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
 
-Run **Multi-GPU** inference with NCCL feature (LLaMa stucture at the moment)
+Run **Multi-GPU** inference with NCCL feature (LLaMa structure at the moment)
 
 ```shell
 cargo run --release --features cuda,nccl -- --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
