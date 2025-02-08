@@ -49,7 +49,7 @@ use tokenizers::Tokenizer;
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
 const MIN_GEN_TOKENS: usize = 128;
-const MAX_GEN_TOKENS: usize = 4096;
+const MAX_GEN_TOKENS: usize = 16 * 1024;
 enum LLMModel {
     Llama(Llama),
     Phi2(Phi2),
@@ -377,7 +377,7 @@ impl DefaultLoader {
         //max and min number of tokens generated per request
         let default_max_tokens = specific_args
             .max_gen_tokens
-            .unwrap_or(config.max_seq_len / 5)
+            .unwrap_or(config.max_seq_len / 2)
             .clamp(MIN_GEN_TOKENS, MAX_GEN_TOKENS);
 
         let pipeline_config = PipelineConfig {

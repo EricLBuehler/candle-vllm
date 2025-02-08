@@ -22,7 +22,7 @@ pub struct QwenConfig {
     pub num_attention_heads: usize,
     pub num_key_value_heads: usize,
     pub max_position_embeddings: usize,
-    pub sliding_window: usize,
+    pub sliding_window: Option<usize>,
     pub max_window_layers: usize,
     pub tie_word_embeddings: bool, //shared weights between input/output embeddings
     pub rope_theta: f64,
@@ -55,7 +55,7 @@ impl QwenConfig {
             bos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
             eos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
             max_seq_len: self.max_position_embeddings,
-            sliding_window: Some(self.sliding_window),
+            sliding_window: self.sliding_window,
             hidden_act: Some(self.hidden_act),
             tie_word_embeddings: self.tie_word_embeddings,
             rope_scaling: None,
