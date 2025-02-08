@@ -33,8 +33,9 @@ Currently, candle-vllm supports chat serving for the following models.
 | #8 | ChatGLM |TBD|TBD|TBD |-|TBD|
 | #9 | **QWen2 (1.8B, 7B)** |✅|148 tks/s (1.8B)|784 tks/s (1.8B) |-|TBD|
 | #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |**73 tks/s (Gemma2-9B, Marlin)** |**587 tks/s (Gemma2-9B)**|
-| #11 | Blip-large (Multimodal) |TBD|TBD|TBD |-|TBD|
-| #12 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|TBD|
+| #11 | **DeepSeek-R1-Distill-QWen** |TBD|TBD|TBD|**62 tks (QWen 14B)**|TBD|
+| #12 | **DeepSeek-R1-Distill-LLaMa** |TBD|TBD|TBD|**108 tks (LLaMa3.1 8B)**|TBD|
+| #13 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|TBD|
 
 
 ## Demo Chat with candle-vllm (~110 tokens/s, LLaMa3.1 8B, 4-bit Marlin, on A100)
@@ -44,34 +45,55 @@ https://github.com/user-attachments/assets/66b5b90e-e2ca-4f0b-82d7-99aa9f85568c
 ## Usage
 See [this folder](examples/) for some examples.
 
-### Step 1: Run Candle-VLLM service
+### Step 1: Start Candle-vLLM service by selecting the running method
 
+Install dependencies
 ```
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt install libssl-dev
 sudo apt install pkg-config
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
-cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
-Note: assume Llama-3.1-8B model weights downloaded in folder `/home/Meta-Llama-3.1-8B-Instruct/`
 
-You may also run specific model using huggingface model-id, e.g.,
+Run **Uncompressed** models
+```shell
+cargo run --release --features cuda -- --port 2000 --weight-path /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --temperature 0. --penalty 1.0
+```
+Note: assume model weights downloaded in folder `/home/DeepSeek-R1-Distill-Llama-8B/`
+
+Run **Marlin-compatible models**, e.g., **DeepSeek-R1-Distill-QWen-14B** (Suggested, Fatest approach)
+```shell
+#model format (4-bit GPTQ, 128-group, desc_act=False)
+cargo run --release --features cuda -- --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
+
+# If you don't have such model, you can convert Uncompressed model to Marlin-compatible format using the given script
+python3 examples/convert_marlin.py --src /home/DeepSeek-R1-Distill-Qwen-14B/ --dst /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
+```
+**Note:** Candle-vLLM will repack the GPTQ model into Marlin format during model loading
+
+Run **Marlin-format models**,
+```shell
+# If you have Marlin-format model, run it with (--quant marlin)
+cargo run --release --features cuda -- --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/ qwen2 --quant marlin --penalty 1.0 --temperature 0.
+```
+
+You may also run specific model using **Huggingface model-id**, e.g.,
 ```shell
 cargo run --release --features cuda -- --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama
 ```
 
-Run models on Mac/Metal devices (assume gguf model downloaded in `/Users/Downloads`)
+```shell
+cargo run --release --features cuda -- --port 2000 --model-id avoroshilov/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g --quant gptq --penalty 1.0 --temperature 0.
+```
 
+Run **GGUF/GGML** models on **Mac/Metal** devices (assume gguf model downloaded in `/Users/Downloads`)
 ```shell
 cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /Users/Downloads --weight-file Phi-3.5-mini-instruct-Q4_K_M.gguf phi3 --quant gguf --temperature 0. --penalty 1.0
 ```
-
 **Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
 
-__Refer to Marlin quantization below for running quantized GPTQ models.__
-
-Run `Multi-GPU` inference with NCCL feature
+Run **Multi-GPU** inference with NCCL feature (LLaMa stucture at the moment)
 
 ```shell
 cargo run --release --features cuda,nccl -- --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
@@ -252,9 +274,9 @@ Candle-vllm now supports GPTQ (Marlin kernel), you may supply the `quant` (marli
 ```
 cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
 ```
-You may also use `AutoGPTQ` to transform a model to marlin format by loading the (quantized) model, supplying the `use_marlin=True` in `AutoGPTQ` and resaving it with "save_pretrained". 
+You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 
 
-**Note:** only 4-bit GPTQ (marlin format) quantization supported at the moment, and the input data type should be `f16` (--dtype f16) or `bf16` (--dtype bf16). You need rename the transformed marlin weight to "model.safetensors" and copy the "tokenizer.json" from the source model folder.
+**Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment, and the input data type should be `bf16` (--dtype bf16) or `f16` (--dtype f16). 
 
 ## In-situ quantization (or in-situ marlin conversion)
 
