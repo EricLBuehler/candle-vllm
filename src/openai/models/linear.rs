@@ -205,7 +205,10 @@ pub fn qlinear(
             )?;
 
             let bs = if bias {
-                Some(vb.get_with_hints_dtype((out_dim,), "bias", Default::default(), DType::F16)?.to_dtype(dtype)?)
+                Some(
+                    vb.get_with_hints_dtype((out_dim,), "bias", Default::default(), DType::F16)?
+                        .to_dtype(dtype)?,
+                )
             } else {
                 None
             };

@@ -27,7 +27,7 @@ def clear_console():
               help="Maximum generated tokens for each response.")
 @click.option("--frequency", type=int, default=10,
               help="Times per second for output refresh.")
-def chatloop(system_prompt: str, stream: bool, max_tokens: int):
+def chatloop(system_prompt: str, stream: bool, max_tokens: int, frequency: int):
     """
     A command-line chatbot interface using OpenAI API and candle-vllm as backend.
     
@@ -65,14 +65,14 @@ def chatloop(system_prompt: str, stream: bool, max_tokens: int):
                 console.print(Rule(title="Candle-vLLM:", align="left", style="cyan"))
                 # Handle streaming response
                 msg = ""
-                with Live(console=console, auto_refresh=True, refresh_per_second=10, vertical_overflow="visible") as live:
+                with Live(console=console, auto_refresh=True, refresh_per_second=frequency, vertical_overflow="visible") as live:
                     for chunk in response:
                         content = chunk.choices[0].delta.content
                         if content != None:
                             msg += content
                             live.update(msg)
                 
-                clear_console() # clear repetive live outputs
+                clear_console() # clear repetitive live outputs
                 console.print(msg) #show final full results
                 console.print(Rule(style="cyan"), "")
                 # Save conversation history
