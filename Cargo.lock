@@ -500,11 +500,13 @@ dependencies = [
  "kernels",
  "metal 0.27.0",
  "metal-kernels",
+ "minijinja",
  "rand",
  "range-checked",
  "rayon",
  "serde",
  "serde_json",
+ "thiserror",
  "tokenizers",
  "tokio",
  "tower-http",
@@ -1914,6 +1916,15 @@ name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
+
+[[package]]
+name = "minijinja"
+version = "1.0.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55e877d961d4f96ce13615862322df7c0b6d169d40cab71a7ef3f9b9e594451e"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "minimal-lexical"

@@ -1,18 +1,35 @@
 pub mod default_conversation;
-
+use serde::Serialize;
 /// A trait for using conversation managers with a `ModulePipeline`.
 pub trait Conversation {
     fn set_system_message(&mut self, system_message: String);
 
     fn append_message(&mut self, role: String, message: String);
 
-    fn append_none_message(&mut self, role: String);
-
-    fn update_last_message(&mut self);
-
     fn get_roles(&self) -> &(String, String);
+
+    fn apply_chat_template(
+        &self,
+        add_generation_prompt: bool,
+    ) -> Result<String, ApplyChatTemplateError>;
 
     fn get_prompt(&mut self) -> String;
 
     fn clear_message(&mut self);
+}
+
+#[derive(Serialize, Debug)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ApplyChatTemplateError {
+    #[error("failed to add template")]
+    AddTemplateError(#[source] minijinja::Error),
+    #[error("failed to get template")]
+    GetTemplateError(#[source] minijinja::Error),
+    #[error("failed to render")]
+    RenderTemplateError(#[source] minijinja::Error),
 }

@@ -42,6 +42,14 @@ pub struct PipelineConfig {
     pub temperature: f32,
 }
 
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct TokenizerConfig {
+    pub model_max_length: Option<usize>,
+    pub add_bos_token: Option<bool>,
+    pub add_eos_token: Option<bool>,
+    pub chat_template: Option<String>,
+}
+
 pub struct OpenAIServerData {
     pub model: Arc<Mutex<LLMEngine>>,
     pub pipeline_config: PipelineConfig,

@@ -2,6 +2,7 @@ use super::{get_token, TokenOrFinishReason};
 use crate::openai::logits_processor::{LogitsProcessor, Sampling};
 use crate::openai::models::TokenID;
 use crate::openai::sampling_params::{Logprobs, TopLogprob};
+use crate::openai::TokenizerConfig;
 use crate::scheduler::sequence::SequenceGroup;
 use crate::{
     openai::{
@@ -30,6 +31,7 @@ use crate::{
     paged_attention::input_metadata::InputMetadata,
     try_api, SpecificConfig,
 };
+use std::path::Path;
 
 #[cfg(feature = "nccl")]
 use crate::openai::models::llama_multi::LlamaMulti;
@@ -86,6 +88,7 @@ pub struct DefaultLoader {
 #[derive(Debug, Clone)]
 pub struct DefaultModelPaths {
     pub tokenizer_filename: PathBuf,
+    pub tokenizer_config_filename: PathBuf,
     pub config_filename: PathBuf,
     pub filenames: Vec<PathBuf>,
 }
@@ -96,6 +99,9 @@ impl DefaultModelPaths {
     }
     fn get_tokenizer_filename(&self) -> PathBuf {
         self.tokenizer_filename.clone()
+    }
+    fn get_tokenizer_config_filename(&self) -> PathBuf {
+        self.tokenizer_config_filename.clone()
     }
     fn get_weight_filenames(&self) -> Vec<PathBuf> {
         self.filenames.clone()
@@ -127,6 +133,11 @@ impl DefaultLoader {
 
         let config_filename = try_api!(api.get("config.json"));
 
+        let tokenizer_config_filename = match api.get("tokenizer_config.json") {
+            Ok(f) => f,
+            _ => "".into(),
+        };
+
         let mut filenames = vec![];
         for rfilename in try_api!(api.info())
             .siblings
@@ -140,6 +151,7 @@ impl DefaultLoader {
 
         Ok(DefaultModelPaths {
             tokenizer_filename,
+            tokenizer_config_filename,
             config_filename,
             filenames,
         })
@@ -388,6 +400,21 @@ impl DefaultLoader {
             temperature: specific_args.temperature.unwrap_or(0.7),
         };
 
+        let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
+        let chat_template = if tokenizer_cfg_file.display().to_string() != ""
+            && Path::exists(&tokenizer_cfg_file)
+        {
+            let cfg_tokenizer: TokenizerConfig = try_api!(serde_json::from_slice(try_api!(
+                &std::fs::read(tokenizer_cfg_file)
+            )));
+            cfg_tokenizer
+                .chat_template
+                .unwrap_or("[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string())
+        } else {
+            "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string()
+        };
+
+        println!("Chat Template {} \n", chat_template);
         println!("{:?}", pipeline_config);
         println!("{:?}", specific_args);
 
@@ -457,7 +484,7 @@ impl DefaultLoader {
                     logits_processor,
                     conversation: DefaultConversation::new(
                         self.name.to_string(),
-                        "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string(),
+                        chat_template.clone(),
                         Vec::default(),
                         0,
                         sep_style.clone(),
