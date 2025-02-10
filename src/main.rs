@@ -128,6 +128,7 @@ async fn main() -> Result<(), APIError> {
         //model in a folder (safetensor format, huggingface folder structure)
         (Some(path), None) => DefaultModelPaths {
             tokenizer_filename: Path::new(path).join("tokenizer.json"),
+            tokenizer_config_filename: Path::new(path).join("tokenizer_config.json"),
             config_filename: Path::new(path).join("config.json"),
             filenames: if Path::new(path)
                 .join("model.safetensors.index.json")
@@ -146,8 +147,16 @@ async fn main() -> Result<(), APIError> {
             tokenizer_filename: {
                 //we need to download tokenizer for the ggufl/ggml model
                 let api = hf_hub::api::sync::Api::new().unwrap();
-                let api = api.model(model_id);
+                let api = api.model(model_id.clone());
                 api.get("tokenizer.json").unwrap()
+            },
+            tokenizer_config_filename: {
+                let api = hf_hub::api::sync::Api::new().unwrap();
+                let api = api.model(model_id.clone());
+                match api.get("tokenizer_config.json") {
+                    Ok(f) => f,
+                    _ => "".into(),
+                }
             },
             config_filename: PathBuf::new(),
             filenames: if Path::new(path).join(file).exists() {

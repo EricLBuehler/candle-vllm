@@ -514,7 +514,7 @@ pub fn hub_load_local_safetensors(
     path: &String,
     json_file: &str,
 ) -> Result<Vec<std::path::PathBuf>> {
-    println!("{:}", path.to_owned() + json_file);
+    println!("{:}", Path::new(path).join(json_file).display());
     let jsfile = std::fs::File::open(Path::new(path).join(json_file))?;
     let json: serde_json::Value = serde_json::from_reader(&jsfile).map_err(candle::Error::wrap)?;
     let weight_map = match json.get("weight_map") {
@@ -525,7 +525,7 @@ pub fn hub_load_local_safetensors(
     let mut safetensors_files = Vec::<std::path::PathBuf>::new();
     for value in weight_map.values() {
         if let Some(file) = value.as_str() {
-            safetensors_files.insert(0, (path.to_owned() + file).into());
+            safetensors_files.insert(0, (Path::new(path).join(file)).into());
         }
     }
     Ok(safetensors_files)
