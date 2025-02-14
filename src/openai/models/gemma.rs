@@ -83,6 +83,7 @@ impl GemmaConfig {
             attn_logit_softcapping: self.attn_logit_softcapping,
             final_logit_softcapping: self.final_logit_softcapping,
             quantization_config: self.quantization_config,
+            moe_config: None,
         }
     }
 }

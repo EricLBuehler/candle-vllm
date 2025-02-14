@@ -70,6 +70,7 @@ impl PhiConfig {
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             quantization_config: self.quantization_config,
+            moe_config: None,
         }
     }
 }

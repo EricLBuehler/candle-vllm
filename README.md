@@ -93,6 +93,11 @@ cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /
 ```
 **Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
 
+Run **DeepSeek** MoE models
+```
+cargo run --release --features cuda -- --port 2000 --weight-path /home/DeepSeek-V2-Lite-Chat deep-seek --penalty 1.0 --temperature 0.
+```
+
 Run **Multi-GPU** inference with NCCL feature (LLaMa structure at the moment)
 
 ```shell
@@ -315,7 +320,7 @@ For local model weights, run `cargo run --release --features cuda -- --port 2000
 
 `PLATFORM`=["cuda", "metal"]
 
-`MODEL_TYPE` = ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm"]
+`MODEL_TYPE` = ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm", "deep-seek"]
 
 `WEIGHT_FILE_PATH` = Corresponding weight path for the given model type
 

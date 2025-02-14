@@ -181,7 +181,7 @@ impl CacheEngine {
         let x = 16 / element_size;
         (
             model_config.num_key_value_heads / num_shards,
-            model_config.get_head_size() / x,
+            model_config.k_head_dim() / x,
             block_size,
             x,
         )
@@ -194,7 +194,7 @@ impl CacheEngine {
     ) -> (usize, usize, usize) {
         (
             model_config.num_key_value_heads / num_shards,
-            model_config.get_head_size(),
+            model_config.v_head_dim(),
             block_size,
         )
     }

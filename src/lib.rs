@@ -195,6 +195,31 @@ pub enum ModelSelected {
         #[arg(long)]
         quant: Option<String>,
     },
+
+    /// Select the deepseek model (default deepseek-v2-lite-chat).
+    DeepSeek {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        temperature: Option<f32>,
+
+        #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
+
+        #[arg(long)]
+        max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
+    },
 }
 
 impl Display for ModelSelected {
@@ -225,6 +250,7 @@ impl Display for ModelSelected {
             ModelSelected::Mistral { .. } => write!(f, "mistral"),
             ModelSelected::Yi { .. } => write!(f, "yi"),
             ModelSelected::StableLM { .. } => write!(f, "stablelm"),
+            ModelSelected::DeepSeek { .. } => write!(f, "deepseek"),
         }
     }
 }
@@ -504,6 +530,34 @@ pub fn get_model_loader(
                 model_id
             } else {
                 "stabilityai/stablelm-zephyr-3b".to_string()
+            },
+            quant,
+        ),
+        ModelSelected::DeepSeek {
+            repeat_last_n,
+            temperature,
+            top_k,
+            top_p,
+            penalty,
+            max_gen_tokens,
+            quant,
+        } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(
+                    repeat_last_n,
+                    temperature,
+                    top_k,
+                    top_p,
+                    penalty,
+                    max_gen_tokens,
+                    quant.clone(),
+                ),
+                "deepseek".to_string(),
+            )),
+            if let Some(model_id) = model_id {
+                model_id
+            } else {
+                "deepseek-ai/DeepSeek-V2-Lite-Chat".to_string()
             },
             quant,
         ),
