@@ -97,14 +97,14 @@ fn get_cache_config(
         / dsize
         / block_size
         / (config.num_key_value_heads / num_shards)
-        / config.get_head_size()
+        / config.k_head_dim()
         / config.num_hidden_layers
         / 2;
     let num_cpu_blocks = kvcache_mem_cpu * SIZE_IN_MB
         / dsize
         / block_size
         / (config.num_key_value_heads / num_shards)
-        / config.get_head_size()
+        / config.k_head_dim()
         / config.num_hidden_layers
         / 2;
     CacheConfig {

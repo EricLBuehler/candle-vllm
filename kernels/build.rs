@@ -21,6 +21,8 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/reshape_and_cache_kernel.cu");
     println!("cargo:rerun-if-changed=src/marlin_cuda_kernel.cu");
     println!("cargo:rerun-if-changed=src/gptq_cuda_kernel.cu");
+    println!("cargo:rerun-if-changed=src/nonzero_bitwise.cu");
+    println!("cargo:rerun-if-changed=src/sort.cu");
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap_or("".to_string()));
     let builder = bindgen_cuda::Builder::default().arg("--expt-relaxed-constexpr");
     println!("cargo:info={builder:?}");

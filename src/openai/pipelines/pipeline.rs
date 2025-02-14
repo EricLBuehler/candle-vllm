@@ -13,6 +13,7 @@ use crate::{
             Conversation,
         },
         models::{
+            deepseek::{DeepSeek, DeepSeekConfig},
             gemma::{Gemma, GemmaConfig},
             llama::{Llama, LlamaConfig},
             mistral::{Mistral, MistralConfig},
@@ -61,6 +62,7 @@ enum LLMModel {
     Mistral(Mistral),
     Yi(Yi),
     StableLM(StableLM),
+    DeepSeek(DeepSeek),
     LlamaGGUF(GGUFLLaMa),
     Phi3GGUF(GGUFPhi3),
     #[cfg(feature = "nccl")]
@@ -256,6 +258,12 @@ impl DefaultLoader {
                     ),));
                     config.into_config(false, dtype, &specific_args)
                 }
+                "deepseek" => {
+                    let config: DeepSeekConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
                 _ => panic!("Model not supported!"),
             };
 
@@ -373,6 +381,10 @@ impl DefaultLoader {
                     "stablelm" => (
                         LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
                         SeparatorStyle::StableLM,
+                    ),
+                    "deepseek" => (
+                        LLMModel::DeepSeek(try_api!(DeepSeek::new(vb, &config, dtype, &device))),
+                        SeparatorStyle::Llama3,
                     ),
                     _ => panic!("Model not supported!"),
                 };
@@ -552,6 +564,9 @@ impl DefaultPipeline {
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::StableLM(stablelm) => stablelm
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .map_err(APIError::from),
+            LLMModel::DeepSeek(deepseek) => deepseek
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Phi3GGUF(phi3) => phi3
@@ -748,6 +763,7 @@ impl DefaultPipeline {
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
             LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),
+            LLMModel::DeepSeek(deepseek) => deepseek.get_config().clone(),
             LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),
         }

@@ -234,6 +234,7 @@ impl GGUFPhi3 {
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             quantization_config: None,
+            moe_config: None,
         }
     }
 

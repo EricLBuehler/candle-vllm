@@ -212,6 +212,7 @@ pub fn gptq_matmul(
     x.apply_op3(qweight, scale, op)
 }
 
+#[allow(dead_code)]
 struct GPTQRepack {
     bits: i32,
 }

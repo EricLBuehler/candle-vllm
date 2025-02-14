@@ -7,7 +7,7 @@ use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
 use half::{bf16, f16};
 use std::ffi::c_int;
-
+#[allow(dead_code)]
 struct PagedAttention {
     softmax_scale: f32,
     softcapping: f32,
@@ -110,9 +110,10 @@ impl PagedAttention {
             || head_size == 96
             || head_size == 112
             || head_size == 128
+            || head_size == 192
             || head_size == 256)
         {
-            candle::bail!("`head_size` must be one of 64, 80, 96, 112, 128 or 256");
+            candle::bail!("`head_size` must be one of 64, 80, 96, 112, 128, 192 or 256");
         }
 
         let (num_seqs_bt, max_num_blocks_per_seq) = bt_l.shape().dims2()?;
