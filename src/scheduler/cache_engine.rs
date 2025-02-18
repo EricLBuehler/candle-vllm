@@ -64,7 +64,7 @@ impl CacheEngine {
                 model_config,
                 cache_config,
                 dtype,
-                device,
+                &Device::Cpu,
                 num_shards,
             )?,
             num_layers: model_config.num_hidden_layers,
