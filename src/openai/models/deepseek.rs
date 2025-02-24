@@ -42,6 +42,7 @@ pub struct DeepSeekConfig {
     pub(crate) moe_intermediate_size: usize,
     pub(crate) num_hidden_layers: usize,
     pub(crate) num_attention_heads: usize,
+    pub(crate) num_key_value_heads: Option<usize>,
     pub(crate) n_shared_experts: Option<usize>,
     pub(crate) n_routed_experts: Option<usize>,
     #[serde(default = "routed_scaling_factor")]
@@ -120,7 +121,7 @@ impl DeepSeekConfig {
             vocab_size: self.vocab_size,
             num_hidden_layers: self.num_hidden_layers,
             num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: self.num_attention_heads,
+            num_key_value_heads: self.num_key_value_heads.unwrap_or(self.num_attention_heads),
             rms_norm_eps: self.rms_norm_eps,
             rope_theta: f64::from(self.rope_theta),
             use_flash_attn,
@@ -164,14 +165,14 @@ impl DeepSeekV2RotaryEmbedding {
             .map(|i| 1f32 / cfg.rope_theta.powf(i as f32 / dim as f32))
             .collect();
         let inv_freq_len = inv_freq.len();
-        let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?;
-        let t = Tensor::arange(0u32, max_seq_len as u32, dev)?
+        let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), &Device::Cpu)?;
+        let t = Tensor::arange(0u32, max_seq_len as u32, &Device::Cpu)?
             .to_dtype(DType::F32)?
             .reshape((max_seq_len, 1))?;
         let freqs = t.matmul(&inv_freq)?;
 
-        let sin = freqs.sin()?.to_dtype(dtype)?;
-        let cos = freqs.cos()?.to_dtype(dtype)?;
+        let sin = freqs.sin()?.to_dtype(dtype)?.to_device(dev)?;
+        let cos = freqs.cos()?.to_dtype(dtype)?.to_device(dev)?;
 
         Ok(Self { sin, cos })
     }
@@ -233,13 +234,13 @@ impl DeepSeekV2RotaryEmbedding {
             .map(|i| 1f32 / cfg.rope_theta.powf(i as f32 / cfg.qk_rope_head_dim as f32))
             .collect();
         let freq_extra_len = freq_extra.len();
-        let freq_extra = Tensor::from_vec(freq_extra, freq_extra_len, dev)?;
+        let freq_extra = Tensor::from_vec(freq_extra, freq_extra_len, &Device::Cpu)?;
         let freq_inter: Vec<_> = (0..cfg.qk_rope_head_dim)
             .step_by(2)
             .map(|i| 1f32 / (factor * cfg.rope_theta.powf(i as f32 / cfg.qk_rope_head_dim as f32)))
             .collect();
         let freq_inter_len = freq_inter.len();
-        let freq_inter = Tensor::from_vec(freq_inter, (1, freq_inter_len), dev)?;
+        let freq_inter = Tensor::from_vec(freq_inter, (1, freq_inter_len), &Device::Cpu)?;
 
         let (low, high) = Self::yarn_find_correction_range(
             beta_fast,
@@ -249,20 +250,24 @@ impl DeepSeekV2RotaryEmbedding {
             original_max_position_embeddings,
         );
         let inv_freq_mask =
-            (1. - Self::yarn_linear_ramp_mask(low, high, cfg.qk_rope_head_dim / 2, dev)?)?;
+            (1. - Self::yarn_linear_ramp_mask(low, high, cfg.qk_rope_head_dim / 2, &Device::Cpu)?)?;
         let inv_freq = freq_inter
             .broadcast_mul(&(1. - &inv_freq_mask)?)?
             .broadcast_add(&freq_extra.broadcast_mul(&inv_freq_mask)?)?;
 
-        let t = Tensor::arange(0u32, cfg.max_position_embeddings as u32, dev)?
+        let t = Tensor::arange(0u32, cfg.max_position_embeddings as u32, &Device::Cpu)?
             .to_dtype(DType::F32)?
             .reshape((cfg.max_position_embeddings, 1))?;
         let freqs = t.matmul(&inv_freq)?;
 
         let mscale =
             Self::yarn_get_mscale(factor, mscale) / Self::yarn_get_mscale(factor, mscale_all_dim);
-        let sin = (freqs.sin()? * mscale as f64)?.to_dtype(dtype)?;
-        let cos = (freqs.cos()? * mscale as f64)?.to_dtype(dtype)?;
+        let sin = (freqs.sin()? * mscale as f64)?
+            .to_dtype(dtype)?
+            .to_device(dev)?;
+        let cos = (freqs.cos()? * mscale as f64)?
+            .to_dtype(dtype)?
+            .to_device(dev)?;
 
         Ok(Self { sin, cos })
     }
@@ -451,18 +456,17 @@ impl Attention {
     ) -> Result<Tensor> {
         let (bs, seq_len, _) = xs.dims3()?;
         let moe_cfg = self.cfg.moe_config.as_ref().unwrap();
-        let q = {
+        let (q_nope, mut q_pe) = {
             let q = self.q.forward(xs)?;
-            q.reshape((bs, seq_len, self.cfg.num_attention_heads, self.q_head_dim))?
-                .transpose(1, 2)?
-                .contiguous()?
+            let q = q.reshape((bs, seq_len, self.cfg.num_attention_heads, self.q_head_dim))?;
+            let q_split = q.split(
+                &[moe_cfg.qk_nope_head_dim, moe_cfg.qk_rope_head_dim],
+                D::Minus1,
+            )?;
+            let q_nope = q_split[0].transpose(1, 2)?;
+            let q_pe = q_split[1].contiguous()?.transpose(1, 2)?;
+            (q_nope, q_pe)
         };
-        let q_split = q.split(
-            &[moe_cfg.qk_nope_head_dim, moe_cfg.qk_rope_head_dim],
-            D::Minus1,
-        )?;
-        let q_nope = q_split[0].clone();
-        let mut q_pe = q_split[1].clone();
 
         let mut compressed_kv = self.kv_a_proj_with_mqa.forward(xs)?;
         let ckv_split =
@@ -571,7 +575,7 @@ impl MoeGate {
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
         let weight = vb.get((n_routed_experts, cfg.hidden_size), "weight")?;
         Ok(Self {
-            weight,
+            weight: weight.to_dtype(DType::F32)?,
             cfg: cfg.clone(),
             top_k: moe_cfg.num_experts_per_tok.unwrap(),
             n_routed_experts,
@@ -586,12 +590,9 @@ impl MoeGate {
         let xs = xs.reshape(((), h))?;
         let logits = xs
             .to_dtype(DType::F32)?
-            .broadcast_matmul(&self.weight.t()?.to_dtype(DType::F32)?)?;
+            .broadcast_matmul(&self.weight.t()?)?;
         let scores = match moe_cfg.scoring_func {
-            ScoringFunc::Softmax => {
-                candle_nn::ops::softmax_last_dim(&logits.to_device(&Device::Cpu)?)?
-                    .to_device(logits.device())?
-            }
+            ScoringFunc::Softmax => candle_nn::ops::softmax_last_dim(&logits)?,
         };
 
         // Select top-k experts
@@ -695,7 +696,7 @@ impl Moe {
             if counts[i] == 0 {
                 continue;
             }
-            let idx_top = topk_ids.eq(i as f64)?.nonzero()?.t()?;
+            let idx_top = topk_ids.eq(i as f64)?.nonzero()?.t()?.contiguous()?;
             let idx = &idx_top.i(0)?.contiguous()?;
             let top = &idx_top.i(1)?.contiguous()?;
 

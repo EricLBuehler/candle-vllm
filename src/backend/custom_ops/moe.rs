@@ -91,35 +91,27 @@ impl TopKLastDimOp for Tensor {
     fn topk(&self, topk: usize) -> Result<TopKOutput> {
         // Sorted descending
         #[cfg(feature = "cuda")]
-        let sorted_indices = self.arg_sort(false)?;
+        let (values, sorted_indices) = self.sort(false)?;
         #[cfg(not(feature = "cuda"))]
-        let sorted_indices = self.arg_sort_last_dim(false)?;
+        let (values, sorted_indices) = self.sort_last_dim(false)?;
         let topk_indices = sorted_indices.narrow(D::Minus1, 0, topk)?.contiguous()?;
+        let topk_values = values.narrow(D::Minus1, 0, topk)?.contiguous()?;
         Ok(TopKOutput {
-            values: self.gather(&topk_indices, D::Minus1)?,
+            values: topk_values,
             indices: topk_indices,
         })
     }
 
     fn topk_unsorted(&self, topk: usize) -> Result<TopKOutput> {
         // Sorted descending
-        #[cfg(feature = "cuda")]
-        let sorted_indices_all = self.arg_sort(false)?;
-        #[cfg(not(feature = "cuda"))]
-        let sorted_indices_all = self.arg_sort_last_dim(false)?;
-
-        let topk_indices_sorted = sorted_indices_all
-            .narrow(D::Minus1, 0, topk)?
-            .contiguous()?;
-        let topk_values_sorted = self.gather(&topk_indices_sorted, D::Minus1)?;
-
+        let TopKOutput { values, indices } = self.topk(topk)?;
         // Reorder the indices ascending
         #[cfg(feature = "cuda")]
-        let reorder_indices = topk_indices_sorted.arg_sort(true)?;
+        let reorder_indices = indices.arg_sort(true)?;
         #[cfg(not(feature = "cuda"))]
-        let reorder_indices = topk_indices_sorted.arg_sort_last_dim(true)?;
-        let topk_indices_unsorted = topk_indices_sorted.gather(&reorder_indices, D::Minus1)?;
-        let topk_values_unsorted = topk_values_sorted.gather(&reorder_indices, D::Minus1)?;
+        let reorder_indices = indices.arg_sort_last_dim(true)?;
+        let topk_indices_unsorted = indices.gather(&reorder_indices, D::Minus1)?;
+        let topk_values_unsorted = values.gather(&reorder_indices, D::Minus1)?;
         Ok(TopKOutput {
             values: topk_values_unsorted,
             indices: topk_indices_unsorted,
