@@ -1,5 +1,6 @@
 use candle::{Result, Tensor};
 use candle_core as candle;
+#[cfg(feature = "cuda")]
 use kernels::ffi;
 
 #[derive(Debug, Clone)]

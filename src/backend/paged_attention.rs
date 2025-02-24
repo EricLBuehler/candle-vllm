@@ -525,10 +525,10 @@ pub fn paged_attention(
 ) -> Result<Tensor> {
     let op = PagedAttention {
         softmax_scale,
-        key_cache: key_cache.clone(),
-        value_cache: value_cache.clone(),
-        block_tables: block_tables.clone(),
-        context_lens: context_lens.clone(),
+        key_cache: key_cache.to_owned(),
+        value_cache: value_cache.to_owned(),
+        block_tables: block_tables.to_owned(),
+        context_lens: context_lens.to_owned(),
         alibi_slopes: alibi_slopes.to_owned().cloned(),
         max_context_len,
         softcapping,
