@@ -23,6 +23,12 @@ pub enum ModelSelected {
         temperature: Option<f32>,
 
         #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
+
+        #[arg(long)]
         penalty: Option<f32>,
 
         #[arg(long)]
@@ -42,6 +48,12 @@ pub enum ModelSelected {
         temperature: Option<f32>,
 
         #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
+
+        #[arg(long)]
         penalty: Option<f32>,
 
         #[arg(long)]
@@ -59,6 +71,12 @@ pub enum ModelSelected {
 
         #[arg(long)]
         temperature: Option<f32>,
+
+        #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
 
         #[arg(long)]
         penalty: Option<f32>,
@@ -130,6 +148,12 @@ pub enum ModelSelected {
         temperature: Option<f32>,
 
         #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
+
+        #[arg(long)]
         penalty: Option<f32>,
 
         #[arg(long)]
@@ -149,6 +173,12 @@ pub enum ModelSelected {
         temperature: Option<f32>,
 
         #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
+
+        #[arg(long)]
         penalty: Option<f32>,
 
         #[arg(long)]
@@ -166,6 +196,12 @@ pub enum ModelSelected {
 
         #[arg(long)]
         temperature: Option<f32>,
+
+        #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
 
         #[arg(long)]
         penalty: Option<f32>,
@@ -296,6 +332,8 @@ pub fn get_model_loader(
         ModelSelected::Llama {
             repeat_last_n,
             temperature,
+            top_k,
+            top_p,
             penalty,
             max_gen_tokens,
             quant,
@@ -304,8 +342,8 @@ pub fn get_model_loader(
                 SpecificConfig::new(
                     repeat_last_n,
                     temperature,
-                    None,
-                    None,
+                    top_k,
+                    top_p,
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
@@ -322,6 +360,8 @@ pub fn get_model_loader(
         ModelSelected::Llama3 {
             repeat_last_n,
             temperature,
+            top_k,
+            top_p,
             penalty,
             max_gen_tokens,
             quant,
@@ -330,8 +370,8 @@ pub fn get_model_loader(
                 SpecificConfig::new(
                     repeat_last_n,
                     temperature,
-                    None,
-                    None,
+                    top_k,
+                    top_p,
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
@@ -348,6 +388,8 @@ pub fn get_model_loader(
         ModelSelected::Phi2 {
             repeat_last_n,
             temperature,
+            top_k,
+            top_p,
             penalty,
             max_gen_tokens,
             quant,
@@ -356,8 +398,8 @@ pub fn get_model_loader(
                 SpecificConfig::new(
                     repeat_last_n,
                     temperature,
-                    None,
-                    None,
+                    top_k,
+                    top_p,
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
@@ -430,6 +472,8 @@ pub fn get_model_loader(
         ModelSelected::Gemma {
             repeat_last_n,
             temperature,
+            top_k,
+            top_p,
             penalty,
             max_gen_tokens,
             quant,
@@ -438,8 +482,8 @@ pub fn get_model_loader(
                 SpecificConfig::new(
                     repeat_last_n,
                     temperature,
-                    None,
-                    None,
+                    top_k,
+                    top_p,
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
@@ -456,6 +500,8 @@ pub fn get_model_loader(
         ModelSelected::Mistral {
             repeat_last_n,
             temperature,
+            top_k,
+            top_p,
             penalty,
             max_gen_tokens,
             quant,
@@ -464,8 +510,8 @@ pub fn get_model_loader(
                 SpecificConfig::new(
                     repeat_last_n,
                     temperature,
-                    None,
-                    None,
+                    top_k,
+                    top_p,
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
@@ -483,6 +529,8 @@ pub fn get_model_loader(
         ModelSelected::Yi {
             repeat_last_n,
             temperature,
+            top_k,
+            top_p,
             penalty,
             max_gen_tokens,
             quant,
@@ -491,8 +539,8 @@ pub fn get_model_loader(
                 SpecificConfig::new(
                     repeat_last_n,
                     temperature,
-                    None,
-                    None,
+                    top_k,
+                    top_p,
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
