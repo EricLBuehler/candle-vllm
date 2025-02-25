@@ -1,5 +1,7 @@
 use super::{Config, QuantConfig};
-use crate::openai::distributed::{shard, TensorParallelColumnLinear, TensorParallelRowLinear};
+use crate::openai::distributed::{
+    embedding, linear_no_bias, rms_norm, TensorParallelColumnLinear, TensorParallelRowLinear,
+};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
@@ -69,6 +71,7 @@ impl LlamaConfig {
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             quantization_config: self.quantization_config,
+            moe_config: None,
         }
     }
 }
@@ -96,16 +99,6 @@ impl Cache {
         let sin = idx_theta.sin()?.to_dtype(dtype)?;
         Ok(Self { cos, sin })
     }
-}
-
-fn linear(size1: usize, size2: usize, vb: VarBuilder) -> Result<Linear> {
-    let weight = vb.get((size2, size1), "weight")?;
-    Ok(Linear::new(weight, None))
-}
-
-fn embedding(cfg: &Config, vb: VarBuilder) -> Result<Embedding> {
-    let embeddings = vb.get((cfg.vocab_size, cfg.hidden_size), "weight")?;
-    Ok(Embedding::new(embeddings, cfg.hidden_size))
 }
 
 struct CausalSelfAttention {
@@ -267,10 +260,6 @@ impl Mlp {
         })
     }
 }
-fn rms_norm(size: usize, eps: f64, vb: VarBuilder) -> Result<RmsNorm> {
-    let weight = vb.get_with_hints(size, "weight", shard(0, 0, 1))?;
-    Ok(RmsNorm::new(weight, eps))
-}
 
 struct Block {
     rms_1: RmsNorm,
@@ -389,8 +378,8 @@ impl LlamaMulti {
         device: &Device,
         comm: Rc<Comm>,
     ) -> Result<Self> {
-        let wte = embedding(cfg, vb.pp("model.embed_tokens"))?;
-        let lm_head = linear(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
+        let wte = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
+        let lm_head = linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?;
         let ln_f = rms_norm(cfg.hidden_size, 1e-5, vb.pp("model.norm"))?;
         let blocks: Vec<_> = (0..cfg.num_hidden_layers)
             .map(|i| {

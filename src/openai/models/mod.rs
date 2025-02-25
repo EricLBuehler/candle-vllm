@@ -1,3 +1,4 @@
+#[cfg(feature = "nccl")]
 pub mod deepseek;
 pub mod gemma;
 pub mod linear;
@@ -37,6 +38,8 @@ pub struct QuantConfig {
 
 #[derive(Deserialize, Clone, Debug)]
 pub enum TopkMethod {
+    #[serde(rename = "noaux_tc")]
+    NoAuxTc,
     #[serde(rename = "greedy")]
     Greedy,
     #[serde(rename = "group_limited_greedy")]
@@ -47,6 +50,8 @@ pub enum TopkMethod {
 pub enum ScoringFunc {
     #[serde(rename = "softmax")]
     Softmax,
+    #[serde(rename = "sigmoid")]
+    Sigmoid,
 }
 
 #[derive(Debug, Clone)]

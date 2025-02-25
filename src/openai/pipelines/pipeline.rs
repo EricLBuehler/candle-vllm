@@ -13,7 +13,6 @@ use crate::{
             Conversation,
         },
         models::{
-            deepseek::{DeepSeek, DeepSeekConfig},
             gemma::{Gemma, GemmaConfig},
             llama::{Llama, LlamaConfig},
             mistral::{Mistral, MistralConfig},
@@ -34,6 +33,8 @@ use crate::{
 };
 use std::path::Path;
 
+#[cfg(feature = "nccl")]
+use crate::openai::models::deepseek::{DeepSeek, DeepSeekConfig};
 #[cfg(feature = "nccl")]
 use crate::openai::models::llama_multi::LlamaMulti;
 
@@ -62,6 +63,7 @@ enum LLMModel {
     Mistral(Mistral),
     Yi(Yi),
     StableLM(StableLM),
+    #[cfg(feature = "nccl")]
     DeepSeek(DeepSeek),
     LlamaGGUF(GGUFLLaMa),
     Phi3GGUF(GGUFPhi3),
@@ -306,6 +308,12 @@ impl DefaultLoader {
                                     vb, &config, dtype, &device, comm
                                 ))),
                             )),
+                            "deepseek" => Ok((
+                                device.clone(),
+                                LLMModel::DeepSeek(try_api!(DeepSeek::load(
+                                    vb, &config, dtype, &device, comm
+                                ))),
+                            )),
                             _ => panic!("Model not supported!"),
                         }
                     })
@@ -382,10 +390,7 @@ impl DefaultLoader {
                         LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
                         SeparatorStyle::StableLM,
                     ),
-                    "deepseek" => (
-                        LLMModel::DeepSeek(try_api!(DeepSeek::new(vb, &config, dtype, &device))),
-                        SeparatorStyle::Llama3,
-                    ),
+                    "deepseek" => (panic!("Nccl not enabled for deepseek model!"),),
                     _ => panic!("Model not supported!"),
                 };
                 (vec![model], vec![device], sep)
@@ -566,6 +571,7 @@ impl DefaultPipeline {
             LLMModel::StableLM(stablelm) => stablelm
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
+            #[cfg(feature = "nccl")]
             LLMModel::DeepSeek(deepseek) => deepseek
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
@@ -763,6 +769,7 @@ impl DefaultPipeline {
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
             LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),
+            #[cfg(feature = "nccl")]
             LLMModel::DeepSeek(deepseek) => deepseek.get_config().clone(),
             LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),
