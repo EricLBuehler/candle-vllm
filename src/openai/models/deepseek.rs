@@ -6,13 +6,20 @@ use super::{
 use crate::backend::custom_ops::moe::{
     masked_fill, BincountOp, NonZeroOp, SplitOp, TopKLastDimOp, TopKOutput,
 };
+use crate::openai::distributed::{
+    embedding, rms_norm, AllReduce, ReplicatedLinear, TensorParallelColumnLinear,
+    TensorParallelRowLinear,
+};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_core as candle;
-use candle_nn::{embedding, rms_norm, Activation, Embedding, Linear, Module, RmsNorm, VarBuilder};
+use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
+use candle_nn::{Activation, Embedding, Module, RmsNorm};
+pub use cudarc::nccl::safe::{Comm, ReduceOp};
 use serde::Deserialize;
 use std::iter::zip;
+use std::rc::Rc;
 use std::{f32::consts::PI, sync::Arc};
 
 #[doc(hidden)]
@@ -345,8 +352,12 @@ impl MoEConfig {
 }
 
 enum QProj {
-    Plain(Linear),
-    Lora { a: Linear, norm: RmsNorm, b: Linear },
+    Plain(TensorParallelColumnLinear),
+    Lora {
+        a: ReplicatedLinear,
+        norm: RmsNorm,
+        b: TensorParallelColumnLinear,
+    },
 }
 
 impl QProj {
@@ -360,13 +371,14 @@ impl QProj {
 
 struct Attention {
     q: QProj,
-    kv_a_proj_with_mqa: Linear,
+    kv_a_proj_with_mqa: ReplicatedLinear,
     kv_a_layernorm: RmsNorm,
-    kv_b_proj: Linear,
-    o_proj: Linear,
+    kv_b_proj: TensorParallelColumnLinear,
+    o_proj: TensorParallelRowLinear,
     rotary_emb: Arc<DeepSeekV2RotaryEmbedding>,
     cfg: Config,
     q_head_dim: usize,
+    num_attention_heads: usize,
     attn: PagedAttention,
 }
 
@@ -375,33 +387,36 @@ impl Attention {
         rotary_emb: Arc<DeepSeekV2RotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
         let q_head_dim = cfg.q_head_dim();
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
         let q = match moe_cfg.q_lora_rank {
             Some(lora_rank) => {
-                let a = candle_nn::linear_b(
+                let a = ReplicatedLinear::load_b(
                     cfg.hidden_size,
                     lora_rank,
                     cfg.attention_bias,
                     vb.pp("q_a_proj"),
                 )?;
                 let norm = rms_norm(lora_rank, cfg.rms_norm_eps, vb.pp("q_a_layernorm"))?;
-                let b = candle_nn::linear_no_bias(
+                let b = TensorParallelColumnLinear::load_with_hints(
                     lora_rank,
                     cfg.num_attention_heads * q_head_dim,
                     vb.pp("q_b_proj"),
+                    comm.clone(),
                 )?;
                 QProj::Lora { a, norm, b }
             }
-            None => QProj::Plain(candle_nn::linear_no_bias(
+            None => QProj::Plain(TensorParallelColumnLinear::load_with_hints(
                 cfg.hidden_size,
                 cfg.num_attention_heads * q_head_dim,
                 vb.pp("q_proj"),
+                comm.clone(),
             )?),
         };
 
-        let kv_a_proj_with_mqa = candle_nn::linear_b(
+        let kv_a_proj_with_mqa = ReplicatedLinear::load_b(
             cfg.hidden_size,
             moe_cfg.kv_lora_rank + moe_cfg.qk_rope_head_dim,
             cfg.attention_bias,
@@ -412,18 +427,23 @@ impl Attention {
             cfg.rms_norm_eps,
             vb.pp("kv_a_layernorm"),
         )?;
-        let kv_b_proj = candle_nn::linear_no_bias(
+        let kv_b_proj = TensorParallelColumnLinear::load_with_hints(
             moe_cfg.kv_lora_rank,
             cfg.num_attention_heads * (q_head_dim - moe_cfg.qk_rope_head_dim + moe_cfg.v_head_dim),
             vb.pp("kv_b_proj"),
+            comm.clone(),
         )?;
 
-        let o_proj = candle_nn::linear_b(
+        let o_proj = TensorParallelRowLinear::load_with_hints(
             cfg.num_attention_heads * moe_cfg.v_head_dim,
             cfg.hidden_size,
             cfg.attention_bias,
             vb.pp("o_proj"),
+            comm.clone(),
         )?;
+
+        let num_attention_heads = cfg.num_attention_heads / comm.world_size();
+        let num_kv_heads = cfg.num_key_value_heads / comm.world_size();
 
         Ok(Self {
             q,
@@ -434,11 +454,12 @@ impl Attention {
             rotary_emb,
             cfg: cfg.clone(),
             q_head_dim,
+            num_attention_heads,
             attn: PagedAttention::new(
-                cfg.num_attention_heads,
+                num_attention_heads,
                 moe_cfg.v_head_dim,
                 moe_cfg.softmax_scale(),
-                Some(cfg.num_key_value_heads),
+                Some(num_kv_heads),
                 None,
                 vb.device().clone(),
                 None,
@@ -458,7 +479,7 @@ impl Attention {
         let moe_cfg = self.cfg.moe_config.as_ref().unwrap();
         let (q_nope, mut q_pe) = {
             let q = self.q.forward(xs)?;
-            let q = q.reshape((bs, seq_len, self.cfg.num_attention_heads, self.q_head_dim))?;
+            let q = q.reshape((bs, seq_len, self.num_attention_heads, self.q_head_dim))?;
             let q_split = q.split(
                 &[moe_cfg.qk_nope_head_dim, moe_cfg.qk_rope_head_dim],
                 D::Minus1,
@@ -484,7 +505,7 @@ impl Attention {
             kv.reshape((
                 bs,
                 seq_len,
-                self.cfg.num_attention_heads,
+                self.num_attention_heads,
                 moe_cfg.qk_nope_head_dim + moe_cfg.v_head_dim,
             ))?
             .transpose(1, 2)?
@@ -532,9 +553,9 @@ impl Attention {
 }
 
 struct Mlp {
-    gate: Linear,
-    up: Linear,
-    down: Linear,
+    gate: ReplicatedLinear,
+    up: ReplicatedLinear,
+    down: ReplicatedLinear,
     act: Activation,
 }
 
@@ -549,9 +570,17 @@ impl Mlp {
         let intermediate_size = intermediate_size.unwrap_or(cfg.intermediate_size);
 
         Ok(Self {
-            gate: candle_nn::linear_no_bias(hidden_size, intermediate_size, vb.pp("gate_proj"))?,
-            up: candle_nn::linear_no_bias(hidden_size, intermediate_size, vb.pp("up_proj"))?,
-            down: candle_nn::linear_no_bias(intermediate_size, hidden_size, vb.pp("down_proj"))?,
+            gate: ReplicatedLinear::load_no_bias(
+                hidden_size,
+                intermediate_size,
+                vb.pp("gate_proj"),
+            )?,
+            up: ReplicatedLinear::load_no_bias(hidden_size, intermediate_size, vb.pp("up_proj"))?,
+            down: ReplicatedLinear::load_no_bias(
+                intermediate_size,
+                hidden_size,
+                vb.pp("down_proj"),
+            )?,
             act: cfg.hidden_act.unwrap(),
         })
     }
@@ -568,17 +597,29 @@ struct MoeGate {
     cfg: Config,
     top_k: usize,
     n_routed_experts: usize,
+    e_score_correction_bias: Option<Tensor>,
 }
 
 impl MoeGate {
     fn new(cfg: &Config, vb: VarBuilder, n_routed_experts: usize) -> Result<Self> {
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
         let weight = vb.get((n_routed_experts, cfg.hidden_size), "weight")?;
+        let e_score_correction_bias = if matches!(moe_cfg.topk_method, TopkMethod::NoAuxTc) {
+            Some(vb.get_with_hints_dtype(
+                n_routed_experts,
+                "e_score_correction_bias",
+                Default::default(),
+                DType::F32,
+            )?)
+        } else {
+            None
+        };
         Ok(Self {
             weight: weight.to_dtype(DType::F32)?,
             cfg: cfg.clone(),
             top_k: moe_cfg.num_experts_per_tok.unwrap(),
             n_routed_experts,
+            e_score_correction_bias,
         })
     }
 
@@ -593,6 +634,7 @@ impl MoeGate {
             .broadcast_matmul(&self.weight.t()?)?;
         let scores = match moe_cfg.scoring_func {
             ScoringFunc::Softmax => candle_nn::ops::softmax_last_dim(&logits)?,
+            ScoringFunc::Sigmoid => candle_nn::ops::sigmoid(&logits)?,
         };
 
         // Select top-k experts
@@ -600,6 +642,44 @@ impl MoeGate {
             TopkMethod::Greedy => {
                 let TopKOutput { values, indices } = scores.topk_unsorted(self.top_k)?;
                 (values, indices)
+            }
+            TopkMethod::NoAuxTc => {
+                let Some(e_score_correction_bias) = &self.e_score_correction_bias else {
+                    candle_core::bail!("Expected e_score_correction_bias")
+                };
+                let scores_for_choice = scores
+                    .reshape((bs * seq_len, ()))?
+                    .broadcast_add(&e_score_correction_bias.unsqueeze(0)?)?;
+                // (n, n_group)
+                let group_scores = scores_for_choice
+                    .reshape((bs * seq_len, moe_cfg.n_group, ()))?
+                    .topk(2)?
+                    .values
+                    .sum(D::Minus1)?;
+                // (n, topk_group)
+                let group_idx = group_scores.topk(moe_cfg.topk_group)?.indices;
+                // (n, n_group)
+                let mut group_mask = group_scores.zeros_like()?;
+                // (n, n_group)
+                group_mask = group_mask.scatter_add(
+                    &group_idx,
+                    &group_idx.ones_like()?.to_dtype(group_mask.dtype())?,
+                    1,
+                )?;
+                // (n, e)
+                let score_mask = group_mask
+                    .unsqueeze(D::Minus1)?
+                    .expand((
+                        bs * seq_len,
+                        moe_cfg.n_group,
+                        self.n_routed_experts / moe_cfg.n_group,
+                    ))?
+                    .reshape((bs * seq_len, ()))?;
+                // (n, e)
+                // Invert the mask
+                let tmp_scores = scores_for_choice.broadcast_mul(&score_mask)?;
+                let topk_idx = tmp_scores.topk(self.top_k)?.indices;
+                (scores.gather(&topk_idx, 1)?, topk_idx)
             }
             TopkMethod::GroupLimitedGreedy => {
                 // (n, n_group)
@@ -635,39 +715,51 @@ impl MoeGate {
 
         if self.top_k > 1 && moe_cfg.norm_topk_prob {
             let denominator = (topk_weight.sum_keepdim(D::Minus1)? + 1e-20)?;
-            topk_weight = (topk_weight / denominator)?;
-        } else {
-            topk_weight = (topk_weight * moe_cfg.routed_scaling_factor)?;
+            topk_weight = topk_weight.broadcast_div(&denominator)?;
         }
+
+        topk_weight = (topk_weight * moe_cfg.routed_scaling_factor)?;
         Ok((topk_idx, topk_weight))
     }
 }
 
 struct Moe {
-    experts: Vec<Mlp>,
+    experts: Vec<Option<Mlp>>,
     shared_experts: Option<Mlp>,
     gate: MoeGate,
+    all_reduce: AllReduce,
+    experts_start_idx: usize,
+    experts_end_idx: usize,
+    world_size: usize,
 }
 
 impl Moe {
     fn new(
         cfg: &Config,
         vb: VarBuilder,
-
         n_shared_experts: Option<usize>,
         n_routed_experts: usize,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
         let mut experts = Vec::with_capacity(n_routed_experts);
+        let n_local_experts = n_routed_experts / comm.world_size();
+        let experts_start_idx = comm.rank() * n_local_experts;
+        let experts_end_idx = experts_start_idx + n_local_experts;
         for i in 0..n_routed_experts {
-            let vb_e = vb.pp("experts").pp(i);
-            experts.push(Mlp::new(
-                cfg,
-                vb_e,
-                None,
-                Some(moe_cfg.moe_intermediate_size),
-            )?);
+            if i >= experts_start_idx && i < experts_end_idx {
+                let vb_e = vb.pp("experts").pp(i);
+                experts.push(Some(Mlp::new(
+                    cfg,
+                    vb_e,
+                    None,
+                    Some(moe_cfg.moe_intermediate_size),
+                )?));
+            } else {
+                experts.push(None);
+            }
         }
+
         let shared_experts = if let Some(n_shared_experts) = n_shared_experts {
             let intermediate_size = moe_cfg.moe_intermediate_size * n_shared_experts;
             Some(Mlp::new(
@@ -680,10 +772,15 @@ impl Moe {
             None
         };
         let gate = MoeGate::new(cfg, vb.pp("gate"), n_routed_experts)?;
+        let word_size = comm.world_size();
         Ok(Self {
             experts,
             shared_experts,
             gate,
+            all_reduce: AllReduce::new(comm),
+            experts_end_idx,
+            experts_start_idx,
+            world_size: word_size,
         })
     }
 
@@ -692,13 +789,21 @@ impl Moe {
         let counts = topk_ids
             .flatten_all()?
             .bincount(self.experts.len() as u32)?;
-        for (i, expert) in self.experts.iter().enumerate() {
-            if counts[i] == 0 {
+        for (i, count) in counts
+            .iter()
+            .enumerate()
+            .take(self.experts_end_idx)
+            .skip(self.experts_start_idx)
+        {
+            if *count == 0 {
                 continue;
             }
             let idx_top = topk_ids.eq(i as f64)?.nonzero()?.t()?.contiguous()?;
             let idx = &idx_top.i(0)?.contiguous()?;
             let top = &idx_top.i(1)?.contiguous()?;
+            let expert = self.experts[i]
+                .as_ref()
+                .expect("Expert is not present for this rank.");
 
             y = y.index_add(
                 idx,
@@ -714,6 +819,9 @@ impl Moe {
             )?;
         }
 
+        if self.world_size > 1 {
+            y = self.all_reduce.apply(&y)?;
+        }
         Ok(y)
     }
 
@@ -760,9 +868,10 @@ impl DecoderLayer {
         cfg: &Config,
         vb: VarBuilder,
         layer_idx: usize,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
-        let attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"))?;
+        let attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
         let input_layernorm =
             rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         let post_attention_layernorm = rms_norm(
@@ -779,6 +888,7 @@ impl DecoderLayer {
                 vb.pp("mlp"),
                 moe_cfg.n_shared_experts,
                 moe_cfg.n_routed_experts,
+                comm.clone(),
             )?)
         } else {
             MoeOrMlp::Mlp(Mlp::new(cfg, vb.pp("mlp"), None, None)?)
@@ -815,7 +925,7 @@ impl DecoderLayer {
 }
 
 pub struct DeepSeek {
-    lm_head: Linear,
+    lm_head: ReplicatedLinear,
     embed_tokens: Embedding,
     norm: RmsNorm,
     layers: Vec<DecoderLayer>,
@@ -825,14 +935,23 @@ pub struct DeepSeek {
 }
 
 impl DeepSeek {
-    pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let lm_head = if !cfg.tie_word_embeddings {
-            candle_nn::linear_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?
+            ReplicatedLinear::load_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?
         } else {
-            candle_nn::Linear::new(embed_tokens.embeddings().clone(), None)
+            ReplicatedLinear::from(candle_nn::Linear::new(
+                embed_tokens.embeddings().clone(),
+                None,
+            ))?
         };
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
 
@@ -847,7 +966,13 @@ impl DeepSeek {
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
-            let layer = DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), layer_idx)?;
+            let layer = DecoderLayer::new(
+                rotary_emb.clone(),
+                cfg,
+                vb_l.pp(layer_idx),
+                layer_idx,
+                comm.clone(),
+            )?;
             layers.push(layer)
         }
 

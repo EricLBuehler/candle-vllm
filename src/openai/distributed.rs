@@ -2,9 +2,14 @@ use candle_core::backend::BackendStorage;
 use candle_core::CustomOp1;
 use candle_core::{CpuStorage, DType, Layout, Module, Result, Shape, Tensor};
 use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
-use candle_nn::Linear;
+use candle_nn::{Embedding, Linear, RmsNorm};
 pub use cudarc::nccl::safe::{Comm, ReduceOp};
 pub use std::rc::Rc;
+
+pub struct ReplicatedLinear {
+    linear: Linear,
+}
+
 pub struct TensorParallelColumnLinear {
     linear: Linear,
 }
@@ -21,14 +26,27 @@ impl TensorParallelColumnLinear {
 pub struct TensorParallelRowLinear {
     linear: Linear,
     all_reduce: AllReduce,
+    bias: Option<Tensor>,
 }
 
-struct AllReduce {
+pub struct AllReduce {
     comm: Rc<Comm>,
 }
 
 unsafe impl Sync for AllReduce {}
 unsafe impl Send for AllReduce {}
+
+impl AllReduce {
+    pub fn new(comm: Rc<Comm>) -> Self {
+        Self { comm: comm.clone() }
+    }
+    pub fn apply(&self, xs: &Tensor) -> Result<Tensor> {
+        // use candle_core::cuda::cudarc::driver::result;
+        // unsafe { result::ctx::set_current(*self.comm.comm.device().cu_primary_ctx()) }.unwrap();
+        // self.comm.barrier.wait()?;
+        xs.apply_op1_no_bwd(self)
+    }
+}
 
 impl CustomOp1 for AllReduce {
     fn name(&self) -> &'static str {
@@ -85,10 +103,28 @@ impl CustomOp1 for AllReduce {
 impl TensorParallelRowLinear {
     pub fn new(linear: Linear, comm: Rc<Comm>) -> Self {
         let all_reduce = AllReduce { comm };
-        Self { linear, all_reduce }
+        Self {
+            linear,
+            all_reduce,
+            bias: None,
+        }
     }
+
+    pub fn new_with_bias(linear: Linear, bias: Option<Tensor>, comm: Rc<Comm>) -> Self {
+        let all_reduce = AllReduce { comm };
+        Self {
+            linear,
+            all_reduce,
+            bias,
+        }
+    }
+
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.linear.forward(x)?.apply_op1_no_bwd(&self.all_reduce)
+        let mut xs = self.linear.forward(x)?.apply_op1_no_bwd(&self.all_reduce)?;
+        if let Some(bias) = &self.bias {
+            xs = xs.broadcast_add(bias)?;
+        }
+        Ok(xs)
     }
 }
 
@@ -105,6 +141,18 @@ impl TensorParallelColumnLinear {
         let rank = comm.rank();
         let size = comm.world_size();
         let weight = vb.get_with_hints((), "weight", shard(0, rank, size))?;
+        Ok(Self::new(Linear::new(weight, None)))
+    }
+
+    pub fn load_with_hints(
+        in_dim: usize,
+        out_dim: usize,
+        vb: VarBuilder,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
+        let rank = comm.rank();
+        let size = comm.world_size();
+        let weight = vb.get_with_hints((out_dim, in_dim), "weight", shard(0, rank, size))?;
         Ok(Self::new(Linear::new(weight, None)))
     }
 
@@ -126,5 +174,78 @@ impl TensorParallelRowLinear {
         let size = comm.world_size();
         let weight = vb.get_with_hints((), "weight", shard(1, rank, size))?;
         Ok(Self::new(Linear::new(weight, None), comm))
+    }
+
+    pub fn load_with_hints(
+        in_dim: usize,
+        out_dim: usize,
+        bias: bool,
+        vb: VarBuilder,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
+        let rank = comm.rank();
+        let size = comm.world_size();
+        let weight = vb.get_with_hints((out_dim, in_dim), "weight", shard(1, rank, size))?;
+        let bs = if bias {
+            Some(vb.get((out_dim,), "bias")?)
+        } else {
+            None
+        };
+        Ok(Self::new_with_bias(Linear::new(weight, None), bs, comm))
+    }
+}
+
+pub fn rms_norm(size: usize, eps: f64, vb: VarBuilder) -> Result<RmsNorm> {
+    let weight = vb.get_with_hints(size, "weight", shard(0, 0, 1))?;
+    Ok(RmsNorm::new(weight, eps))
+}
+
+pub fn embedding(vocab_size: usize, hidden_size: usize, vb: VarBuilder) -> Result<Embedding> {
+    let embeddings = vb.get((vocab_size, hidden_size), "weight")?;
+    Ok(Embedding::new(embeddings, hidden_size))
+}
+
+pub fn linear_no_bias(in_dim: usize, out_dim: usize, vb: VarBuilder) -> Result<Linear> {
+    let weight = vb.get((out_dim, in_dim), "weight")?;
+    Ok(Linear::new(weight, None))
+}
+
+pub fn linear(in_dim: usize, out_dim: usize, vb: VarBuilder) -> Result<Linear> {
+    let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard(0, 0, 1))?;
+    let bs = vb.get((out_dim,), "bias")?;
+    Ok(Linear::new(ws, Some(bs)))
+}
+
+pub fn linear_b(in_dim: usize, out_dim: usize, bias: bool, vb: VarBuilder) -> Result<Linear> {
+    if bias {
+        linear(in_dim, out_dim, vb)
+    } else {
+        linear_no_bias(in_dim, out_dim, vb)
+    }
+}
+
+impl ReplicatedLinear {
+    pub fn from(linear: Linear) -> Result<Self> {
+        Ok(Self { linear })
+    }
+
+    pub fn load_no_bias(in_dim: usize, out_dim: usize, vb: VarBuilder) -> Result<Self> {
+        Ok(Self {
+            linear: linear_no_bias(in_dim, out_dim, vb)?,
+        })
+    }
+
+    pub fn load_b(in_dim: usize, out_dim: usize, bias: bool, vb: VarBuilder) -> Result<Self> {
+        if !bias {
+            ReplicatedLinear::load_no_bias(in_dim, out_dim, vb)
+        } else {
+            Ok(Self {
+                linear: linear_b(in_dim, out_dim, bias, vb)?,
+            })
+        }
+    }
+
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        self.linear.forward(&x)
     }
 }

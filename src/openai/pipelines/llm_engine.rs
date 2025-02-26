@@ -258,7 +258,12 @@ impl LLMEngine {
                 .collect();
 
             let pipeline = self.get_mut_pipeline(0).unwrap().0.as_mut();
-            let results = pipeline.sample(&vec_logits[&0], scheduled).unwrap();
+            let results = pipeline
+                .sample(
+                    &vec_logits[&0].to_device(pipeline.device()).unwrap(),
+                    scheduled,
+                )
+                .unwrap();
 
             for (result_, group) in zip(results, scheduled) {
                 match result_ {
