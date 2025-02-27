@@ -25,7 +25,8 @@ use crate::candle::{
     DType, Device, Result, Tensor,
 };
 use candle_core::quantized;
-use candle_nn::init;
+pub use candle_nn::var_builder::Shard;
+pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use either::Either;
 use std::sync::Arc;
 
@@ -128,45 +129,41 @@ impl Module for Linear {
     }
 }
 
-/// Create or initialize a new linear layer.
-///
-/// This uses some default names for weights and biases, namely `"weight"` and `"bias"`.
-pub fn linear(in_dim: usize, out_dim: usize, vb: candle_nn::VarBuilder) -> Result<Linear> {
-    let init_ws = init::DEFAULT_KAIMING_NORMAL;
-    let ws = vb.get_with_hints((out_dim, in_dim), "weight", init_ws)?;
-    let bound = 1. / (in_dim as f64).sqrt();
-    let init_bs = init::Init::Uniform {
-        lo: -bound,
-        up: bound,
-    };
-    let bs = vb.get_with_hints(out_dim, "bias", init_bs)?;
-    Ok(Linear::new(ws, Some(bs)))
+pub fn linear_no_bias(
+    in_dim: usize,
+    out_dim: usize,
+    vb: VarBuilder,
+    shard: Shard,
+) -> Result<Linear> {
+    let weight = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
+    Ok(Linear::new(weight, None))
 }
 
-/// Create or initialize a new linear layer without biases.
-pub fn linear_no_bias(in_dim: usize, out_dim: usize, vb: candle_nn::VarBuilder) -> Result<Linear> {
-    let init_ws = init::DEFAULT_KAIMING_NORMAL;
-    let ws = vb.get_with_hints((out_dim, in_dim), "weight", init_ws)?;
-    Ok(Linear::new(ws, None))
+pub fn linear(in_dim: usize, out_dim: usize, vb: VarBuilder, shard: Shard) -> Result<Linear> {
+    let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
+    let bs = vb.get((out_dim,), "bias")?;
+    Ok(Linear::new(ws, Some(bs)))
 }
 
 pub fn linear_b(
     in_dim: usize,
     out_dim: usize,
     bias: bool,
-    vb: candle_nn::VarBuilder,
+    vb: VarBuilder,
+    shard: Shard,
 ) -> Result<Linear> {
     if bias {
-        linear(in_dim, out_dim, vb)
+        linear(in_dim, out_dim, vb, shard)
     } else {
-        linear_no_bias(in_dim, out_dim, vb)
+        linear_no_bias(in_dim, out_dim, vb, shard)
     }
 }
 
 pub fn qlinear(
     in_dim: usize,
     out_dim: usize,
-    vb: candle_nn::VarBuilder,
+    vb: VarBuilder,
+    shard: Shard,
     quant_config: &Option<QuantConfig>,
     bias: bool,
     dtype: DType,
@@ -331,10 +328,11 @@ pub fn qlinear(
                 }
             }
         }
-        None => linear_b(in_dim, out_dim, bias, vb),
+        None => linear_b(in_dim, out_dim, bias, vb, shard),
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct QLinear {
     inner: QMatMul,
@@ -627,10 +625,6 @@ impl Module for QLinear {
                     Ok(x)
                 }
             }
-            // (QMatMul::Tensor(qw), Some(scale), qzeros, g_idx, perm, workspace) => {
-            //     let qw = gptq_dequant(qw, scale, qzeros, g_idx, self.bits)?;
-            //     self.forward_via_dequant(x, &qw)
-            // }
             _ => self.forward_no_dequant(x),
         }
     }
@@ -670,20 +664,21 @@ impl LinearX {
 pub fn linear_x(
     in_dim: usize,
     out_dim: usize,
-    vb: candle_nn::VarBuilder,
+    vb: VarBuilder,
+    shard: Shard,
     quant: &Option<String>,
     quant_config: &Option<QuantConfig>,
     dtype: DType,
 ) -> Result<LinearX> {
     if let Some(quatized_type) = quant {
-        let ln = qlinear(in_dim, out_dim, vb, quant_config, true, dtype).unwrap();
+        let ln = qlinear(in_dim, out_dim, vb, shard, quant_config, true, dtype).unwrap();
         Ok(LinearX(Either::Right(QLinear::from_linear_x(
             ln,
             quatized_type.clone(),
             quant_config,
         ))))
     } else {
-        let ln = linear(in_dim, out_dim, vb).unwrap();
+        let ln = linear(in_dim, out_dim, vb, shard).unwrap();
         Ok(LinearX(Either::Left(ln)))
     }
 }
@@ -691,21 +686,21 @@ pub fn linear_x(
 pub fn linear_no_bias_x(
     in_dim: usize,
     out_dim: usize,
-    vb: candle_nn::VarBuilder,
+    vb: VarBuilder,
+    shard: Shard,
     quant: &Option<String>,
     quant_config: &Option<QuantConfig>,
     dtype: DType,
 ) -> Result<LinearX> {
     if let Some(quatized_type) = quant {
-        let ln = qlinear(in_dim, out_dim, vb, quant_config, false, dtype).unwrap();
+        let ln = qlinear(in_dim, out_dim, vb, shard, quant_config, false, dtype).unwrap();
         Ok(LinearX(Either::Right(QLinear::from_linear_x(
             ln,
             quatized_type.clone(),
             quant_config,
         ))))
     } else {
-        let init_ws = init::DEFAULT_KAIMING_NORMAL;
-        let ws = vb.get_with_hints((out_dim, in_dim), "weight", init_ws)?;
+        let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
         let ln = Linear::new(ws, None);
         Ok(LinearX(Either::Left(ln)))
     }
@@ -715,14 +710,15 @@ pub fn linear_b_x(
     in_dim: usize,
     out_dim: usize,
     bias: bool,
-    vb: candle_nn::VarBuilder,
+    vb: VarBuilder,
+    shard: Shard,
     quant: &Option<String>,
     quant_config: &Option<QuantConfig>,
     dtype: DType,
 ) -> Result<LinearX> {
     if bias {
-        linear_x(in_dim, out_dim, vb, quant, quant_config, dtype)
+        linear_x(in_dim, out_dim, vb, shard, quant, quant_config, dtype)
     } else {
-        linear_no_bias_x(in_dim, out_dim, vb, quant, quant_config, dtype)
+        linear_no_bias_x(in_dim, out_dim, vb, shard, quant, quant_config, dtype)
     }
 }

@@ -1,15 +1,14 @@
 use super::{Config, QuantConfig};
 use crate::openai::distributed::{
-    embedding, linear_no_bias, rms_norm, TensorParallelColumnLinear, TensorParallelRowLinear,
+    embedding, linear_no_bias, rms_norm, Comm, TensorParallelColumnLinear, TensorParallelRowLinear,
+    VarBuilder,
 };
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_core as candle;
-use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use candle_nn::{Embedding, Linear, Module, RmsNorm};
-pub use cudarc::nccl::safe::{Comm, ReduceOp};
 pub const MAX_SEQ_LEN: usize = 4096;
 use crate::openai::models::TokenID;
 use std::iter::zip;

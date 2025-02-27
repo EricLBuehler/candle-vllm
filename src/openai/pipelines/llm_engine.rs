@@ -22,6 +22,10 @@ use crate::{
 use candle_core::{Device, Tensor};
 use either::Either;
 use flume::Sender;
+#[cfg(feature = "nccl")]
+use rayon::iter::IntoParallelRefIterator;
+#[cfg(feature = "nccl")]
+use rayon::iter::ParallelIterator;
 use std::time::SystemTime;
 use std::{
     collections::{HashMap, VecDeque},
@@ -194,43 +198,11 @@ impl LLMEngine {
             let seqs = scheduled[0].get_seqs();
 
             #[cfg(feature = "nccl")]
-            use rayon::iter::IntoParallelRefIterator;
-            #[cfg(feature = "nccl")]
-            use rayon::iter::ParallelIterator;
-            #[cfg(feature = "nccl")]
-            let vec_logits: HashMap<usize, Tensor> = self
-                .pipelines
-                .par_iter()
-                .map(|(rank, (pipeline, cache_engine))| {
-                    let device = pipeline.device();
-                    let PreparedInputs {
-                        tokens,
-                        positions,
-                        metadata,
-                    } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
-                        self.prepare_prompt(scheduled, device)
-                    } else {
-                        self.prepare_decode(scheduled, device)
-                    }
-                    .unwrap();
-                    (
-                        *rank,
-                        pipeline
-                            .forward(
-                                tokens,
-                                &positions,
-                                Some(&*cache_engine.get_kv_cache()),
-                                &metadata,
-                            )
-                            .unwrap(),
-                    )
-                })
-                .collect();
-
+            let iterator = self.pipelines.par_iter();
             #[cfg(not(feature = "nccl"))]
-            let vec_logits: HashMap<usize, Tensor> = self
-                .pipelines
-                .iter()
+            let iterator = self.pipelines.iter();
+
+            let vec_logits: HashMap<usize, Tensor> = iterator
                 .map(|(rank, (pipeline, cache_engine))| {
                     let device = pipeline.device();
                     let PreparedInputs {

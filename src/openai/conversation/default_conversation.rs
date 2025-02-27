@@ -38,7 +38,7 @@ pub enum SeparatorStyle {
 pub struct DefaultConversation {
     name: String,
     system_message: String,
-    chat_template: String,
+    chat_template: Option<String>,
     messages: Vec<Message>,
     offset: usize,
     sep_style: SeparatorStyle,
@@ -59,7 +59,7 @@ impl DefaultConversation {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
-        chat_template: String,
+        chat_template: Option<String>,
         messages: Vec<Message>,
         offset: usize,
         sep_style: SeparatorStyle,
@@ -107,10 +107,18 @@ impl Conversation for DefaultConversation {
         &self,
         add_generation_prompt: bool,
     ) -> Result<String, ApplyChatTemplateError> {
+        if self.chat_template.is_none() {
+            return Err(ApplyChatTemplateError::GetTemplateError(
+                minijinja::Error::new(minijinja::ErrorKind::CannotDeserialize, "Not found!"),
+            ));
+        }
         let mut env = Environment::new();
-        env.add_template(self.name.as_str(), self.chat_template.as_str())
-            .map_err(ApplyChatTemplateError::AddTemplateError)
-            .unwrap();
+        env.add_template(
+            self.name.as_str(),
+            self.chat_template.as_ref().unwrap().as_str(),
+        )
+        .map_err(ApplyChatTemplateError::AddTemplateError)
+        .unwrap();
         let template = env
             .get_template(&self.name)
             .map_err(ApplyChatTemplateError::GetTemplateError)?;
@@ -127,7 +135,9 @@ impl Conversation for DefaultConversation {
             Ok(prompt) => prompt,
             _ => {
                 //no chat template exists? using the built-in template
-                let system_prompt = self.chat_template.format(&[self.system_message.clone()]);
+                let default_sys_prompt = "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string();
+                let chat_template = self.chat_template.as_ref().unwrap_or(&default_sys_prompt);
+                let system_prompt = chat_template.format(&[self.system_message.clone()]);
                 match self.sep_style {
                     SeparatorStyle::AddColonSingle
                     | SeparatorStyle::AddColonSpaceSingle

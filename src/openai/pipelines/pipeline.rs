@@ -41,7 +41,6 @@ use crate::openai::models::llama_multi::LlamaMulti;
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, IndexOp, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
-use candle_nn::VarBuilder;
 use either::Either;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
@@ -260,6 +259,7 @@ impl DefaultLoader {
                     ),));
                     config.into_config(false, dtype, &specific_args)
                 }
+                #[cfg(feature = "nccl")]
                 "deepseek" => {
                     let config: DeepSeekConfig = try_api!(serde_json::from_slice(&try_api!(
                         std::fs::read(paths.get_config_filename())
@@ -343,7 +343,7 @@ impl DefaultLoader {
             let (models, devices, sep_style) = if device_ids.len() < 2 {
                 let device = crate::new_device(device_ids[0]).unwrap();
                 let vb = match unsafe {
-                    VarBuilder::from_mmaped_safetensors(
+                    candle_nn::var_builder::ShardedSafeTensors::var_builder(
                         &paths.get_weight_filenames(),
                         dtype,
                         &device,
@@ -390,6 +390,7 @@ impl DefaultLoader {
                         LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
                         SeparatorStyle::StableLM,
                     ),
+                    #[cfg(feature = "nccl")]
                     "deepseek" => (panic!("Nccl not enabled for deepseek model!"),),
                     _ => panic!("Model not supported!"),
                 };
@@ -418,20 +419,21 @@ impl DefaultLoader {
         };
 
         let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
-        let chat_template = if tokenizer_cfg_file.display().to_string() != ""
+        let chat_template: Option<String> = if tokenizer_cfg_file.display().to_string() != ""
             && Path::exists(&tokenizer_cfg_file)
         {
             let cfg_tokenizer: TokenizerConfig = try_api!(serde_json::from_slice(try_api!(
                 &std::fs::read(tokenizer_cfg_file)
             )));
-            cfg_tokenizer
-                .chat_template
-                .unwrap_or("[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string())
+            cfg_tokenizer.chat_template
         } else {
-            "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string()
+            None
         };
-
-        println!("Chat Template {} \n", chat_template);
+        if chat_template.is_some() {
+            println!("Chat Template {} \n", chat_template.as_ref().unwrap());
+        } else {
+            println!("Warning: Missing tokenizer_config.json \n Warning: Chat Template not found, use built-in template which may not correct!");
+        }
         println!("{:?}", pipeline_config);
         println!("{:?}", specific_args);
 
