@@ -36,7 +36,7 @@ Currently, candle-vllm supports chat serving for the following models.
 | #11 | **DeepSeek-R1-Distill-QWen** |TBD|TBD|TBD|**62 tks (QWen 14B)**|TBD|
 | #12 | **DeepSeek-R1-Distill-LLaMa** |TBD|TBD|TBD|**108 tks (LLaMa3.1 8B)**|TBD|
 | #13 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|TBD|
-| #13 | **DeepSeek V2/V3/R1** |✅|TBD|TBD |-|TBD|
+| #14 | **DeepSeek V2/V3/R1** |✅|TBD|TBD |-|TBD|
 
 
 ## Demo Chat with candle-vllm (~110 tokens/s, LLaMa3.1 8B, 4-bit Marlin, on A100)
@@ -118,9 +118,7 @@ export NCCL_IB_DISABLE=1 # disable ibnet/infiniband (optional)
 Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
 
 ```shell
-python3 -m pip install openai
-python3 -m pip install rich
-python3 -m pip install click
+python3 -m pip install openai rich click
 ```
 
 Chat with the mini chatbot
