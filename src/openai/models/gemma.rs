@@ -1,6 +1,7 @@
 use super::{Config, QuantConfig};
+use crate::openai::distributed::embedding;
 use crate::openai::models::linear::{
-    linear_b_x as linear_b, linear_no_bias_x as linear, LinearX as Linear,
+    linear_b_x as linear_b, linear_no_bias_x as linear, LinearX as Linear, Shard, VarBuilder,
 };
 use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
@@ -8,8 +9,7 @@ use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
-use candle_nn::Activation;
-use candle_nn::{RmsNorm, VarBuilder};
+use candle_nn::{Activation, RmsNorm};
 use std::iter::zip;
 use std::sync::Arc;
 
@@ -162,6 +162,7 @@ impl MLP {
             hidden_sz,
             intermediate_sz,
             vb.pp("gate_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -170,6 +171,7 @@ impl MLP {
             hidden_sz,
             intermediate_sz,
             vb.pp("up_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -178,6 +180,7 @@ impl MLP {
             intermediate_sz,
             hidden_sz,
             vb.pp("down_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -228,6 +231,7 @@ impl Attention {
             num_heads * head_dim,
             bias,
             vb.pp("q_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -237,6 +241,7 @@ impl Attention {
             num_kv_heads * head_dim,
             bias,
             vb.pp("k_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -246,6 +251,7 @@ impl Attention {
             num_kv_heads * head_dim,
             bias,
             vb.pp("v_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -255,6 +261,7 @@ impl Attention {
             hidden_sz,
             bias,
             vb.pp("o_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -462,8 +469,7 @@ pub struct Gemma {
 impl Gemma {
     pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
         let vb_m = vb.pp("model");
-        let embed_tokens =
-            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
+        let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(vb.dtype(), cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");

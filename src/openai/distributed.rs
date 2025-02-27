@@ -1,9 +1,23 @@
-use candle_core::backend::BackendStorage;
 use candle_core::CustomOp1;
-use candle_core::{CpuStorage, DType, Layout, Module, Result, Shape, Tensor};
-use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
-use candle_nn::{Embedding, Linear, RmsNorm};
-pub use cudarc::nccl::safe::{Comm, ReduceOp};
+use candle_core::{CpuStorage, Layout, Module, Result, Shape, Tensor};
+use candle_nn::var_builder::Shard;
+pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
+use candle_nn::{Embedding, LayerNorm, Linear, RmsNorm};
+#[cfg(feature = "nccl")]
+pub use cudarc::nccl::safe::Comm;
+#[cfg(not(feature = "nccl"))]
+pub struct Comm {}
+#[cfg(not(feature = "nccl"))]
+impl Comm {
+    //dummy Comm
+    fn rank(&self) -> usize {
+        0
+    }
+    fn world_size(&self) -> usize {
+        1
+    }
+}
+
 pub use std::rc::Rc;
 
 pub struct ReplicatedLinear {
@@ -29,6 +43,7 @@ pub struct TensorParallelRowLinear {
     bias: Option<Tensor>,
 }
 
+#[allow(dead_code)]
 pub struct AllReduce {
     comm: Rc<Comm>,
 }
@@ -57,14 +72,17 @@ impl CustomOp1 for AllReduce {
         candle_core::bail!("AllReduce is never used on cpu")
     }
 
-    #[cfg(feature = "cuda")]
+    #[cfg(all(feature = "cuda", feature = "nccl"))]
     fn cuda_fwd(
         &self,
         s: &candle_core::CudaStorage,
         l: &Layout,
     ) -> Result<(candle_core::CudaStorage, Shape)> {
+        use candle_core::backend::BackendStorage;
         use candle_core::cuda_backend::cudarc::driver::DeviceSlice;
         use candle_core::cuda_backend::WrapErr;
+        use candle_core::DType;
+        use cudarc::nccl::safe::ReduceOp;
         use half::{bf16, f16};
 
         let elem_count = l.shape().elem_count();
@@ -198,6 +216,15 @@ impl TensorParallelRowLinear {
 pub fn rms_norm(size: usize, eps: f64, vb: VarBuilder) -> Result<RmsNorm> {
     let weight = vb.get_with_hints(size, "weight", shard(0, 0, 1))?;
     Ok(RmsNorm::new(weight, eps))
+}
+
+pub fn layer_norm(size: usize, eps: f64, affine: bool, vb: VarBuilder) -> Result<LayerNorm> {
+    let weight = vb.get_with_hints(size, "weight", Shard::default())?;
+    if affine {
+        Ok(LayerNorm::new(weight, vb.get(size, "bias")?, eps))
+    } else {
+        Ok(LayerNorm::new_no_bias(weight, eps))
+    }
 }
 
 pub fn embedding(vocab_size: usize, hidden_size: usize, vb: VarBuilder) -> Result<Embedding> {

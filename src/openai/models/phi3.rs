@@ -1,14 +1,17 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
 use super::{Config, QuantConfig, RopeScaling};
-use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
+use crate::openai::distributed::{embedding, rms_norm};
+use crate::openai::models::linear::{
+    linear_no_bias_x as linear, LinearX as Linear, Shard, VarBuilder,
+};
+use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
-use candle_nn::VarBuilder;
-use candle_transformers::models::with_tracing::RmsNorm;
+use candle_nn::RmsNorm;
 use either::Either;
 use std::collections::HashMap;
 use std::iter::zip;
@@ -25,8 +28,8 @@ pub struct PhiConfig {
     pub num_key_value_heads: usize,
     pub rms_norm_eps: f64,
     pub rope_theta: f64,
-    pub bos_token_id: Option<u32>,
-    pub eos_token_id: Option<u32>,
+    pub bos_token_id: TokenID,
+    pub eos_token_id: TokenID,
     pub rope_scaling: Option<HashMap<String, RopeScaling>>,
     pub max_position_embeddings: usize,
     pub original_max_position_embeddings: Option<usize>,
@@ -52,8 +55,8 @@ impl PhiConfig {
             rms_norm_eps: self.rms_norm_eps,
             rope_theta: self.rope_theta,
             use_flash_attn,
-            bos_token_id: super::TokenID(Either::Left(self.bos_token_id)),
-            eos_token_id: super::TokenID(Either::Left(self.eos_token_id)),
+            bos_token_id: self.bos_token_id,
+            eos_token_id: self.eos_token_id,
             max_seq_len: self.max_position_embeddings,
             sliding_window: self.sliding_window,
             hidden_act: Some(self.hidden_act),
@@ -257,6 +260,7 @@ impl Attention {
             cfg.hidden_size,
             op_size,
             vb.pp("qkv_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -265,6 +269,7 @@ impl Attention {
             num_heads * head_dim,
             cfg.hidden_size,
             vb.pp("o_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -377,6 +382,7 @@ impl Mlp {
             hidden_size,
             2 * i_size,
             vb.pp("gate_up_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -385,6 +391,7 @@ impl Mlp {
             i_size,
             hidden_size,
             vb.pp("down_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -425,8 +432,8 @@ impl DecoderLayer {
         let self_attn = Attention::new(rotary_emb, cfg, dtype, vb.pp("self_attn"))?;
         let mlp = Mlp::new(cfg, dtype, vb.pp("mlp"))?;
         let input_layernorm =
-            RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
-        let post_attention_layernorm = RmsNorm::new(
+            rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
+        let post_attention_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
@@ -472,8 +479,7 @@ pub struct Phi {
 impl Phi {
     pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
         let vb_m = vb.pp("model");
-        let embed_tokens =
-            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
+        let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(dtype, cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
@@ -481,11 +487,12 @@ impl Phi {
             let layer = DecoderLayer::new(rotary_emb.clone(), cfg, dtype, vb_l.pp(layer_idx))?;
             layers.push(layer)
         }
-        let norm = RmsNorm::new(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
+        let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
         let lm_head = linear(
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
+            Shard::default(),
             &None, //no quant for lm_head
             &None,
             dtype,

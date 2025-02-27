@@ -5,13 +5,13 @@ use tokio::sync::{Mutex, Notify};
 
 use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
 
-#[cfg(feature = "nccl")]
 pub mod distributed;
 pub mod requests;
 pub mod responses;
 pub mod sampling_params;
 pub mod streaming;
-
+use either::Either;
+use serde::Deserialize;
 pub trait TokenizerWrapper<'s, E>
 where
     E: Into<EncodeInput<'s>>,
@@ -42,9 +42,14 @@ pub struct PipelineConfig {
     pub temperature: f32,
 }
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct MaxModelLen(
+    #[serde(with = "either::serde_untagged")] pub Either<Option<usize>, Option<f64>>,
+);
+
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct TokenizerConfig {
-    pub model_max_length: Option<usize>,
+    pub model_max_length: MaxModelLen,
     pub add_bos_token: Option<bool>,
     pub add_eos_token: Option<bool>,
     pub chat_template: Option<String>,

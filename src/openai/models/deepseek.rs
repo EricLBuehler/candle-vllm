@@ -7,16 +7,14 @@ use crate::backend::custom_ops::moe::{
     masked_fill, BincountOp, NonZeroOp, SplitOp, TopKLastDimOp, TopKOutput,
 };
 use crate::openai::distributed::{
-    embedding, rms_norm, AllReduce, ReplicatedLinear, TensorParallelColumnLinear,
-    TensorParallelRowLinear,
+    embedding, rms_norm, AllReduce, Comm, ReplicatedLinear, TensorParallelColumnLinear,
+    TensorParallelRowLinear, VarBuilder,
 };
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_core as candle;
-use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use candle_nn::{Activation, Embedding, Module, RmsNorm};
-pub use cudarc::nccl::safe::{Comm, ReduceOp};
 use serde::Deserialize;
 use std::iter::zip;
 use std::rc::Rc;

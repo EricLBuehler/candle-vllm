@@ -1,17 +1,19 @@
 use super::{Config, QuantConfig};
-use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
+use crate::openai::distributed::{embedding, layer_norm};
+use crate::openai::models::linear::{
+    linear_no_bias_x as linear, LinearX as Linear, Shard, VarBuilder,
+};
+use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
-use candle_nn::{Activation, VarBuilder};
-use candle_transformers::models::with_tracing::{layer_norm, Embedding, LayerNorm};
+use candle_nn::{Activation, Embedding, LayerNorm};
 
-use either::Either;
 use serde::Deserialize;
 use std::iter::zip;
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Phi2Config {
     pub vocab_size: usize,
     pub hidden_size: usize,
@@ -26,8 +28,8 @@ pub struct Phi2Config {
     pub rope_theta: f64,
     pub partial_rotary_factor: f32,
     pub qk_layernorm: bool,
-    pub bos_token_id: Option<u32>,
-    pub eos_token_id: Option<u32>,
+    pub bos_token_id: TokenID,
+    pub eos_token_id: TokenID,
     pub sliding_window: Option<usize>,
     pub original_max_position_embeddings: Option<usize>,
     pub quantization_config: Option<QuantConfig>,
@@ -50,8 +52,8 @@ impl Phi2Config {
             num_key_value_heads: self.num_key_value_heads.unwrap_or(self.num_attention_heads),
             rms_norm_eps: self.layer_norm_eps,
             rope_theta: self.rope_theta,
-            bos_token_id: super::TokenID(Either::Left(self.bos_token_id)),
-            eos_token_id: super::TokenID(Either::Left(self.eos_token_id)),
+            bos_token_id: self.bos_token_id,
+            eos_token_id: self.eos_token_id,
             max_seq_len: self.max_position_embeddings,
             sliding_window: self.sliding_window,
             hidden_act: Some(self.hidden_act),
@@ -132,6 +134,7 @@ impl MLP {
             cfg.hidden_size,
             cfg.intermediate_size,
             vb.pp("fc1"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -140,6 +143,7 @@ impl MLP {
             cfg.intermediate_size,
             cfg.hidden_size,
             vb.pp("fc2"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -184,6 +188,7 @@ impl Attention {
             cfg.hidden_size,
             num_heads * head_dim,
             vb.pp("q_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -192,6 +197,7 @@ impl Attention {
             cfg.hidden_size,
             num_kv_heads * head_dim,
             vb.pp("k_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -200,6 +206,7 @@ impl Attention {
             cfg.hidden_size,
             num_kv_heads * head_dim,
             vb.pp("v_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -208,6 +215,7 @@ impl Attention {
             num_heads * head_dim,
             cfg.hidden_size,
             vb.pp("dense"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -215,8 +223,8 @@ impl Attention {
         // Alternative rope scalings are not supported.
         let rotary_emb = RotaryEmbedding::new(cfg, dtype, vb.device())?;
         let (q_layernorm, k_layernorm) = if cfg.qk_layer_rms_norm.unwrap() {
-            let q_layernorm = layer_norm(head_dim, cfg.rms_norm_eps, vb.pp("q_layernorm"))?;
-            let k_layernorm = layer_norm(head_dim, cfg.rms_norm_eps, vb.pp("k_layernorm"))?;
+            let q_layernorm = layer_norm(head_dim, cfg.rms_norm_eps, true, vb.pp("q_layernorm"))?;
+            let k_layernorm = layer_norm(head_dim, cfg.rms_norm_eps, true, vb.pp("k_layernorm"))?;
             (Some(q_layernorm), Some(k_layernorm))
         } else {
             (None, None)
@@ -319,20 +327,22 @@ struct DecoderLayer {
     self_attn: Attention,
     mlp: MLP,
     input_layernorm: LayerNorm,
-    span: tracing::Span,
 }
 
 impl DecoderLayer {
     fn new(cfg: &Config, dtype: DType, vb: VarBuilder) -> Result<Self> {
         let self_attn = Attention::new(cfg, dtype, vb.pp("self_attn"))?;
         let mlp = MLP::new(cfg, dtype, vb.pp("mlp"))?;
-        let input_layernorm =
-            layer_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
+        let input_layernorm = layer_norm(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            true,
+            vb.pp("input_layernorm"),
+        )?;
         Ok(Self {
             self_attn,
             mlp,
             input_layernorm,
-            span: tracing::span!(tracing::Level::TRACE, "block"),
         })
     }
 
@@ -344,7 +354,6 @@ impl DecoderLayer {
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let _enter = self.span.enter();
         let residual = xs;
         let xs = xs.apply(&self.input_layernorm)?;
         let attn_outputs =
@@ -367,11 +376,11 @@ pub struct Phi2 {
 impl Phi2 {
     pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
         let vb_m = vb.pp("model");
-        let embed_tokens =
-            Embedding::new(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
+        let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let final_layernorm = layer_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
+            true,
             vb_m.pp("final_layernorm"),
         )?;
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
@@ -384,6 +393,7 @@ impl Phi2 {
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
+            Shard::default(),
             &None, //no quant for lm_head
             &None,
             dtype,

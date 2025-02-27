@@ -1,17 +1,18 @@
 use super::{Config, QuantConfig};
+use crate::openai::distributed::{embedding, layer_norm};
 use crate::openai::models::linear::{
-    linear_no_bias_x as linear_no_bias, linear_x as linear, LinearX as Linear,
+    linear_no_bias_x as linear_no_bias, linear_x as linear, LinearX as Linear, Shard, VarBuilder,
 };
+use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
-use candle_nn::{Activation, LayerNorm, VarBuilder};
-use either::Either;
+use candle_nn::{Activation, LayerNorm};
 use std::iter::zip;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct StableLMConfig {
     pub vocab_size: usize,
     pub intermediate_size: usize,
@@ -28,8 +29,8 @@ pub struct StableLMConfig {
     pub partial_rotary_factor: Option<f32>,
     pub rope_pct: Option<f32>,
     pub tie_word_embeddings: Option<bool>,
-    pub bos_token_id: usize,
-    pub eos_token_id: usize,
+    pub bos_token_id: TokenID,
+    pub eos_token_id: TokenID,
     pub sliding_window: Option<usize>,
     pub quantization_config: Option<QuantConfig>,
 }
@@ -52,8 +53,8 @@ impl StableLMConfig {
             rms_norm_eps: self.norm_eps,
             rope_theta: self.rope_theta,
             use_flash_attn,
-            bos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
-            eos_token_id: super::TokenID(Either::Left(Some(self.bos_token_id as u32))),
+            bos_token_id: self.bos_token_id,
+            eos_token_id: self.eos_token_id,
             max_seq_len: self.max_position_embeddings,
             sliding_window: self.sliding_window,
             hidden_act: Some(self.hidden_act),
@@ -144,6 +145,7 @@ impl MLP {
             hidden_sz,
             intermediate_sz,
             vb.pp("gate_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -152,6 +154,7 @@ impl MLP {
             hidden_sz,
             intermediate_sz,
             vb.pp("up_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -160,6 +163,7 @@ impl MLP {
             intermediate_sz,
             hidden_sz,
             vb.pp("down_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -218,6 +222,7 @@ impl Attention {
             hidden_sz,
             num_heads * head_dim,
             vb.pp("q_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -226,6 +231,7 @@ impl Attention {
             hidden_sz,
             num_kv_heads * head_dim,
             vb.pp("k_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -234,6 +240,7 @@ impl Attention {
             hidden_sz,
             num_kv_heads * head_dim,
             vb.pp("v_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -242,6 +249,7 @@ impl Attention {
             num_heads * head_dim,
             hidden_sz,
             vb.pp("o_proj"),
+            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
             dtype,
@@ -350,11 +358,16 @@ impl DecoderLayer {
     ) -> Result<Self> {
         let self_attn = Attention::new(rotary_emb, cfg, dtype, vb.pp("self_attn"))?;
         let mlp = MLP::new(cfg, dtype, vb.pp("mlp"))?;
-        let input_layernorm =
-            candle_nn::layer_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
-        let post_attention_layernorm = candle_nn::layer_norm(
+        let input_layernorm = layer_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
+            true,
+            vb.pp("input_layernorm"),
+        )?;
+        let post_attention_layernorm = layer_norm(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            true,
             vb.pp("post_attention_layernorm"),
         )?;
         Ok(Self {
@@ -398,8 +411,7 @@ pub struct StableLM {
 impl StableLM {
     pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
         let vb_m = vb.pp("model");
-        let embed_tokens =
-            candle_nn::embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
+        let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(vb.dtype(), cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
@@ -407,11 +419,12 @@ impl StableLM {
             let layer = DecoderLayer::new(rotary_emb.clone(), cfg, dtype, vb_l.pp(layer_idx))?;
             layers.push(layer)
         }
-        let norm = candle_nn::layer_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
+        let norm = layer_norm(cfg.hidden_size, cfg.rms_norm_eps, true, vb_m.pp("norm"))?;
         let lm_head = linear_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
+            Shard::default(),
             &None, //no quant for lm_head
             &None,
             dtype,

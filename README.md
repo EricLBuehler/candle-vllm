@@ -36,6 +36,7 @@ Currently, candle-vllm supports chat serving for the following models.
 | #11 | **DeepSeek-R1-Distill-QWen** |TBD|TBD|TBD|**62 tks (QWen 14B)**|TBD|
 | #12 | **DeepSeek-R1-Distill-LLaMa** |TBD|TBD|TBD|**108 tks (LLaMa3.1 8B)**|TBD|
 | #13 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|TBD|
+| #14 | **DeepSeek V2/V3/R1** |✅|TBD|TBD |-|TBD|
 
 
 ## Demo Chat with candle-vllm (~110 tokens/s, LLaMa3.1 8B, 4-bit Marlin, on A100)
@@ -50,8 +51,8 @@ See [this folder](examples/) for some examples.
 Install dependencies
 ```
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-sudo apt install libssl-dev
-sudo apt install pkg-config
+sudo apt install libssl-dev -y
+sudo apt install pkg-config -y
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
 ```
@@ -98,7 +99,7 @@ Run **DeepSeek** MoE models
 cargo run --release --features cuda -- --port 2000 --weight-path /home/DeepSeek-V2-Lite-Chat deep-seek --penalty 1.0 --temperature 0.
 ```
 
-Run **Multi-GPU** inference with NCCL feature (LLaMa structure at the moment)
+Run **Multi-GPU** inference with NCCL feature (LLaMa and DeepSeek structure at the moment)
 
 ```shell
 cargo run --release --features cuda,nccl -- --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
@@ -117,9 +118,7 @@ export NCCL_IB_DISABLE=1 # disable ibnet/infiniband (optional)
 Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
 
 ```shell
-python3 -m pip install openai
-python3 -m pip install rich
-python3 -m pip install click
+python3 -m pip install openai rich click
 ```
 
 Chat with the mini chatbot
