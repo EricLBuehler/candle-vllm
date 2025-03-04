@@ -12,6 +12,7 @@ struct GPTQMatMul {
     g_idx: Option<Tensor>,
     workspace: Option<Tensor>,
     bits: i32,
+    group_size: i32,
 }
 
 impl GPTQMatMul {
@@ -33,7 +34,7 @@ impl GPTQMatMul {
         let x_shape = x_l.dims();
         let weight_shape = qweight_l.dims();
         // let zero_shape = self.qzeros.shape().dims();
-        let scale_shape = scale_l.dims();
+        // let scale_shape = scale_l.dims();
 
         let pack_factor: usize = 32 / self.bits as usize;
         let marlin_format = self.workspace.is_some();
@@ -63,12 +64,6 @@ impl GPTQMatMul {
         let qs_ptr = *qs.device_ptr() as *const core::ffi::c_void;
 
         unsafe {
-            let groupsize: i32 = if scale_shape[0] == 1 {
-                -1i32
-            } else {
-                (size_k / scale_shape[0]) as i32
-            };
-
             if marlin_format {
                 let workspace_ptr = if self.workspace.is_some() {
                     let (workspace, workspace_l) =
@@ -93,7 +88,7 @@ impl GPTQMatMul {
                         size_k as i32,                    //k
                         size_n as i32,                    //n
                         workspace_ptr,
-                        groupsize as i32,
+                        self.group_size as i32,
                         *dev.cu_stream() as i64,
                     );
                 } else if x.dtype() == DType::BF16 {
@@ -106,7 +101,7 @@ impl GPTQMatMul {
                         size_k as i32,                    //k
                         size_n as i32,                    //n
                         workspace_ptr,
-                        groupsize as i32,
+                        self.group_size as i32,
                         *dev.cu_stream() as i64,
                     );
                 }
@@ -202,12 +197,14 @@ pub fn gptq_matmul(
     g_idx: &Option<Tensor>,
     workspace: &Option<Tensor>,
     bits: i32,
+    group_size: i32,
 ) -> Result<Tensor> {
     let op = GPTQMatMul {
         qzeros: qzeros.to_owned(),
         g_idx: g_idx.to_owned(),
         workspace: workspace.to_owned(),
         bits,
+        group_size,
     };
     x.apply_op3(qweight, scale, op)
 }

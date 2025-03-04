@@ -1,7 +1,7 @@
 use super::{Config, QuantConfig};
-use crate::openai::distributed::embedding;
-use crate::openai::models::linear::{
-    linear_b_x as linear_b, linear_no_bias_x as linear, LinearX as Linear, Shard, VarBuilder,
+use crate::openai::distributed::{
+    embedding, Comm, ReplicatedLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
+    VarBuilder,
 };
 use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
@@ -11,6 +11,7 @@ use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Activation, RmsNorm};
 use std::iter::zip;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -145,45 +146,43 @@ impl RotaryEmbedding {
     }
 }
 
-#[derive(Debug, Clone)]
-#[allow(clippy::upper_case_acronyms)]
 struct MLP {
-    gate_proj: Linear,
-    up_proj: Linear,
-    down_proj: Linear,
+    gate_proj: TensorParallelColumnLinear,
+    up_proj: TensorParallelColumnLinear,
+    down_proj: TensorParallelRowLinear,
     act_fn: candle_nn::Activation,
 }
 
 impl MLP {
-    fn new(cfg: &Config, dtype: DType, vb: VarBuilder) -> Result<Self> {
+    fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
-        let gate_proj = linear(
+        let gate_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             intermediate_sz,
+            false,
             vb.pp("gate_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let up_proj = linear(
+        let up_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             intermediate_sz,
+            false,
             vb.pp("up_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let down_proj = linear(
+        let down_proj = TensorParallelRowLinear::load_with_hints(
             intermediate_sz,
             hidden_sz,
+            false,
             vb.pp("down_proj"),
-            Shard::default(),
+            comm,
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
         Ok(Self {
             gate_proj,
@@ -196,17 +195,17 @@ impl MLP {
 
 impl Module for MLP {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let lhs = xs.apply(&self.gate_proj)?.apply(&self.act_fn)?;
-        let rhs = xs.apply(&self.up_proj)?;
-        (lhs * rhs)?.apply(&self.down_proj)
+        let lhs = self.act_fn.forward(&self.gate_proj.forward(xs)?)?;
+        let rhs = self.up_proj.forward(xs)?;
+        self.down_proj.forward(&(&lhs * &rhs)?)
     }
 }
 
 struct Attention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
-    o_proj: Linear,
+    q_proj: TensorParallelColumnLinear,
+    k_proj: TensorParallelColumnLinear,
+    v_proj: TensorParallelColumnLinear,
+    o_proj: TensorParallelRowLinear,
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
@@ -218,68 +217,67 @@ impl Attention {
     fn new(
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
-        dtype: DType,
         vb: VarBuilder,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
         let head_dim = cfg.head_dim.unwrap();
         let bias = cfg.attention_bias;
-        let q_proj = linear_b(
+        let q_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_heads * head_dim,
             bias,
             vb.pp("q_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let k_proj = linear_b(
+        let k_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
             bias,
             vb.pp("k_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let v_proj = linear_b(
+        let v_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
             bias,
             vb.pp("v_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let o_proj = linear_b(
+
+        let o_proj = TensorParallelRowLinear::load_with_hints(
             num_heads * head_dim,
             hidden_sz,
             bias,
             vb.pp("o_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
+        let attention_heads = cfg.num_attention_heads / comm.world_size();
+        let kv_heads = cfg.num_key_value_heads / comm.world_size();
         Ok(Self {
             q_proj,
             k_proj,
             v_proj,
             o_proj,
-            num_heads,
-            num_kv_heads,
+            num_heads: attention_heads,
+            num_kv_heads: kv_heads,
             head_dim,
             rotary_emb,
             attn: PagedAttention::new(
-                cfg.num_attention_heads,
+                attention_heads,
                 head_dim,
                 1. / ((head_dim as f32).sqrt()),
-                Some(cfg.num_key_value_heads),
+                Some(kv_heads),
                 None,
                 vb.device().clone(),
                 None,
@@ -370,11 +368,11 @@ impl DecoderLayer {
     fn new(
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
-        dtype: DType,
         vb: VarBuilder,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
-        let self_attn = Attention::new(rotary_emb, cfg, dtype, vb.pp("self_attn"))?;
-        let mlp = MLP::new(cfg, dtype, vb.pp("mlp"))?;
+        let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
+        let mlp = MLP::new(cfg, vb.pp("mlp"), comm.clone())?;
         let input_layernorm =
             rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
 
@@ -459,7 +457,7 @@ pub struct Gemma {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
-    lm_head: Linear,
+    lm_head: ReplicatedLinear,
     device: Device,
     dtype: DType,
     hidden_size: usize,
@@ -467,23 +465,25 @@ pub struct Gemma {
 }
 
 impl Gemma {
-    pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
+    pub fn new(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(vb.dtype(), cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
-            let layer = DecoderLayer::new(rotary_emb.clone(), cfg, dtype, vb_l.pp(layer_idx))?;
+            let layer =
+                DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), comm.clone())?;
             layers.push(layer)
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = Linear::new(
-            embed_tokens.embeddings().clone(),
-            None,
-            &None, //no quant for lm_head
-            &None,
-        );
+        let lm_head = ReplicatedLinear::from_weight_bias(embed_tokens.embeddings().clone(), None)?;
         Ok(Self {
             embed_tokens,
             layers,
@@ -545,10 +545,8 @@ impl Gemma {
             }
         }
 
-        let logits = xs
-            .i((.., seq_len - 1, ..))?
-            .apply(&self.norm)?
-            .apply(&self.lm_head)?;
+        let logits = xs.i((.., seq_len - 1, ..))?.apply(&self.norm)?;
+        let logits = self.lm_head.forward(&logits)?;
 
         let logits = match self.cfg.final_logit_softcapping {
             None => logits,

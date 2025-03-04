@@ -1,7 +1,7 @@
 use super::{Config, QuantConfig};
-use crate::openai::distributed::{embedding, layer_norm};
-use crate::openai::models::linear::{
-    linear_no_bias_x as linear_no_bias, linear_x as linear, LinearX as Linear, Shard, VarBuilder,
+use crate::openai::distributed::{
+    embedding, layer_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
+    TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
@@ -10,6 +10,7 @@ use crate::SpecificConfig;
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_nn::{Activation, LayerNorm};
 use std::iter::zip;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -127,75 +128,70 @@ impl RotaryEmbedding {
     }
 }
 
-#[derive(Debug)]
-#[allow(clippy::upper_case_acronyms)]
 struct MLP {
-    gate_proj: Linear,
-    up_proj: Linear,
-    down_proj: Linear,
+    gate_proj: TensorParallelColumnLinear,
+    up_proj: TensorParallelColumnLinear,
+    down_proj: TensorParallelRowLinear,
     act_fn: Activation,
-    span: tracing::Span,
 }
 
 impl MLP {
-    fn new(cfg: &Config, dtype: DType, vb: VarBuilder) -> Result<Self> {
+    fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
-        let gate_proj = linear_no_bias(
+
+        let gate_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             intermediate_sz,
+            false,
             vb.pp("gate_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let up_proj = linear_no_bias(
+        let up_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             intermediate_sz,
+            false,
             vb.pp("up_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let down_proj = linear_no_bias(
+        let down_proj = TensorParallelRowLinear::load_with_hints(
             intermediate_sz,
             hidden_sz,
+            false,
             vb.pp("down_proj"),
-            Shard::default(),
+            comm,
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
         Ok(Self {
             gate_proj,
             up_proj,
             down_proj,
             act_fn: cfg.hidden_act.unwrap_or(Activation::Silu),
-            span: tracing::span!(tracing::Level::TRACE, "mlp"),
         })
     }
 }
 
 impl Module for MLP {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let _enter = self.span.enter();
-        let lhs = xs.apply(&self.gate_proj)?.apply(&self.act_fn)?;
-        let rhs = xs.apply(&self.up_proj)?;
-        (lhs * rhs)?.apply(&self.down_proj)
+        let lhs = self.act_fn.forward(&self.gate_proj.forward(xs)?)?;
+        let rhs = self.up_proj.forward(xs)?;
+        self.down_proj.forward(&(&lhs * &rhs)?)
     }
 }
 
 struct Attention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
-    o_proj: Linear,
+    q_proj: TensorParallelColumnLinear,
+    k_proj: TensorParallelColumnLinear,
+    v_proj: TensorParallelColumnLinear,
+    o_proj: TensorParallelRowLinear,
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
-    hidden_size: usize,
     rotary_emb: Arc<RotaryEmbedding>,
     attn: PagedAttention,
 }
@@ -204,71 +200,67 @@ impl Attention {
     fn new(
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
-        dtype: DType,
         vb: VarBuilder,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
         let head_dim = hidden_sz / num_heads;
 
-        let linear_layer = if cfg.use_qkv_bias.unwrap_or(false) {
-            linear
-        } else {
-            linear_no_bias
-        };
-
-        let q_proj = linear_layer(
+        let q_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_heads * head_dim,
+            cfg.use_qkv_bias.unwrap_or(false),
             vb.pp("q_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let k_proj = linear_layer(
+        let k_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
+            cfg.use_qkv_bias.unwrap_or(false),
             vb.pp("k_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let v_proj = linear_layer(
+        let v_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
+            cfg.use_qkv_bias.unwrap_or(false),
             vb.pp("v_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let o_proj = linear_no_bias(
+
+        let o_proj = TensorParallelRowLinear::load_with_hints(
             num_heads * head_dim,
             hidden_sz,
+            false,
             vb.pp("o_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
+        let attention_heads = cfg.num_attention_heads / comm.world_size();
+        let kv_heads = cfg.num_key_value_heads / comm.world_size();
         Ok(Self {
             q_proj,
             k_proj,
             v_proj,
             o_proj,
-            num_heads,
-            num_kv_heads,
+            num_heads: attention_heads,
+            num_kv_heads: kv_heads,
             head_dim,
-            hidden_size: hidden_sz,
             rotary_emb,
             attn: PagedAttention::new(
-                cfg.num_attention_heads,
+                attention_heads,
                 head_dim,
                 1. / ((head_dim as f32).sqrt()),
-                Some(cfg.num_key_value_heads),
+                Some(kv_heads),
                 None,
                 vb.device().clone(),
                 None,
@@ -332,10 +324,9 @@ impl Attention {
         )?;
 
         let y = if attention_mask.is_some() {
-            y.transpose(1, 2)?
-                .reshape(&[b_sz, seq_len, self.hidden_size])?
+            y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))?
         } else {
-            y.reshape(&[b_sz, seq_len, self.hidden_size])?
+            y.reshape((b_sz, seq_len, ()))?
         };
         let y = self.o_proj.forward(&y)?;
         Ok(y)
@@ -353,11 +344,11 @@ impl DecoderLayer {
     fn new(
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
-        dtype: DType,
         vb: VarBuilder,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
-        let self_attn = Attention::new(rotary_emb, cfg, dtype, vb.pp("self_attn"))?;
-        let mlp = MLP::new(cfg, dtype, vb.pp("mlp"))?;
+        let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
+        let mlp = MLP::new(cfg, vb.pp("mlp"), comm.clone())?;
         let input_layernorm = layer_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
@@ -402,32 +393,37 @@ pub struct StableLM {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: LayerNorm,
-    lm_head: Linear,
+    lm_head: ReplicatedLinear,
     device: Device,
     dtype: DType,
     cfg: Config,
 }
 
 impl StableLM {
-    pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
+    pub fn new(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(vb.dtype(), cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
-            let layer = DecoderLayer::new(rotary_emb.clone(), cfg, dtype, vb_l.pp(layer_idx))?;
+            let layer =
+                DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), comm.clone())?;
             layers.push(layer)
         }
         let norm = layer_norm(cfg.hidden_size, cfg.rms_norm_eps, true, vb_m.pp("norm"))?;
-        let lm_head = linear_no_bias(
+        let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
-            Shard::default(),
-            &None, //no quant for lm_head
             &None,
-            dtype,
+            &None,
         )?;
         Ok(Self {
             embed_tokens,
@@ -486,10 +482,8 @@ impl StableLM {
                 )?
             }
         }
-        xs.i((.., seq_len - 1, ..))?
-            .apply(&self.norm)?
-            .apply(&self.lm_head)?
-            .to_dtype(DType::F32)
+        let xs = xs.i((.., seq_len - 1, ..))?.apply(&self.norm)?;
+        self.lm_head.forward(&xs)?.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {

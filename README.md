@@ -99,10 +99,15 @@ Run **DeepSeek** MoE models
 cargo run --release --features cuda -- --port 2000 --weight-path /home/DeepSeek-V2-Lite-Chat deep-seek --penalty 1.0 --temperature 0.
 ```
 
-Run **Multi-GPU** inference with NCCL feature (LLaMa and DeepSeek structure at the moment)
+Run **Multi-GPU** inference with NCCL feature
 
 ```shell
 cargo run --release --features cuda,nccl -- --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
+```
+
+Run **Multi-GPU** inference with NCCL feature for `quantized` models
+```shell
+cargo run --release --features cuda,nccl -- --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant gptq --temperature 0. --penalty 1.0
 ```
 
 If you encountered problems under Multi-GPU settings, you may:
@@ -111,7 +116,7 @@ export NCCL_P2P_LEVEL=LOC # use local devices (multiple cards within a server, P
 export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
 export NCCL_IB_DISABLE=1 # disable ibnet/infiniband (optional)
 ```
-**Note:** quantized models are not supported yet under multi-gpu setting.
+**Note:** number of GPU used must be aligned to 2^n (e.g., 2, 4, or 8).
 
 ### Step 2:
 #### Option 1: Chat with Chat.py (for simple tests)

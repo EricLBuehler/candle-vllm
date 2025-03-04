@@ -1,9 +1,9 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
 use super::{Config, QuantConfig, RopeScaling};
-use crate::openai::distributed::{embedding, rms_norm};
-use crate::openai::models::linear::{
-    linear_no_bias_x as linear, LinearX as Linear, Shard, VarBuilder,
+use crate::openai::distributed::{
+    embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
+    TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
@@ -15,6 +15,7 @@ use candle_nn::RmsNorm;
 use either::Either;
 use std::collections::HashMap;
 use std::iter::zip;
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -235,11 +236,10 @@ impl RotaryEmbedding {
 }
 
 struct Attention {
-    qkv_proj: Linear,
-    o_proj: Linear,
+    qkv_proj: ReplicatedLinear, //split into two devices may cause some errors, therefore, we use replicatedlayer
+    o_proj: ReplicatedLinear,
     num_heads: usize,
     num_kv_heads: usize,
-    hidden_size: usize,
     head_dim: usize,
     rotary_emb: Arc<RotaryEmbedding>,
     attn: PagedAttention,
@@ -249,44 +249,46 @@ impl Attention {
     fn new(
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
-        dtype: DType,
         vb: VarBuilder,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         let op_size = num_heads * head_dim + 2 * num_kv_heads * head_dim;
-        let qkv_proj = linear(
+        let qkv_proj = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             op_size,
             vb.pp("qkv_proj"),
-            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let o_proj = linear(
+        let o_proj = ReplicatedLinear::load_no_bias(
             num_heads * head_dim,
             cfg.hidden_size,
             vb.pp("o_proj"),
-            Shard::default(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
+        //Fix the attention parallel
+        assert!(
+            comm.world_size() < 2,
+            "Packed qkv_proj is not supported under multi-gpu setting!"
+        );
+        let attention_heads = cfg.num_attention_heads / comm.world_size();
+        let kv_heads = cfg.num_key_value_heads / comm.world_size();
         Ok(Self {
             qkv_proj,
             o_proj,
             rotary_emb,
-            num_heads,
-            num_kv_heads,
+            num_heads: attention_heads,
+            num_kv_heads: kv_heads,
             head_dim,
-            hidden_size: cfg.hidden_size,
             attn: PagedAttention::new(
-                cfg.num_attention_heads,
+                attention_heads,
                 head_dim,
                 1. / ((head_dim as f32).sqrt()),
-                Some(cfg.num_key_value_heads),
+                Some(kv_heads),
                 None,
                 vb.device().clone(),
                 None,
@@ -356,45 +358,43 @@ impl Attention {
         )?;
 
         let y = if attention_mask.is_some() {
-            y.transpose(1, 2)?
-                .reshape(&[b_sz, seq_len, self.hidden_size])?
+            y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))?
         } else {
-            y.reshape(&[b_sz, seq_len, self.hidden_size])?
+            y.reshape((b_sz, seq_len, ()))?
         };
         let y = self.o_proj.forward(&y)?;
         Ok(y)
     }
 }
 
-#[derive(Debug, Clone)]
 struct Mlp {
-    gate_up_proj: Linear,
-    down_proj: Linear,
+    gate_up_proj: TensorParallelColumnLinear,
+    down_proj: TensorParallelRowLinear,
     act_fn: candle_nn::Activation,
     i_size: usize,
 }
 
 impl Mlp {
-    fn new(cfg: &Config, dtype: DType, vb: VarBuilder) -> Result<Self> {
+    fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let hidden_size = cfg.hidden_size;
         let i_size = cfg.intermediate_size;
-        let gate_up_proj = linear(
+        let gate_up_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_size,
             2 * i_size,
+            false,
             vb.pp("gate_up_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let down_proj = linear(
+        let down_proj = TensorParallelRowLinear::load_with_hints(
             i_size,
             hidden_size,
+            false,
             vb.pp("down_proj"),
-            Shard::default(),
+            comm,
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
         Ok(Self {
             gate_up_proj,
@@ -407,11 +407,11 @@ impl Mlp {
 
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let up_states = xs.apply(&self.gate_up_proj)?;
+        let up_states = self.gate_up_proj.forward(&xs)?;
         let gate = up_states.narrow(D::Minus1, 0, self.i_size)?;
         let up_states = up_states.narrow(D::Minus1, self.i_size, self.i_size)?;
         let up_states = (up_states * gate.apply(&self.act_fn))?;
-        up_states.apply(&self.down_proj)
+        self.down_proj.forward(&up_states)
     }
 }
 
@@ -426,11 +426,11 @@ impl DecoderLayer {
     fn new(
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
-        dtype: DType,
         vb: VarBuilder,
+        comm: Rc<Comm>,
     ) -> Result<Self> {
-        let self_attn = Attention::new(rotary_emb, cfg, dtype, vb.pp("self_attn"))?;
-        let mlp = Mlp::new(cfg, dtype, vb.pp("mlp"))?;
+        let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
+        let mlp = Mlp::new(cfg, vb.pp("mlp"), comm.clone())?;
         let input_layernorm =
             rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         let post_attention_layernorm = rms_norm(
@@ -470,33 +470,39 @@ pub struct Phi {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
-    lm_head: Linear,
+    lm_head: ReplicatedLinear,
     device: Device,
     dtype: DType,
     cfg: Config,
 }
 
 impl Phi {
-    pub fn new(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
+    pub fn new(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(dtype, cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         for layer_idx in 0..cfg.num_hidden_layers {
-            let layer = DecoderLayer::new(rotary_emb.clone(), cfg, dtype, vb_l.pp(layer_idx))?;
+            let layer =
+                DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), comm.clone())?;
             layers.push(layer)
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = linear(
+        let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
-            Shard::default(),
-            &None, //no quant for lm_head
             &None,
-            dtype,
+            &None,
         )?;
+
         Ok(Self {
             embed_tokens,
             layers,
@@ -554,10 +560,8 @@ impl Phi {
                 )?
             }
         }
-        xs.i((.., seq_len - 1, ..))?
-            .apply(&self.norm)?
-            .apply(&self.lm_head)?
-            .to_dtype(DType::F32)
+        let xs = xs.i((.., seq_len - 1, ..))?.apply(&self.norm)?;
+        self.lm_head.forward(&xs)?.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {
