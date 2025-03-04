@@ -1,8 +1,9 @@
+use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
 use candle_core::CustomOp1;
 use candle_core::{CpuStorage, Layout, Module, Result, Shape, Tensor};
 use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
-use candle_nn::{Embedding, LayerNorm, Linear, RmsNorm};
+use candle_nn::{Embedding, LayerNorm, RmsNorm};
 #[cfg(feature = "nccl")]
 pub use cudarc::nccl::safe::Comm;
 #[cfg(not(feature = "nccl"))]
@@ -10,10 +11,17 @@ pub struct Comm {}
 #[cfg(not(feature = "nccl"))]
 impl Comm {
     //dummy Comm
-    fn rank(&self) -> usize {
+    pub fn default() -> Self {
+        Self {}
+    }
+    pub fn dim(&self) -> usize {
         0
     }
-    fn world_size(&self) -> usize {
+
+    pub fn rank(&self) -> usize {
+        0
+    }
+    pub fn world_size(&self) -> usize {
         1
     }
 }
@@ -22,23 +30,30 @@ pub use std::rc::Rc;
 
 pub struct ReplicatedLinear {
     linear: Linear,
+    bias: Option<Tensor>,
 }
 
 pub struct TensorParallelColumnLinear {
     linear: Linear,
+    bias: Option<Tensor>,
 }
 
 impl TensorParallelColumnLinear {
     pub fn new(linear: Linear) -> Self {
-        Self { linear }
+        Self { linear, bias: None }
     }
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.linear.forward(x)
+        let mut xs = self.linear.forward(x)?;
+        if let Some(bias) = &self.bias {
+            xs = xs.broadcast_add(bias)?;
+        }
+        Ok(xs)
     }
 }
 
 pub struct TensorParallelRowLinear {
     linear: Linear,
+    #[cfg(feature = "nccl")]
     all_reduce: AllReduce,
     bias: Option<Tensor>,
 }
@@ -119,30 +134,41 @@ impl CustomOp1 for AllReduce {
 }
 
 impl TensorParallelRowLinear {
+    #[allow(unused_variables)]
     pub fn new(linear: Linear, comm: Rc<Comm>) -> Self {
+        #[cfg(feature = "nccl")]
         let all_reduce = AllReduce { comm };
         Self {
             linear,
+            #[cfg(feature = "nccl")]
             all_reduce,
             bias: None,
         }
     }
 
+    #[allow(unused_variables)]
     pub fn new_with_bias(linear: Linear, bias: Option<Tensor>, comm: Rc<Comm>) -> Self {
+        #[cfg(feature = "nccl")]
         let all_reduce = AllReduce { comm };
         Self {
             linear,
+            #[cfg(feature = "nccl")]
             all_reduce,
             bias,
         }
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let mut xs = self.linear.forward(x)?.apply_op1_no_bwd(&self.all_reduce)?;
+        let xs = self.linear.forward(x)?;
+        #[cfg(feature = "nccl")]
+        let xs = xs.apply_op1_no_bwd(&self.all_reduce)?;
+
         if let Some(bias) = &self.bias {
-            xs = xs.broadcast_add(bias)?;
+            let xs = xs.broadcast_add(bias)?;
+            Ok(xs)
+        } else {
+            Ok(xs)
         }
-        Ok(xs)
     }
 }
 
@@ -153,63 +179,87 @@ pub fn shard(dim: usize, rank: usize, world_size: usize) -> candle_nn::var_build
         world_size,
     }
 }
-
+use crate::openai::models::QuantConfig;
 impl TensorParallelColumnLinear {
-    pub fn load(vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
-        let rank = comm.rank();
-        let size = comm.world_size();
-        let weight = vb.get_with_hints((), "weight", shard(0, rank, size))?;
-        Ok(Self::new(Linear::new(weight, None)))
-    }
-
-    pub fn load_with_hints(
-        in_dim: usize,
-        out_dim: usize,
-        vb: VarBuilder,
-        comm: Rc<Comm>,
-    ) -> Result<Self> {
-        let rank = comm.rank();
-        let size = comm.world_size();
-        let weight = vb.get_with_hints((out_dim, in_dim), "weight", shard(0, rank, size))?;
-        Ok(Self::new(Linear::new(weight, None)))
-    }
-
-    pub fn load_multi(vb: VarBuilder, prefixes: &[&str], comm: Rc<Comm>) -> Result<Self> {
-        let rank = comm.rank();
-        let size = comm.world_size();
-        let weights: Vec<_> = prefixes
-            .iter()
-            .map(|p| vb.pp(p).get_with_hints((), "weight", shard(0, rank, size)))
-            .collect::<Result<Vec<_>>>()?;
-        let weight = Tensor::cat(&weights, 0)?.contiguous()?;
-        Ok(Self::new(Linear::new(weight, None)))
-    }
-}
-
-impl TensorParallelRowLinear {
-    pub fn load(vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
-        let rank = comm.rank();
-        let size = comm.world_size();
-        let weight = vb.get_with_hints((), "weight", shard(1, rank, size))?;
-        Ok(Self::new(Linear::new(weight, None), comm))
-    }
-
     pub fn load_with_hints(
         in_dim: usize,
         out_dim: usize,
         bias: bool,
         vb: VarBuilder,
         comm: Rc<Comm>,
+        quant: &Option<String>,
+        quant_config: &Option<QuantConfig>,
     ) -> Result<Self> {
         let rank = comm.rank();
         let size = comm.world_size();
-        let weight = vb.get_with_hints((out_dim, in_dim), "weight", shard(1, rank, size))?;
+        let dtype = vb.dtype();
+        let bs = if bias {
+            let full_bias = vb.get((out_dim,), "bias")?;
+            if comm.world_size() > 1 {
+                //match bias to its corresponding partial weight
+                let out_dim_partition = out_dim / comm.world_size();
+                let full_bias = full_bias
+                    .narrow(0, comm.rank() * out_dim_partition, out_dim_partition)?
+                    .contiguous()?;
+                Some(full_bias)
+            } else {
+                Some(vb.get((out_dim,), "bias")?)
+            }
+        } else {
+            None
+        };
+        let linear = linear(
+            in_dim,
+            out_dim,
+            vb,
+            shard(0, rank, size),
+            quant,
+            quant_config,
+            dtype,
+        )?;
+        Ok(Self { linear, bias: bs })
+    }
+
+    // pub fn load_multi(vb: VarBuilder, prefixes: &[&str], comm: Rc<Comm>) -> Result<Self> {
+    //     let rank = comm.rank();
+    //     let size = comm.world_size();
+    //     let weights: Vec<_> = prefixes
+    //         .iter()
+    //         .map(|p| vb.pp(p).get_with_hints((), "weight", shard(0, rank, size)))
+    //         .collect::<Result<Vec<_>>>()?;
+    //     let weight = Tensor::cat(&weights, 0)?.contiguous()?;
+    //     Ok(Self::new(Linear::new(weight, None)))
+    // }
+}
+
+impl TensorParallelRowLinear {
+    pub fn load_with_hints(
+        in_dim: usize,
+        out_dim: usize,
+        bias: bool,
+        vb: VarBuilder,
+        comm: Rc<Comm>,
+        quant: &Option<String>,
+        quant_config: &Option<QuantConfig>,
+    ) -> Result<Self> {
+        let rank = comm.rank();
+        let size = comm.world_size();
+        let dtype = vb.dtype();
         let bs = if bias {
             Some(vb.get((out_dim,), "bias")?)
         } else {
             None
         };
-        Ok(Self::new_with_bias(Linear::new(weight, None), bs, comm))
+        let linear = linear(
+            in_dim,
+            out_dim,
+            vb,
+            shard(1, rank, size),
+            quant,
+            quant_config,
+            dtype,
+        )?;
+        Ok(Self::new_with_bias(linear, bs, comm))
     }
 }
 
@@ -232,47 +282,70 @@ pub fn embedding(vocab_size: usize, hidden_size: usize, vb: VarBuilder) -> Resul
     Ok(Embedding::new(embeddings, hidden_size))
 }
 
-pub fn linear_no_bias(in_dim: usize, out_dim: usize, vb: VarBuilder) -> Result<Linear> {
-    let weight = vb.get((out_dim, in_dim), "weight")?;
-    Ok(Linear::new(weight, None))
-}
-
-pub fn linear(in_dim: usize, out_dim: usize, vb: VarBuilder) -> Result<Linear> {
-    let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard(0, 0, 1))?;
-    let bs = vb.get((out_dim,), "bias")?;
-    Ok(Linear::new(ws, Some(bs)))
-}
-
-pub fn linear_b(in_dim: usize, out_dim: usize, bias: bool, vb: VarBuilder) -> Result<Linear> {
-    if bias {
-        linear(in_dim, out_dim, vb)
-    } else {
-        linear_no_bias(in_dim, out_dim, vb)
-    }
-}
-
 impl ReplicatedLinear {
-    pub fn from(linear: Linear) -> Result<Self> {
-        Ok(Self { linear })
+    pub fn from(linear: Linear, bias: Option<Tensor>) -> Result<Self> {
+        Ok(Self { linear, bias })
     }
 
-    pub fn load_no_bias(in_dim: usize, out_dim: usize, vb: VarBuilder) -> Result<Self> {
-        Ok(Self {
-            linear: linear_no_bias(in_dim, out_dim, vb)?,
-        })
+    pub fn from_weight_bias(weight: Tensor, bias: Option<Tensor>) -> Result<Self> {
+        let linear = Linear::new(weight, None, &None, &None);
+        Ok(Self { linear, bias })
     }
 
-    pub fn load_b(in_dim: usize, out_dim: usize, bias: bool, vb: VarBuilder) -> Result<Self> {
+    pub fn load_no_bias(
+        in_dim: usize,
+        out_dim: usize,
+        vb: VarBuilder,
+        quant: &Option<String>,
+        quant_config: &Option<QuantConfig>,
+    ) -> Result<Self> {
+        let dtype = vb.dtype();
+        let linear = linear(
+            in_dim,
+            out_dim,
+            vb,
+            shard(0, 0, 1),
+            quant,
+            quant_config,
+            dtype,
+        )?;
+        Ok(Self { linear, bias: None })
+    }
+
+    pub fn load_b(
+        in_dim: usize,
+        out_dim: usize,
+        bias: bool,
+        vb: VarBuilder,
+        quant: &Option<String>,
+        quant_config: &Option<QuantConfig>,
+    ) -> Result<Self> {
         if !bias {
-            ReplicatedLinear::load_no_bias(in_dim, out_dim, vb)
+            ReplicatedLinear::load_no_bias(in_dim, out_dim, vb, quant, quant_config)
         } else {
+            let dtype = vb.dtype();
+            let bs = vb.get((out_dim,), "bias")?;
+            let linear = linear(
+                in_dim,
+                out_dim,
+                vb,
+                shard(0, 0, 1),
+                quant,
+                quant_config,
+                dtype,
+            )?;
             Ok(Self {
-                linear: linear_b(in_dim, out_dim, bias, vb)?,
+                linear,
+                bias: Some(bs),
             })
         }
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.linear.forward(&x)
+        let mut xs = self.linear.forward(&x)?;
+        if let Some(bias) = &self.bias {
+            xs = xs.broadcast_add(bias)?;
+        }
+        Ok(xs)
     }
 }

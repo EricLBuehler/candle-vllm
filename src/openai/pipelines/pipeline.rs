@@ -13,6 +13,7 @@ use crate::{
             Conversation,
         },
         models::{
+            deepseek::{DeepSeek, DeepSeekConfig},
             gemma::{Gemma, GemmaConfig},
             llama::{Llama, LlamaConfig},
             mistral::{Mistral, MistralConfig},
@@ -32,11 +33,6 @@ use crate::{
     try_api, SpecificConfig,
 };
 use std::path::Path;
-
-#[cfg(feature = "nccl")]
-use crate::openai::models::deepseek::{DeepSeek, DeepSeekConfig};
-#[cfg(feature = "nccl")]
-use crate::openai::models::llama_multi::LlamaMulti;
 
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, IndexOp, Tensor};
@@ -62,12 +58,9 @@ enum LLMModel {
     Mistral(Mistral),
     Yi(Yi),
     StableLM(StableLM),
-    #[cfg(feature = "nccl")]
     DeepSeek(DeepSeek),
     LlamaGGUF(GGUFLLaMa),
     Phi3GGUF(GGUFPhi3),
-    #[cfg(feature = "nccl")]
-    LlamaMulti(LlamaMulti),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -259,7 +252,6 @@ impl DefaultLoader {
                     ),));
                     config.into_config(false, dtype, &specific_args)
                 }
-                #[cfg(feature = "nccl")]
                 "deepseek" => {
                     let config: DeepSeekConfig = try_api!(serde_json::from_slice(&try_api!(
                         std::fs::read(paths.get_config_filename())
@@ -272,134 +264,124 @@ impl DefaultLoader {
             println!("Model {:?}", config);
 
             println!("Loading {} model.", self.name);
+            use crate::openai::distributed::Comm;
             #[cfg(feature = "nccl")]
-            let (models, devices, sep_style) = if device_ids.len() > 1 {
-                use cudarc::nccl::safe::{Comm, Id};
-                let id = Id::new().unwrap();
-                let results: Vec<_> = device_ids
-                    .par_iter()
-                    .enumerate()
-                    .map(|(rank, dev_id)| {
+            let id = cudarc::nccl::safe::Id::new().unwrap();
+            let results: Vec<_> = device_ids
+                .par_iter()
+                .enumerate()
+                .map(|(rank, dev_id)| {
+                    let num_devices = device_ids.len();
+                    if num_devices > 1 {
                         println!(
                             "Loading partial model on device rank {} (ordinal {})",
                             rank, *dev_id
                         );
-                        let paths: Vec<PathBuf> = paths.get_weight_filenames();
-                        let device = crate::new_device(*dev_id).unwrap();
-                        let comm = Rc::new(
-                            Comm::from_rank(
-                                device.as_cuda_device().unwrap().cuda_device(),
-                                rank,
-                                device_ids.len(),
-                                id,
-                            )
-                            .unwrap(),
-                        );
-                        let vb = unsafe {
-                            candle_nn::var_builder::ShardedSafeTensors::var_builder(
-                                &paths, dtype, &device,
-                            )
-                            .unwrap()
-                        };
-                        match self.name.as_str() {
-                            "llama" | "llama3" => Ok((
-                                device.clone(),
-                                LLMModel::LlamaMulti(try_api!(LlamaMulti::load(
-                                    vb, &config, dtype, &device, comm
-                                ))),
-                            )),
-                            "deepseek" => Ok((
-                                device.clone(),
-                                LLMModel::DeepSeek(try_api!(DeepSeek::load(
-                                    vb, &config, dtype, &device, comm
-                                ))),
-                            )),
-                            _ => panic!("Model not supported!"),
-                        }
-                    })
-                    .collect();
+                    }
 
-                // Separate devices and models from the results
-                let mut devices = Vec::new();
-                let mut models = Vec::new();
-                for result in results {
-                    match result {
-                        Ok((device, model)) => {
-                            devices.push(device);
-                            models.push(model);
-                        }
-                        Err(e) => {
-                            return Err(e.into());
-                        }
+                    let paths: Vec<PathBuf> = paths.get_weight_filenames();
+                    let device = crate::new_device(*dev_id).unwrap();
+                    #[cfg(feature = "nccl")]
+                    let comm = Rc::new(
+                        Comm::from_rank(
+                            device.as_cuda_device().unwrap().cuda_device(),
+                            rank,
+                            num_devices,
+                            id,
+                        )
+                        .unwrap(),
+                    );
+
+                    #[cfg(not(feature = "nccl"))]
+                    let comm = Rc::new(Comm::default());
+
+                    let vb = unsafe {
+                        candle_nn::var_builder::ShardedSafeTensors::var_builder(
+                            &paths, dtype, &device,
+                        )
+                        .unwrap()
+                    };
+
+                    let (model, sep) = match self.name.as_str() {
+                        "llama" => (
+                            LLMModel::Llama(try_api!(Llama::load(
+                                vb, &config, dtype, &device, comm
+                            ))),
+                            SeparatorStyle::Llama,
+                        ),
+                        "llama3" => (
+                            LLMModel::Llama(try_api!(Llama::load(
+                                vb, &config, dtype, &device, comm
+                            ))),
+                            SeparatorStyle::Llama3,
+                        ),
+                        "phi2" => (
+                            LLMModel::Phi2(try_api!(Phi2::new(vb, &config, dtype, &device, comm))),
+                            SeparatorStyle::Phi,
+                        ),
+                        "phi3" => (
+                            LLMModel::Phi3(try_api!(Phi::new(vb, &config, dtype, &device, comm))),
+                            SeparatorStyle::Phi,
+                        ),
+                        "qwen2" => (
+                            LLMModel::Qwen2(try_api!(Qwen2::new(
+                                vb, &config, dtype, &device, comm
+                            ))),
+                            SeparatorStyle::Qwen2,
+                        ),
+                        "gemma" => (
+                            LLMModel::Gemma(try_api!(Gemma::new(
+                                vb, &config, dtype, &device, comm
+                            ))),
+                            SeparatorStyle::Gemma,
+                        ),
+                        "mistral" => (
+                            LLMModel::Mistral(try_api!(Mistral::new(
+                                vb, &config, dtype, &device, comm
+                            ))),
+                            SeparatorStyle::Mistral,
+                        ),
+                        "yi" => (
+                            LLMModel::Yi(try_api!(Yi::new(vb, &config, dtype, &device, comm))),
+                            SeparatorStyle::Yi,
+                        ),
+                        "stablelm" => (
+                            LLMModel::StableLM(try_api!(StableLM::new(
+                                vb, &config, dtype, &device, comm
+                            ))),
+                            SeparatorStyle::StableLM,
+                        ),
+                        "deepseek" => (
+                            LLMModel::DeepSeek(try_api!(DeepSeek::load(
+                                vb, &config, dtype, &device, comm
+                            ))),
+                            SeparatorStyle::Llama3,
+                        ),
+                        _ => panic!("Model not supported!"),
+                    };
+                    Ok((model, device, sep))
+                })
+                .collect();
+
+            // Separate devices and models from the results
+            let mut devices = Vec::new();
+            let mut models = Vec::new();
+            let mut sep_style = Vec::new();
+
+            for result in results {
+                match result {
+                    Ok((model, device, sep)) => {
+                        devices.push(device);
+                        models.push(model);
+                        sep_style.push(sep)
+                    }
+                    Err(e) => {
+                        return Err(e.into());
                     }
                 }
+            }
 
-                (models, devices, SeparatorStyle::Llama3)
-            } else {
-                panic!("You've enabled nccl feature for multi-gpu inference but only one device was given!");
-            };
-
-            #[cfg(not(feature = "nccl"))]
-            let (models, devices, sep_style) = if device_ids.len() < 2 {
-                let device = crate::new_device(device_ids[0]).unwrap();
-                let vb = match unsafe {
-                    candle_nn::var_builder::ShardedSafeTensors::var_builder(
-                        &paths.get_weight_filenames(),
-                        dtype,
-                        &device,
-                    )
-                } {
-                    Ok(vb_) => vb_,
-                    _ => panic!("Load model weights failed!"),
-                };
-
-                let (model, sep) = match self.name.as_str() {
-                    "llama" => (
-                        LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
-                        SeparatorStyle::Llama,
-                    ),
-                    "llama3" => (
-                        LLMModel::Llama(try_api!(Llama::load(vb, &config, dtype, &device))),
-                        SeparatorStyle::Llama3,
-                    ),
-                    "phi2" => (
-                        LLMModel::Phi2(try_api!(Phi2::new(vb, &config, dtype, &device))),
-                        SeparatorStyle::Phi,
-                    ),
-                    "phi3" => (
-                        LLMModel::Phi3(try_api!(Phi::new(vb, &config, dtype, &device))),
-                        SeparatorStyle::Phi,
-                    ),
-                    "qwen2" => (
-                        LLMModel::Qwen2(try_api!(Qwen2::new(vb, &config, dtype, &device))),
-                        SeparatorStyle::Qwen2,
-                    ),
-                    "gemma" => (
-                        LLMModel::Gemma(try_api!(Gemma::new(vb, &config, dtype, &device))),
-                        SeparatorStyle::Gemma,
-                    ),
-                    "mistral" => (
-                        LLMModel::Mistral(try_api!(Mistral::new(vb, &config, dtype, &device))),
-                        SeparatorStyle::Mistral,
-                    ),
-                    "yi" => (
-                        LLMModel::Yi(try_api!(Yi::new(vb, &config, dtype, &device))),
-                        SeparatorStyle::Yi,
-                    ),
-                    "stablelm" => (
-                        LLMModel::StableLM(try_api!(StableLM::new(vb, &config, dtype, &device))),
-                        SeparatorStyle::StableLM,
-                    ),
-                    #[cfg(feature = "nccl")]
-                    "deepseek" => (panic!("Nccl not enabled for deepseek model!"),),
-                    _ => panic!("Model not supported!"),
-                };
-                (vec![model], vec![device], sep)
-            } else {
-                panic!("You've provided multiple devices for inference but nccl feature is not enabled!");
-            };
-
-            (models, devices, config, sep_style)
+            (models, devices, config, sep_style[0].clone())
         };
 
         println!("Done loading.");
@@ -548,10 +530,6 @@ impl DefaultPipeline {
             LLMModel::Llama(llama) => llama
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
-            #[cfg(feature = "nccl")]
-            LLMModel::LlamaMulti(llama) => llama
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
-                .map_err(APIError::from),
             LLMModel::Phi2(phi) => phi
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
@@ -573,7 +551,6 @@ impl DefaultPipeline {
             LLMModel::StableLM(stablelm) => stablelm
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
-            #[cfg(feature = "nccl")]
             LLMModel::DeepSeek(deepseek) => deepseek
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
@@ -762,8 +739,6 @@ impl DefaultPipeline {
     pub fn get_model_config(&self) -> Config {
         match &self.model {
             LLMModel::Llama(llama) => llama.get_config().clone(),
-            #[cfg(feature = "nccl")]
-            LLMModel::LlamaMulti(llama) => llama.get_config().clone(),
             LLMModel::Phi2(phi) => phi.get_config().clone(),
             LLMModel::Phi3(phi) => phi.get_config().clone(),
             LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),
@@ -771,7 +746,6 @@ impl DefaultPipeline {
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
             LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),
-            #[cfg(feature = "nccl")]
             LLMModel::DeepSeek(deepseek) => deepseek.get_config().clone(),
             LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),

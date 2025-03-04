@@ -1,6 +1,7 @@
 use super::{Config, QuantConfig};
-use crate::openai::models::linear::{
-    linear_no_bias_x as linear, LinearX as Linear, Shard, VarBuilder,
+use crate::openai::distributed::{
+    embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
+    TensorParallelRowLinear, VarBuilder,
 };
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
@@ -9,7 +10,6 @@ use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Embedding, Module, RmsNorm};
 pub const MAX_SEQ_LEN: usize = 4096;
-use crate::openai::distributed::{embedding, rms_norm};
 use crate::openai::models::TokenID;
 use std::iter::zip;
 pub use std::rc::Rc;
@@ -102,22 +102,19 @@ impl Cache {
 }
 
 struct CausalSelfAttention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
-    o_proj: Linear,
+    q_proj: TensorParallelColumnLinear,
+    k_proj: TensorParallelColumnLinear,
+    v_proj: TensorParallelColumnLinear,
+    o_proj: TensorParallelRowLinear,
     num_attention_heads: usize,
     num_key_value_heads: usize,
     head_dim: usize,
-    span: tracing::Span,
-    span_rot: tracing::Span,
     attn: PagedAttention,
     cos_sin_cache: Cache,
 }
 
 impl CausalSelfAttention {
     fn apply_rotary_emb(&self, x: &Tensor, input_positions: &[Vec<usize>]) -> Result<Tensor> {
-        let _enter = self.span_rot.enter();
         let (b_sz, _, seq_len, _hidden_size) = x.dims4()?;
         let mut embeds = Vec::new();
         for (b, seqlen_offset) in zip(0..b_sz, input_positions) {
@@ -144,8 +141,7 @@ impl CausalSelfAttention {
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let _enter = self.span.enter();
-        let (b_sz, seq_len, hidden_size) = x.dims3()?;
+        let (b_sz, seq_len, _) = x.dims3()?;
         let q = self.q_proj.forward(x)?;
         let k = self.k_proj.forward(x)?;
         let v = self.v_proj.forward(x)?;
@@ -187,72 +183,77 @@ impl CausalSelfAttention {
         )?;
 
         let y = if attention_mask.is_some() {
-            y.transpose(1, 2)?.reshape(&[b_sz, seq_len, hidden_size])?
+            y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))?
         } else {
-            y.reshape(&[b_sz, seq_len, hidden_size])?
+            y.reshape((b_sz, seq_len, ()))?
         };
         let y = self.o_proj.forward(&y)?;
         Ok(y)
     }
 
-    fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
-        let span = tracing::span!(tracing::Level::TRACE, "attn");
-        let span_rot = tracing::span!(tracing::Level::TRACE, "attn-rot");
+    fn load(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
         let size_in = cfg.hidden_size;
         let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
         let size_kv = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads;
-        let q_proj = linear(
+        let q_proj = TensorParallelColumnLinear::load_with_hints(
             size_in,
             size_q,
+            false,
             vb.pp("q_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let k_proj = linear(
+        let k_proj = TensorParallelColumnLinear::load_with_hints(
             size_in,
             size_kv,
+            false,
             vb.pp("k_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let v_proj = linear(
+        let v_proj = TensorParallelColumnLinear::load_with_hints(
             size_in,
             size_kv,
+            false,
             vb.pp("v_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let o_proj = linear(
+
+        let o_proj = TensorParallelRowLinear::load_with_hints(
             size_q,
             size_in,
+            false,
             vb.pp("o_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
+        let attention_heads = cfg.num_attention_heads / comm.world_size();
+        let kv_heads = cfg.num_key_value_heads / comm.world_size();
         Ok(Self {
             q_proj,
             k_proj,
             v_proj,
             o_proj,
-            num_attention_heads: cfg.num_attention_heads,
-            num_key_value_heads: cfg.num_key_value_heads,
+            num_attention_heads: attention_heads,
+            num_key_value_heads: kv_heads,
             head_dim,
-            span,
-            span_rot,
             attn: PagedAttention::new(
-                cfg.num_attention_heads,
+                attention_heads,
                 head_dim,
                 1. / ((head_dim as f32).sqrt()),
-                Some(cfg.num_key_value_heads),
+                Some(kv_heads),
                 None,
                 vb.device().clone(),
                 None,
@@ -262,57 +263,52 @@ impl CausalSelfAttention {
     }
 }
 
-#[derive(Debug, Clone)]
 struct Mlp {
-    c_fc1: Linear,
-    c_fc2: Linear,
-    c_proj: Linear,
-    span: tracing::Span,
+    c_fc1: TensorParallelColumnLinear,
+    c_fc2: TensorParallelColumnLinear,
+    c_proj: TensorParallelRowLinear,
 }
 
 impl Mlp {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let _enter = self.span.enter();
         let x = (candle_nn::ops::silu(&self.c_fc1.forward(x)?)? * self.c_fc2.forward(x)?)?;
         self.c_proj.forward(&x)
     }
 
-    fn load(vb: VarBuilder, dtype: DType, cfg: &Config) -> Result<Self> {
-        let span = tracing::span!(tracing::Level::TRACE, "mlp");
+    fn load(vb: VarBuilder, cfg: &Config, comm: Rc<Comm>) -> Result<Self> {
         let h_size = cfg.hidden_size;
         let i_size = cfg.intermediate_size;
-        let c_fc1 = linear(
+        let c_fc1 = TensorParallelColumnLinear::load_with_hints(
             h_size,
             i_size,
+            false,
             vb.pp("gate_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let c_fc2 = linear(
+        let c_fc2 = TensorParallelColumnLinear::load_with_hints(
             h_size,
             i_size,
+            false,
             vb.pp("up_proj"),
-            Shard::default(),
+            comm.clone(),
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
-        let c_proj = linear(
+        let c_proj = TensorParallelRowLinear::load_with_hints(
             i_size,
             h_size,
+            false,
             vb.pp("down_proj"),
-            Shard::default(),
+            comm,
             &cfg.specific_config.quant,
             &cfg.quantization_config,
-            dtype,
         )?;
         Ok(Self {
             c_fc1,
             c_fc2,
             c_proj,
-            span,
         })
     }
 }
@@ -322,7 +318,6 @@ struct Block {
     attn: CausalSelfAttention,
     rms_2: RmsNorm,
     mlp: Mlp,
-    span: tracing::Span,
 }
 
 impl Block {
@@ -334,7 +329,6 @@ impl Block {
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let _enter = self.span.enter();
         let residual = x;
         let x = self.rms_1.forward(x)?;
         let x = (self
@@ -346,10 +340,15 @@ impl Block {
         Ok(x)
     }
 
-    fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
-        let span = tracing::span!(tracing::Level::TRACE, "block");
-        let attn = CausalSelfAttention::load(vb.pp("self_attn"), cfg, dtype, device)?;
-        let mlp = Mlp::load(vb.pp("mlp"), dtype, cfg)?;
+    fn load(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
+        let attn = CausalSelfAttention::load(vb.pp("self_attn"), cfg, dtype, device, comm.clone())?;
+        let mlp = Mlp::load(vb.pp("mlp"), cfg, comm.clone())?;
         let rms_1 = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         let rms_2 = rms_norm(
             cfg.hidden_size,
@@ -361,7 +360,6 @@ impl Block {
             attn,
             rms_2,
             mlp,
-            span,
         })
     }
 }
@@ -370,7 +368,7 @@ pub struct Llama {
     wte: Embedding,
     blocks: Vec<Block>,
     ln_f: RmsNorm,
-    lm_head: Linear,
+    lm_head: ReplicatedLinear,
     cfg: Config,
     dtype: DType,
     device: Device,
@@ -429,20 +427,34 @@ impl Llama {
         logits.to_dtype(DType::F32)
     }
 
-    pub fn load(vb: VarBuilder, cfg: &Config, dtype: DType, device: &Device) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+    ) -> Result<Self> {
         let wte = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
-        let lm_head = linear(
+        let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
-            Shard::default(),
-            &None, //no quant for lm_head
             &None,
-            dtype,
+            &None,
         )?;
+
         let ln_f = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
         let blocks: Vec<_> = (0..cfg.num_hidden_layers)
-            .map(|i| Block::load(vb.pp(&format!("model.layers.{i}")), cfg, dtype, device).unwrap())
+            .map(|i| {
+                Block::load(
+                    vb.pp(&format!("model.layers.{i}")),
+                    cfg,
+                    dtype,
+                    device,
+                    comm.clone(),
+                )
+                .unwrap()
+            })
             .collect();
 
         Ok(Self {

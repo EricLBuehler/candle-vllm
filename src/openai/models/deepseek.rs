@@ -396,21 +396,29 @@ impl Attention {
                     lora_rank,
                     cfg.attention_bias,
                     vb.pp("q_a_proj"),
+                    &cfg.specific_config.quant,
+                    &cfg.quantization_config,
                 )?;
                 let norm = rms_norm(lora_rank, cfg.rms_norm_eps, vb.pp("q_a_layernorm"))?;
                 let b = TensorParallelColumnLinear::load_with_hints(
                     lora_rank,
                     cfg.num_attention_heads * q_head_dim,
+                    false,
                     vb.pp("q_b_proj"),
                     comm.clone(),
+                    &cfg.specific_config.quant,
+                    &cfg.quantization_config,
                 )?;
                 QProj::Lora { a, norm, b }
             }
             None => QProj::Plain(TensorParallelColumnLinear::load_with_hints(
                 cfg.hidden_size,
                 cfg.num_attention_heads * q_head_dim,
+                false,
                 vb.pp("q_proj"),
                 comm.clone(),
+                &cfg.specific_config.quant,
+                &cfg.quantization_config,
             )?),
         };
 
@@ -419,6 +427,8 @@ impl Attention {
             moe_cfg.kv_lora_rank + moe_cfg.qk_rope_head_dim,
             cfg.attention_bias,
             vb.pp("kv_a_proj_with_mqa"),
+            &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
         let kv_a_layernorm = rms_norm(
             moe_cfg.kv_lora_rank,
@@ -428,8 +438,11 @@ impl Attention {
         let kv_b_proj = TensorParallelColumnLinear::load_with_hints(
             moe_cfg.kv_lora_rank,
             cfg.num_attention_heads * (q_head_dim - moe_cfg.qk_rope_head_dim + moe_cfg.v_head_dim),
+            false,
             vb.pp("kv_b_proj"),
             comm.clone(),
+            &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
 
         let o_proj = TensorParallelRowLinear::load_with_hints(
@@ -438,6 +451,8 @@ impl Attention {
             cfg.attention_bias,
             vb.pp("o_proj"),
             comm.clone(),
+            &cfg.specific_config.quant,
+            &cfg.quantization_config,
         )?;
 
         let num_attention_heads = cfg.num_attention_heads / comm.world_size();
@@ -572,12 +587,22 @@ impl Mlp {
                 hidden_size,
                 intermediate_size,
                 vb.pp("gate_proj"),
+                &cfg.specific_config.quant,
+                &cfg.quantization_config,
             )?,
-            up: ReplicatedLinear::load_no_bias(hidden_size, intermediate_size, vb.pp("up_proj"))?,
+            up: ReplicatedLinear::load_no_bias(
+                hidden_size,
+                intermediate_size,
+                vb.pp("up_proj"),
+                &cfg.specific_config.quant,
+                &cfg.quantization_config,
+            )?,
             down: ReplicatedLinear::load_no_bias(
                 intermediate_size,
                 hidden_size,
                 vb.pp("down_proj"),
+                &cfg.specific_config.quant,
+                &cfg.quantization_config,
             )?,
             act: cfg.hidden_act.unwrap(),
         })
@@ -944,12 +969,15 @@ impl DeepSeek {
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let lm_head = if !cfg.tie_word_embeddings {
-            ReplicatedLinear::load_no_bias(cfg.hidden_size, cfg.vocab_size, vb.pp("lm_head"))?
+            ReplicatedLinear::load_no_bias(
+                cfg.hidden_size,
+                cfg.vocab_size,
+                vb.pp("lm_head"),
+                &None,
+                &None,
+            )?
         } else {
-            ReplicatedLinear::from(candle_nn::Linear::new(
-                embed_tokens.embeddings().clone(),
-                None,
-            ))?
+            ReplicatedLinear::from_weight_bias(embed_tokens.embeddings().clone(), None)?
         };
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
 
