@@ -10,6 +10,7 @@ pub enum Messages {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum StopTokens {
     Multi(Vec<String>),
     Single(String),
