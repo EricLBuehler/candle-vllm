@@ -196,7 +196,7 @@ impl TensorParallelColumnLinear {
         let bs = if bias {
             let full_bias = vb.get((out_dim,), "bias")?;
             if comm.world_size() > 1 {
-                //match bias to its correponding partial weight
+                //match bias to its corresponding partial weight
                 let out_dim_partition = out_dim / comm.world_size();
                 let full_bias = full_bias
                     .narrow(0, comm.rank() * out_dim_partition, out_dim_partition)?

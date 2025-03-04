@@ -116,7 +116,7 @@ export NCCL_P2P_LEVEL=LOC # use local devices (multiple cards within a server, P
 export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
 export NCCL_IB_DISABLE=1 # disable ibnet/infiniband (optional)
 ```
-**Note:** number of GPU used must be aligned to 2^n (e.g., 2, 4, or 8).
+**Note:** number of GPUs used must be aligned to 2^n (e.g., 2, 4, or 8).
 
 ### Step 2:
 #### Option 1: Chat with Chat.py (for simple tests)
