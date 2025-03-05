@@ -1,6 +1,7 @@
 use super::{get_token, TokenOrFinishReason};
 use crate::openai::logits_processor::{LogitsProcessor, Sampling};
 use crate::openai::models::TokenID;
+use crate::openai::requests::StopTokens;
 use crate::openai::sampling_params::{Logprobs, TopLogprob};
 use crate::openai::TokenizerConfig;
 use crate::scheduler::sequence::SequenceGroup;
@@ -633,7 +634,24 @@ impl DefaultPipeline {
                 if origin_text.contains("▁") && origin_text.replace("▁", "") == text {
                     text = origin_text.replace("▁", " ");
                 }
-                if self.stop_token_ids.contains(&next_token) && tokens_generated > 1 {
+                let mut custom_stop_token_match = false;
+                match &sampling_params.stop {
+                    Some(StopTokens::Multi(v)) => {
+                        if v.contains(&text) || v.contains(&origin_text) {
+                            custom_stop_token_match = true;
+                        }
+                    }
+                    Some(StopTokens::Single(v)) => {
+                        if *v == text || *v == origin_text {
+                            custom_stop_token_match = true;
+                        }
+                    }
+                    _ => {}
+                }
+
+                if (custom_stop_token_match || self.stop_token_ids.contains(&next_token))
+                    && tokens_generated > 1
+                {
                     let mut result = shared_result.lock().unwrap();
                     result.insert(group_idx, Right("stop".to_string()));
                     break;
@@ -673,6 +691,7 @@ impl DefaultPipeline {
         use std::collections::HashMap;
         let mut result = Vec::<TokenOrFinishReason>::new();
         let mut tokens_generated = HashMap::<usize, i32>::new();
+        let mut custom_stop_tokens = HashMap::<usize, Vec<String>>::new();
         for (i, group) in groups.iter().enumerate() {
             let sampling_params = &group.sampling_params;
             for seq in group.get_seqs().values() {
@@ -684,6 +703,15 @@ impl DefaultPipeline {
                     tokens_generated.insert(i, _tokens_generated as i32);
                 }
                 break;
+            }
+            match &sampling_params.stop {
+                Some(StopTokens::Multi(v)) => {
+                    custom_stop_tokens.insert(i, v.to_vec());
+                }
+                Some(StopTokens::Single(v)) => {
+                    custom_stop_tokens.insert(i, vec![v.clone()]);
+                }
+                _ => {}
             }
         }
 
@@ -703,10 +731,19 @@ impl DefaultPipeline {
             if origin_text.contains("▁") && origin_text.replace("▁", "") == text {
                 text = origin_text.replace("▁", " ");
             }
+            let custom_stop_token_match = if custom_stop_tokens.contains_key(&i)
+                && custom_stop_tokens[&i].contains(&origin_text)
+            {
+                true
+            } else {
+                false
+            };
 
             if tokens_generated[&i] < 0 {
                 result.push(Right("length".to_string()));
-            } else if tokens_generated[&i] > 0 && self.stop_token_ids.contains(&next_token) {
+            } else if tokens_generated[&i] > 0
+                && (custom_stop_token_match || self.stop_token_ids.contains(&next_token))
+            {
                 result.push(Right("stop".to_string()));
             } else {
                 let logprob = Logprobs {
