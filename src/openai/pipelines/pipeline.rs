@@ -22,6 +22,7 @@ use crate::{
             phi3::{Phi, PhiConfig},
             quantized_llama::GGUFLLaMa,
             quantized_phi3::GGUFPhi3,
+            quantized_qwen2::GGUFQWen2,
             qwen2::{Qwen2, QwenConfig},
             stable_lm::{StableLM, StableLMConfig},
             yi::{Yi, YiConfig},
@@ -62,6 +63,7 @@ enum LLMModel {
     DeepSeek(DeepSeek),
     LlamaGGUF(GGUFLLaMa),
     Phi3GGUF(GGUFPhi3),
+    QWen2GGUF(GGUFQWen2),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -198,6 +200,13 @@ impl DefaultLoader {
                     ));
                     let cfg = model.get_config().clone();
                     (LLMModel::Phi3GGUF(model), cfg, SeparatorStyle::Phi)
+                }
+                "qwen2" => {
+                    let model = try_api!(GGUFQWen2::from_gguf(
+                        content, &mut file, &device, dtype, s_cfg
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::QWen2GGUF(model), cfg, SeparatorStyle::Qwen2)
                 }
                 _ => panic!("Model not supported!"),
             };
@@ -561,6 +570,9 @@ impl DefaultPipeline {
             LLMModel::LlamaGGUF(llama) => llama
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
+            LLMModel::QWen2GGUF(qwen2) => qwen2
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .map_err(APIError::from),
         }
     }
 
@@ -786,6 +798,7 @@ impl DefaultPipeline {
             LLMModel::DeepSeek(deepseek) => deepseek.get_config().clone(),
             LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),
+            LLMModel::QWen2GGUF(qwen2) => qwen2.get_config().clone(),
         }
     }
 

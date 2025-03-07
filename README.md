@@ -37,6 +37,7 @@ Currently, candle-vllm supports chat serving for the following models.
 | #12 | **DeepSeek-R1-Distill-LLaMa** |TBD|TBD|TBD|**108 tks (LLaMa3.1 8B)**|TBD|
 | #13 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|TBD|
 | #14 | **DeepSeek V2/V3/R1** |✅|TBD|TBD |-|TBD|
+| #15 | **QwQ-32B (GGUF)** |✅|TBD|TBD |36 tks/s (Q4K)|TBD|
 
 
 ## Demo Chat with candle-vllm (~110 tokens/s, LLaMa3.1 8B, 4-bit Marlin, on A100)
@@ -86,11 +87,17 @@ cargo run --release --features cuda -- --port 2000 --model-id meta-llama/Llama-2
 
 ```shell
 cargo run --release --features cuda -- --port 2000 --model-id avoroshilov/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g --quant gptq --penalty 1.0 --temperature 0.
+
+
+```
+Run **QwQ-32B GGUF/GGML** models on **CUDA or Mac/Metal** devices
+```shell
+cargo run --release --features cuda -- --port 2000 --model-id Qwen/QwQ-32B --dtype bf16 --weight-path ./ --weight-file qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
 ```
 
-Run **GGUF/GGML** models on **Mac/Metal** devices (assume gguf model downloaded in `/Users/Downloads`)
+Run **GGUF/GGML** models on **CUDA or Mac/Metal** devices (assume gguf model downloaded in `/Users/Downloads`)
 ```shell
-cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /Users/Downloads --weight-file Phi-3.5-mini-instruct-Q4_K_M.gguf phi3 --quant gguf --temperature 0. --penalty 1.0
+cargo run --release --features metal -- --port 2000 --model-id microsoft/Phi-3.5-mini-instruct --dtype bf16 --weight-path /Users/Downloads --weight-file Phi-3.5-mini-instruct-Q4_K_M.gguf phi3 --quant gguf --temperature 0. --penalty 1.0
 ```
 **Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
 
