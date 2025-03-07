@@ -2,65 +2,40 @@ use super::Config;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
-use candle_core::quantized::gguf_file;
-use candle_core::quantized::QTensor;
-use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
-use candle_nn::{Embedding, RmsNorm};
+use candle_core::quantized::{gguf_file, QMatMul};
+use candle_core::{DType, Device, IndexOp, Result, Tensor};
+use candle_nn::{Embedding, Module};
+use candle_transformers::quantized_nn::RmsNorm;
 use either::Either;
 use std::iter::zip;
-#[derive(Debug, Clone)]
-struct QLinear {
-    inner: candle_core::quantized::QMatMul,
-}
-
-impl QLinear {
-    fn new<R: std::io::Read + std::io::Seek>(
-        ct: &gguf_file::Content,
-        r: &mut R,
-        name: &str,
-        device: &Device,
-    ) -> Result<Self> {
-        let w = ct.tensor(r, &format!("{name}.weight"), device)?;
-        let inner = candle_core::quantized::QMatMul::from_qtensor(w)?;
-        Ok(Self { inner })
-    }
-}
-
-impl Module for QLinear {
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        self.inner.forward(xs)
-    }
-}
 
 #[derive(Debug, Clone)]
 struct Mlp {
-    ffn_up: QLinear,
-    ffn_down: QLinear,
-    i_size: usize,
+    feed_forward_w1: QMatMul,
+    feed_forward_w2: QMatMul,
+    feed_forward_w3: QMatMul,
 }
 
 impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let up_states = xs.apply(&self.ffn_up)?;
-        let gate = up_states.narrow(D::Minus1, 0, self.i_size)?;
-        let up_states = up_states.narrow(D::Minus1, self.i_size, self.i_size)?;
-        let up_states = (up_states * gate.silu()?)?;
-        up_states.apply(&self.ffn_down)
+        let w1 = self.feed_forward_w1.forward(xs)?;
+        let w3 = self.feed_forward_w3.forward(xs)?;
+        self.feed_forward_w2
+            .forward(&(candle_nn::ops::silu(&w1)? * w3)?)
     }
 }
 
-fn rms_norm(w: QTensor, eps: f64) -> Result<RmsNorm> {
-    let w = w.dequantize(&w.device())?;
-    let rms = RmsNorm::new(w, eps);
-    Ok(rms)
-}
-
 struct LayerWeights {
-    attn_qkv: QLinear,
-    attn_output: QLinear,
-    attn_norm: RmsNorm,
-    ffn_norm: RmsNorm,
+    attention_wq: QMatMul,
+    attention_wk: QMatMul,
+    attention_wv: QMatMul,
+    attention_bq: Tensor,
+    attention_bk: Tensor,
+    attention_bv: Tensor,
+    attention_wo: QMatMul,
+    attention_norm: RmsNorm,
     mlp: Mlp,
+    ffn_norm: RmsNorm,
     n_head: usize,
     n_kv_head: usize,
     head_dim: usize,
@@ -104,21 +79,15 @@ impl LayerWeights {
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_sz, seq_len, n_embd) = x.dims3()?;
-        let qkv = self.attn_qkv.forward(x)?;
+        let (b_sz, seq_len, _) = x.dims3()?;
 
-        let query_pos = self.n_head * self.head_dim;
-        let q = qkv.narrow(D::Minus1, 0, query_pos)?.to_dtype(self.dtype)?;
-        let k = qkv
-            .narrow(D::Minus1, query_pos, self.n_kv_head * self.head_dim)?
-            .to_dtype(self.dtype)?;
-        let v = qkv
-            .narrow(
-                D::Minus1,
-                query_pos + self.n_kv_head * self.head_dim,
-                self.n_kv_head * self.head_dim,
-            )?
-            .to_dtype(self.dtype)?;
+        let q = self.attention_wq.forward(x)?.to_dtype(self.dtype)?;
+        let k = self.attention_wk.forward(x)?.to_dtype(self.dtype)?;
+        let v = self.attention_wv.forward(x)?.to_dtype(self.dtype)?;
+
+        let q = q.broadcast_add(&self.attention_bq)?;
+        let k = k.broadcast_add(&self.attention_bk)?;
+        let v = v.broadcast_add(&self.attention_bv)?;
 
         let (q, k, v) = if seq_len == 1 {
             //no need transpose for seq_len == 1, change reshape dim
@@ -153,29 +122,29 @@ impl LayerWeights {
         )?;
 
         let y = if mask.is_some() {
-            y.transpose(1, 2)?.reshape(&[b_sz, seq_len, n_embd])?
+            y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))?
         } else {
-            y.reshape(&[b_sz, seq_len, n_embd])?
+            y.reshape((b_sz, seq_len, ()))?
         };
 
-        let y = self.attn_output.forward(&y.to_dtype(x.dtype())?)?;
+        let y = self.attention_wo.forward(&y.to_dtype(x.dtype())?)?;
         Ok(y)
     }
 }
 
-pub struct GGUFPhi3 {
+pub struct GGUFQWen2 {
     tok_embeddings: Embedding,
     layers: Vec<LayerWeights>,
-    output_norm: RmsNorm,
-    output: QLinear,
+    norm: RmsNorm,
+    output: QMatMul,
     cfg: Config,
     dtype: DType,
 }
 
 fn precomput_freqs_cis(
     head_dim: usize,
-    max_seq_len: usize,
     freq_base: f32,
+    context_length: usize,
     device: &Device,
     dtype: DType,
 ) -> Result<(Tensor, Tensor)> {
@@ -184,16 +153,16 @@ fn precomput_freqs_cis(
         .map(|i| 1f32 / freq_base.powf(i as f32 / head_dim as f32))
         .collect();
     let theta = Tensor::new(theta.as_slice(), device)?;
-    let idx_theta = Tensor::arange(0, max_seq_len as u32, device)?
+    let idx_theta = Tensor::arange(0, context_length as u32, device)?
         .to_dtype(DType::F32)?
-        .reshape((max_seq_len, 1))?
+        .reshape((context_length, 1))?
         .matmul(&theta.reshape((1, theta.elem_count()))?)?;
     let cos = idx_theta.cos()?.to_dtype(dtype)?;
     let sin = idx_theta.sin()?.to_dtype(dtype)?;
     Ok((cos, sin))
 }
 
-impl GGUFPhi3 {
+impl GGUFQWen2 {
     pub fn into_config(
         embedding_length: usize,
         i_size: usize,
@@ -216,8 +185,8 @@ impl GGUFPhi3 {
             rms_norm_eps: rms_eps,
             rope_theta: 0.,
             use_flash_attn: false,
-            bos_token_id: super::TokenID(Either::Left(Some(1))),
-            eos_token_id: super::TokenID(Either::Left(Some(2))),
+            bos_token_id: super::TokenID(Either::Left(Some(151644))),
+            eos_token_id: super::TokenID(Either::Left(Some(151645))),
             max_seq_len: max_seq_len,
             sliding_window: None,
             hidden_act: None,
@@ -250,77 +219,110 @@ impl GGUFPhi3 {
             Some(v) => Ok(v),
         };
 
-        // Parameter extraction from metadata.
-        let head_count = md_get("phi3.attention.head_count")?.to_u32()? as usize;
-        let head_count_kv = md_get("phi3.attention.head_count_kv")?.to_u32()? as usize;
-        let block_count = md_get("phi3.block_count")?.to_u32()? as usize;
-        let embedding_length = md_get("phi3.embedding_length")?.to_u32()? as usize;
-        let max_seq_len = md_get("phi3.context_length")?.to_u32()? as usize;
+        let head_count = md_get("qwen2.attention.head_count")?.to_u32()? as usize;
+        let head_count_kv = md_get("qwen2.attention.head_count_kv")?.to_u32()? as usize;
+        let embedding_length = md_get("qwen2.embedding_length")?.to_u32()? as usize;
+        let context_length = md_get("qwen2.context_length")?.to_u32()? as usize;
+        let block_count = md_get("qwen2.block_count")?.to_u32()? as usize;
+        let rms_norm_eps = md_get("qwen2.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
+        let rope_freq_base = md_get("qwen2.rope.freq_base")
+            .and_then(|m| m.to_f32())
+            .unwrap_or(10000f32);
+
         let head_dim = embedding_length / head_count;
-        let i_size = md_get("phi3.feed_forward_length")?.to_u32()? as usize;
-        let rope_dim = md_get("phi3.rope.dimension_count")?.to_u32()? as usize;
-        let rms_eps = md_get("phi3.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
-        let (cos, sin) = precomput_freqs_cis(rope_dim, max_seq_len, 10_000., device, dtype)?;
 
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;
-        let output_norm = rms_norm(ct.tensor(reader, "output_norm.weight", device)?, rms_eps)?;
-        let output = QLinear::new(&ct, reader, "output", device)?;
+        let norm = RmsNorm::from_qtensor(
+            ct.tensor(reader, "output_norm.weight", device)?,
+            rms_norm_eps,
+        )?;
+        let output = match ct.tensor(reader, "output.weight", device) {
+            Ok(v) => QMatMul::from_qtensor(v)?,
+            _ => {
+                // use tie_word_embeddings
+                QMatMul::from_qtensor(ct.tensor(reader, "token_embd.weight", device)?)?
+            }
+        };
+
+        let (cos, sin) =
+            precomput_freqs_cis(head_dim, rope_freq_base, context_length, device, dtype)?;
 
         let mut layers = Vec::with_capacity(block_count);
+
         for layer_idx in 0..block_count {
             let prefix = format!("blk.{layer_idx}");
-            let ffn_up = QLinear::new(&ct, reader, &format!("{prefix}.ffn_up"), device)?;
-            let ffn_down = QLinear::new(&ct, reader, &format!("{prefix}.ffn_down"), device)?;
-            let mlp = Mlp {
-                ffn_up,
-                ffn_down,
-                i_size,
+            let attention_wq = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device)?;
+            let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
+            let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
+
+            let attention_bq = ct.tensor(reader, &format!("{prefix}.attn_q.bias"), device)?;
+            let attention_bk = ct.tensor(reader, &format!("{prefix}.attn_k.bias"), device)?;
+            let attention_bv = ct.tensor(reader, &format!("{prefix}.attn_v.bias"), device)?;
+
+            let attention_wo =
+                ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
+
+            let mlp = {
+                let feed_forward_w1 =
+                    ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
+                let feed_forward_w2 =
+                    ct.tensor(reader, &format!("{prefix}.ffn_down.weight"), device)?;
+                let feed_forward_w3 =
+                    ct.tensor(reader, &format!("{prefix}.ffn_up.weight"), device)?;
+                Mlp {
+                    feed_forward_w1: QMatMul::from_qtensor(feed_forward_w1)?,
+                    feed_forward_w2: QMatMul::from_qtensor(feed_forward_w2)?,
+                    feed_forward_w3: QMatMul::from_qtensor(feed_forward_w3)?,
+                }
             };
-            let attn_norm = rms_norm(
-                ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?,
-                rms_eps,
-            )?;
-            let ffn_norm = rms_norm(
-                ct.tensor(reader, &format!("{prefix}.ffn_norm.weight"), device)?,
-                rms_eps,
-            )?;
+
+            let attention_norm =
+                ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?;
+            let ffn_norm = ct.tensor(reader, &format!("{prefix}.ffn_norm.weight"), device)?;
+
             layers.push(LayerWeights {
-                attn_qkv: QLinear::new(&ct, reader, &format!("{prefix}.attn_qkv"), device)?,
-                attn_output: QLinear::new(&ct, reader, &format!("{prefix}.attn_output"), device)?,
-                attn_norm,
-                ffn_norm,
+                attention_wq: QMatMul::from_qtensor(attention_wq)?,
+                attention_wk: QMatMul::from_qtensor(attention_wk)?,
+                attention_wv: QMatMul::from_qtensor(attention_wv)?,
+                attention_bq: attention_bq.dequantize(device)?.to_dtype(dtype)?,
+                attention_bk: attention_bk.dequantize(device)?.to_dtype(dtype)?,
+                attention_bv: attention_bv.dequantize(device)?.to_dtype(dtype)?,
+                attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                attention_norm: RmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
+                cos: cos.clone(),
+                sin: sin.clone(),
                 mlp,
+                ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
                 n_head: head_count,
                 n_kv_head: head_count_kv,
                 head_dim,
-                cos: cos.clone(),
-                sin: sin.clone(),
                 attn: PagedAttention::new(
-                    head_count,
-                    head_dim,
+                    head_count as usize,
+                    (embedding_length / head_count) as usize,
                     1. / ((head_dim as f32).sqrt()),
-                    Some(head_count_kv),
+                    Some(head_count_kv as usize),
                     None,
                     device.clone(),
                     None,
                 )?,
                 dtype,
-            })
+            });
         }
+
         Ok(Self {
             tok_embeddings: Embedding::new(tok_embeddings, embedding_length),
             layers,
-            output_norm,
+            norm,
             output,
-            cfg: GGUFPhi3::into_config(
+            cfg: GGUFQWen2::into_config(
                 embedding_length,
-                i_size,
+                0,
                 block_count,
                 head_count,
                 head_count_kv,
-                rms_eps,
-                max_seq_len,
+                rms_norm_eps,
+                context_length,
                 dtype,
                 s_cfg,
             ),
@@ -344,56 +346,59 @@ impl GGUFPhi3 {
 
     pub fn forward(
         &self,
-        xs: &Tensor,
+        x: &Tensor,
         input_positions: &[Vec<usize>],
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_sz, seq_len) = xs.dims2()?;
+        let (b_sz, seq_len) = x.dims2()?;
         let mask = if seq_len == 1 {
             None
         } else {
-            Some(self.prepare_decoder_attention_mask(b_sz, seq_len, xs.device())?)
+            Some(self.prepare_decoder_attention_mask(b_sz, seq_len, x.device())?)
         };
-        let mut xs = self.tok_embeddings.forward(xs)?;
-
+        let mut layer_in = self.tok_embeddings.forward(x)?;
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
-                let residual = &xs;
-                let ys = xs.apply(&layer.attn_norm)?;
-                let ys = layer.forward_attn(
-                    &ys,
+                let x = layer_in;
+                let residual = &x;
+                let x = layer.attention_norm.forward(&x)?;
+                let attn = layer.forward_attn(
+                    &x,
                     mask.as_ref(),
                     input_positions,
                     Some((k_cache, v_cache)),
                     input_metadata,
                 )?;
-                let ys = (ys + residual)?;
-                let residual = &ys;
-                let ys = ys.apply(&layer.ffn_norm)?;
-                let ys = layer.mlp.forward(&ys)?;
-                xs = (ys + residual)?
+                let x = (attn + residual)?;
+
+                // MLP
+                let residual = &x;
+                let x = layer.ffn_norm.forward(&x)?;
+                let x = layer.mlp.forward(&x)?;
+                let x = (x + residual)?;
+                layer_in = x
             }
         } else {
             for layer in self.layers.iter() {
-                let residual = &xs;
-                let ys = xs.apply(&layer.attn_norm)?;
-                let ys = layer.forward_attn(
-                    &ys,
-                    mask.as_ref(),
-                    input_positions,
-                    None,
-                    input_metadata,
-                )?;
-                let ys = (ys + residual)?;
-                let residual = &ys;
-                let ys = ys.apply(&layer.ffn_norm)?;
-                let ys = layer.mlp.forward(&ys)?;
-                xs = (ys + residual)?
+                let x = layer_in;
+                let residual = &x;
+                let x = layer.attention_norm.forward(&x)?;
+                let attn =
+                    layer.forward_attn(&x, mask.as_ref(), input_positions, None, input_metadata)?;
+                let x = (attn + residual)?;
+
+                // MLP
+                let residual = &x;
+                let x = layer.ffn_norm.forward(&x)?;
+                let x = layer.mlp.forward(&x)?;
+                let x = (x + residual)?;
+                layer_in = x
             }
         }
-        let xs = xs.i((.., seq_len - 1, ..))?.apply(&self.output_norm)?;
-        self.output.forward(&xs)
+        let x = self.norm.forward(&layer_in)?;
+        let x = x.i((.., seq_len - 1, ..))?;
+        self.output.forward(&x)
     }
 
     pub fn get_config(&self) -> &Config {
