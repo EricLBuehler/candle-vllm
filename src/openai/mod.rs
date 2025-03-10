@@ -48,11 +48,27 @@ pub struct MaxModelLen(
 );
 
 #[derive(Clone, Debug, serde::Deserialize)]
+#[allow(unused)]
+pub struct TokenContent {
+    content: Option<String>,
+    lstrip: Option<bool>,
+    normalized: Option<bool>,
+    rstrip: Option<bool>,
+    single_word: Option<bool>,
+}
+#[derive(Deserialize, Debug, Clone)]
+pub struct BosEosToken(
+    #[serde(with = "either::serde_untagged")] pub Either<Option<String>, Option<TokenContent>>,
+);
+
+#[derive(Clone, Debug, serde::Deserialize)]
 pub struct TokenizerConfig {
     pub model_max_length: MaxModelLen,
     pub add_bos_token: Option<bool>,
     pub add_eos_token: Option<bool>,
     pub chat_template: Option<String>,
+    pub bos_token: BosEosToken,
+    pub eos_token: BosEosToken,
 }
 
 pub struct OpenAIServerData {
