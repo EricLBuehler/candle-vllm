@@ -3,7 +3,7 @@ use crate::openai::logits_processor::{LogitsProcessor, Sampling};
 use crate::openai::models::TokenID;
 use crate::openai::requests::StopTokens;
 use crate::openai::sampling_params::{Logprobs, TopLogprob};
-use crate::openai::TokenizerConfig;
+use crate::openai::{BosEosToken, TokenizerConfig};
 use crate::scheduler::sequence::SequenceGroup;
 use crate::{
     openai::{
@@ -411,15 +411,27 @@ impl DefaultLoader {
         };
 
         let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
-        let chat_template: Option<String> = if tokenizer_cfg_file.display().to_string() != ""
-            && Path::exists(&tokenizer_cfg_file)
-        {
+        let (chat_template, bos_token, eos_token): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = if tokenizer_cfg_file.display().to_string() != "" && Path::exists(&tokenizer_cfg_file) {
             let cfg_tokenizer: TokenizerConfig = try_api!(serde_json::from_slice(try_api!(
                 &std::fs::read(tokenizer_cfg_file)
             )));
-            cfg_tokenizer.chat_template
+            let bos = match cfg_tokenizer.bos_token {
+                BosEosToken(Either::Left(Some(id))) => Some(id),
+                BosEosToken(Either::Right(Some(content))) => content.content.clone(),
+                _ => None,
+            };
+            let eos = match cfg_tokenizer.eos_token {
+                BosEosToken(Either::Left(Some(id))) => Some(id),
+                BosEosToken(Either::Right(Some(content))) => content.content.clone(),
+                _ => None,
+            };
+            (cfg_tokenizer.chat_template, bos, eos)
         } else {
-            None
+            (None, None, None)
         };
         if chat_template.is_some() {
             println!("Chat Template {} \n", chat_template.as_ref().unwrap());
@@ -497,10 +509,9 @@ impl DefaultLoader {
                         self.name.to_string(),
                         chat_template.clone(),
                         Vec::default(),
-                        0,
                         sep_style.clone(),
-                        "".to_string(),
-                        stop_token_ids.clone(),
+                        bos_token.clone(),
+                        eos_token.clone(),
                         ("user".to_string(), "assistant".to_string()),
                         DefaultConversationSeparators {
                             sep: " ".to_string(),

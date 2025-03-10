@@ -40,10 +40,9 @@ pub struct DefaultConversation {
     system_message: String,
     chat_template: Option<String>,
     messages: Vec<Message>,
-    offset: usize,
     sep_style: SeparatorStyle,
-    stop_criteria: String,
-    stop_token_ids: Vec<u32>,
+    bos_token: Option<String>,
+    eos_token: Option<String>,
     roles: (String, String),
     sep: String,
     sep2: Option<String>,
@@ -61,10 +60,9 @@ impl DefaultConversation {
         name: String,
         chat_template: Option<String>,
         messages: Vec<Message>,
-        offset: usize,
         sep_style: SeparatorStyle,
-        stop_criteria: String,
-        stop_token_ids: Vec<u32>,
+        bos_token: Option<String>,
+        eos_token: Option<String>,
         roles: (String, String),
         seps: DefaultConversationSeparators,
     ) -> Self {
@@ -73,10 +71,9 @@ impl DefaultConversation {
             system_message: "".to_string(),
             chat_template,
             messages,
-            offset,
             sep_style,
-            stop_criteria,
-            stop_token_ids,
+            bos_token,
+            eos_token,
             roles,
             sep: seps.sep,
             sep2: seps.sep2,
@@ -126,12 +123,14 @@ impl Conversation for DefaultConversation {
             .render(context! {
               messages => self.messages,
               add_generation_prompt => add_generation_prompt,
+              bos_token => self.bos_token,
+              eos_token => self.eos_token,
             })
             .map_err(ApplyChatTemplateError::RenderTemplateError)
     }
     /// Convert this conversation to a String prompt
     fn get_prompt(&mut self) -> String {
-        match self.apply_chat_template(self.system_message != "") {
+        match self.apply_chat_template(true) {
             Ok(prompt) => prompt,
             _ => {
                 //no chat template exists? using the built-in template
