@@ -782,7 +782,15 @@ pub fn linear_no_bias_x(
             out_dim,
             vb,
             shard(
-                if shards.dim == 1 { 0 } else { 1 },
+                if shards.world_size < 2 {
+                    0
+                } else {
+                    if shards.dim == 1 {
+                        0
+                    } else {
+                        1
+                    }
+                },
                 shards.rank,
                 shards.world_size,
             ),

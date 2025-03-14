@@ -83,6 +83,11 @@ struct Args {
 
     #[arg(long, value_delimiter = ',')]
     device_ids: Option<Vec<usize>>,
+
+    /// Maximum waiting time for processing parallel requests (in milliseconds).
+    /// A larger value means the engine can hold more requests and process them in a single generation call.
+    #[arg(long, default_value_t = 200)]
+    holding_time: usize,
 }
 
 fn get_cache_config(
@@ -253,6 +258,7 @@ async fn main() -> Result<(), APIError> {
         &config,
         Arc::new(Notify::new()),
         finish_notify.clone(),
+        args.holding_time,
     )?;
 
     let server_data = OpenAIServerData {
