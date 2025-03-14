@@ -37,7 +37,7 @@ use crate::{
 use std::path::Path;
 
 use candle_core::quantized::gguf_file;
-use candle_core::{DType, Device, IndexOp, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
 use either::Either;
 use either::Either::{Left, Right};
@@ -592,57 +592,79 @@ impl DefaultPipeline {
         logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        use std::collections::HashMap;
-        use std::sync::Mutex;
-
-        if logits.dims()[0] > 1 && groups[0].sampling_params.repetition_penalty == 1. {
-            return self.sample_batch(logits, groups);
-        }
-        let shared_result = Arc::new(Mutex::new(HashMap::<usize, TokenOrFinishReason>::new()));
-        let shared_group_idx = Arc::new(Mutex::new(0));
-        groups.par_iter().for_each(|group| {
-            let group_idx = {
-                let mut groupidx = shared_group_idx.lock().unwrap();
-                let group_idx = *groupidx;
-                *groupidx += 1;
-                group_idx
-            };
-
-            let sampling_params = &group.sampling_params;
-            for seq in group.get_seqs().values() {
-                let logits = logits.i((group_idx, ..)).unwrap().contiguous();
-                let logits = logits.unwrap().squeeze(0).unwrap();
+        let (tokens_generated, custom_stop_tokens, panalties, reference_tokens): (
+            Vec<i32>,
+            Vec<Vec<String>>,
+            Vec<f32>,
+            Vec<Vec<u32>>,
+        ) = groups
+            .into_par_iter()
+            .map(|group| {
+                let sampling_params = &group.sampling_params;
+                let seq = group.get_seqs().values().next().unwrap();
                 let sq = seq.deref_mut();
                 let tokens = sq
                     .get_token_ids()
                     .iter()
                     .map(|x| *x as u32)
                     .collect::<Vec<_>>();
-                let tokens_generated = sq.get_len() - sq.get_prompt_len();
+                let generated = sq.get_len() - sq.get_prompt_len();
 
-                if tokens_generated > sampling_params.max_tokens {
-                    let mut result = shared_result.lock().unwrap();
-                    result.insert(group_idx, Right("length".to_string()));
-                    break;
-                }
+                let custom_stop_token = match &sampling_params.stop {
+                    Some(StopTokens::Multi(v)) => v.to_vec(),
+                    Some(StopTokens::Single(v)) => {
+                        vec![v.clone()]
+                    }
+                    _ => vec![],
+                };
 
-                let logits = if sampling_params.repetition_penalty == 1.
-                    || self.args.repeat_last_n.unwrap_or(64) >= tokens_generated
+                let ref_tokens = if sampling_params.repetition_penalty != 1.
+                    && self.args.repeat_last_n.unwrap_or(64) < generated
                 {
-                    logits
-                } else {
                     let start_at = tokens
                         .len()
                         .saturating_sub(self.args.repeat_last_n.unwrap_or(64));
-                    candle_transformers::utils::apply_repeat_penalty(
-                        &logits,
-                        sampling_params.repetition_penalty,
-                        &tokens[start_at..],
-                    )
-                    .unwrap_or(logits)
+                    tokens[start_at..].to_vec()
+                } else {
+                    vec![]
                 };
+                (
+                    if generated > sampling_params.max_tokens {
+                        -1i32
+                    } else {
+                        generated as i32
+                    },
+                    custom_stop_token,
+                    sampling_params.repetition_penalty,
+                    ref_tokens,
+                )
+            })
+            .collect::<Vec<(i32, Vec<String>, f32, Vec<u32>)>>()
+            .into_iter()
+            .fold(
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                |mut acc, (gen, stop, penalty, ref_t)| {
+                    acc.0.push(gen);
+                    acc.1.push(stop);
+                    acc.2.push(penalty);
+                    acc.3.push(ref_t);
+                    acc
+                },
+            );
 
-                let next_token = self.logits_processor.sample(&logits).unwrap();
+        let logits = if panalties.iter().any(|&v| v != 1.0 && v != 0.) {
+            self.logits_processor
+                .apply_batch_repeat_penalty(&logits, panalties, reference_tokens)
+                .unwrap()
+        } else {
+            logits.to_owned()
+        };
+
+        let next_tokens = self.logits_processor.sample(&logits).unwrap();
+        let result: Vec<TokenOrFinishReason> = next_tokens
+            .into_par_iter()
+            .enumerate()
+            .map(|(i, next_token)| {
                 let mut text = self
                     .tokenizer
                     .tokenizer()
@@ -657,127 +679,30 @@ impl DefaultPipeline {
                 if origin_text.contains("▁") && origin_text.replace("▁", "") == text {
                     text = origin_text.replace("▁", " ");
                 }
-                let mut custom_stop_token_match = false;
-                match &sampling_params.stop {
-                    Some(StopTokens::Multi(v)) => {
-                        if v.contains(&text) || v.contains(&origin_text) {
-                            custom_stop_token_match = true;
-                        }
-                    }
-                    Some(StopTokens::Single(v)) => {
-                        if *v == text || *v == origin_text {
-                            custom_stop_token_match = true;
-                        }
-                    }
-                    _ => {}
-                }
+                let custom_stop_token_match = if custom_stop_tokens[i].len() > 0
+                    && custom_stop_tokens[i].contains(&text.trim().to_string())
+                {
+                    true
+                } else {
+                    false
+                };
 
-                if (custom_stop_token_match || self.stop_token_ids.contains(&next_token))
-                    && tokens_generated > 1
+                if tokens_generated[i] < 0 {
+                    Right("length".to_string())
+                } else if tokens_generated[i] > 0
+                    && (custom_stop_token_match || self.stop_token_ids.contains(&next_token))
                 {
-                    let mut result = shared_result.lock().unwrap();
-                    result.insert(group_idx, Right("stop".to_string()));
-                    break;
-                }
-                {
-                    let logprob = Logprobs {
+                    Right("stop".to_string())
+                } else {
+                    Left(Logprobs {
                         token: next_token as usize,
                         logprob: 0.0,
                         top_logprobs: Vec::<TopLogprob>::new(),
                         bytes: text,
-                    };
-                    let mut result = shared_result.lock().unwrap();
-                    result.insert(group_idx, Left(logprob));
+                    })
                 }
-            }
-        });
-
-        let final_result = Arc::try_unwrap(shared_result)
-            .expect("Arc should have only one reference left")
-            .into_inner()
-            .expect("Mutex should not be poisoned");
-
-        let mut sorted_vec: Vec<_> = final_result.into_iter().collect();
-        sorted_vec.sort_by_key(|&(key, _)| key);
-
-        let result: Vec<TokenOrFinishReason> =
-            sorted_vec.into_iter().map(|(_, value)| value).collect();
-
-        Ok(result)
-    }
-
-    pub fn sample_batch(
-        &mut self,
-        logits: &Tensor,
-        groups: &VecDeque<Arc<SequenceGroup>>,
-    ) -> Result<Vec<TokenOrFinishReason>, APIError> {
-        use std::collections::HashMap;
-        let mut result = Vec::<TokenOrFinishReason>::new();
-        let mut tokens_generated = HashMap::<usize, i32>::new();
-        let mut custom_stop_tokens = HashMap::<usize, Vec<String>>::new();
-        for (i, group) in groups.iter().enumerate() {
-            let sampling_params = &group.sampling_params;
-            for seq in group.get_seqs().values() {
-                let sq = seq.deref_mut();
-                let _tokens_generated = sq.get_len() - sq.get_prompt_len();
-                if _tokens_generated > sampling_params.max_tokens {
-                    tokens_generated.insert(i, -1);
-                } else {
-                    tokens_generated.insert(i, _tokens_generated as i32);
-                }
-                break;
-            }
-            match &sampling_params.stop {
-                Some(StopTokens::Multi(v)) => {
-                    custom_stop_tokens.insert(i, v.to_vec());
-                }
-                Some(StopTokens::Single(v)) => {
-                    custom_stop_tokens.insert(i, vec![v.clone()]);
-                }
-                _ => {}
-            }
-        }
-
-        let next_tokens = self.logits_processor.sample_batch(&logits).unwrap();
-        for (i, next_token) in next_tokens.iter().enumerate() {
-            let mut text = self
-                .tokenizer
-                .tokenizer()
-                .decode(&[*next_token], false)
-                .unwrap_or(" ".to_string());
-            let origin_text = self
-                .tokenizer
-                .tokenizer()
-                .id_to_token(*next_token)
-                .unwrap_or("".to_string());
-            //properly handle space token
-            if origin_text.contains("▁") && origin_text.replace("▁", "") == text {
-                text = origin_text.replace("▁", " ");
-            }
-            let custom_stop_token_match = if custom_stop_tokens.contains_key(&i)
-                && custom_stop_tokens[&i].contains(&origin_text)
-            {
-                true
-            } else {
-                false
-            };
-
-            if tokens_generated[&i] < 0 {
-                result.push(Right("length".to_string()));
-            } else if tokens_generated[&i] > 0
-                && (custom_stop_token_match || self.stop_token_ids.contains(&next_token))
-            {
-                result.push(Right("stop".to_string()));
-            } else {
-                let logprob = Logprobs {
-                    token: *next_token as usize,
-                    logprob: 0.0,
-                    top_logprobs: Vec::<TopLogprob>::new(),
-                    bytes: text,
-                };
-                result.push(Left(logprob));
-            }
-        }
+            })
+            .collect();
         Ok(result)
     }
 
