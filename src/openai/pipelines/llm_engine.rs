@@ -64,6 +64,7 @@ impl LLMEngine {
         config: &Config,
         notify: Arc<Notify>,
         finish_notify: Arc<Notify>,
+        holding_time: usize,
     ) -> Result<Arc<Mutex<Self>>, APIError> {
         let engine = Arc::new(Mutex::new(Self {
             pipelines,
@@ -82,7 +83,7 @@ impl LLMEngine {
             tokio::runtime::Handle::current().block_on(async move {
                 loop {
                     notify.notified().await; // Blocking call to wait for notification
-                    let _ = tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                    let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
                     let mut e = engine.lock().await;
                     let result = e.generate_once().unwrap();
                     if result.len() == 0 {
