@@ -26,6 +26,7 @@ use flume::Sender;
 use rayon::iter::IntoParallelRefIterator;
 #[cfg(feature = "nccl")]
 use rayon::iter::ParallelIterator;
+use std::sync::RwLock;
 use std::time::SystemTime;
 use std::{
     collections::{HashMap, VecDeque},
@@ -33,7 +34,6 @@ use std::{
     sync::Arc,
 };
 use tokenizers::Encoding;
-use tokio::sync::Mutex;
 use tokio::sync::Notify;
 #[allow(dead_code)]
 struct PreparedInputs {
@@ -54,9 +54,28 @@ pub struct LLMEngine {
     pub notify: Arc<Notify>,
     pub finish_notify: Arc<Notify>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
+    sequence_groups: RwLock<VecDeque<Arc<SequenceGroup>>>,
 }
 
 impl LLMEngine {
+    async fn generate_parallel(
+        engine: &Arc<RwLock<LLMEngine>>,
+        ranks: Vec<usize>,
+    ) -> Vec<HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>> {
+        #[cfg(feature = "nccl")]
+        let iterator = ranks.par_iter();
+        #[cfg(not(feature = "nccl"))]
+        let iterator = ranks.iter();
+
+        let tasks: Vec<_> = iterator
+            .map(|rank| {
+                let engine_clone = engine.clone();
+                Self::generate_once(engine_clone, *rank).unwrap()
+            })
+            .collect();
+        tasks
+    }
+
     pub fn new(
         pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
         scheduler_config: SchedulerConfig,
@@ -65,8 +84,9 @@ impl LLMEngine {
         notify: Arc<Notify>,
         finish_notify: Arc<Notify>,
         holding_time: usize,
-    ) -> Result<Arc<Mutex<Self>>, APIError> {
-        let engine = Arc::new(Mutex::new(Self {
+    ) -> Result<Arc<RwLock<Self>>, APIError> {
+        let num_threads: usize = pipelines.len();
+        let engine = Arc::new(RwLock::new(Self {
             pipelines,
             scheduler: Scheduler::new(scheduler_config, cache_config),
             seq_id: 0,
@@ -76,20 +96,26 @@ impl LLMEngine {
             notify: notify.clone(),
             finish_notify: finish_notify.clone(),
             completion_records: HashMap::new(),
+            sequence_groups: RwLock::new(VecDeque::new()),
         }));
         let engine_clone = engine.clone();
 
+        let mut ranks = Vec::<usize>::new();
+        for rank in 0..num_threads {
+            ranks.push(rank);
+        }
         let _ = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
                 loop {
                     notify.notified().await; // Blocking call to wait for notification
                     let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
-                    let mut e = engine.lock().await;
-                    let result = e.generate_once().unwrap();
-                    if result.len() == 0 {
+                    let results = Self::generate_parallel(&engine, ranks.clone()).await;
+                    let result = &results[0];
+                    if results.len() == 0 || result.len() == 0 {
                         continue;
                     }
                     for request_id in result.keys() {
+                        let mut e = engine.write().unwrap();
                         e.completion_records.insert(request_id.to_string(), result[request_id].clone());
                     }
                     finish_notify.notify_one();
@@ -153,17 +179,17 @@ impl LLMEngine {
     }
 
     fn get_stream_response(
-        &mut self,
+        &self,
         request_id: String,
         created: u64,
         content: Option<String>,
         finish_reason: Option<String>,
+        pipeline: &DefaultPipeline,
     ) -> ChatCompletionChunk {
         let mut choices = Vec::new();
-        let pipeline = self.get_mut_pipeline(0).unwrap().0.as_mut();
         let choice = Choice {
             delta: ChoiceData {
-                role: pipeline.get_conversation(true).get_roles().0.clone(),
+                role: pipeline.get_past_conversation().get_roles().0.clone(),
                 content,
             },
             finish_reason,
@@ -182,63 +208,100 @@ impl LLMEngine {
     }
 
     pub fn generate_once(
-        &mut self,
+        engine: Arc<RwLock<Self>>,
+        rank: usize,
     ) -> Result<HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
         let mut responses =
             HashMap::<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>::new();
         let mut prompt_finish_times = HashMap::<usize, SystemTime>::new();
-        while self.scheduler.has_unfinished_sequences() {
-            let scheduler_outputs = self.scheduler.schedule();
-            if !scheduler_outputs.ignored_seq_groups.is_empty() {
-                todo!();
+        #[cfg(feature = "nccl")]
+        {
+            let e = engine.read().unwrap();
+            let (pipeline, _) = e.get_pipeline(rank).unwrap();
+            let device = pipeline.device();
+            let _ = device.as_cuda_device().unwrap().bind_to_thread();
+        }
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            {
+                let e = engine.read().unwrap();
+                if !e.scheduler.has_unfinished_sequences() {
+                    break;
+                }
+            }
+            if rank == 0 {
+                //only the first rank thread perform task scheduling
+                let mut e = engine.write().unwrap();
+                let scheduler_outputs = e.scheduler.schedule();
+                if !scheduler_outputs.ignored_seq_groups.is_empty() {
+                    todo!();
+                }
+                e.execute_scheduler_ops(&scheduler_outputs, 0).unwrap();
+                let mut groups = e.sequence_groups.write().unwrap();
+
+                *groups = match Arc::try_unwrap(scheduler_outputs.scheduled) {
+                    Ok(deq) => deq,
+                    Err(arc_deq) => (*arc_deq).clone(),
+                };
+            };
+
+            let scheduled: VecDeque<Arc<SequenceGroup>> = {
+                let e = engine.read().unwrap();
+                let x = e.sequence_groups.read().unwrap();
+                x.clone()
+            };
+            if scheduled.len() == 0 {
+                continue; //data not ready
             }
 
-            self.execute_scheduler_ops(&scheduler_outputs, 0).unwrap();
-
-            let scheduled: &VecDeque<Arc<SequenceGroup>> = &scheduler_outputs.scheduled;
             let seqs = scheduled[0].get_seqs();
+            //run partial models in parallel
+            let logits = {
+                let e = engine.read().unwrap();
+                let (pipeline, cache_engine) = e.get_pipeline(rank).unwrap();
+                let device = pipeline.device();
+                let PreparedInputs {
+                    tokens,
+                    positions,
+                    metadata,
+                } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
+                    e.prepare_prompt(&scheduled, device)
+                } else {
+                    e.prepare_decode(&scheduled, device)
+                }?;
 
-            #[cfg(feature = "nccl")]
-            let iterator = self.pipelines.par_iter();
-            #[cfg(not(feature = "nccl"))]
-            let iterator = self.pipelines.iter();
+                let x = pipeline.forward(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                )?;
 
-            let vec_logits: HashMap<usize, Tensor> = iterator
-                .map(|(rank, (pipeline, cache_engine))| {
-                    let device = pipeline.device();
-                    let PreparedInputs {
-                        tokens,
-                        positions,
-                        metadata,
-                    } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
-                        self.prepare_prompt(scheduled, device)
-                    } else {
-                        self.prepare_decode(scheduled, device)
-                    }
-                    .unwrap();
-                    (
-                        *rank,
-                        pipeline
-                            .forward(
-                                tokens,
-                                &positions,
-                                Some(&*cache_engine.get_kv_cache()),
-                                &metadata,
-                            )
-                            .unwrap(),
-                    )
-                })
-                .collect();
+                x
+            };
 
-            let pipeline = self.get_mut_pipeline(0).unwrap().0.as_mut();
-            let results = pipeline
-                .sample(
-                    &vec_logits[&0].to_device(pipeline.device()).unwrap(),
-                    scheduled,
-                )
-                .unwrap();
+            let optional_results = if rank == 0 {
+                //only the first rank thread perform sampling
+                let mut e = engine.write().unwrap();
+                let default_pipeline = e.get_mut_pipeline(0usize).unwrap().0.as_mut();
+                Some(default_pipeline.sample(&logits, &scheduled).unwrap())
+            } else {
+                None
+            };
 
-            for (result_, group) in zip(results, scheduled) {
+            {
+                let e = engine.write().unwrap();
+                let mut cur_group = e.sequence_groups.write().unwrap();
+                cur_group.clear();
+            }
+
+            if optional_results.is_none() {
+                continue;
+            }
+
+            //only the first rank thread perform stream response
+            let results = optional_results.unwrap();
+            for (result_, group) in zip(results, &scheduled) {
                 match result_ {
                     Either::Left(logprobs) => {
                         let seq = group.get_seqs().values().nth(0).unwrap();
@@ -246,11 +309,14 @@ impl LLMEngine {
                             prompt_finish_times.insert(*group.get_id(), SystemTime::now());
                         }
                         if let Some(sender) = &group.sender {
-                            let chunk = self.get_stream_response(
+                            let e = engine.read().unwrap();
+                            let (pipeline, _) = e.get_pipeline(rank).unwrap();
+                            let chunk = e.get_stream_response(
                                 group.request_id.clone(),
                                 group.arrival_time,
                                 Some(logprobs.bytes.clone()),
                                 None,
+                                &pipeline,
                             );
                             let ret = sender.send(ChatResponse::Chunk(chunk));
                             if ret.is_err() {
@@ -265,20 +331,29 @@ impl LLMEngine {
                     Either::Right(finish_reason) => {
                         let seq = group.get_seqs().values().nth(0).unwrap();
                         if let Some(sender) = &group.sender {
-                            let chunk = self.get_stream_response(
+                            let e = engine.read().unwrap();
+                            let (pipeline, _) = e.get_pipeline(rank).unwrap();
+                            let chunk = e.get_stream_response(
                                 group.request_id.clone(),
                                 group.arrival_time,
                                 None,
                                 Some(finish_reason.clone()),
+                                &pipeline,
                             );
-                            sender.send(ChatResponse::Chunk(chunk)).unwrap();
+                            let ret = sender.send(ChatResponse::Chunk(chunk));
+                            if ret.is_err() {
+                                println!("Send stream finish response error!");
+                            }
                         };
                         seq.deref_mut().set_finish_reason(finish_reason)
                     }
                 }
             }
 
-            self.scheduler.free_finished_sequence_groups();
+            {
+                let mut e = engine.write().unwrap();
+                e.scheduler.free_finished_sequence_groups();
+            }
 
             for group in scheduled.iter() {
                 if group.is_finished() && !responses.contains_key(&group.request_id) {
@@ -308,32 +383,35 @@ impl LLMEngine {
                     let top_n = seqs.get(0..group.sampling_params.n).unwrap();
 
                     let mut choices = Vec::new();
-                    for (index, seq) in top_n.iter().enumerate() {
-                        let outputs = seq.deref_mut().get_output_tokens();
-                        let data = outputs
-                            .iter()
-                            .map(|x| x.token.try_into().unwrap())
-                            .collect::<Vec<_>>();
-                        let pipeline = self.get_mut_pipeline(0usize).unwrap().0.as_mut();
-                        let data = pipeline
-                            .tokenizer()
-                            .tokenizer()
-                            .decode(&data, false)
-                            .unwrap();
-                        let choice = ChatChoice {
-                            message: ChatChoiceData {
-                                role: pipeline.get_conversation(true).get_roles().0.clone(),
-                                content: Some(data),
-                            },
-                            finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
-                            index,
-                            logprobs: if group.use_logprobs {
-                                Some(WrapperLogprobs { content: outputs })
-                            } else {
-                                None
-                            },
-                        };
-                        choices.push(choice);
+                    if group.sender.is_none() {
+                        let e = engine.read().unwrap();
+                        for (index, seq) in top_n.iter().enumerate() {
+                            let outputs = seq.deref_mut().get_output_tokens();
+                            let data = outputs
+                                .iter()
+                                .map(|x| x.token.try_into().unwrap())
+                                .collect::<Vec<_>>();
+                            let pipeline = e.get_pipeline(0usize).unwrap().0.as_ref();
+                            let data = pipeline
+                                .tokenizer()
+                                .tokenizer()
+                                .decode(&data, false)
+                                .unwrap();
+                            let choice = ChatChoice {
+                                message: ChatChoiceData {
+                                    role: pipeline.get_past_conversation().get_roles().0.clone(),
+                                    content: Some(data),
+                                },
+                                finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
+                                index,
+                                logprobs: if group.use_logprobs {
+                                    Some(WrapperLogprobs { content: outputs })
+                                } else {
+                                    None
+                                },
+                            };
+                            choices.push(choice);
+                        }
                     }
 
                     let completion_tokens = top_n
@@ -365,8 +443,12 @@ impl LLMEngine {
                 }
             }
         }
-        let default_pipeline = self.get_mut_pipeline(0usize).unwrap().0.as_mut();
-        default_pipeline.reset_decoder();
+
+        if rank == 0 {
+            let mut e = engine.write().unwrap();
+            let default_pipeline = e.get_mut_pipeline(rank).unwrap().0.as_mut();
+            default_pipeline.reset_decoder();
+        }
         Ok(responses)
     }
 }

@@ -624,12 +624,16 @@ pub fn hub_load_local_safetensors(
         Some(serde_json::Value::Object(map)) => map,
         Some(_) => panic!("weight map in {json_file:?} is not a map"),
     };
-    let mut safetensors_files = Vec::<std::path::PathBuf>::new();
+    let mut safetensors_files = std::collections::HashSet::new();
     for value in weight_map.values() {
         if let Some(file) = value.as_str() {
-            safetensors_files.insert(0, (Path::new(path).join(file)).into());
+            safetensors_files.insert(file);
         }
     }
+    let safetensors_files: Vec<_> = safetensors_files
+        .into_iter()
+        .map(|v| Path::new(path).join(v))
+        .collect();
     Ok(safetensors_files)
 }
 
