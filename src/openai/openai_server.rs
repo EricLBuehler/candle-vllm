@@ -35,7 +35,7 @@ async fn get_gen_prompt(
     data: &OpenAIServerData,
     request: &ChatCompletionRequest,
 ) -> Result<String, APIError> {
-    let mut model = data.model.lock().await;
+    let mut model = data.model.write().unwrap();
     let conversation = model
         .get_mut_pipeline(0)
         .unwrap()
@@ -76,7 +76,7 @@ async fn check_length(
     data: &OpenAIServerData,
 ) -> Result<Encoding, APIError> {
     let token_ids = {
-        let model = data.model.lock().await;
+        let model = data.model.read().unwrap();
         model
             .get_pipeline(0)
             .unwrap()
@@ -192,7 +192,7 @@ pub async fn chat_completions(
         tokio::runtime::Handle::current().block_on(async move {
             {
                 //send completion request to inference engine
-                let mut model = data.model.lock().await;
+                let mut model = data.model.write().unwrap();
                 model.add_request(
                     token_ids,
                     request_id.clone(),
@@ -225,7 +225,7 @@ pub async fn chat_completions(
     } else {
         // wait until current response finished
         finish_notify.notified().await;
-        let model = data_clone.model.lock().await;
+        let model = data_clone.model.read().unwrap();
         if !model.completion_records.contains_key(&request_id_clone) {
             return ChatResponder::ModelError(APIError::from(format!(
                 "Unable to generate response for request {}",

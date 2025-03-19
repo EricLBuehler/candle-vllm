@@ -29,7 +29,7 @@ pub struct QuantConfig {
     pub quant_method: String,
     pub bits: usize,
     pub group_size: i32,
-    pub sym: bool,
+    pub sym: Option<bool>,
     pub desc_act: Option<bool>,
     pub checkpoint_format: Option<String>,
 }
