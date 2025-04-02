@@ -91,7 +91,7 @@ struct Args {
     #[arg(long, default_value_t = 500)]
     holding_time: usize,
 
-    //Wheather the program running in multiprocess or multithread model for parallel inference
+    //Whether the program running in multiprocess or multithread model for parallel inference
     #[arg(long, default_value_t = false)]
     multi_process: bool,
 }
