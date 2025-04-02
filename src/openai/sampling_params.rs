@@ -20,7 +20,7 @@ pub struct Logprobs {
     pub top_logprobs: Vec<TopLogprob>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum EarlyStoppingCondition {
     ///True
     BestOfCompleteCandidates,
@@ -37,7 +37,7 @@ pub enum SamplingType {
     RANDOM,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SamplingParams {
     /// Number of output seqs to return for a prompt.
     pub n: usize,

@@ -1,4 +1,8 @@
 use super::{DefaultPipeline, _make_tensor_with_pad};
+#[cfg(feature = "nccl")]
+use crate::openai::communicator::{DaemonManager, MessageType, TaskData, TaskSampleData};
+#[cfg(feature = "nccl")]
+use crate::openai::pipelines::TokenOrFinishReason;
 use crate::openai::streaming::ChatResponse;
 use crate::scheduler::Scheduler;
 use crate::{
@@ -35,6 +39,9 @@ use std::{
 };
 use tokenizers::Encoding;
 use tokio::sync::Notify;
+#[cfg(feature = "nccl")]
+use tracing::info;
+use tracing::warn;
 #[allow(dead_code)]
 struct PreparedInputs {
     tokens: Tensor,
@@ -55,12 +62,18 @@ pub struct LLMEngine {
     pub finish_notify: Arc<Notify>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
     sequence_groups: RwLock<VecDeque<Arc<SequenceGroup>>>,
+    multi_process: bool,
+    #[cfg(feature = "nccl")]
+    cur_tasks: RwLock<Vec<TaskData>>,
+    #[cfg(feature = "nccl")]
+    daemon_manager: RwLock<Option<DaemonManager>>,
 }
 
 impl LLMEngine {
     async fn generate_parallel(
         engine: &Arc<RwLock<LLMEngine>>,
         ranks: Vec<usize>,
+        multi_process: bool,
     ) -> Vec<HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>> {
         #[cfg(feature = "nccl")]
         let iterator = ranks.par_iter();
@@ -70,7 +83,7 @@ impl LLMEngine {
         let tasks: Vec<_> = iterator
             .map(|rank| {
                 let engine_clone = engine.clone();
-                Self::generate_once(engine_clone, *rank).unwrap()
+                Self::generate_once(engine_clone, *rank, multi_process).unwrap()
             })
             .collect();
         tasks
@@ -84,6 +97,9 @@ impl LLMEngine {
         notify: Arc<Notify>,
         finish_notify: Arc<Notify>,
         holding_time: usize,
+        num_shards: usize,
+        multi_process: bool,
+        #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
     ) -> Result<Arc<RwLock<Self>>, APIError> {
         let num_threads: usize = pipelines.len();
         let engine = Arc::new(RwLock::new(Self {
@@ -97,6 +113,11 @@ impl LLMEngine {
             finish_notify: finish_notify.clone(),
             completion_records: HashMap::new(),
             sequence_groups: RwLock::new(VecDeque::new()),
+            multi_process,
+            #[cfg(feature = "nccl")]
+            cur_tasks: RwLock::new(Vec::<TaskData>::new()),
+            #[cfg(feature = "nccl")]
+            daemon_manager: RwLock::new(daemon_manager),
         }));
         let engine_clone = engine.clone();
 
@@ -104,12 +125,80 @@ impl LLMEngine {
         for rank in 0..num_threads {
             ranks.push(rank);
         }
+        #[cfg(feature = "nccl")]
+        if multi_process || num_shards > 1 {
+            warn!("start llm engine, number of pipeline {}!", num_threads);
+        }
         let _ = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
                 loop {
-                    notify.notified().await; // Blocking call to wait for notification
-                    let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
-                    let results = Self::generate_parallel(&engine, ranks.clone()).await;
+                    #[cfg(feature = "nccl")]
+                    if multi_process {
+                        if DaemonManager::is_daemon() {
+                            warn!("daemon process wait_task!");
+                            let message = {
+                                let e = engine.read().unwrap();
+                                let mut daemon_manager = e.daemon_manager.write().unwrap();
+                                daemon_manager.as_mut().unwrap().receive_message()
+                            };
+                            match message {
+                                Ok(MessageType::Start) => {
+                                    warn!("A start message*****!");
+                                }
+                                Ok(MessageType::Data(data)) => {
+                                    let mut e = engine.write().unwrap();
+                                    for task in data {
+                                        warn!("Add request {} to task list!", task.request_id);
+                                        e.add_request(task.prompt, task.request_id, task.created, task.sampling_params, task.use_logprobs, None);
+                                    }
+                                    continue;
+                                }
+                                Ok(MessageType::Sample(_)) => {
+                                    info!("A sample message before start!");
+                                    continue;
+                                }
+                                Ok(MessageType::Finish) => {
+                                    info!("A finish message before start!");
+                                    continue;
+                                }
+                                Ok(MessageType::Close) => {
+                                    warn!("A close message*****!");
+                                    break;
+                                }
+                                _=> {
+                                    warn!("Invalid message, perhaps the main process is exited!");
+                                    panic!("Exit process");
+                                }
+                            };
+
+                        } else {
+                            notify.notified().await;
+                            let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
+                            {
+                                let e = engine.read().unwrap();
+                                let mut daemon_manager = e.daemon_manager.write().unwrap();
+                                let mut cur_tasks = e.cur_tasks.write().unwrap();
+                                let send_tasks = cur_tasks.clone();
+                                if send_tasks.len() < 1 {
+                                    continue
+                                }
+                                warn!("Sending {} tasks to {} subprocesses", send_tasks.len(), num_shards - 1);
+                                let _ = daemon_manager.as_mut().unwrap().send_message(&MessageType::Data(send_tasks));
+                                cur_tasks.clear();
+                                let _ = daemon_manager.as_mut().unwrap().send_message(&MessageType::Start);
+                            }
+                        }
+                    }
+                    if !multi_process {
+                        notify.notified().await; // Blocking call to wait for notification
+                        let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
+                    }
+                    let results = Self::generate_parallel(&engine, ranks.clone(), multi_process).await;
+
+                    #[cfg(feature = "nccl")]
+                    if multi_process && DaemonManager::is_daemon() {
+                        continue;
+                    }
                     let result = &results[0];
                     if results.len() == 0 || result.len() == 0 {
                         continue;
@@ -207,9 +296,37 @@ impl LLMEngine {
         }
     }
 
+    #[cfg(feature = "nccl")]
+    pub fn sync_process(daemon_manager: &mut DaemonManager, msg_send: MessageType) -> bool {
+        if DaemonManager::is_daemon() {
+            info!("waiting sync message!");
+            let message = { daemon_manager.receive_message() };
+            match message {
+                Ok(MessageType::Finish) | Ok(MessageType::Close) => {
+                    warn!("A abort/finish or close message!");
+                    return false;
+                }
+                Ok(MessageType::Continue) => {
+                    info!("continue message!");
+                }
+                Ok(MessageType::Start) | Ok(MessageType::Data(_)) | Ok(MessageType::Sample(_)) => {
+                    info!("other message!");
+                }
+                _ => {
+                    warn!("invalid message!");
+                    panic!("Exit process")
+                }
+            };
+        } else {
+            let _ = daemon_manager.send_message(&msg_send);
+        }
+        return true;
+    }
+
     pub fn generate_once(
         engine: Arc<RwLock<Self>>,
         rank: usize,
+        multi_process: bool,
     ) -> Result<HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
         let mut responses =
             HashMap::<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>::new();
@@ -222,10 +339,13 @@ impl LLMEngine {
             let _ = device.as_cuda_device().unwrap().bind_to_thread();
         }
         loop {
-            std::thread::sleep(std::time::Duration::from_millis(1));
             {
+                if !multi_process {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
                 let e = engine.read().unwrap();
                 if !e.scheduler.has_unfinished_sequences() {
+                    warn!("generate_once: no unfinished_sequences, break");
                     break;
                 }
             }
@@ -280,17 +400,83 @@ impl LLMEngine {
                 x
             };
 
-            let optional_results = if rank == 0 {
-                //only the first rank thread perform sampling
-                let mut e = engine.write().unwrap();
-                let default_pipeline = e.get_mut_pipeline(0usize).unwrap().0.as_mut();
-                Some(default_pipeline.sample(&logits, &scheduled).unwrap())
+            #[cfg(feature = "nccl")]
+            let do_sample = if rank == 0 && !DaemonManager::is_daemon() {
+                true
             } else {
+                false
+            };
+            #[cfg(not(feature = "nccl"))]
+            let do_sample = if rank == 0 { true } else { false };
+
+            let optional_results = if do_sample {
+                let sample = {
+                    //only the first rank thread perform sampling
+                    let mut e = engine.write().unwrap();
+                    let default_pipeline = e.get_mut_pipeline(0usize).unwrap().0.as_mut();
+                    default_pipeline.sample(&logits, &scheduled).unwrap()
+                };
+
+                #[cfg(feature = "nccl")]
+                if multi_process {
+                    let e = engine.read().unwrap();
+                    let mut daemon_manager = e.daemon_manager.write().unwrap();
+                    let mut logprobs: Vec<TaskSampleData> = Vec::new();
+                    for s in &sample {
+                        match s {
+                            Either::Left(logprob) => {
+                                logprobs.push(TaskSampleData::Token(logprob.clone()))
+                            }
+                            Either::Right(s) => {
+                                logprobs.push(TaskSampleData::StopReason(s.clone()))
+                            }
+                        };
+                    }
+                    let _ = daemon_manager
+                        .as_mut()
+                        .unwrap()
+                        .send_message(&MessageType::Sample(logprobs));
+                }
+                Some(sample)
+            } else {
+                #[cfg(feature = "nccl")]
+                if multi_process && DaemonManager::is_daemon() {
+                    let _ = logits.to_device(&Device::Cpu).unwrap(); //sync
+                    let message = {
+                        let e = engine.read().unwrap();
+                        let mut daemon_manager = e.daemon_manager.write().unwrap();
+                        daemon_manager.as_mut().unwrap().receive_message()
+                    };
+                    let mut logprobs: Vec<TokenOrFinishReason> = Vec::new();
+                    match message {
+                        Ok(MessageType::Sample(data)) => {
+                            for s in data {
+                                match s {
+                                    TaskSampleData::Token(t) => {
+                                        logprobs.push(TokenOrFinishReason::Left(t))
+                                    }
+                                    TaskSampleData::StopReason(s) => {
+                                        logprobs.push(TokenOrFinishReason::Right(s))
+                                    }
+                                }
+                            }
+                            info!("generate_once: received sample");
+                            Some(logprobs)
+                        }
+                        _ => {
+                            info!("generate_once: received empty sample");
+                            break;
+                        }
+                    }
+                } else {
+                    None
+                }
+                #[cfg(not(feature = "nccl"))]
                 None
             };
 
             {
-                let e = engine.write().unwrap();
+                let e = engine.read().unwrap();
                 let mut cur_group = e.sequence_groups.write().unwrap();
                 cur_group.clear();
             }
@@ -325,7 +511,6 @@ impl LLMEngine {
                                 break;
                             }
                         };
-                        // print!("{}", logprobs.bytes.clone());
                         seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
@@ -442,6 +627,20 @@ impl LLMEngine {
                     };
                 }
             }
+
+            #[cfg(feature = "nccl")]
+            if multi_process {
+                let mut e = engine.write().unwrap();
+                if e.scheduler.has_unfinished_sequences() {
+                    let mut daemon_manager = e.daemon_manager.write().unwrap();
+                    if !Self::sync_process(daemon_manager.as_mut().unwrap(), MessageType::Continue)
+                    {
+                        let seq = scheduled[0].get_seqs().values().nth(0).unwrap();
+                        seq.deref_mut().set_finish_reason("Abort".to_string());
+                    }
+                }
+                e.scheduler.free_finished_sequence_groups();
+            };
         }
 
         if rank == 0 {
@@ -449,6 +648,19 @@ impl LLMEngine {
             let default_pipeline = e.get_mut_pipeline(rank).unwrap().0.as_mut();
             default_pipeline.reset_decoder();
         }
+
+        #[cfg(feature = "nccl")]
+        if multi_process && !DaemonManager::is_daemon() {
+            warn!("Sending finish message to subprocesses");
+            let e = engine.read().unwrap();
+            let mut daemon_manager = e.daemon_manager.write().unwrap();
+            let _ = daemon_manager
+                .as_mut()
+                .unwrap()
+                .send_message(&MessageType::Finish);
+        }
+
+        warn!("generate_once: finished generation");
         Ok(responses)
     }
 }
@@ -700,7 +912,7 @@ impl LLMEngine {
             self.group_id,
             request_id.clone(),
             created,
-            sampling_params,
+            sampling_params.clone(),
             use_logprobs,
             sender,
         );
@@ -712,5 +924,19 @@ impl LLMEngine {
             request_id.clone(),
             prompt_len
         );
+
+        #[cfg(feature = "nccl")]
+        if self.multi_process && !DaemonManager::is_daemon() {
+            info!("add task to list");
+            let task = TaskData {
+                prompt,
+                request_id,
+                created,
+                sampling_params,
+                use_logprobs,
+            };
+            let mut cur_tasks = self.cur_tasks.write().unwrap();
+            cur_tasks.push(task);
+        }
     }
 }
