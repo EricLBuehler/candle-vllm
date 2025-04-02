@@ -15,7 +15,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - `In-situ` quantization (and `In-situ` marlin format conversion)
 - `GPTQ/Marlin` format quantization (4-bit)
 - Support `Mac/Metal` devices
-- Support `Multi-GPU` inference
+- Support `Multi-GPU` inference (both `multi-process` and  `multi-threaded` mode)
 
 ## Develop Status
 
@@ -106,22 +106,26 @@ Run **DeepSeek** MoE models
 cargo run --release --features cuda -- --port 2000 --weight-path /home/DeepSeek-V2-Lite-Chat deep-seek --penalty 1.0 --temperature 0.
 ```
 
-Run **Multi-GPU** inference with NCCL feature
+Run **Multi-process Multi-GPU** inference with NCCL feature
 
 ```shell
+cargo run --release --features cuda,nccl -- --multi-process --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
+```
+
+Run **Multi-process Multi-GPU** inference with NCCL feature for `quantized` models
+```shell
+cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant gptq --temperature 0. --penalty 1.0
+```
+
+Run **Multi-threaded Multi-GPU** inference with NCCL feature
+```shell
+#simply remove the "--multi-process"
 cargo run --release --features cuda,nccl -- --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
 ```
 
-Run **Multi-GPU** inference with NCCL feature for `quantized` models
+If you encountered problems under Multi-GPU settings (especially on Multi-threaded Multi-GPU mode), you may:
 ```shell
-cargo run --release --features cuda,nccl -- --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant gptq --temperature 0. --penalty 1.0
-```
-
-If you encountered problems under Multi-GPU settings, you may:
-```shell
-export NCCL_P2P_LEVEL=LOC # use local devices (multiple cards within a server, PCIE, etc.)
 export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
-export NCCL_IB_DISABLE=1 # disable ibnet/infiniband (optional)
 ```
 **Note:** number of GPUs used must be aligned to 2^n (e.g., 2, 4, or 8).
 

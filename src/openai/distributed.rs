@@ -5,7 +5,7 @@ use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use candle_nn::{Embedding, LayerNorm, RmsNorm};
 #[cfg(feature = "nccl")]
-pub use cudarc::nccl::safe::Comm;
+pub use cudarc::nccl::safe::{Comm, Id};
 #[cfg(not(feature = "nccl"))]
 pub struct Comm {}
 #[cfg(not(feature = "nccl"))]
@@ -25,6 +25,9 @@ impl Comm {
         1
     }
 }
+
+#[cfg(not(feature = "nccl"))]
+pub struct Id {}
 
 pub use std::rc::Rc;
 

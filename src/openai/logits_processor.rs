@@ -2,7 +2,7 @@
 use crate::backend::custom_ops::sort::ArgSortOp; //Use our custom sort kernel, fix kernel crash on A100
 use crate::candle::D;
 use crate::candle::{DType, Error, Result, Tensor};
-use rand::{distributions::Distribution, SeedableRng};
+use rand::{distr::Distribution, SeedableRng};
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
 use std::sync::Arc;
@@ -48,7 +48,7 @@ impl LogitsProcessor {
     }
 
     fn sample_multinomial(&self, prs: &Vec<f32>) -> Result<u32> {
-        let distr = rand::distributions::WeightedIndex::new(prs).map_err(Error::wrap)?;
+        let distr = rand::distr::weighted::WeightedIndex::new(prs).map_err(Error::wrap)?;
         let mut rng = self.rng.lock().unwrap();
         let next_token = distr.sample(&mut *rng) as u32;
         Ok(next_token)
