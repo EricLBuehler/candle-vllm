@@ -1,0 +1,49 @@
+use crate::openai::communicator::DaemonManager;
+use std::{process, thread, time};
+use tracing::{info, warn};
+pub async fn heartbeat_worker(num_subprocess: Option<usize>) {
+    let _ = thread::spawn(move || {
+        let mut heartbeat_error_count = 0;
+        let mut command_manager = if DaemonManager::is_daemon() {
+            let _ = thread::sleep(time::Duration::from_millis(3000 as u64));
+            let manager = DaemonManager::new_command(num_subprocess);
+            loop {
+                if manager.is_ok() {
+                    break;
+                } else if heartbeat_error_count < 5 {
+                    heartbeat_error_count += 1;
+                    warn!(
+                        "Retry connect to main process' command channel ({:?})!",
+                        manager
+                    );
+                    let _ = thread::sleep(time::Duration::from_millis(1000 as u64));
+                    continue;
+                } else {
+                    warn!("{:?}", manager);
+                    break;
+                }
+            }
+            manager
+        } else {
+            DaemonManager::new_command(num_subprocess)
+        };
+        warn!("enter heartbeat processing loop ({:?})", command_manager);
+        loop {
+            let alive_result = command_manager.as_mut().unwrap().heartbeat();
+            if alive_result.is_err() {
+                warn!("{:?}", alive_result);
+                if heartbeat_error_count > 10 {
+                    warn!(
+                        "heartbeat detection failed, exit the current process because of {:?}",
+                        alive_result
+                    );
+                    process::abort();
+                }
+                heartbeat_error_count += 1;
+            } else {
+                info!("paired processes still alive!");
+            }
+            let _ = thread::sleep(time::Duration::from_millis(1000 as u64));
+        }
+    });
+}
