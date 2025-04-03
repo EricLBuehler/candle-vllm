@@ -218,6 +218,11 @@ async fn main() -> Result<(), APIError> {
     };
     use candle_vllm::scheduler::cache_engine::CacheEngine;
     let num_shards = device_ids.len();
+    #[cfg(not(feature = "nccl"))]
+    assert!(
+        num_shards == 1,
+        "More than one shard was given, but NCCL is not enabled for parallel inference!"
+    );
     let mut port = args.port;
     #[cfg(feature = "nccl")]
     let logger = ftail::Ftail::new();

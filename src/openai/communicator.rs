@@ -71,12 +71,13 @@ pub struct DaemonManager {
 }
 
 impl DaemonManager {
-    pub fn ipc_name(command_channel: bool) -> anyhow::Result<Name<'static>> {
-        let printname = if command_channel {
-            "command_candle_vllm.sock"
-        } else {
-            "candle_vllm_daemon.sock"
-        };
+    pub fn ipc_default_name() -> anyhow::Result<Name<'static>> {
+        let printname = "candle_vllm_daemon.sock";
+        Ok(printname.to_ns_name::<GenericNamespaced>()?)
+    }
+
+    pub fn ipc_command_name(command_name: &str) -> anyhow::Result<Name<'static>> {
+        let printname = format!("command_{}_candle_vllm.sock", command_name);
         Ok(printname.to_ns_name::<GenericNamespaced>()?)
     }
 
@@ -86,7 +87,7 @@ impl DaemonManager {
 
     //called by main process
     pub fn new(num_subprocess: usize) -> anyhow::Result<Self> {
-        let name = DaemonManager::ipc_name(false)?;
+        let name = DaemonManager::ipc_default_name()?;
         *IS_DAEMON.lock().unwrap() = false;
         let listener = ListenerOptions::new().name(name).create_sync()?;
         let mut streams = Vec::with_capacity(num_subprocess);
@@ -114,7 +115,7 @@ impl DaemonManager {
     //called by daemon processes
     pub fn connect() -> anyhow::Result<Self> {
         *IS_DAEMON.lock().unwrap() = true;
-        let name = DaemonManager::ipc_name(false)?;
+        let name = DaemonManager::ipc_default_name()?;
         let mut stream = LocalStream::connect(name)?;
         stream.write_all(b"ready\n")?;
         Ok(Self {
@@ -182,8 +183,8 @@ impl DaemonManager {
         DaemonManager::receive(self.main_stream.as_mut().unwrap())
     }
 
-    pub fn new_command(num_subprocess: Option<usize>) -> std::io::Result<Self> {
-        let name = DaemonManager::ipc_name(true).unwrap();
+    pub fn new_command(command_name: &str, num_subprocess: Option<usize>) -> std::io::Result<Self> {
+        let name = DaemonManager::ipc_command_name(command_name).unwrap();
         if DaemonManager::is_daemon() {
             warn!("connect to main process' command channel!");
             let mut stream = LocalStream::connect(name)?;
