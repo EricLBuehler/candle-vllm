@@ -4,6 +4,8 @@ use axum::{
     Router,
 };
 use candle_core::{DType, Device};
+#[cfg(feature = "nccl")]
+use candle_vllm::backend::heartbeat;
 use candle_vllm::openai::openai_server::chat_completions;
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::pipelines::pipeline::DefaultModelPaths;
@@ -228,7 +230,7 @@ async fn main() -> Result<(), APIError> {
         }
 
         logger
-            .console(tracing::log::LevelFilter::Info)
+            .console(tracing::log::LevelFilter::Warn)
             .single_file(
                 format!("candle-vllm-rank-{}.log", rank).as_str(),
                 true,
@@ -238,6 +240,7 @@ async fn main() -> Result<(), APIError> {
             .unwrap();
 
         warn!("subprocess rank {} started!", rank);
+        heartbeat::heartbeat_worker(Some(num_shards - 1)).await;
 
         (
             loader

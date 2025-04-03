@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
 use std::time::SystemTime;
 use tokenizers::Encoding;
-use tracing::info;
+use tracing::{info, warn};
 pub(crate) const DAEMON_PAYLOAD: &str = "__CANDLE_VLLM_DAEMON_INTERNAL";
 use lazy_static::lazy_static;
 use std::sync::Mutex;
@@ -58,17 +58,25 @@ pub enum MessageType {
     Sample(Vec<TaskSampleData>),
     Continue,
     Finish,
+    HeartBeat,
     Close,
 }
 
+#[derive(Debug)]
 pub struct DaemonManager {
     daemon_streams: Option<Vec<LocalStream>>,
     main_stream: Option<LocalStream>,
+    daemon_streams_command: Option<Vec<LocalStream>>,
+    main_stream_command: Option<LocalStream>,
 }
 
 impl DaemonManager {
-    pub fn ipc_name() -> anyhow::Result<Name<'static>> {
-        let printname = "candle_vllm_daemon.sock";
+    pub fn ipc_name(command_channel: bool) -> anyhow::Result<Name<'static>> {
+        let printname = if command_channel {
+            "command_candle_vllm.sock"
+        } else {
+            "candle_vllm_daemon.sock"
+        };
         Ok(printname.to_ns_name::<GenericNamespaced>()?)
     }
 
@@ -78,7 +86,7 @@ impl DaemonManager {
 
     //called by main process
     pub fn new(num_subprocess: usize) -> anyhow::Result<Self> {
-        let name = DaemonManager::ipc_name()?;
+        let name = DaemonManager::ipc_name(false)?;
         *IS_DAEMON.lock().unwrap() = false;
         let listener = ListenerOptions::new().name(name).create_sync()?;
         let mut streams = Vec::with_capacity(num_subprocess);
@@ -95,33 +103,30 @@ impl DaemonManager {
                 info!("one daemon process connected!");
             }
         }
-
         Ok(Self {
             daemon_streams: Some(streams),
             main_stream: None,
+            daemon_streams_command: None,
+            main_stream_command: None,
         })
     }
 
     //called by daemon processes
     pub fn connect() -> anyhow::Result<Self> {
         *IS_DAEMON.lock().unwrap() = true;
-        let name = DaemonManager::ipc_name()?;
+        let name = DaemonManager::ipc_name(false)?;
         let mut stream = LocalStream::connect(name)?;
         stream.write_all(b"ready\n")?;
         Ok(Self {
             daemon_streams: None,
             main_stream: Some(stream),
+            daemon_streams_command: None,
+            main_stream_command: None,
         })
     }
 
-    pub fn send_message(&mut self, message: &MessageType) -> std::io::Result<()> {
-        assert!(
-            !DaemonManager::is_daemon(),
-            "must be called in the main process!"
-        );
-        assert!(self.daemon_streams.is_some(), "No daomon process found!");
+    pub fn send(streams: &mut Vec<LocalStream>, message: &MessageType) -> std::io::Result<()> {
         let serialized = bincode::serialize(message).expect("Serialization failed");
-        let streams = self.daemon_streams.as_mut().unwrap();
         for stream in streams.iter_mut() {
             stream.write_all(&(serialized.len() as u32).to_le_bytes())?;
             stream.write_all(&serialized)?;
@@ -140,16 +145,17 @@ impl DaemonManager {
         Ok(())
     }
 
-    pub fn receive_message(&mut self) -> std::io::Result<MessageType> {
+    pub fn send_message(&mut self, message: &MessageType) -> std::io::Result<()> {
         assert!(
-            DaemonManager::is_daemon(),
-            "must be called in the daemon processes!"
+            !DaemonManager::is_daemon(),
+            "must be called in the main process!"
         );
-        assert!(
-            self.main_stream.is_some(),
-            "not connected to the main process!"
-        );
-        let mut stream = self.main_stream.as_ref().unwrap();
+        assert!(self.daemon_streams.is_some(), "No daomon process found!");
+        let streams = self.daemon_streams.as_mut().unwrap();
+        DaemonManager::send(streams, message)
+    }
+
+    pub fn receive(stream: &mut LocalStream) -> std::io::Result<MessageType> {
         let mut length_buf = [0u8; 4];
         stream.read_exact(&mut length_buf)?;
         let length = u32::from_le_bytes(length_buf) as usize;
@@ -162,6 +168,106 @@ impl DaemonManager {
         stream.write_all(&[1])?;
         stream.flush()?;
         Ok(message)
+    }
+
+    pub fn receive_message(&mut self) -> std::io::Result<MessageType> {
+        assert!(
+            DaemonManager::is_daemon(),
+            "must be called in the daemon processes!"
+        );
+        assert!(
+            self.main_stream.is_some(),
+            "not connected to the main process!"
+        );
+        DaemonManager::receive(self.main_stream.as_mut().unwrap())
+    }
+
+    pub fn new_command(num_subprocess: Option<usize>) -> std::io::Result<Self> {
+        let name = DaemonManager::ipc_name(true).unwrap();
+        if DaemonManager::is_daemon() {
+            warn!("connect to main process' command channel!");
+            let mut stream = LocalStream::connect(name)?;
+            stream.write_all(b"ready\n")?;
+            warn!("connected to the main process' command channel!");
+            Ok(Self {
+                daemon_streams: None,
+                main_stream: None,
+                daemon_streams_command: None,
+                main_stream_command: Some(stream),
+            })
+        } else {
+            warn!("build command channel for the main process!");
+            let num_subprocess = num_subprocess.unwrap();
+            let listener = ListenerOptions::new().name(name).create_sync()?;
+            let mut streams = Vec::with_capacity(num_subprocess);
+            for _ in 0..num_subprocess {
+                let stream = listener.accept()?;
+                warn!("accept one daemon process!");
+                streams.push(stream);
+            }
+
+            for stream in streams.iter_mut() {
+                let mut reader = BufReader::new(stream);
+                let mut message = String::new();
+                reader.read_line(&mut message)?;
+                if message.trim() == "ready" {
+                    warn!("one daemon process connected!");
+                }
+            }
+            warn!("command channel is built!");
+            Ok(Self {
+                daemon_streams: None,
+                main_stream: None,
+                daemon_streams_command: Some(streams),
+                main_stream_command: None,
+            })
+        }
+    }
+
+    pub fn send_command(&mut self, message: &MessageType) -> std::io::Result<()> {
+        assert!(
+            !DaemonManager::is_daemon(),
+            "must be called in the main process!"
+        );
+        assert!(
+            self.daemon_streams_command.is_some(),
+            "No daomon process found!"
+        );
+        let streams = self.daemon_streams_command.as_mut().unwrap();
+        DaemonManager::send(streams, message)
+    }
+
+    pub fn receive_command(&mut self) -> std::io::Result<MessageType> {
+        assert!(
+            DaemonManager::is_daemon(),
+            "must be called in the daemon processes!"
+        );
+        assert!(
+            self.main_stream_command.is_some(),
+            "not connected to the main process!"
+        );
+        DaemonManager::receive(self.main_stream_command.as_mut().unwrap())
+    }
+
+    //This will block the callers
+    pub fn heartbeat(&mut self) -> std::io::Result<()> {
+        if DaemonManager::is_daemon() {
+            assert!(
+                self.main_stream_command.is_some(),
+                "Current daemon process is not connected to the main process!"
+            );
+            match self.receive_command() {
+                Ok(MessageType::HeartBeat) => Ok(()),
+                Err(e) => Err(e),
+                _ => Ok(()),
+            }
+        } else {
+            assert!(
+                self.daemon_streams_command.is_some(),
+                "No daemon processed connected to this main process!"
+            );
+            self.send_command(&MessageType::HeartBeat)
+        }
     }
 }
 
@@ -176,6 +282,7 @@ pub fn init_subprocess(device_ids: Vec<usize>) -> anyhow::Result<(Id, usize, Dae
         let id = Id::uninit(new_id.0);
 
         let daemon_manager = DaemonManager::connect()?;
+        warn!("Connected to the main process!");
         (id, rank, daemon_manager)
     } else {
         let id = Id::new().unwrap();
@@ -209,7 +316,7 @@ pub fn init_subprocess(device_ids: Vec<usize>) -> anyhow::Result<(Id, usize, Dae
             })
             .collect();
         let daemon_manager = DaemonManager::new(device_ids.len() - 1)?;
-        info!("All workers have received the ids!");
+        warn!("All workers have received the ids!");
         (id, 0, daemon_manager)
     };
     Ok((id, local_rank, daemon_manager))
