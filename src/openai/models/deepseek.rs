@@ -3,9 +3,7 @@ use super::{
     Config, DeepSeekRopeScaling, MoEConfig, QuantConfig, ScoringFunc, SpecificConfig, TokenID,
     TopkMethod,
 };
-use crate::backend::custom_ops::moe::{
-    masked_fill, BincountOp, NonZeroOp, SplitOp, TopKLastDimOp, TopKOutput,
-};
+use crate::backend::custom_ops::moe::{masked_fill, NonZeroOp, SplitOp, TopKLastDimOp, TopKOutput};
 use crate::openai::distributed::{
     embedding, rms_norm, AllReduce, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
@@ -16,10 +14,10 @@ use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::{Activation, Embedding, Module, RmsNorm};
 use serde::Deserialize;
-use std::iter::zip;
+use std::collections::HashSet;
+use std::iter::{zip, FromIterator};
 use std::rc::Rc;
 use std::{f32::consts::PI, sync::Arc};
-
 #[doc(hidden)]
 #[macro_export]
 macro_rules! serde_default_fn {
@@ -809,16 +807,15 @@ impl Moe {
 
     fn moe_infer(&self, xs: &Tensor, topk_ids: &Tensor, topk_weight: &Tensor) -> Result<Tensor> {
         let mut y = xs.zeros_like()?;
-        let counts = topk_ids
-            .flatten_all()?
-            .bincount(self.experts.len() as u32)?;
-        for (i, count) in counts
-            .iter()
-            .enumerate()
-            .take(self.experts_end_idx)
-            .skip(self.experts_start_idx)
-        {
-            if *count == 0 {
+        let topk_weight = if topk_weight.dtype() != xs.dtype() {
+            topk_weight.to_dtype(xs.dtype())?
+        } else {
+            topk_weight.to_owned()
+        };
+        let unique_ids: HashSet<u32> =
+            HashSet::from_iter(topk_ids.to_device(&Device::Cpu)?.flatten_all()?.to_vec1()?);
+        for i in self.experts_start_idx..self.experts_end_idx {
+            if !unique_ids.contains(&(i as u32)) {
                 continue;
             }
             let idx_top = topk_ids.eq(i as f64)?.nonzero()?.t()?.contiguous()?;
@@ -835,8 +832,7 @@ impl Moe {
                         .index_select(idx, 0)?
                         .gather(&top.unsqueeze(1)?, 1)?
                         .squeeze(1)?
-                        .unsqueeze(D::Minus1)?
-                        .to_dtype(xs.dtype())?,
+                        .unsqueeze(D::Minus1)?,
                 )?,
                 0,
             )?;
