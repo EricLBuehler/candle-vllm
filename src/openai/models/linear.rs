@@ -204,47 +204,36 @@ pub fn qlinear(
             };
 
             let scale_and_zero_size = in_dim / (cfg.group_size as usize);
-            let scales = vb.get_with_hints_dtype(
-                (scale_and_zero_size, out_dim),
-                if marlin_format { "s" } else { "scales" },
-                shards,
-                DType::F16,
-            )?;
+            let scales = vb
+                .get_with_hints_dtype(
+                    (scale_and_zero_size, out_dim),
+                    if marlin_format { "s" } else { "scales" },
+                    shards,
+                    DType::F16,
+                )?
+                .to_dtype(dtype)?;
 
-            let scales = if dtype != scales.dtype() {
-                scales.to_dtype(dtype)?
-            } else {
-                scales
-            };
-
-            let in_dim_partition = if shards.world_size > 1 && shards.dim == 0 {
+            let in_dim_partition = if shards.dim == 0 {
                 in_dim / shards.world_size
             } else {
                 in_dim
             };
 
-            let scale_and_zero_size_partition = if shards.world_size > 1 && shards.dim == 0 {
-                scale_and_zero_size / shards.world_size
-            } else {
-                scale_and_zero_size
-            };
-
-            let out_dim_partition = if shards.world_size > 1 && shards.dim == 1 {
+            let out_dim_partition = if shards.dim == 1 {
                 out_dim / shards.world_size
             } else {
                 out_dim
             };
 
             let bs = if bias {
-                let mut bs = vb
-                    .get_with_hints_dtype((out_dim,), "bias", Default::default(), DType::F16)?
+                let bs = vb
+                    .get_with_hints_dtype(
+                        (out_dim,),
+                        "bias",
+                        shard(0, shards.rank, shards.world_size),
+                        DType::F16,
+                    )?
                     .to_dtype(dtype)?;
-                bs = if out_dim_partition < out_dim {
-                    bs.narrow(0, shards.rank * out_dim_partition, out_dim_partition)?
-                        .contiguous()?
-                } else {
-                    bs
-                };
                 Some(bs)
             } else {
                 None
@@ -269,9 +258,7 @@ pub fn qlinear(
                     Default::default(),
                     DType::U32,
                 )?;
-                qzeros = if scale_and_zero_size_partition < scale_and_zero_size
-                    || out_dim_partition < out_dim
-                {
+                qzeros = if shards.world_size > 1 {
                     let dim_size = qzeros.dims()[shards.dim];
                     let start = shards.rank * (dim_size / shards.world_size);
                     qzeros
@@ -282,7 +269,7 @@ pub fn qlinear(
                 };
                 let mut g_idx =
                     vb.get_with_hints_dtype((in_dim,), "g_idx", Default::default(), DType::U32)?;
-                g_idx = if in_dim_partition < in_dim {
+                g_idx = if shards.world_size > 1 {
                     g_idx
                         .narrow(0, shards.rank * in_dim_partition, in_dim_partition)?
                         .contiguous()?

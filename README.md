@@ -49,7 +49,7 @@ See [this folder](examples/) for some examples.
 
 ### Step 1: Start Candle-vLLM service by selecting the running method
 
-Install dependencies
+Install dependencies (Rust compiler `1.83.0+` required)
 ```
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt install libssl-dev -y
