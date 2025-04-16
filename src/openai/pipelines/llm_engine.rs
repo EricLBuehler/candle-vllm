@@ -39,9 +39,9 @@ use std::{
 };
 use tokenizers::Encoding;
 use tokio::sync::Notify;
-#[cfg(feature = "nccl")]
-use tracing::info;
 use tracing::warn;
+#[cfg(feature = "nccl")]
+use tracing::{debug, info};
 #[allow(dead_code)]
 struct PreparedInputs {
     tokens: Tensor,
@@ -125,17 +125,14 @@ impl LLMEngine {
         for rank in 0..num_threads {
             ranks.push(rank);
         }
-        #[cfg(feature = "nccl")]
-        if multi_process || num_shards > 1 {
-            warn!("start llm engine, number of pipeline {}!", num_threads);
-        }
+
         let _ = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
                 loop {
                     #[cfg(feature = "nccl")]
                     if multi_process {
                         if DaemonManager::is_daemon() {
-                            warn!("daemon process wait_task!");
+                            info!("daemon process wait_task!");
                             let message = {
                                 let e = engine.read().unwrap();
                                 let mut daemon_manager = e.daemon_manager.write().unwrap();
@@ -143,7 +140,10 @@ impl LLMEngine {
                             };
                             match message {
                                 Ok(MessageType::Start) => {
-                                    warn!("A start message*****!");
+                                    info!("A start message*****!");
+                                }
+                                Ok(MessageType::Continue) => {
+                                    info!("A continue message before start!");
                                 }
                                 Ok(MessageType::Data(data)) => {
                                     let mut e = engine.write().unwrap();
@@ -157,13 +157,9 @@ impl LLMEngine {
                                     info!("A sample message before start!");
                                     continue;
                                 }
-                                Ok(MessageType::Finish) => {
-                                    info!("A finish message before start!");
+                                Ok(MessageType::Abort(_)) | Ok(MessageType::Finish) | Ok(MessageType::Close) => {
+                                    info!("A abort/finish or close message before start!");
                                     continue;
-                                }
-                                Ok(MessageType::Close) => {
-                                    warn!("A close message*****!");
-                                    break;
                                 }
                                 _=> {
                                     warn!("Invalid message, perhaps the main process is exited!");
@@ -297,14 +293,20 @@ impl LLMEngine {
     }
 
     #[cfg(feature = "nccl")]
-    pub fn sync_process(daemon_manager: &mut DaemonManager, msg_send: MessageType) -> bool {
+    pub fn sync_process(
+        daemon_manager: &mut DaemonManager,
+        msg_send: MessageType,
+    ) -> Option<Vec<usize>> {
         if DaemonManager::is_daemon() {
             info!("waiting sync message!");
             let message = { daemon_manager.receive_message() };
             match message {
+                Ok(MessageType::Abort(ids)) => {
+                    return Some(ids);
+                }
                 Ok(MessageType::Finish) | Ok(MessageType::Close) => {
                     warn!("A abort/finish or close message!");
-                    return false;
+                    return Some(Vec::<usize>::new());
                 }
                 Ok(MessageType::Continue) => {
                     info!("continue message!");
@@ -320,7 +322,7 @@ impl LLMEngine {
         } else {
             let _ = daemon_manager.send_message(&msg_send);
         }
-        return true;
+        return None;
     }
 
     pub fn generate_once(
@@ -333,6 +335,7 @@ impl LLMEngine {
         let mut prompt_finish_times = HashMap::<usize, SystemTime>::new();
         #[cfg(feature = "nccl")]
         {
+            warn!("Start processing...");
             let e = engine.read().unwrap();
             let (pipeline, _) = e.get_pipeline(rank).unwrap();
             let device = pipeline.device();
@@ -506,9 +509,11 @@ impl LLMEngine {
                             );
                             let ret = sender.send(ChatResponse::Chunk(chunk));
                             if ret.is_err() {
-                                println!("Send stream response error!");
-                                seq.deref_mut().set_finish_reason("Abort".to_string());
-                                break;
+                                println!(
+                                    "Send stream response error! (sequence id {})",
+                                    seq.deref().get_id()
+                                );
+                                seq.deref_mut().set_finish_reason("abort".to_string());
                             }
                         };
                         seq.deref_mut().add_token(logprobs);
@@ -540,6 +545,7 @@ impl LLMEngine {
                 e.scheduler.free_finished_sequence_groups();
             }
 
+            let mut aborted_sequences: Vec<usize> = Vec::new();
             for group in scheduled.iter() {
                 if group.is_finished() && !responses.contains_key(&group.request_id) {
                     let end_time = SystemTime::now();
@@ -568,7 +574,19 @@ impl LLMEngine {
                     let top_n = seqs.get(0..group.sampling_params.n).unwrap();
 
                     let mut choices = Vec::new();
-                    if group.sender.is_none() {
+
+                    let do_sync_response = {
+                        #[cfg(feature = "nccl")]
+                        if multi_process && DaemonManager::is_daemon() {
+                            false
+                        } else {
+                            group.sender.is_none()
+                        }
+                        #[cfg(not(feature = "nccl"))]
+                        group.sender.is_none()
+                    };
+
+                    if do_sync_response {
                         let e = engine.read().unwrap();
                         for (index, seq) in top_n.iter().enumerate() {
                             let outputs = seq.deref_mut().get_output_tokens();
@@ -623,7 +641,16 @@ impl LLMEngine {
                     responses.insert(group.request_id.clone(), (choices, usage));
 
                     if let Some(sender) = &group.sender {
-                        let _ = sender.send(ChatResponse::Done);
+                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        if seq.deref().get_finish_reason() != "abort" {
+                            warn!(
+                                "Sending completion message to client! (sequence id {})",
+                                seq.deref().get_id()
+                            );
+                            let _ = sender.send(ChatResponse::Done);
+                        } else {
+                            aborted_sequences.push(seq.deref().get_id());
+                        }
                     };
                 }
             }
@@ -631,12 +658,45 @@ impl LLMEngine {
             #[cfg(feature = "nccl")]
             if multi_process {
                 let mut e = engine.write().unwrap();
-                if e.scheduler.has_unfinished_sequences() {
+                if !DaemonManager::is_daemon() {
+                    if aborted_sequences.len() > 0 {
+                        warn!(
+                            "Sending abort message ({} sequence(s)) to subprocesses!",
+                            aborted_sequences.len()
+                        );
+                    }
                     let mut daemon_manager = e.daemon_manager.write().unwrap();
-                    if !Self::sync_process(daemon_manager.as_mut().unwrap(), MessageType::Continue)
-                    {
-                        let seq = scheduled[0].get_seqs().values().nth(0).unwrap();
-                        seq.deref_mut().set_finish_reason("Abort".to_string());
+                    let _ = daemon_manager
+                        .as_mut()
+                        .unwrap()
+                        .send_message(&if aborted_sequences.len() > 0 {
+                            MessageType::Abort(aborted_sequences)
+                        } else {
+                            MessageType::Continue
+                        });
+                } else {
+                    if e.scheduler.has_unfinished_sequences() {
+                        let mut daemon_manager = e.daemon_manager.write().unwrap();
+                        match Self::sync_process(
+                            daemon_manager.as_mut().unwrap(),
+                            MessageType::Continue,
+                        ) {
+                            Some(ids) => {
+                                for group in scheduled.iter() {
+                                    let seq = group.get_seqs().values().nth(0).unwrap();
+                                    if ids.is_empty() || ids.contains(&seq.deref().get_id()) {
+                                        seq.deref_mut().set_finish_reason("abort".to_string());
+                                        warn!(
+                                            "abort sequence ({}) in subprocess!",
+                                            seq.deref().get_id()
+                                        );
+                                    }
+                                }
+                            }
+                            _ => {
+                                debug!("sync continue message -> continue!");
+                            }
+                        }
                     }
                 }
                 e.scheduler.free_finished_sequence_groups();

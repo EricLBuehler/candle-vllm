@@ -57,6 +57,7 @@ pub enum MessageType {
     Data(Vec<TaskData>),
     Sample(Vec<TaskSampleData>),
     Continue,
+    Abort(Vec<usize>),
     Finish,
     HeartBeat,
     Close,
@@ -203,7 +204,7 @@ impl DaemonManager {
             let mut streams = Vec::with_capacity(num_subprocess);
             for _ in 0..num_subprocess {
                 let stream = listener.accept()?;
-                warn!("accept one daemon process!");
+                info!("accept one daemon process!");
                 streams.push(stream);
             }
 
