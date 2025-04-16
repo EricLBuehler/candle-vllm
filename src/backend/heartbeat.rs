@@ -1,6 +1,6 @@
 use crate::openai::communicator::DaemonManager;
 use std::{process, thread, time};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 pub async fn heartbeat_worker(num_subprocess: Option<usize>) {
     let _ = thread::spawn(move || {
         let mut connect_retry_count = 0;
@@ -28,7 +28,7 @@ pub async fn heartbeat_worker(num_subprocess: Option<usize>) {
         } else {
             DaemonManager::new_command("heartbeat", num_subprocess)
         };
-        warn!("enter heartbeat processing loop ({:?})", command_manager);
+        info!("enter heartbeat processing loop ({:?})", command_manager);
         loop {
             let alive_result = command_manager.as_mut().unwrap().heartbeat();
             if alive_result.is_err() {
@@ -42,7 +42,7 @@ pub async fn heartbeat_worker(num_subprocess: Option<usize>) {
                 }
                 heartbeat_error_count += 1;
             } else {
-                info!("paired processes still alive!");
+                debug!("paired processes still alive!");
             }
             let _ = thread::sleep(time::Duration::from_millis(1000 as u64));
         }
