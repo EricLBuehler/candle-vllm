@@ -52,11 +52,15 @@ impl Progress {
         for i in 0..n {
             let pb = m.add(ProgressBar::new(size as u64));
             pb.set_style(sty.clone());
-            pb.set_message(format!("On Rank {} Device", i));
+            if n > 1 {
+                pb.set_message(format!("On Rank {} Device", i));
+            }
             bars.push(pb);
         }
 
-        m.println(format!("Loading model in {} ranks!", n)).unwrap();
+        if n > 1 {
+            m.println(format!("Loading model in {} ranks!", n)).unwrap();
+        }
         Self { m, bars, size }
     }
 
@@ -64,7 +68,9 @@ impl Progress {
         if idx < self.bars.len() && progress > 0 {
             let pos = self.bars[idx].position();
             self.bars[idx].inc(progress as u64 - pos);
-            self.bars[idx].set_message(format!("On Rank {} Device", idx));
+            if self.bars.len() > 1 {
+                self.bars[idx].set_message(format!("On Rank {} Device", idx));
+            }
         }
     }
 
@@ -72,7 +78,9 @@ impl Progress {
         for idx in 0..self.bars.len() {
             let pos = self.bars[idx].position();
             self.bars[idx].inc(self.size as u64 - pos);
-            self.bars[idx].set_message(format!("On Rank {} Device Finished", idx));
+            if self.bars.len() > 1 {
+                self.bars[idx].set_message(format!("On Rank {} Device Finished", idx));
+            }
         }
         self.m.clear().unwrap();
     }
