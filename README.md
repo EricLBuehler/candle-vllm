@@ -40,11 +40,33 @@ Currently, candle-vllm supports chat serving for the following models.
 | #15 | **QwQ-32B (GGUF)** |✅|TBD|TBD |36 tks/s (Q4K)|TBD|
 
 
+## General Usage
+
+[`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`MODEL_TYPE`] [`MODEL_PARAM`]
+
+**Example:**
+```shell
+[RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "2,3"] [--weight-path /home/weights/QwQ32B-GPTQ-4Bit] [llama3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95]
+```
+
+`ENV_PARAM`: RUST_LOG=warn
+
+`BUILD_PARAM`: --release --features cuda,nccl
+
+`PROGRAM_PARAM`：--multi-process --log --dtype bf16 --port 2000 --device-ids "2,3"
+
+`MODEL_WEIGHT_PATH`: --weight-path /home/weights/QwQ32B-GPTQ-4Bit
+
+`MODEL_TYPE`: llama3
+
+`MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95
+
 ## Demo Chat with candle-vllm (~110 tokens/s, LLaMa3.1 8B, 4-bit Marlin, on A100)
 
 https://github.com/user-attachments/assets/66b5b90e-e2ca-4f0b-82d7-99aa9f85568c
 
-## Usage
+## Detailed Usage
+
 See [this folder](examples/) for some examples.
 
 ### Step 1: Start Candle-vLLM service by selecting the running method

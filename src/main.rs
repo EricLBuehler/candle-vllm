@@ -11,7 +11,7 @@ use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::pipelines::pipeline::DefaultModelPaths;
 use candle_vllm::openai::responses::APIError;
 use candle_vllm::openai::OpenAIServerData;
-use candle_vllm::scheduler::cache_engine::CacheConfig;
+use candle_vllm::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm::scheduler::SchedulerConfig;
 use candle_vllm::{get_model_loader, hub_load_local_safetensors, ModelSelected};
 use clap::Parser;
@@ -96,6 +96,9 @@ struct Args {
     //Whether the program running in multiprocess or multithread model for parallel inference
     #[arg(long, default_value_t = false)]
     multi_process: bool,
+
+    #[arg(long, default_value_t = false)]
+    log: bool,
 }
 
 fn get_cache_config(
@@ -127,6 +130,42 @@ fn get_cache_config(
         fully_init: true,
         dtype: config.kv_cache_dtype,
     }
+}
+
+fn config_log(
+    logger: ftail::Ftail,
+    log_enable: bool,
+    log_file: String,
+) -> Result<(), ftail::error::FtailError> {
+    if !log_enable {
+        return Ok(());
+    }
+    use tracing::log::LevelFilter;
+    let mut cfg_filter = LevelFilter::Warn;
+    if let Ok(level) = std::env::var("RUST_LOG") {
+        let log_level_names: [&str; 6] = ["OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+        let log_levels: [LevelFilter; 6] = [
+            LevelFilter::Off,
+            LevelFilter::Error,
+            LevelFilter::Warn,
+            LevelFilter::Info,
+            LevelFilter::Debug,
+            LevelFilter::Trace,
+        ];
+        let level = level.to_uppercase();
+        for (i, name) in log_level_names.to_vec().into_iter().enumerate() {
+            if level.find(name).is_some() {
+                cfg_filter = log_levels[i]
+            }
+        }
+    };
+    if std::fs::exists(&log_file).is_ok() {
+        let _ = std::fs::remove_file(&log_file);
+    }
+    logger
+        .console(cfg_filter)
+        .single_file(log_file.as_str(), true, cfg_filter)
+        .init()
 }
 
 #[tokio::main]
@@ -216,16 +255,14 @@ async fn main() -> Result<(), APIError> {
         Some(ids) => ids,
         _ => vec![0usize],
     };
-    use candle_vllm::scheduler::cache_engine::CacheEngine;
     let num_shards = device_ids.len();
     #[cfg(not(feature = "nccl"))]
     assert!(
         num_shards == 1,
         "More than one shard was given, but NCCL is not enabled for parallel inference!"
     );
-    let mut port = args.port;
-    #[cfg(feature = "nccl")]
     let logger = ftail::Ftail::new();
+    let mut port = args.port;
     #[cfg(feature = "nccl")]
     let ((default_pipelines, pipeline_config), daemon_manager) = if args.multi_process {
         use candle_vllm::openai::communicator::init_subprocess;
@@ -234,15 +271,8 @@ async fn main() -> Result<(), APIError> {
             port = port + 1; //processes other than rank 0 use fake server port since they do not perform response
         }
 
-        logger
-            .console(tracing::log::LevelFilter::Warn)
-            .single_file(
-                format!("candle-vllm-rank-{}.log", rank).as_str(),
-                true,
-                tracing::log::LevelFilter::Warn,
-            )
-            .init()
-            .unwrap();
+        let log_file = format!("candle-vllm-rank-{}.log", rank);
+        let _ = config_log(logger, args.log, log_file);
 
         warn!("subprocess rank {} started!", rank);
         heartbeat::heartbeat_worker(Some(num_shards - 1)).await;
@@ -262,6 +292,8 @@ async fn main() -> Result<(), APIError> {
             Some(daemon_manager),
         )
     } else {
+        let log_file = format!("candle-vllm-{}ranks.log", device_ids.len());
+        let _ = config_log(logger, args.log, log_file);
         (
             loader
                 .load_model(paths, dtype, &quant, device_ids, None, None, None)
@@ -281,9 +313,13 @@ async fn main() -> Result<(), APIError> {
     );
 
     #[cfg(not(feature = "nccl"))]
-    let (default_pipelines, pipeline_config) = loader
-        .load_model(paths, dtype, &quant, device_ids, None, None)
-        .await?;
+    let (default_pipelines, pipeline_config) = {
+        let log_file = format!("candle-vllm.log");
+        let _ = config_log(logger, args.log, log_file);
+        loader
+            .load_model(paths, dtype, &quant, device_ids, None, None)
+            .await?
+    };
 
     let mut config: Option<Config> = None;
     let mut cache_config: Option<CacheConfig> = None;

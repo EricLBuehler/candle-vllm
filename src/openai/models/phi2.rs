@@ -1,4 +1,5 @@
 use super::{Config, QuantConfig};
+use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, layer_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
@@ -12,7 +13,7 @@ use candle_nn::{Activation, Embedding, LayerNorm};
 use serde::Deserialize;
 use std::iter::zip;
 use std::rc::Rc;
-
+use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, Deserialize)]
 pub struct Phi2Config {
     pub vocab_size: usize,
@@ -380,6 +381,7 @@ impl Phi2 {
         _dtype: DType,
         device: &Device,
         comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
@@ -391,9 +393,11 @@ impl Phi2 {
         )?;
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_m = vb_m.pp("layers");
+        let reporter = progress_reporter.clone();
         for layer_idx in 0..cfg.num_hidden_layers {
             let layer = DecoderLayer::new(cfg, vb_m.pp(layer_idx), comm.clone())?;
-            layers.push(layer)
+            layers.push(layer);
+            reporter.write().unwrap().set_progress(layer_idx);
         }
         let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,

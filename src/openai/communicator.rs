@@ -59,7 +59,8 @@ pub enum MessageType {
     Continue,
     Abort(Vec<usize>),
     Finish,
-    HeartBeat,
+    HeartBeat,                //command channel
+    Progress((usize, usize)), //command channel
     Close,
 }
 
@@ -271,8 +272,52 @@ impl DaemonManager {
             self.send_command(&MessageType::HeartBeat)
         }
     }
+
+    //This will block the callers
+    pub fn progress(
+        &mut self,
+        progress: Option<(usize, usize)>,
+    ) -> std::io::Result<Option<Vec<(usize, usize)>>> {
+        if DaemonManager::is_daemon() {
+            assert!(
+                self.main_stream_command.is_some() && progress.is_some(),
+                "Current daemon process is not connected to the main process!"
+            );
+            let stream = self.main_stream_command.as_mut().unwrap();
+            let message = MessageType::Progress(progress.unwrap());
+            let serialized = bincode::serialize(&message).expect("Serialization failed");
+            stream.write_all(&(serialized.len() as u32).to_le_bytes())?;
+            stream.write_all(&serialized)?;
+            stream.flush()?; // Ensure data is sent immediately
+                             // Wait for acknowledgment
+            let mut ack_buf = [0u8; 1];
+            if let Err(e) = stream.read_exact(&mut ack_buf) {
+                info!(
+                    "Timeout waiting for acknowledgment from subprocess: {:?}",
+                    e
+                );
+            } else if ack_buf[0] != 1 {
+                info!("Unexpected acknowledgment value from subprocess");
+            }
+            Ok(None)
+        } else {
+            assert!(
+                self.daemon_streams_command.is_some(),
+                "No daemon processed connected to this main process!"
+            );
+            let mut ret = Vec::<(usize, usize)>::new();
+            for i in 0..self.daemon_streams_command.as_ref().unwrap().len() {
+                let streams = self.daemon_streams_command.as_mut().unwrap();
+                if let Ok(MessageType::Progress((r, p))) = DaemonManager::receive(&mut streams[i]) {
+                    ret.push((r, p));
+                }
+            }
+            Ok(Some(ret))
+        }
+    }
 }
 
+#[allow(unused_variables)]
 pub fn init_subprocess(device_ids: Vec<usize>) -> anyhow::Result<(Id, usize, DaemonManager)> {
     let (id, local_rank, daemon_manager) = if let Ok(payload) = env::var(DAEMON_PAYLOAD) {
         let payload: RankData = serde_json::from_str(&payload)?;
@@ -308,7 +353,10 @@ pub fn init_subprocess(device_ids: Vec<usize>) -> anyhow::Result<(Id, usize, Dae
                 };
 
                 cmd.env(DAEMON_PAYLOAD, serde_json::to_string(&data).unwrap());
-                cmd.env("RUST_LOG", "info,warn");
+                cmd.env(
+                    "RUST_LOG",
+                    std::env::var("RUST_LOG").unwrap_or("warn".to_string()),
+                );
 
                 cmd.stdout(std::process::Stdio::null());
                 cmd.stderr(std::process::Stdio::null());

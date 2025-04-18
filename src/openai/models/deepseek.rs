@@ -4,6 +4,7 @@ use super::{
     TopkMethod,
 };
 use crate::backend::custom_ops::moe::{masked_fill, NonZeroOp, SplitOp, TopKLastDimOp, TopKOutput};
+use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, AllReduce, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
@@ -15,9 +16,10 @@ use candle_core as candle;
 use candle_nn::{Activation, Embedding, Module, RmsNorm};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::f32::consts::PI;
 use std::iter::{zip, FromIterator};
 use std::rc::Rc;
-use std::{f32::consts::PI, sync::Arc};
+use std::sync::{Arc, RwLock};
 #[doc(hidden)]
 #[macro_export]
 macro_rules! serde_default_fn {
@@ -960,10 +962,12 @@ impl DeepSeek {
         dtype: DType,
         device: &Device,
         comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
+        let reporter = progress_reporter.clone();
         let lm_head = if !cfg.tie_word_embeddings {
             ReplicatedLinear::load_no_bias(
                 cfg.hidden_size,
@@ -995,7 +999,8 @@ impl DeepSeek {
                 layer_idx,
                 comm.clone(),
             )?;
-            layers.push(layer)
+            layers.push(layer);
+            reporter.write().unwrap().set_progress(layer_idx);
         }
 
         Ok(Self {

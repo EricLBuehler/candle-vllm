@@ -1,4 +1,5 @@
 use super::Config;
+use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
@@ -8,6 +9,7 @@ use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_nn::{Embedding, RmsNorm};
 use either::Either;
 use std::iter::zip;
+use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone)]
 struct QLinear {
     inner: candle_core::quantized::QMatMul,
@@ -238,17 +240,27 @@ impl GGUFPhi3 {
         }
     }
 
+    pub fn get_num_of_layers(ct: gguf_file::Content) -> Result<usize> {
+        let md_get = |s: &str| match ct.metadata.get(s) {
+            None => candle_core::bail!("cannot find {s} in metadata"),
+            Some(v) => Ok(v),
+        };
+        Ok(md_get("phi3.block_count")?.to_u32()? as usize)
+    }
+
     pub fn from_gguf<R: std::io::Seek + std::io::Read>(
         ct: gguf_file::Content,
         reader: &mut R,
         device: &Device,
         dtype: DType,
         s_cfg: SpecificConfig,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
             Some(v) => Ok(v),
         };
+        let reporter = progress_reporter.clone();
 
         // Parameter extraction from metadata.
         let head_count = md_get("phi3.attention.head_count")?.to_u32()? as usize;
@@ -306,7 +318,8 @@ impl GGUFPhi3 {
                     None,
                 )?,
                 dtype,
-            })
+            });
+            reporter.write().unwrap().set_progress(layer_idx);
         }
         Ok(Self {
             tok_embeddings: Embedding::new(tok_embeddings, embedding_length),
