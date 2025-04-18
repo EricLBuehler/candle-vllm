@@ -373,6 +373,8 @@ async fn main() -> Result<(), APIError> {
         daemon_manager,
     )?;
 
+    let max_model_len = pipeline_config.max_model_len;
+    let kvcached_tokens = cache_config.num_gpu_blocks.unwrap() * cache_config.block_size;
     let server_data = OpenAIServerData {
         pipeline_config,
         model: llm_engine,
@@ -381,7 +383,15 @@ async fn main() -> Result<(), APIError> {
         finish_notify: finish_notify.clone(),
     };
 
-    println!("Server started at http://127.0.0.1:{}.", args.port);
+    println!("\nMaximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):");
+    for batch in [1, 8, 16, 32, 64, 128] {
+        println!(
+            "-> Batch {}: {}",
+            batch,
+            std::cmp::min(kvcached_tokens / batch, max_model_len)
+        );
+    }
+    println!("\nServer started at http://127.0.0.1:{}.", args.port);
 
     let allow_origin = AllowOrigin::any();
     let cors_layer = CorsLayer::new()
