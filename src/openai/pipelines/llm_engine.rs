@@ -298,7 +298,7 @@ impl LLMEngine {
         msg_send: MessageType,
     ) -> Option<Vec<usize>> {
         if DaemonManager::is_daemon() {
-            info!("waiting sync message!");
+            debug!("waiting sync message!");
             let message = { daemon_manager.receive_message() };
             match message {
                 Ok(MessageType::Abort(ids)) => {
@@ -309,7 +309,7 @@ impl LLMEngine {
                     return Some(Vec::<usize>::new());
                 }
                 Ok(MessageType::Continue) => {
-                    info!("continue message!");
+                    debug!("continue message!");
                 }
                 Ok(MessageType::Start) | Ok(MessageType::Data(_)) | Ok(MessageType::Sample(_)) => {
                     info!("other message!");
@@ -463,7 +463,7 @@ impl LLMEngine {
                                     }
                                 }
                             }
-                            info!("generate_once: received sample");
+                            debug!("generate_once: received sample");
                             Some(logprobs)
                         }
                         _ => {

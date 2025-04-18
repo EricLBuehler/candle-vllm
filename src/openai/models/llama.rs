@@ -10,10 +10,11 @@ use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Embedding, Module, RmsNorm};
 pub const MAX_SEQ_LEN: usize = 4096;
+use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::models::TokenID;
 use std::iter::zip;
 pub use std::rc::Rc;
-
+use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct LlamaConfig {
     pub hidden_size: usize,
@@ -433,6 +434,7 @@ impl Llama {
         dtype: DType,
         device: &Device,
         comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let wte = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
         let lm_head = ReplicatedLinear::load_no_bias(
@@ -444,16 +446,19 @@ impl Llama {
         )?;
 
         let ln_f = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
+        let reporter = progress_reporter.clone();
         let blocks: Vec<_> = (0..cfg.num_hidden_layers)
             .map(|i| {
-                Block::load(
+                let b = Block::load(
                     vb.pp(&format!("model.layers.{i}")),
                     cfg,
                     dtype,
                     device,
                     comm.clone(),
                 )
-                .unwrap()
+                .unwrap();
+                reporter.write().unwrap().set_progress(i);
+                b
             })
             .collect();
 

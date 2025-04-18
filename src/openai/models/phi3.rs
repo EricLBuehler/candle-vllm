@@ -1,6 +1,7 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
 use super::{Config, QuantConfig, RopeScaling};
+use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
@@ -16,8 +17,7 @@ use either::Either;
 use std::collections::HashMap;
 use std::iter::zip;
 use std::rc::Rc;
-use std::sync::Arc;
-
+use std::sync::{Arc, RwLock};
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct PhiConfig {
     pub vocab_size: usize,
@@ -483,16 +483,19 @@ impl Phi {
         dtype: DType,
         device: &Device,
         comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(dtype, cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
+        let reporter = progress_reporter.clone();
         for layer_idx in 0..cfg.num_hidden_layers {
             let layer =
                 DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), comm.clone())?;
-            layers.push(layer)
+            layers.push(layer);
+            reporter.write().unwrap().set_progress(layer_idx);
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
         let lm_head = ReplicatedLinear::load_no_bias(
