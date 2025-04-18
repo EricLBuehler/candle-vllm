@@ -46,20 +46,22 @@ Currently, candle-vllm supports chat serving for the following models.
 
 **Example:**
 ```shell
-[RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "2,3"] [--weight-path /home/weights/QwQ32B-GPTQ-4Bit] [llama3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95]
+[RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192] [--weight-path /home/weights/QwQ32B-GPTQ-4Bit] [qwen2] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95]
 ```
 
 `ENV_PARAM`: RUST_LOG=warn
 
 `BUILD_PARAM`: --release --features cuda,nccl
 
-`PROGRAM_PARAM`：--multi-process --log --dtype bf16 --port 2000 --device-ids "2,3"
+`PROGRAM_PARAM`：--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192
 
 `MODEL_WEIGHT_PATH`: --weight-path /home/weights/QwQ32B-GPTQ-4Bit
 
-`MODEL_TYPE`: llama3
+`MODEL_TYPE`: qwen2
 
 `MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95
+
+where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm", "deep-seek"]
 
 ## Demo Chat with candle-vllm (~110 tokens/s, LLaMa3.1 8B, 4-bit Marlin, on A100)
 
