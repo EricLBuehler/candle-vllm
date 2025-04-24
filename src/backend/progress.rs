@@ -1,6 +1,7 @@
 #[cfg(feature = "nccl")]
 use crate::openai::communicator::DaemonManager;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::{thread, time};
 
@@ -69,7 +70,11 @@ impl Progress {
             let pos = self.bars[idx].position();
             self.bars[idx].inc(progress as u64 - pos);
             if self.bars.len() > 1 {
-                self.bars[idx].set_message(format!("On Rank {} Device", idx));
+                if progress >= self.size {
+                    self.bars[idx].set_message(format!("On Rank {} Device Finished", idx));
+                } else {
+                    self.bars[idx].set_message(format!("On Rank {} Device", idx));
+                }
             }
         }
     }
@@ -91,11 +96,12 @@ pub async fn progress_worker(
     num_subprocess: Option<usize>,
     length: usize,
     progress_reporter: Arc<RwLock<ProgressReporter>>,
-) {
+) -> std::thread::JoinHandle<()> {
     #[cfg(feature = "nccl")]
     use tracing::{debug, warn};
+    let mut finished_map = HashMap::<usize, usize>::new();
     let reporter = progress_reporter.clone();
-    let _ = thread::spawn(move || {
+    let handle = thread::spawn(move || {
         #[cfg(feature = "nccl")]
         let mut connect_retry_count = 0;
         #[cfg(feature = "nccl")]
@@ -133,6 +139,7 @@ pub async fn progress_worker(
         loop {
             {
                 let (rank, progress) = reporter.read().unwrap().get_progress();
+                finished_map.insert(rank, progress);
                 #[cfg(feature = "nccl")]
                 if DaemonManager::is_daemon() {
                     //report progress to main process
@@ -146,6 +153,7 @@ pub async fn progress_worker(
                     if let Ok(Some(progresses)) = command_manager.as_mut().unwrap().progress(None) {
                         for (rank, progress) in progresses {
                             progress_bar.as_ref().unwrap().update(rank, progress); //for other ranks
+                            finished_map.insert(rank, progress);
                             debug!("rank {} progress {}", rank, progress);
                         }
                     }
@@ -154,18 +162,27 @@ pub async fn progress_worker(
                 #[cfg(not(feature = "nccl"))]
                 progress_bar.as_ref().unwrap().update(rank, progress);
 
-                if progress >= length - 1 {
+                if progress >= length {
                     #[cfg(not(feature = "nccl"))]
-                    progress_bar.as_ref().unwrap().finish();
+                    {
+                        progress_bar.as_ref().unwrap().finish();
+                        break;
+                    }
                     #[cfg(feature = "nccl")]
                     if !DaemonManager::is_daemon() {
-                        progress_bar.as_ref().unwrap().finish();
+                        if finished_map.len() < 2 || finished_map.values().all(|v| v == &length) {
+                            progress_bar.as_ref().unwrap().finish();
+                            warn!("all ranks finished model loading!");
+                            break;
+                        }
+                    } else {
+                        break;
                     }
-                    break;
                 }
             }
 
             let _ = thread::sleep(time::Duration::from_millis(500 as u64));
         }
     });
+    handle
 }

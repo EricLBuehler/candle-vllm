@@ -397,7 +397,7 @@ impl Phi2 {
         for layer_idx in 0..cfg.num_hidden_layers {
             let layer = DecoderLayer::new(cfg, vb_m.pp(layer_idx), comm.clone())?;
             layers.push(layer);
-            reporter.write().unwrap().set_progress(layer_idx);
+            reporter.write().unwrap().set_progress(layer_idx + 1);
         }
         let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,

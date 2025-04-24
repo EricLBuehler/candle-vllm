@@ -408,7 +408,7 @@ impl Yi {
             let layer =
                 DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), comm.clone())?;
             layers.push(layer);
-            reporter.write().unwrap().set_progress(layer_idx);
+            reporter.write().unwrap().set_progress(layer_idx + 1);
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
 

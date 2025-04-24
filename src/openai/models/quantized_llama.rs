@@ -497,7 +497,7 @@ impl GGUFLLaMa {
                 )?,
                 dtype,
             });
-            reporter.write().unwrap().set_progress(layer_idx);
+            reporter.write().unwrap().set_progress(layer_idx + 1);
         }
         Ok(Self {
             tok_embeddings: Embedding::new(tok_embeddings, embedding_length),
