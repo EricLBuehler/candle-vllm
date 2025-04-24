@@ -1000,7 +1000,7 @@ impl DeepSeek {
                 comm.clone(),
             )?;
             layers.push(layer);
-            reporter.write().unwrap().set_progress(layer_idx);
+            reporter.write().unwrap().set_progress(layer_idx + 1);
         }
 
         Ok(Self {

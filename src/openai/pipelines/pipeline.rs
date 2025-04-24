@@ -188,7 +188,7 @@ impl DefaultLoader {
                 );
                 let mut file = try_api!(std::fs::File::open(&path.clone()));
                 let s_cfg = specific_args.clone();
-                {
+                let nlayers = {
                     let content =
                         try_api!(gguf_file::Content::read(&mut file)
                             .map_err(|e| e.with_path(path.clone())));
@@ -198,15 +198,14 @@ impl DefaultLoader {
                         "qwen2" => GGUFQWen2::get_num_of_layers(content),
                         _ => panic!("Model not supported!"),
                     };
-                    if nlayers.is_ok() {
-                        progress_worker(
-                            Some(num_subprogress as usize),
-                            nlayers.unwrap(),
-                            Arc::clone(&reporter),
-                        )
-                        .await;
-                    }
+                    nlayers.unwrap()
                 };
+                let handle = progress_worker(
+                    Some(num_subprogress as usize),
+                    nlayers,
+                    Arc::clone(&reporter),
+                )
+                .await;
                 let content = try_api!(
                     gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
                 );
@@ -261,6 +260,7 @@ impl DefaultLoader {
                     }
                     _ => panic!("Model not supported!"),
                 };
+                handle.join().unwrap();
                 (vec![model], vec![device], config.to_owned(), sep_style)
             } else {
                 let config = match self.name.as_str() {
@@ -325,7 +325,7 @@ impl DefaultLoader {
                 println!("Model {:?}", config);
 
                 println!("Loading {} model.", self.name);
-                progress_worker(
+                let handle = progress_worker(
                     Some(num_subprogress as usize),
                     config.num_hidden_layers,
                     Arc::clone(&reporter),
@@ -505,6 +505,7 @@ impl DefaultLoader {
                     })
                     .collect();
 
+                handle.join().unwrap();
                 // Separate devices and models from the results
                 let mut devices = Vec::new();
                 let mut models = Vec::new();

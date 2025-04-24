@@ -457,7 +457,7 @@ impl Llama {
                     comm.clone(),
                 )
                 .unwrap();
-                reporter.write().unwrap().set_progress(i);
+                reporter.write().unwrap().set_progress(i + 1);
                 b
             })
             .collect();

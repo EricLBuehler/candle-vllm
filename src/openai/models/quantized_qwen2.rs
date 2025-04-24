@@ -319,7 +319,7 @@ impl GGUFQWen2 {
                 )?,
                 dtype,
             });
-            reporter.write().unwrap().set_progress(layer_idx);
+            reporter.write().unwrap().set_progress(layer_idx + 1);
         }
 
         Ok(Self {
