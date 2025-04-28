@@ -74,12 +74,17 @@ See [this folder](examples/) for some examples.
 ### Step 1: Start Candle-vLLM service by selecting the running method
 
 Install dependencies (Rust compiler `1.83.0+` required)
-```
+```shell
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 sudo apt install libssl-dev -y
 sudo apt install pkg-config -y
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
+```
+
+**Make sure the CUDA Toolkit is correctly configured:**
+```shell
+export PATH=$PATH:/usr/local/cuda/bin/
 ```
 
 Run **Uncompressed** models
@@ -102,6 +107,12 @@ Run **Marlin-format models**,
 ```shell
 # If you have Marlin-format model, run it with (--quant marlin)
 cargo run --release --features cuda -- --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/ qwen2 --quant marlin --penalty 1.0 --temperature 0.
+```
+
+Run **Marlin-compatible AWQ models**,
+```shell
+python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
+cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
 ```
 
 You may also run specific model using **Huggingface model-id**, e.g.,
@@ -152,6 +163,14 @@ If you encountered problems under Multi-GPU settings (especially on Multi-thread
 export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
 ```
 **Note:** number of GPUs used must be aligned to 2^n (e.g., 2, 4, or 8).
+
+
+Run **DeepSeek-R1 (685B) on Lower GPU Memory Setups**, e.g., `8 x A100(48GB)`
+
+```
+RUST_LOG=warn cargo run --release --features cuda,nccl -- --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --model-id cognitivecomputations/DeepSeek-R1-awq deep-seek --quant awq --temperature 0. --penalty 1.0 --num-experts-offload-per-rank 10
+```
+**Note:** This setup offloads 10 experts per rank (a total of 80 out of 256 experts) to the CPU (around 120GB additional host memory required). During inference, these offloaded experts are swapped back into GPU memory as needed. If you have even less GPU memory, consider increasing the `--num-experts-offload-per-rank` parameter (up to a maximum of 32 experts per rank in this case).
 
 ### Step 2:
 #### Option 1: Chat with Chat.py (for simple tests)
@@ -312,19 +331,25 @@ async def benchmark():
 asyncio.run(benchmark())
 ```
 
-## GPTQ/Marlin 4-bit quantization
-Candle-vllm now supports GPTQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
+## GPTQ/AWQ/Marlin 4-bit quantization
+Candle-vllm now supports GPTQ/AWQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
 
-```
+```shell
 cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
 ```
+or, convert existing AWQ 4bit model to marlin compatible format
+```shell
+python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
+cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
+```
+
 You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 
 
-**Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment, and the input data type should be `bf16` (--dtype bf16) or `f16` (--dtype f16). 
+**Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment. 
 
 ## In-situ quantization (or in-situ marlin conversion)
 
-Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) or `4-bit GPTQ` weights into any GGML format (or `marlin format`) during model loading. This feature helps conserve GPU memory (or speedup inference performance through marlin kernel), making it more efficient for consumer-grade GPUs (e.g., RTX 4090). To use this feature, simply supply the quant parameter when running candle-vllm.
+Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) or `4-bit GPTQ/AWQ` weights into any GGML format (or `marlin format`) during model loading. This feature helps conserve GPU memory (or speedup inference performance through marlin kernel), making it more efficient for consumer-grade GPUs (e.g., RTX 4090). To use this feature, simply supply the quant parameter when running candle-vllm.
 
 For unquantized models:
 
@@ -338,13 +363,13 @@ For quantized 4-bit GPTQ model:
 cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
 ```
 
-Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml"]
+Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml", "gptq", "awq"]
 
 **Please note**:
 
 1) It may takes few minutes to load F32/F16/BF16 models into quantized;
 
-2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`);
+2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`) and 4-bit AWQ (after conversion using the given script);
 
 3) Marlin format only supported in CUDA platform.
 

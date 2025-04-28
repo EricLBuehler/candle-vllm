@@ -255,6 +255,13 @@ pub enum ModelSelected {
 
         #[arg(long)]
         quant: Option<String>,
+
+        //the number of experts offloaded per rank,
+        //suppose there are 256 experts in total which split into 8 devices (rank 8),
+        //each rank has 32 experts, num-experts-offload-per-rank=16 means
+        //half of the experts can be offloaded to cpu memory
+        #[arg(long)]
+        num_experts_offload_per_rank: Option<usize>,
     },
 }
 
@@ -300,6 +307,7 @@ pub struct SpecificConfig {
     penalty: Option<f32>,
     max_gen_tokens: Option<usize>,
     quant: Option<String>,
+    num_experts_offload_per_rank: Option<usize>,
 }
 
 impl SpecificConfig {
@@ -311,6 +319,7 @@ impl SpecificConfig {
         penalty: Option<f32>,
         max_gen_tokens: Option<usize>,
         quant: Option<String>,
+        num_experts_offload_per_rank: Option<usize>,
     ) -> Self {
         Self {
             repeat_last_n,
@@ -320,6 +329,7 @@ impl SpecificConfig {
             penalty,
             max_gen_tokens,
             quant,
+            num_experts_offload_per_rank,
         }
     }
 }
@@ -347,6 +357,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "llama".to_string(),
             )),
@@ -375,6 +386,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "llama3".to_string(),
             )),
@@ -403,6 +415,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "phi2".to_string(),
             )),
@@ -431,6 +444,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "phi3".to_string(),
             )),
@@ -459,6 +473,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "qwen2".to_string(),
             )),
@@ -487,6 +502,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "gemma".to_string(),
             )),
@@ -515,6 +531,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "mistral".to_string(),
             )),
@@ -544,6 +561,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "yi".to_string(),
             )),
@@ -571,6 +589,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    None,
                 ),
                 "stablelm".to_string(),
             )),
@@ -589,6 +608,7 @@ pub fn get_model_loader(
             penalty,
             max_gen_tokens,
             quant,
+            num_experts_offload_per_rank,
         } => (
             Box::new(DefaultLoader::new(
                 SpecificConfig::new(
@@ -599,6 +619,7 @@ pub fn get_model_loader(
                     penalty,
                     max_gen_tokens,
                     quant.clone(),
+                    num_experts_offload_per_rank,
                 ),
                 "deepseek".to_string(),
             )),

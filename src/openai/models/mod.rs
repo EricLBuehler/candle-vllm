@@ -72,6 +72,7 @@ pub struct MoEConfig {
     pub rope_scaling: Option<DeepSeekRopeScaling>,
     pub n_group: usize,
     pub topk_group: usize,
+    pub num_experts_offload_per_rank: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
