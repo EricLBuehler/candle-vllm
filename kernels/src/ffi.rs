@@ -76,11 +76,13 @@ extern "C" {
         inputs: *const c_void,
         weight: *const c_int,
         scales: *const c_void,
+        zeros: *const c_void,
+        g_idx: *const c_void,
         out: *mut c_void,
         m: c_int,
         k: c_int,
         n: c_int,
-        workspace: *const c_void, //tensor with at least `n / 128 * max_par` entries that are all zero
+        workspace: *const c_void,
         groupsize: c_int,
         stream: i64,
     );
@@ -89,20 +91,60 @@ extern "C" {
         inputs: *const c_void,
         weight: *const c_int,
         scales: *const c_void,
+        zeros: *const c_void,
+        g_idx: *const c_void,
         out: *mut c_void,
         m: c_int,
         k: c_int,
         n: c_int,
-        workspace: *const c_void, //tensor with at least `n / 128 * max_par` entries that are all zero
+        workspace: *const c_void, 
         groupsize: c_int,
         stream: i64,
     );
 
+    pub fn marlin_awq_4bit_f16(
+        inputs: *const c_void,
+        weight: *const c_int,
+        scales: *const c_void,
+        zeros: *const c_void,
+        g_idx: *const c_void,
+        out: *mut c_void,
+        m: c_int,
+        k: c_int,
+        n: c_int,
+        workspace: *const c_void,
+        groupsize: c_int,
+        stream: i64,
+    );
+
+    pub fn marlin_awq_4bit_bf16(
+        inputs: *const c_void,
+        weight: *const c_int,
+        scales: *const c_void,
+        zeros: *const c_void,
+        g_idx: *const c_void,
+        out: *mut c_void,
+        m: c_int,
+        k: c_int,
+        n: c_int,
+        workspace: *const c_void, 
+        groupsize: c_int,
+        stream: i64,
+    );
     pub fn gptq_repack(
         weight: *const c_void,
         result: *const c_void,
         m: c_int,
         n: c_int,
+        stream: i64,
+    );
+
+    pub fn awq_repack(
+        weight: *const c_void,
+        result: *const c_void,
+        k: c_int,
+        n: c_int,
+        bits: c_int,
         stream: i64,
     );
 

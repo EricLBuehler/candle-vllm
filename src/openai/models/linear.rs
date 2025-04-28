@@ -18,7 +18,7 @@
 //! # Ok(()) }
 //! ```
 use super::QuantConfig;
-use crate::backend::gptq::{gptq_matmul, gptq_weight_repack};
+use crate::backend::gptq::{gptq_matmul, marlin_weight_repack};
 use crate::candle::Module;
 use crate::candle::{
     quantized::{gguf_file, QMatMul, QTensor},
@@ -75,6 +75,18 @@ impl Linear {
 
     pub fn workspace(&self) -> Option<&Tensor> {
         self.workspace.as_ref()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn reload(&mut self) -> Result<()> {
+        self.weight = self.weight.reload()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn offload(&mut self) -> Result<()> {
+        self.weight = self.weight.offload()?;
+        Ok(())
     }
 }
 
@@ -171,12 +183,13 @@ pub fn qlinear(
 ) -> Result<Linear> {
     match quant_config {
         Some(cfg) => {
-            let marlin_compatible =
-                if cfg.quant_method != "gptq" || (cfg.bits != 4 && cfg.bits != 8) {
-                    false
-                } else {
-                    true
-                };
+            let marlin_compatible = if (cfg.quant_method != "gptq" && cfg.quant_method != "awq")
+                || (cfg.bits != 4 && cfg.bits != 8)
+            {
+                false
+            } else {
+                true
+            };
             let marlin_format = if cfg.checkpoint_format.is_some()
                 && cfg.checkpoint_format.as_ref().unwrap() == "marlin"
             {
@@ -185,10 +198,19 @@ pub fn qlinear(
                 false
             };
             let ws = vb.get_with_hints_dtype(
-                (
-                    in_dim / (32 / cfg.bits) / if marlin_format { 2 } else { 1 },
-                    out_dim * if marlin_format { 2 } else { 1 },
-                ),
+                if cfg.quant_method == "gptq" {
+                    //quantized gptq (k/pack_factor, n) format
+                    (
+                        in_dim / (32 / cfg.bits) / if marlin_format { 2 } else { 1 },
+                        out_dim * if marlin_format { 2 } else { 1 },
+                    )
+                } else {
+                    //quantized awq (k, n/pack_factor) format
+                    (
+                        in_dim * if marlin_format { 2 } else { 1 },
+                        out_dim / (32 / cfg.bits) / if marlin_format { 2 } else { 1 },
+                    )
+                },
                 if marlin_format { "B" } else { "qweight" },
                 Default::default(),
                 DType::U32,
@@ -240,8 +262,7 @@ pub fn qlinear(
             };
 
             if marlin_format {
-                let workspace =
-                    Tensor::zeros(out_dim_partition / (32 / cfg.bits), DType::U32, vb.device())?;
+                let workspace = Tensor::zeros(out_dim_partition, DType::U32, vb.device())?;
                 //marlin weight file
                 Ok(Linear {
                     weight: ws,
@@ -267,19 +288,29 @@ pub fn qlinear(
                 } else {
                     qzeros
                 };
-                let mut g_idx =
-                    vb.get_with_hints_dtype((in_dim,), "g_idx", Default::default(), DType::U32)?;
-                g_idx = if shards.world_size > 1 {
-                    g_idx
-                        .narrow(0, shards.rank * in_dim_partition, in_dim_partition)?
-                        .contiguous()?
+                let g_idx = if cfg.quant_method == "gptq" {
+                    let mut g_idx = vb.get_with_hints_dtype(
+                        (in_dim,),
+                        "g_idx",
+                        Default::default(),
+                        DType::U32,
+                    )?;
+                    g_idx = if shards.world_size > 1 {
+                        g_idx
+                            .narrow(0, shards.rank * in_dim_partition, in_dim_partition)?
+                            .contiguous()?
+                    } else {
+                        g_idx
+                    };
+                    Some(g_idx)
                 } else {
-                    g_idx
+                    let dummy_g_idx = Tensor::zeros(16, DType::U32, vb.device())?;
+                    Some(dummy_g_idx)
                 };
 
                 if (cfg.sym.is_some() && !cfg.sym.unwrap())
                     || cfg.bits != 4
-                    || (cfg.group_size != 128 && cfg.group_size != -1)
+                    || (cfg.group_size != 64 && cfg.group_size != 128 && cfg.group_size != -1)
                     || (cfg.desc_act.is_some() && cfg.desc_act.unwrap() == true)
                 {
                     //only model with 4-bit and desc_act==false can be repacked to marlin format
@@ -292,7 +323,7 @@ pub fn qlinear(
                         bias: bs,
                         scales: Some(scales),
                         qzeros: Some(qzeros),
-                        g_idx: Some(g_idx),
+                        g_idx,
                         workspace: None,
                     })
                 } else {
@@ -338,7 +369,7 @@ pub fn qlinear(
                     }
 
                     let ws = if marlin_compatible {
-                        gptq_weight_repack(&ws)?
+                        marlin_weight_repack(&ws, cfg.bits as i32, cfg.quant_method != "gptq")?
                     } else {
                         ws
                     }; //repack to marlin format
@@ -355,17 +386,13 @@ pub fn qlinear(
                         scales
                     };
 
-                    let workspace = Tensor::zeros(
-                        out_dim_partition / (32 / cfg.bits),
-                        DType::U32,
-                        vb.device(),
-                    )?;
+                    let workspace = Tensor::zeros(out_dim_partition, DType::U32, vb.device())?;
                     Ok(Linear {
                         weight: ws,
                         bias: bs,
                         scales: Some(scales),
                         qzeros: Some(qzeros),
-                        g_idx: Some(g_idx),
+                        g_idx,
                         workspace: Some(workspace),
                     })
                 }
@@ -387,6 +414,7 @@ pub struct QLinear {
     group_size: i32,
     bits: i32,
     dtype: DType,
+    is_awq: bool,
 }
 
 impl QLinear {
@@ -410,10 +438,11 @@ impl QLinear {
             group_size: 0,
             bits: 0,
             dtype: DType::F32,
+            is_awq: false,
         })
     }
 
-    pub fn from_linear(linear: Linear, group_size: i32, bits: i32) -> Self {
+    pub fn from_linear(linear: Linear, group_size: i32, bits: i32, is_awq: bool) -> Self {
         Self {
             inner: QMatMul::Tensor(linear.weight().clone()),
             bias: linear.bias().cloned(),
@@ -424,6 +453,7 @@ impl QLinear {
             group_size,
             bits,
             dtype: linear.weight().dtype(),
+            is_awq,
         }
     }
 
@@ -439,6 +469,7 @@ impl QLinear {
             group_size: 0,
             bits: 0,
             dtype,
+            is_awq: false,
         }
     }
 
@@ -456,6 +487,7 @@ impl QLinear {
             group_size: 0,
             bits: 0,
             dtype: DType::F32,
+            is_awq: false,
         }
     }
 
@@ -481,6 +513,7 @@ impl QLinear {
             group_size: 0,
             bits: 0,
             dtype,
+            is_awq: false,
         }
     }
 
@@ -495,9 +528,17 @@ impl QLinear {
         match quant_config {
             Some(cfg) => {
                 assert!(
-                    cfg.quant_method == "gptq" || cfg.quant_method == "marlin" || quant == "marlin"
+                    cfg.quant_method == "gptq"
+                        || cfg.quant_method == "awq"
+                        || cfg.quant_method == "marlin"
+                        || quant == "marlin"
                 );
-                QLinear::from_linear(linear, cfg.group_size as i32, cfg.bits as i32)
+                QLinear::from_linear(
+                    linear,
+                    cfg.group_size as i32,
+                    cfg.bits as i32,
+                    cfg.quant_method == "awq",
+                )
             }
             None => {
                 use quantized::GgmlDType;
@@ -531,6 +572,7 @@ impl QLinear {
             group_size: 0,
             bits: 0,
             dtype: old.dtype,
+            is_awq: false,
         }
     }
 
@@ -552,6 +594,30 @@ impl QLinear {
 
     pub fn bias_mut(&mut self) -> Option<&mut Tensor> {
         self.bias.as_mut()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn offload(&mut self) -> Result<()> {
+        let w = match &self.inner {
+            QMatMul::Tensor(qw) => qw.offload()?,
+            _ => {
+                unreachable!()
+            }
+        };
+        self.inner = QMatMul::Tensor(w);
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn reload(&mut self) -> Result<()> {
+        let w = match &self.inner {
+            QMatMul::Tensor(qw) => qw.reload()?,
+            _ => {
+                unreachable!()
+            }
+        };
+        self.inner = QMatMul::Tensor(w);
+        Ok(())
     }
 }
 
@@ -659,6 +725,7 @@ impl Module for QLinear {
                             workspace,
                             self.bits,
                             self.group_size,
+                            self.is_awq,
                         )?;
                         o.reshape((bsize, seq_len, dim1, ()))?
                     }
@@ -671,6 +738,7 @@ impl Module for QLinear {
                         workspace,
                         self.bits,
                         self.group_size,
+                        self.is_awq,
                     )?,
                     [seq_len, dim] => {
                         let x = x.reshape((1, seq_len, dim))?;
@@ -683,6 +751,7 @@ impl Module for QLinear {
                             workspace,
                             self.bits,
                             self.group_size,
+                            self.is_awq,
                         )?;
                         o.reshape((seq_len, ()))?
                     }
@@ -727,6 +796,21 @@ impl LinearX {
             )))
         } else {
             LinearX(Either::Left(ln))
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn offload(&mut self) -> Result<()> {
+        match &mut self.0 {
+            Either::Left(ln) => ln.offload(),
+            Either::Right(ln) => ln.offload(),
+        }
+    }
+    #[cfg(feature = "cuda")]
+    pub fn reload(&mut self) -> Result<()> {
+        match &mut self.0 {
+            Either::Left(ln) => ln.reload(),
+            Either::Right(ln) => ln.reload(),
         }
     }
 }

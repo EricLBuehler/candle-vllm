@@ -5,7 +5,10 @@ use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
 use half::{bf16, f16};
 #[cfg(feature = "cuda")]
-use kernels::ffi::{gemm_half_q_half_alt, gptq_repack, marlin_4bit_bf16, marlin_4bit_f16};
+use kernels::ffi::{
+    awq_repack, gemm_half_q_half_alt, gptq_repack, marlin_4bit_bf16, marlin_4bit_f16,
+    marlin_awq_4bit_bf16, marlin_awq_4bit_f16,
+};
 
 struct GPTQMatMul {
     qzeros: Option<Tensor>,
@@ -13,6 +16,7 @@ struct GPTQMatMul {
     workspace: Option<Tensor>,
     bits: i32,
     group_size: i32,
+    is_awq: bool,
 }
 
 impl GPTQMatMul {
@@ -30,6 +34,7 @@ impl GPTQMatMul {
     ) -> Result<(CudaStorage, Shape)> {
         use candle::cuda_backend::cudarc::driver::DevicePtr;
         use candle::cuda_backend::WrapErr;
+        use std::ffi::c_void;
         let dev = qweight.device();
         let x_shape = x_l.dims();
         let weight_shape = qweight_l.dims();
@@ -58,10 +63,36 @@ impl GPTQMatMul {
         let elem_count = oshape.elem_count();
         let out = unsafe { dev.alloc::<T>(elem_count) }.w()?;
 
-        let out_ptr = *out.device_ptr() as *mut core::ffi::c_void;
-        let in_ptr = *input.device_ptr() as *const core::ffi::c_void;
-        let qw_ptr = *qw.device_ptr() as *const core::ffi::c_void;
-        let qs_ptr = *qs.device_ptr() as *const core::ffi::c_void;
+        let out_ptr = *out.device_ptr() as *mut c_void;
+        let in_ptr = *input.device_ptr() as *const c_void;
+        let qw_ptr = *qw.device_ptr() as *const c_void;
+        let qs_ptr = *qs.device_ptr() as *const c_void;
+
+        let qzeros_ptr = if self.qzeros.is_some() {
+            let (qzeros, qzeros_l) = self.qzeros.as_ref().unwrap().storage_and_layout();
+            let qzeros = match &*qzeros {
+                Storage::Cuda(p) => p,
+                _ => candle::bail!("qzeros must be a cuda tensor"),
+            };
+            let qzeros_ = qzeros.as_cuda_slice::<u32>()?;
+            let qzeros_ = qzeros_.slice(qzeros_l.start_offset()..);
+            *qzeros_.device_ptr() as *const c_void
+        } else {
+            std::ptr::null() as *const c_void
+        };
+
+        let g_idx_ptr = if self.g_idx.is_some() {
+            let (g_idx, g_idx_l) = self.g_idx.as_ref().unwrap().storage_and_layout();
+            let g_idx = match &*g_idx {
+                Storage::Cuda(p) => p,
+                _ => candle::bail!("g_idx must be a cuda tensor"),
+            };
+            let g_idx_ = g_idx.as_cuda_slice::<u32>()?;
+            let g_idx_ = g_idx_.slice(g_idx_l.start_offset()..);
+            *g_idx_.device_ptr() as *const c_void
+        } else {
+            std::ptr::null() as *const c_void
+        };
 
         unsafe {
             if marlin_format {
@@ -74,62 +105,77 @@ impl GPTQMatMul {
                     };
                     let workspace_ = workspace.as_cuda_slice::<u32>()?;
                     let workspace_ = workspace_.slice(workspace_l.start_offset()..);
-                    *workspace_.device_ptr() as *const core::ffi::c_void
+                    *workspace_.device_ptr() as *const c_void
                 } else {
                     candle::bail!("workspace is required for marlin matmul!")
                 };
+
                 if x.dtype() == DType::F16 {
-                    marlin_4bit_f16(
-                        in_ptr,
-                        qw_ptr as *const i32,
-                        qs_ptr,
-                        out_ptr,
-                        (x_shape[0] * x_shape[1]) as i32, //m
-                        size_k as i32,                    //k
-                        size_n as i32,                    //n
-                        workspace_ptr,
-                        self.group_size as i32,
-                        *dev.cu_stream() as i64,
-                    );
+                    if self.is_awq {
+                        marlin_awq_4bit_f16(
+                            in_ptr,
+                            qw_ptr as *const i32,
+                            qs_ptr,
+                            qzeros_ptr,
+                            g_idx_ptr,
+                            out_ptr,
+                            (x_shape[0] * x_shape[1]) as i32,
+                            size_k as i32,
+                            size_n as i32,
+                            workspace_ptr,
+                            self.group_size as i32,
+                            *dev.cu_stream() as i64,
+                        );
+                    } else {
+                        marlin_4bit_f16(
+                            in_ptr,
+                            qw_ptr as *const i32,
+                            qs_ptr,
+                            qzeros_ptr,
+                            g_idx_ptr,
+                            out_ptr,
+                            (x_shape[0] * x_shape[1]) as i32, //m
+                            size_k as i32,                    //k
+                            size_n as i32,                    //n
+                            workspace_ptr,
+                            self.group_size as i32,
+                            *dev.cu_stream() as i64,
+                        );
+                    }
                 } else if x.dtype() == DType::BF16 {
-                    marlin_4bit_bf16(
-                        in_ptr,
-                        qw_ptr as *const i32,
-                        qs_ptr,
-                        out_ptr,
-                        (x_shape[0] * x_shape[1]) as i32, //m
-                        size_k as i32,                    //k
-                        size_n as i32,                    //n
-                        workspace_ptr,
-                        self.group_size as i32,
-                        *dev.cu_stream() as i64,
-                    );
+                    if self.is_awq {
+                        marlin_awq_4bit_bf16(
+                            in_ptr,
+                            qw_ptr as *const i32,
+                            qs_ptr,
+                            qzeros_ptr,
+                            g_idx_ptr,
+                            out_ptr,
+                            (x_shape[0] * x_shape[1]) as i32,
+                            size_k as i32,
+                            size_n as i32,
+                            workspace_ptr,
+                            self.group_size as i32,
+                            *dev.cu_stream() as i64,
+                        );
+                    } else {
+                        marlin_4bit_bf16(
+                            in_ptr,
+                            qw_ptr as *const i32,
+                            qs_ptr,
+                            qzeros_ptr,
+                            g_idx_ptr,
+                            out_ptr,
+                            (x_shape[0] * x_shape[1]) as i32, //m
+                            size_k as i32,                    //k
+                            size_n as i32,                    //n
+                            workspace_ptr,
+                            self.group_size as i32,
+                            *dev.cu_stream() as i64,
+                        );
+                    }
                 }
             } else {
-                let (qzeros_ptr, g_idx_ptr) = if self.qzeros.is_some() && self.g_idx.is_some() {
-                    let (qzeros, qzeros_l) = self.qzeros.as_ref().unwrap().storage_and_layout();
-                    let (g_idx, g_idx_l) = self.g_idx.as_ref().unwrap().storage_and_layout();
-                    let qzeros = match &*qzeros {
-                        Storage::Cuda(p) => p,
-                        _ => candle::bail!("qzeros must be a cuda tensor"),
-                    };
-                    let qzeros_ = qzeros.as_cuda_slice::<u32>()?;
-                    let qzeros_ = qzeros_.slice(qzeros_l.start_offset()..);
-                    let g_idx = match &*g_idx {
-                        Storage::Cuda(p) => p,
-                        _ => candle::bail!("g_idx must be a cuda tensor"),
-                    };
-                    let g_idx_ = g_idx.as_cuda_slice::<u32>()?;
-                    let g_idx_ = g_idx_.slice(g_idx_l.start_offset()..);
-
-                    (
-                        *qzeros_.device_ptr() as *const core::ffi::c_void,
-                        *g_idx_.device_ptr() as *const core::ffi::c_void,
-                    )
-                } else {
-                    candle::bail!("qzeros and g_idx are required for non-marlin matmul!")
-                };
-
                 if x.dtype() == DType::F16 {
                     gemm_half_q_half_alt(
                         in_ptr,
@@ -198,6 +244,7 @@ pub fn gptq_matmul(
     workspace: &Option<Tensor>,
     bits: i32,
     group_size: i32,
+    is_awq: bool,
 ) -> Result<Tensor> {
     let op = GPTQMatMul {
         qzeros: qzeros.to_owned(),
@@ -205,16 +252,18 @@ pub fn gptq_matmul(
         workspace: workspace.to_owned(),
         bits,
         group_size,
+        is_awq,
     };
     x.apply_op3(qweight, scale, op)
 }
 
 #[allow(dead_code)]
-struct GPTQRepack {
+struct MarlinRepack {
     bits: i32,
+    is_awq: bool, //awq or gptq
 }
 
-impl GPTQRepack {
+impl MarlinRepack {
     #[cfg(feature = "cuda")]
     fn cuda_fwd_t<
         T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
@@ -228,8 +277,20 @@ impl GPTQRepack {
         let dev = qweight.device();
         let q_shape = qweight_l.dims();
         let mut out_shape: Vec<usize> = q_shape.to_vec();
-        out_shape[0] = (q_shape[0] / 2) as usize;
-        out_shape[1] = (q_shape[1] * 2) as usize;
+        let pack_factor = (32 / self.bits) as usize;
+        if self.is_awq {
+            //in_dim 4096, out_dim 1024 (/pack_factor)
+            //ws shape [4096, 128]
+            //out_shape [256, 2048]
+            out_shape[0] = (q_shape[0] / pack_factor / 2) as usize;
+            out_shape[1] = (q_shape[1] * pack_factor * 2) as usize;
+        } else {
+            //in_dim 4096 (/pack_factor), out_dim 1024
+            //ws shape [512, 1024]
+            //out_shape [256, 2048]
+            out_shape[0] = (q_shape[0] / 2) as usize;
+            out_shape[1] = (q_shape[1] * 2) as usize;
+        }
 
         let oshape: Shape = out_shape.into();
 
@@ -246,13 +307,24 @@ impl GPTQRepack {
         let q_ptr = *q.device_ptr() as *const core::ffi::c_void;
 
         unsafe {
-            gptq_repack(
-                q_ptr,
-                out_ptr,
-                q_shape[0] as i32,
-                q_shape[1] as i32,
-                *dev.cu_stream() as i64,
-            )
+            if self.is_awq {
+                awq_repack(
+                    q_ptr,
+                    out_ptr,
+                    q_shape[0] as i32,
+                    q_shape[1] as i32,
+                    self.bits,
+                    *dev.cu_stream() as i64,
+                )
+            } else {
+                gptq_repack(
+                    q_ptr,
+                    out_ptr,
+                    q_shape[0] as i32,
+                    q_shape[1] as i32,
+                    *dev.cu_stream() as i64,
+                )
+            }
         }
 
         let out = CudaStorage::wrap_cuda_slice(out, dev.clone());
@@ -260,24 +332,24 @@ impl GPTQRepack {
     }
 }
 
-impl candle::CustomOp1 for GPTQRepack {
+impl candle::CustomOp1 for MarlinRepack {
     fn name(&self) -> &'static str {
-        "GPTQRepack"
+        "MarlinRepack"
     }
 
     fn cpu_fwd(&self, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
-        candle::bail!("no cpu support for GPTQRepack")
+        candle::bail!("no cpu support for MarlinRepack")
     }
     #[cfg(feature = "cuda")]
     fn cuda_fwd(&self, qweight: &CudaStorage, qweight_l: &Layout) -> Result<(CudaStorage, Shape)> {
         match qweight.dtype() {
             DType::U32 => self.cuda_fwd_t::<u32>(qweight, qweight_l),
-            dt => candle::bail!("GPTQRepack is only supported for i32/u32 weight ({dt:?})"),
+            dt => candle::bail!("MarlinRepack is only supported for i32/u32 weight ({dt:?})"),
         }
     }
 }
 
-pub fn gptq_weight_repack(qweight: &Tensor) -> Result<Tensor> {
-    let op = GPTQRepack { bits: 4 };
+pub fn marlin_weight_repack(qweight: &Tensor, bits: i32, is_awq: bool) -> Result<Tensor> {
+    let op = MarlinRepack { bits, is_awq };
     qweight.apply_op1(op)
 }

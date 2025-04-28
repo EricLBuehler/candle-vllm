@@ -356,4 +356,20 @@ impl ReplicatedLinear {
         }
         Ok(xs)
     }
+
+    pub fn offload(&mut self) -> Result<()> {
+        if cfg!(feature = "cuda") {
+            self.linear.offload()
+        } else {
+            panic!("tensor offload not available on this device!");
+        }
+    }
+
+    pub fn reload(&mut self) -> Result<()> {
+        if cfg!(feature = "cuda") {
+            self.linear.reload()
+        } else {
+            panic!("tensor offload not available on this device!");
+        }
+    }
 }

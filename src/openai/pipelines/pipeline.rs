@@ -621,6 +621,16 @@ impl DefaultLoader {
                     }
                 }
 
+                if chat_template.is_some() {
+                    if chat_template.as_ref().unwrap().find("<|eom_id|>").is_some() {
+                        tracing::warn!("custom stop token <|eom_id|> in chat template");
+                        stop_token_ids.push(128008)
+                    }
+                    if chat_template.as_ref().unwrap().find("<|eot_id|>").is_some() {
+                        tracing::warn!("custom stop token <|eot_id|> in chat template");
+                        stop_token_ids.push(128009)
+                    }
+                }
                 if stop_token_ids.is_empty() {
                     //if no eos_token defined in the config, use default
                     if let Some(token) = tokenizer.get_token("<|endoftext|>") {
@@ -633,6 +643,7 @@ impl DefaultLoader {
                         stop_token_ids.push(token);
                     }
                 }
+                tracing::warn!("stop_token_ids {:?}", stop_token_ids);
                 Box::new(DefaultPipeline {
                     model,
                     args: specific_args.clone(),
