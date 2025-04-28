@@ -97,7 +97,7 @@ extern "C" {
         m: c_int,
         k: c_int,
         n: c_int,
-        workspace: *const c_void, 
+        workspace: *const c_void,
         groupsize: c_int,
         stream: i64,
     );
@@ -127,7 +127,7 @@ extern "C" {
         m: c_int,
         k: c_int,
         n: c_int,
-        workspace: *const c_void, 
+        workspace: *const c_void,
         groupsize: c_int,
         stream: i64,
     );

@@ -369,7 +369,7 @@ Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", 
 
 1) It may takes few minutes to load F32/F16/BF16 models into quantized;
 
-2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`) and 4-bit AWQ (after convertion using the given script);
+2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`) and 4-bit AWQ (after conversion using the given script);
 
 3) Marlin format only supported in CUDA platform.
 
