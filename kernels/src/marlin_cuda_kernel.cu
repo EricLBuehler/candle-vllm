@@ -1637,8 +1637,6 @@ void marlin_matmul(const void* A, const void* B, void* scales, void* zeros, void
     A_ptr += 16 * thread_m_blocks * (prob_k / 8) * par;
     C_ptr += 16 * thread_m_blocks * (prob_n / 8) * par;
   }
-  cudaStreamSynchronize(stream);
-
 }
 
 extern "C" void marlin_4bit_f16(const void* A, const void* B, void* scales, void* zeros, void* g_idx, void* C, int prob_m, int prob_k, 

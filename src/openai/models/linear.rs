@@ -296,22 +296,25 @@ pub fn qlinear(
                         DType::U32,
                     )?;
                     g_idx = if shards.world_size > 1 {
+                        let dim_size = g_idx.dims()[0];
+                        let start = shards.rank * (dim_size / shards.world_size);
                         g_idx
-                            .narrow(0, shards.rank * in_dim_partition, in_dim_partition)?
+                            .narrow(0, start, dim_size / shards.world_size)?
                             .contiguous()?
                     } else {
                         g_idx
                     };
                     Some(g_idx)
                 } else {
-                    let dummy_g_idx = Tensor::zeros(16, DType::U32, vb.device())?;
-                    Some(dummy_g_idx)
+                    None
                 };
 
                 if (cfg.sym.is_some() && !cfg.sym.unwrap())
                     || cfg.bits != 4
                     || (cfg.group_size != 64 && cfg.group_size != 128 && cfg.group_size != -1)
-                    || (cfg.desc_act.is_some() && cfg.desc_act.unwrap() == true)
+                    || (cfg.desc_act.is_some()
+                        && cfg.desc_act.unwrap() == true
+                        && cfg.quant_method == "gptq")
                 {
                     //only model with 4-bit and desc_act==false can be repacked to marlin format
                     if cfg.quant_method == "marlin" {
@@ -522,9 +525,6 @@ impl QLinear {
         quant: String,
         quant_config: &Option<QuantConfig>,
     ) -> Self {
-        let weight = linear.weight();
-        let qbias = linear.bias().cloned();
-        let dtype = weight.dtype();
         match quant_config {
             Some(cfg) => {
                 assert!(
@@ -555,6 +555,9 @@ impl QLinear {
                     "q6k" => GgmlDType::Q6K,
                     _ => panic!("Unsupported GGML data type!"),
                 };
+                let weight = linear.weight();
+                let qbias = linear.bias().cloned();
+                let dtype = weight.dtype();
                 let qtensor = QTensor::quantize(weight, ggml_dtype).unwrap();
                 QLinear::from_qparts_x(qtensor, qbias, dtype)
             }
