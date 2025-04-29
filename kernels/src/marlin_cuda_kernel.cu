@@ -1630,14 +1630,12 @@ void marlin_matmul(const void* A, const void* B, void* scales, void* zeros, void
     CALL_IF(8, 4, 128)
     CALL_IF(4, 8, 128)
     else {
-      // printf("Unsupported shapes: block_m %d, block_k %d, block_n %d\n", thread_m_blocks, thread_k_blocks, thread_n_blocks);
       throw std::runtime_error("Unsupported shapes: MKN");
     }
 
     A_ptr += 16 * thread_m_blocks * (prob_k / 8) * par;
     C_ptr += 16 * thread_m_blocks * (prob_n / 8) * par;
   }
-  cudaStreamSynchronize(stream);
 
 }
 
