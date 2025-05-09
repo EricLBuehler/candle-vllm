@@ -131,7 +131,7 @@ impl LLMEngine {
                 loop {
                     #[cfg(feature = "nccl")]
                     if multi_process {
-                        if DaemonManager::is_daemon() {
+                        if !DaemonManager::is_master_rank() {
                             info!("daemon process wait_task!");
                             let message = {
                                 let e = engine.read().unwrap();
@@ -192,7 +192,7 @@ impl LLMEngine {
                     let results = Self::generate_parallel(&engine, ranks.clone(), multi_process).await;
 
                     #[cfg(feature = "nccl")]
-                    if multi_process && DaemonManager::is_daemon() {
+                    if multi_process && !DaemonManager::is_master_rank() {
                         continue;
                     }
                     let result = &results[0];
@@ -320,6 +320,7 @@ impl LLMEngine {
                 }
             };
         } else {
+            debug!("sending sync message!");
             let _ = daemon_manager.send_message(&msg_send);
         }
         return None;
