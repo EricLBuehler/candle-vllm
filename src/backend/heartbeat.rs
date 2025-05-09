@@ -4,13 +4,12 @@ use tracing::{debug, info, warn};
 pub async fn heartbeat_worker(num_subprocess: Option<usize>) {
     let _ = thread::spawn(move || {
         let mut connect_retry_count = 0;
-        let mut heartbeat_error_count = 0;
         let mut command_manager = if DaemonManager::is_daemon() {
             let mut manager = DaemonManager::new_command("heartbeat", None);
             loop {
                 if manager.is_ok() {
                     break;
-                } else if connect_retry_count < 50 {
+                } else if connect_retry_count < 120 {
                     connect_retry_count += 1;
                     warn!(
                         "Retry connect to main process' command channel ({:?})!",
@@ -28,6 +27,7 @@ pub async fn heartbeat_worker(num_subprocess: Option<usize>) {
         } else {
             DaemonManager::new_command("heartbeat", num_subprocess)
         };
+        let mut heartbeat_error_count = 0;
         info!("enter heartbeat processing loop ({:?})", command_manager);
         loop {
             let alive_result = command_manager.as_mut().unwrap().heartbeat();

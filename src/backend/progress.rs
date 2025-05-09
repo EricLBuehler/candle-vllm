@@ -110,7 +110,7 @@ pub async fn progress_worker(
             loop {
                 if manager.is_ok() {
                     break;
-                } else if connect_retry_count < 50 {
+                } else if connect_retry_count < 120 {
                     connect_retry_count += 1;
                     warn!(
                         "Retry connect to main process' command channel ({:?})!",

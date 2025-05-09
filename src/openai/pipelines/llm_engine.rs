@@ -297,7 +297,7 @@ impl LLMEngine {
         daemon_manager: &mut DaemonManager,
         msg_send: MessageType,
     ) -> Option<Vec<usize>> {
-        if DaemonManager::is_daemon() {
+        if !DaemonManager::is_master_rank() {
             debug!("waiting sync message!");
             let message = { daemon_manager.receive_message() };
             match message {
@@ -404,7 +404,7 @@ impl LLMEngine {
             };
 
             #[cfg(feature = "nccl")]
-            let do_sample = if rank == 0 && !DaemonManager::is_daemon() {
+            let do_sample = if rank == 0 && DaemonManager::is_master_rank() {
                 true
             } else {
                 false
@@ -443,7 +443,7 @@ impl LLMEngine {
                 Some(sample)
             } else {
                 #[cfg(feature = "nccl")]
-                if multi_process && DaemonManager::is_daemon() {
+                if multi_process && !DaemonManager::is_master_rank() {
                     let _ = logits.to_device(&Device::Cpu).unwrap(); //sync
                     let message = {
                         let e = engine.read().unwrap();
@@ -577,7 +577,7 @@ impl LLMEngine {
 
                     let do_sync_response = {
                         #[cfg(feature = "nccl")]
-                        if multi_process && DaemonManager::is_daemon() {
+                        if multi_process && !DaemonManager::is_master_rank() {
                             false
                         } else {
                             group.sender.is_none()
@@ -658,7 +658,7 @@ impl LLMEngine {
             #[cfg(feature = "nccl")]
             if multi_process {
                 let mut e = engine.write().unwrap();
-                if !DaemonManager::is_daemon() {
+                if DaemonManager::is_master_rank() {
                     if aborted_sequences.len() > 0 {
                         warn!(
                             "Sending abort message ({} sequence(s)) to subprocesses!",
@@ -710,7 +710,7 @@ impl LLMEngine {
         }
 
         #[cfg(feature = "nccl")]
-        if multi_process && !DaemonManager::is_daemon() {
+        if multi_process && DaemonManager::is_master_rank() {
             warn!("Sending finish message to subprocesses");
             let e = engine.read().unwrap();
             let mut daemon_manager = e.daemon_manager.write().unwrap();
