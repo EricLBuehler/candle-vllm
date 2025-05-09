@@ -180,9 +180,14 @@ Install API and chatbot dependencies (openai package is only used for local chat
 python3 -m pip install openai rich click
 ```
 
-Chat with the mini chatbot
+Chat with the mini chatbot (plain text)
 ```shell
 python3 examples/chat.py
+```
+
+Chat with the mini chatbot (live update with Markdown, may cause flick)
+```shell
+python3 examples/chat.py --live
 ```
 
 Chat demo on GPU (A100, LLaMa3.1 8B)
