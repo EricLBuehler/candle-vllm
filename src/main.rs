@@ -255,7 +255,8 @@ async fn main() -> Result<(), APIError> {
         Some(ids) => ids,
         _ => vec![0usize],
     };
-    let num_shards = device_ids.len();
+    let local_world_size = device_ids.len();
+    let mut num_shards = local_world_size;
     #[cfg(not(feature = "nccl"))]
     assert!(
         num_shards == 1,
@@ -264,18 +265,20 @@ async fn main() -> Result<(), APIError> {
     let logger = ftail::Ftail::new();
     let mut port = args.port;
     #[cfg(feature = "nccl")]
-    let ((default_pipelines, pipeline_config), daemon_manager) = if args.multi_process {
+    let ((default_pipelines, pipeline_config), global_rank, daemon_manager) = if args.multi_process
+    {
         use candle_vllm::openai::communicator::init_subprocess;
-        let (id, rank, daemon_manager) = init_subprocess(device_ids.clone()).unwrap();
-        if rank != 0 {
+        let (id, local_rank, global_rank, global_world_size, daemon_manager) =
+            init_subprocess(device_ids.clone()).unwrap();
+        if local_rank != 0 {
             port = port + 1; //processes other than rank 0 use fake server port since they do not perform response
         }
-
-        let log_file = format!("candle-vllm-rank-{}.log", rank);
+        num_shards = global_world_size;
+        let log_file = format!("candle-vllm-rank-{}.log", global_rank);
         let _ = config_log(logger, args.log, log_file);
 
-        warn!("subprocess rank {} started!", rank);
-        heartbeat::heartbeat_worker(Some(num_shards - 1)).await;
+        warn!("subprocess rank {} started!", global_rank);
+        heartbeat::heartbeat_worker(Some(local_world_size - 1)).await;
 
         (
             loader
@@ -283,12 +286,15 @@ async fn main() -> Result<(), APIError> {
                     paths,
                     dtype,
                     &quant,
-                    vec![device_ids[rank]],
+                    vec![device_ids[local_rank]],
                     Some(id),
-                    Some(rank),
-                    Some(num_shards),
+                    Some(local_rank),
+                    Some(local_world_size),
+                    Some(global_rank),
+                    Some(global_world_size),
                 )
                 .await?,
+            global_rank,
             Some(daemon_manager),
         )
     } else {
@@ -296,8 +302,11 @@ async fn main() -> Result<(), APIError> {
         let _ = config_log(logger, args.log, log_file);
         (
             loader
-                .load_model(paths, dtype, &quant, device_ids, None, None, None)
+                .load_model(
+                    paths, dtype, &quant, device_ids, None, None, None, None, None,
+                )
                 .await?,
+            0,
             None,
         )
     };
@@ -313,12 +322,15 @@ async fn main() -> Result<(), APIError> {
     );
 
     #[cfg(not(feature = "nccl"))]
-    let (default_pipelines, pipeline_config) = {
+    let ((default_pipelines, pipeline_config), global_rank) = {
         let log_file = format!("candle-vllm.log");
         let _ = config_log(logger, args.log, log_file);
-        loader
-            .load_model(paths, dtype, &quant, device_ids, None, None)
-            .await?
+        (
+            loader
+                .load_model(paths, dtype, &quant, device_ids, None, None)
+                .await?,
+            0,
+        )
     };
 
     let mut config: Option<Config> = None;
@@ -383,16 +395,21 @@ async fn main() -> Result<(), APIError> {
         finish_notify: finish_notify.clone(),
     };
 
-    println!("\nMaximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):");
-    for batch in [1, 8, 16, 32, 64, 128] {
+    if global_rank == 0 {
         println!(
-            "-> Batch {}: {}",
-            batch,
-            std::cmp::min(kvcached_tokens / batch, max_model_len)
+            "\nMaximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):"
         );
+        for batch in [1, 8, 16, 32, 64, 128] {
+            println!(
+                "-> Batch {}: {}",
+                batch,
+                std::cmp::min(kvcached_tokens / batch, max_model_len)
+            );
+        }
+        println!("\nServer started at http://127.0.0.1:{}.", port);
+    } else {
+        println!("\nDaemon service started at rank {}.", global_rank);
     }
-    println!("\nServer started at http://127.0.0.1:{}.", args.port);
-
     let allow_origin = AllowOrigin::any();
     let cors_layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST])
