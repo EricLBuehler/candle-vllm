@@ -232,17 +232,16 @@ impl LLMEngine {
                         overall_usage.prompt_tokens,
                         overall_usage.prompt_time_costs / 1000
                     );
-
                     println!(
-                        "\r\n [{} requests] Decoding: {} tokens processed in {} seconds ({} tokens/s)",
+                        "\r\n [{} requests] Decoding: {} tokens processed in {} seconds ({:.02} tokens/s)",
                         result.len(),
                         overall_usage.completion_tokens,
                         overall_usage.completion_time_costs / 1000,
-                        overall_usage.completion_tokens * 1000
+                        overall_usage.completion_tokens as f32 * 1000.0
                             / if overall_usage.completion_time_costs > 0 {
-                                overall_usage.completion_time_costs
+                                overall_usage.completion_time_costs as f32
                             } else {
-                                1
+                                1f32
                             }
                     );
                 }
