@@ -270,8 +270,8 @@ async fn main() -> Result<(), APIError> {
         use candle_vllm::openai::communicator::init_subprocess;
         let (id, local_rank, global_rank, global_world_size, daemon_manager) =
             init_subprocess(device_ids.clone()).unwrap();
-        if local_rank != 0 {
-            port = port + 1; //processes other than rank 0 use fake server port since they do not perform response
+        if global_rank != 0 {
+            port = port + global_rank as u16; //processes other than rank 0 use fake server port since they do not perform response
         }
         num_shards = global_world_size;
         let log_file = format!("candle-vllm-rank-{}.log", global_rank);
