@@ -124,6 +124,15 @@ pub async fn chat_completions(
     //     return Either::Left(Err(res.err().unwrap()));
     // }
 
+    #[cfg(feature = "nccl")]
+    use crate::openai::communicator::DaemonManager;
+    #[cfg(feature = "nccl")]
+    if !DaemonManager::is_master_rank() {
+        return ChatResponder::ModelError(APIError::from(
+            "Daemon process unable to generate response, please request server port of the main process!",
+        ));
+    }
+
     if request.logit_bias.as_ref().is_some()
         && request.logit_bias.as_ref().is_some_and(|x| !x.is_empty())
     {

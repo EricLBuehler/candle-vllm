@@ -45,7 +45,9 @@ async def stream_response(response_idx, stream: Stream[ChatCompletionChunk]):
             result += r
     return (response_idx, result)
 
-async def benchmark(batch, max_tokens=1024):
+async def benchmark(batch, max_tokens=1024, port=2000):
+    openai.base_url = "http://localhost:"+str(port)+"/v1/"
+
     model = "any" # model used dependent on the server side
     # candidate requests
     prompts = []
@@ -87,5 +89,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Using 'batch' and 'max_tokens' parameters for candle-vllm benchmark.")
     parser.add_argument('--batch', default=16, type=int)
     parser.add_argument('--max_tokens', default=1024, type=int)
+    parser.add_argument('--port', default=2000, type=int)
     args = parser.parse_args()
-    asyncio.run(benchmark(args.batch, args.max_tokens))
+    asyncio.run(benchmark(args.batch, args.max_tokens, args.port))
