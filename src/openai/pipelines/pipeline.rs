@@ -578,13 +578,21 @@ impl DefaultLoader {
         } else {
             (None, None, None)
         };
-        if chat_template.is_some() {
-            println!("Chat Template {} \n", chat_template.as_ref().unwrap());
-        } else {
-            println!("Warning: Missing tokenizer_config.json \n Warning: Chat Template not found, use built-in template which may not correct!");
+
+        #[cfg(feature = "nccl")]
+        let global_rank = global_rank.unwrap_or(0);
+        #[cfg(not(feature = "nccl"))]
+        let global_rank = local_rank.unwrap_or(0);
+
+        if global_rank == 0 {
+            if chat_template.is_some() {
+                println!("Chat Template {} \n", chat_template.as_ref().unwrap());
+            } else {
+                println!("Warning: Missing tokenizer_config.json \n Warning: Chat Template not found, use built-in template which may not correct!");
+            }
+            println!("{:?}", pipeline_config);
+            println!("{:?}", specific_args);
         }
-        println!("{:?}", pipeline_config);
-        println!("{:?}", specific_args);
 
         let pipelines = models
             .into_iter()

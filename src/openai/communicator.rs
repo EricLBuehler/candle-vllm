@@ -189,6 +189,34 @@ impl DaemonManager {
         self.mpi_world.is_some()
     }
 
+    pub fn is_running_under_mpirun() -> bool {
+        // Check for OpenMPI or MPICH env vars
+        #[cfg(not(feature = "mpi"))]
+        return false;
+        #[cfg(feature = "mpi")]
+        {
+            std::env::var("OMPI_COMM_WORLD_SIZE").is_ok() || std::env::var("PMI_RANK").is_ok()
+        }
+    }
+
+    pub fn mpi_sync(&mut self) -> bool {
+        if DaemonManager::is_running_under_mpirun() && self.is_distributed() {
+            //sync mpi processes across nodes
+            if DaemonManager::is_master_rank() {
+                println!("Sync MPI processes across nodes (from master rank)!");
+                self.send_message(&MessageType::Continue).is_ok()
+            } else {
+                println!("Sync MPI processes across nodes (from daemon rank)!");
+                match self.receive_message() {
+                    Ok(MessageType::Continue) => true,
+                    _ => false,
+                }
+            }
+        } else {
+            false
+        }
+    }
+
     //inter-node communication
     pub fn send_local(
         streams: &mut Vec<LocalStream>,
@@ -473,23 +501,13 @@ impl DaemonManager {
     }
 }
 
-fn is_running_under_mpirun() -> bool {
-    // Check for OpenMPI or MPICH env vars
-    #[cfg(not(feature = "mpi"))]
-    return false;
-    #[cfg(feature = "mpi")]
-    {
-        std::env::var("OMPI_COMM_WORLD_SIZE").is_ok() || std::env::var("PMI_RANK").is_ok()
-    }
-}
-
 #[allow(unused_variables)]
 pub fn init_subprocess(
     device_ids: Vec<usize>,
 ) -> anyhow::Result<(Id, usize, usize, usize, DaemonManager)> {
     let local_world_size = device_ids.len();
     let (local_rank, global_rank, global_world_size, id, daemon_manager) =
-        if is_running_under_mpirun() {
+        if DaemonManager::is_running_under_mpirun() {
             #[cfg(not(feature = "mpi"))]
             panic!("mpi feature is not enabled!");
             //multi-node
