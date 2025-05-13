@@ -31,13 +31,16 @@ def clear_console():
               help="Maximum generated tokens for each response.")
 @click.option("--frequency", type=int, default=10,
               help="Times per second for output refresh.")
-def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, frequency: int):
+@click.option("--port", type=int, default=2000,
+              help="Server port.")
+def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, frequency: int, port: int):
     """
     A command-line chatbot interface using OpenAI API and candle-vllm as backend.
     """
     console = Console()
     messages = []
     console.clear()
+    openai.base_url = "http://localhost:"+str(port)+"/v1/"
 
     # Add a system prompt if provided
     if system_prompt:
@@ -112,8 +115,8 @@ def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, freq
             except KeyboardInterrupt:
                 console.log("Response interrupted by user. Press Ctrl+C again to exit.", style="yellow")
                 continue
-            except openai.error.AuthenticationError as e:
-                console.log(f"Authentication error: {e}", style="bold red")
+            except Exception as e:
+                console.log(f"Request error: {e}", style="bold red")
                 break
             except openai.error.OpenAIError as e:
                 console.log(f"Unexpected OpenAI error: {e}", style="bold red")

@@ -395,6 +395,17 @@ async fn main() -> Result<(), APIError> {
         finish_notify: finish_notify.clone(),
     };
 
+    if global_rank != 0 {
+        println!("\nDaemon service started at rank {}.", global_rank);
+    }
+
+    #[cfg(feature = "nccl")]
+    if args.multi_process {
+        let e = server_data.model.read().unwrap();
+        let mut daemon_manager = e.daemon_manager.write().unwrap();
+        daemon_manager.as_mut().unwrap().mpi_sync();
+    }
+
     if global_rank == 0 {
         println!(
             "\nMaximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):"
@@ -407,9 +418,8 @@ async fn main() -> Result<(), APIError> {
             );
         }
         println!("\nServer started at http://127.0.0.1:{}.", port);
-    } else {
-        println!("\nDaemon service started at rank {}.", global_rank);
     }
+
     let allow_origin = AllowOrigin::any();
     let cors_layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST])
