@@ -556,12 +556,18 @@ impl LLMEngine {
                         .as_millis();
                     let seq = group.get_seqs().values().nth(0).unwrap();
                     let decoded_tokens = seq.deref().get_len() - seq.deref().get_prompt_len();
-                    println!(
-                        "Request {} decoding {} tokens finished in {} seconds",
-                        group.request_id,
-                        decoded_tokens,
-                        completion_time_costs / 1000
-                    );
+                    #[cfg(feature = "nccl")]
+                    let do_log = DaemonManager::is_master_rank();
+                    #[cfg(not(feature = "nccl"))]
+                    let do_log = true;
+                    if do_log {
+                        println!(
+                            "Request {} decoding {} tokens finished in {} seconds",
+                            group.request_id,
+                            decoded_tokens,
+                            completion_time_costs / 1000
+                        );
+                    }
                     // Create choices from the group
                     let mut seqs = group.get_seqs().values().collect::<Vec<_>>();
                     seqs.sort_by(|seq_a, seq_b| {
@@ -979,11 +985,18 @@ impl LLMEngine {
         self.group_id += 1;
 
         self.scheduler.add_sequence(seq_group);
-        println!(
-            "Request {} with length {} added to sequence group.",
-            request_id.clone(),
-            prompt_len
-        );
+
+        #[cfg(feature = "nccl")]
+        let do_log = DaemonManager::is_master_rank();
+        #[cfg(not(feature = "nccl"))]
+        let do_log = true;
+        if do_log {
+            println!(
+                "Request {} with length {} added to sequence group.",
+                request_id.clone(),
+                prompt_len
+            );
+        }
 
         #[cfg(feature = "nccl")]
         if self.multi_process && !DaemonManager::is_daemon() {
