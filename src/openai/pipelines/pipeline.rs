@@ -17,6 +17,7 @@ use crate::{
         models::{
             deepseek::{DeepSeek, DeepSeekConfig},
             gemma::{Gemma, GemmaConfig},
+            gemma3::{Gemma3, Gemma3Config},
             llama::{Llama, LlamaConfig},
             mistral::{Mistral, MistralConfig},
             phi2::{Phi2, Phi2Config},
@@ -59,6 +60,7 @@ enum LLMModel {
     Phi3(Phi),
     Qwen(Qwen),
     Gemma(Gemma),
+    Gemma3(Gemma3),
     Mistral(Mistral),
     Yi(Yi),
     StableLM(StableLM),
@@ -298,6 +300,12 @@ impl DefaultLoader {
                     ),));
                     config.into_config(false, dtype, &specific_args)
                 }
+                "gemma3" => {
+                    let config: Gemma3Config = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
                 "mistral" => {
                     let config: MistralConfig = try_api!(serde_json::from_slice(&try_api!(
                         std::fs::read(paths.get_config_filename())
@@ -461,6 +469,20 @@ impl DefaultLoader {
                         "gemma" => (
                             LLMModel::Gemma(
                                 Gemma::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            ),
+                            SeparatorStyle::Gemma,
+                        ),
+                        "gemma3" => (
+                            LLMModel::Gemma3(
+                                Gemma3::new(
                                     vb,
                                     &config,
                                     dtype,
@@ -746,6 +768,9 @@ impl DefaultPipeline {
             LLMModel::Gemma(gemma) => gemma
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
+            LLMModel::Gemma3(gemma3) => gemma3
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .map_err(APIError::from),
             LLMModel::Mistral(mistral) => mistral
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
@@ -915,6 +940,7 @@ impl DefaultPipeline {
             LLMModel::Phi3(phi) => phi.get_config().clone(),
             LLMModel::Qwen(qwen) => qwen.get_config().clone(),
             LLMModel::Gemma(gemma) => gemma.get_config().clone(),
+            LLMModel::Gemma3(gemma3) => gemma3.get_config().clone(),
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
             LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),

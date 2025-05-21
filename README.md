@@ -85,7 +85,7 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 
 `MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95
 
-where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "gemma", "yi", "stable-lm", "deep-seek"]
+where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
 
 ## Detailed Usage
 
