@@ -8,7 +8,7 @@ pub mod phi3;
 pub mod quantized_llama;
 pub mod quantized_phi3;
 pub mod quantized_qwen2;
-pub mod qwen2;
+pub mod qwen;
 pub mod stable_lm;
 pub mod yi;
 use crate::SpecificConfig;

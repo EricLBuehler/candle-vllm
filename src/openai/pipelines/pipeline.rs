@@ -24,7 +24,7 @@ use crate::{
             quantized_llama::GGUFLLaMa,
             quantized_phi3::GGUFPhi3,
             quantized_qwen2::GGUFQWen2,
-            qwen2::{Qwen, QwenConfig},
+            qwen::{Qwen, QwenConfig},
             stable_lm::{StableLM, StableLMConfig},
             yi::{Yi, YiConfig},
             Config,
