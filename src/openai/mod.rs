@@ -69,8 +69,8 @@ pub struct TokenizerConfig {
     pub add_bos_token: Option<bool>,
     pub add_eos_token: Option<bool>,
     pub chat_template: Option<String>,
-    pub bos_token: BosEosToken,
-    pub eos_token: BosEosToken,
+    pub bos_token: Option<BosEosToken>,
+    pub eos_token: Option<BosEosToken>,
 }
 
 pub struct OpenAIServerData {

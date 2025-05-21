@@ -26,6 +26,7 @@ pub struct QwenConfig {
     pub sliding_window: Option<usize>,
     pub max_window_layers: usize,
     pub tie_word_embeddings: bool, //shared weights between input/output embeddings
+    pub attention_bias: Option<bool>,
     pub rope_theta: f64,
     pub rms_norm_eps: f64,
     pub use_sliding_window: bool,
@@ -61,7 +62,7 @@ impl QwenConfig {
             tie_word_embeddings: self.tie_word_embeddings,
             rope_scaling: None,
             original_max_position_embeddings: None,
-            attention_bias: false,
+            attention_bias: self.attention_bias.unwrap_or(false),
             partial_rotary_factor: None,
             qk_layer_rms_norm: None,
             kv_cache_dtype,
@@ -189,6 +190,8 @@ struct Attention {
     k_proj: TensorParallelColumnLinear,
     v_proj: TensorParallelColumnLinear,
     o_proj: TensorParallelRowLinear,
+    q_norm: Option<RmsNorm>,
+    k_norm: Option<RmsNorm>,
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
@@ -198,6 +201,7 @@ struct Attention {
 
 impl Attention {
     fn new(
+        qwen3: bool,
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
@@ -211,7 +215,7 @@ impl Attention {
         let q_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_heads * head_dim,
-            true,
+            cfg.attention_bias,
             vb.pp("q_proj"),
             comm.clone(),
             &cfg.specific_config.quant,
@@ -220,7 +224,7 @@ impl Attention {
         let k_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
-            true,
+            cfg.attention_bias,
             vb.pp("k_proj"),
             comm.clone(),
             &cfg.specific_config.quant,
@@ -229,7 +233,7 @@ impl Attention {
         let v_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
-            true,
+            cfg.attention_bias,
             vb.pp("v_proj"),
             comm.clone(),
             &cfg.specific_config.quant,
@@ -245,6 +249,18 @@ impl Attention {
             &cfg.specific_config.quant,
             &cfg.quantization_config,
         )?;
+
+        let q_norm = if qwen3 {
+            Some(rms_norm(head_dim, cfg.rms_norm_eps, vb.pp("q_norm"))?)
+        } else {
+            None
+        };
+        let k_norm = if qwen3 {
+            Some(rms_norm(head_dim, cfg.rms_norm_eps, vb.pp("k_norm"))?)
+        } else {
+            None
+        };
+
         let attention_heads = cfg.num_attention_heads / comm.world_size();
         let kv_heads = cfg.num_key_value_heads / comm.world_size();
         Ok(Self {
@@ -252,6 +268,8 @@ impl Attention {
             k_proj,
             v_proj,
             o_proj,
+            q_norm,
+            k_norm,
             num_heads: attention_heads,
             num_kv_heads: kv_heads,
             head_dim,
@@ -301,6 +319,19 @@ impl Attention {
             (q, k, v.contiguous()?)
         };
 
+        let (q, k) = if self.q_norm.is_some() && self.k_norm.is_some() {
+            //Per‑head RMSNorm in qwen3
+            let q_flat = q.flatten(0, 2)?; // (B*H, L, D) -> (BHL, D) after transpose later
+            let k_flat = k.flatten(0, 2)?;
+            let q_flat = self.q_norm.as_ref().unwrap().forward(&q_flat)?;
+            let k_flat = self.k_norm.as_ref().unwrap().forward(&k_flat)?;
+            let q = q_flat.reshape((b_sz, self.num_heads, seq_len, self.head_dim))?;
+            let k = k_flat.reshape((b_sz, self.num_kv_heads, seq_len, self.head_dim))?;
+            (q, k)
+        } else {
+            (q, k)
+        };
+
         let (q, k) = self.rotary_emb.apply_rotary_emb_qkv(
             &q.to_dtype(DType::F32)?,
             &k.to_dtype(DType::F32)?,
@@ -339,12 +370,13 @@ struct DecoderLayer {
 
 impl DecoderLayer {
     fn new(
+        qwen3: bool,
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
         comm: Rc<Comm>,
     ) -> Result<Self> {
-        let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
+        let self_attn = Attention::new(qwen3, rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
         let mlp = MLP::new(cfg, vb.pp("mlp"), comm.clone())?;
         let input_layernorm =
             rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
@@ -381,7 +413,7 @@ impl DecoderLayer {
     }
 }
 
-pub struct Qwen2 {
+pub struct Qwen {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
@@ -392,8 +424,9 @@ pub struct Qwen2 {
     cfg: Config,
 }
 
-impl Qwen2 {
+impl Qwen {
     pub fn new(
+        qwen3: bool,
         vb: VarBuilder,
         cfg: &Config,
         dtype: DType,
@@ -408,8 +441,13 @@ impl Qwen2 {
         let vb_l = vb_m.pp("layers");
         let reporter = progress_reporter.clone();
         for layer_idx in 0..cfg.num_hidden_layers {
-            let layer =
-                DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), comm.clone())?;
+            let layer = DecoderLayer::new(
+                qwen3,
+                rotary_emb.clone(),
+                cfg,
+                vb_l.pp(layer_idx),
+                comm.clone(),
+            )?;
             layers.push(layer);
             reporter.write().unwrap().set_progress(layer_idx + 1);
         }

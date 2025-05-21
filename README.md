@@ -32,7 +32,7 @@ Currently, candle-vllm supports chat serving for the following models.
 | #6 | **StableLM** |✅|99 tks/s (3B)|TBD|-|TBD|
 | #7 | BigCode/StarCode |TBD|TBD|TBD |-|TBD|
 | #8 | ChatGLM |TBD|TBD|TBD |-|TBD|
-| #9 | **QWen2** |✅|148 tks/s (1.8B)|784 tks/s (1.8B) |-|TBD|
+| #9 | **QWen3** |✅|81 tks/s (8B)|831 tks/s (8B) |-|TBD|
 | #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |**73 tks/s (Gemma2-9B, Marlin)** |**587 tks/s (Gemma2-9B)**|
 | #11 | **DeepSeek-R1-Distill-QWen** |TBD|TBD|TBD|**62 tks (QWen 14B)**|TBD|
 | #12 | **DeepSeek-R1-Distill-LLaMa** |TBD|TBD|TBD|**108 tks (LLaMa3.1 8B)**|TBD|
@@ -85,7 +85,7 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 
 `MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95
 
-where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm", "deep-seek"]
+where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "gemma", "yi", "stable-lm", "deep-seek"]
 
 ## Detailed Usage
 

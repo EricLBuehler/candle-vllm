@@ -18,7 +18,7 @@ pub enum SeparatorStyle {
     Llama,
     Llama3,
     Phi,
-    Qwen2,
+    Qwen,
     Gemma,
     Mistral,
     Yi,
@@ -238,7 +238,7 @@ impl Conversation for DefaultConversation {
                         accum
                     }
 
-                    SeparatorStyle::Qwen2 | SeparatorStyle::Yi => {
+                    SeparatorStyle::Qwen | SeparatorStyle::Yi => {
                         let mut accum = "".to_string();
                         for (i, message) in self.messages.iter().enumerate() {
                             if message.role.clone() == self.roles.0 {

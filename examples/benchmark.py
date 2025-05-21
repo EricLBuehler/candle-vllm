@@ -6,7 +6,7 @@ from typing import List
 import argparse
 # Run candle-vllm service: cargo run --release -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE> --repeat-last-n 64
 # MODEL_ID is the huggingface model id or local weight path
-# MODEL_TYPE is one of ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "gemma", "yi", "stable-lm"]
+# MODEL_TYPE is one of ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "gemma", "yi", "stable-lm"]
 # Then run this file: python3 examples/benchmark.py --batch 16
 
 openai.api_key = "EMPTY"
