@@ -1,5 +1,6 @@
 pub mod deepseek;
 pub mod gemma;
+pub mod gemma3;
 pub mod linear;
 pub mod llama;
 pub mod mistral;
@@ -11,11 +12,16 @@ pub mod quantized_qwen2;
 pub mod qwen;
 pub mod stable_lm;
 pub mod yi;
+use crate::openai::distributed::Comm;
+use crate::paged_attention::input_metadata::InputMetadata;
+use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
-use candle_core::DType;
+use candle_core::{DType, Device, Result, Tensor};
 use either::Either;
 use serde::Deserialize;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 #[derive(Deserialize, Debug, Clone)]
 pub struct RopeScaling(#[serde(with = "either::serde_untagged")] pub Either<Vec<f64>, String>);
 
@@ -121,10 +127,12 @@ pub struct Config {
     pub use_flash_attn: bool,
     pub rms_norm_eps: f64,
     pub rope_theta: f64,
+    pub rope_local_base_freq: Option<f64>,
     pub bos_token_id: TokenID,
     pub eos_token_id: TokenID,
     pub max_seq_len: usize,
     pub sliding_window: Option<usize>,
+    pub sliding_window_pattern: Option<usize>,
     pub hidden_act: Option<candle_nn::Activation>,
     pub tie_word_embeddings: bool,
     pub rope_scaling: Option<HashMap<String, RopeScaling>>,
@@ -172,6 +180,155 @@ impl Config {
                 cfg.qk_rope_head_dim + cfg.qk_nope_head_dim
             }
             _ => self.get_head_size(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum KvCache {
+    Normal(candle_nn::kv_cache::KvCache),
+    Rotating(candle_nn::kv_cache::RotatingKvCache),
+}
+
+pub struct NaiveAttention {
+    kv_cache: RefCell<KvCache>,
+    num_kv_groups: usize,
+    scale: f64,
+}
+
+impl NaiveAttention {
+    pub fn new(cfg: &Config, sliding_window: Option<usize>) -> Self {
+        let num_heads = cfg.num_attention_heads;
+        let num_kv_heads = cfg.num_key_value_heads;
+        let num_kv_groups = num_heads / num_kv_heads;
+        let scale = 1f64 / f64::sqrt(cfg.head_dim.unwrap() as f64);
+
+        let kv_cache = if let Some(sliding_window) = sliding_window {
+            KvCache::Rotating(candle_nn::kv_cache::RotatingKvCache::new(2, sliding_window))
+        } else {
+            KvCache::Normal(candle_nn::kv_cache::KvCache::new(2, cfg.max_seq_len))
+        };
+        Self {
+            kv_cache: RefCell::new(kv_cache),
+            num_kv_groups,
+            scale,
+        }
+    }
+
+    pub fn forward(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        attention_mask: Option<&Tensor>,
+        softcapping: Option<f64>,
+    ) -> Result<Tensor> {
+        let (b_sz, _, seq_len, _) = q.dims4()?;
+        {
+            if seq_len > 1 {
+                self.clear_kv_cache();
+            }
+        }
+        let mut cache = self.kv_cache.borrow_mut();
+        let (k, v) = match &mut *cache {
+            KvCache::Normal(c) => c.append(&k, &v)?,
+            KvCache::Rotating(c) => c.append(&k, &v)?,
+        };
+
+        let k = candle_transformers::utils::repeat_kv(k, self.num_kv_groups)?.contiguous()?;
+        let v = candle_transformers::utils::repeat_kv(v, self.num_kv_groups)?.contiguous()?;
+
+        let attn_weights = (q.matmul(&k.transpose(2, 3)?)? * self.scale)?;
+
+        let attn_weights = match softcapping {
+            None => attn_weights,
+            Some(sc) => ((attn_weights / sc)?.tanh()? * sc)?,
+        };
+
+        let attn_weights = match attention_mask {
+            None => attn_weights,
+            Some(mask) => attn_weights.broadcast_add(mask)?,
+        };
+        let attn_out = candle_nn::ops::softmax_last_dim(&attn_weights)?;
+        attn_out
+            .matmul(&v)?
+            .transpose(1, 2)?
+            .reshape((b_sz, seq_len, ()))
+    }
+
+    pub fn clear_kv_cache(&self) {
+        let mut cache = self.kv_cache.borrow_mut();
+        match &mut *cache {
+            KvCache::Normal(c) => c.reset(),
+            KvCache::Rotating(c) => c.reset(),
+        }
+    }
+}
+
+pub enum AttentionSelect {
+    Naive(NaiveAttention),
+    Paged(PagedAttention),
+}
+
+impl AttentionSelect {
+    pub fn new(
+        cfg: &Config,
+        sliding_window: Option<usize>,
+        comm: Rc<Comm>,
+        device: &Device,
+    ) -> Self {
+        if cfg.sliding_window.is_some() {
+            AttentionSelect::Naive(NaiveAttention::new(cfg, sliding_window))
+        } else {
+            let head_dim = cfg.head_dim.unwrap();
+            let attention_heads = cfg.num_attention_heads / comm.world_size();
+            let kv_heads = cfg.num_key_value_heads / comm.world_size();
+            AttentionSelect::Paged(
+                PagedAttention::new(
+                    attention_heads,
+                    head_dim,
+                    1. / ((head_dim as f32).sqrt()),
+                    Some(kv_heads),
+                    None,
+                    device.clone(),
+                    None,
+                )
+                .unwrap(),
+            )
+        }
+    }
+
+    pub fn forward(
+        &self,
+        q: &Tensor,
+        k: &Tensor,
+        v: &Tensor,
+        attention_mask: Option<&Tensor>,
+        cache: Option<(&Tensor, &Tensor)>,
+        input_metadata: &InputMetadata,
+        softcapping: Option<f64>,
+    ) -> Result<Tensor> {
+        match self {
+            AttentionSelect::Naive(att) => att.forward(q, k, v, attention_mask, softcapping),
+            AttentionSelect::Paged(pag) => {
+                let (b_sz, _, seq_len, _) = q.dims4()?;
+                let y = pag.forward(
+                    q,
+                    k,
+                    v,
+                    attention_mask,
+                    cache.map(|(k_, _)| k_.clone()),
+                    cache.map(|(_, v_)| v_.clone()),
+                    input_metadata,
+                    softcapping,
+                )?;
+
+                if attention_mask.is_some() {
+                    y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))
+                } else {
+                    y.reshape((b_sz, seq_len, ()))
+                }
+            }
         }
     }
 }

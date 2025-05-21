@@ -187,6 +187,30 @@ pub enum ModelSelected {
         quant: Option<String>,
     },
 
+    Gemma3 {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        temperature: Option<f32>,
+
+        #[arg(long)]
+        top_p: Option<f64>,
+
+        #[arg(long)]
+        top_k: Option<usize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
+
+        #[arg(long)]
+        max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
+    },
+
     /// Select the mistral model (default 7b).
     Mistral {
         /// Control the application of repeat penalty for the last n tokens
@@ -323,6 +347,7 @@ impl Display for ModelSelected {
                 quant: _,
             } => write!(f, "qwen3"),
             ModelSelected::Gemma { .. } => write!(f, "gemma"),
+            ModelSelected::Gemma3 { .. } => write!(f, "gemma3"),
             ModelSelected::Mistral { .. } => write!(f, "mistral"),
             ModelSelected::Yi { .. } => write!(f, "yi"),
             ModelSelected::StableLM { .. } => write!(f, "stablelm"),
@@ -572,6 +597,35 @@ pub fn get_model_loader(
                 model_id
             } else {
                 "google/gemma-2b-it".to_string()
+            },
+            quant,
+        ),
+        ModelSelected::Gemma3 {
+            repeat_last_n,
+            temperature,
+            top_k,
+            top_p,
+            penalty,
+            max_gen_tokens,
+            quant,
+        } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(
+                    repeat_last_n,
+                    temperature,
+                    top_k,
+                    top_p,
+                    penalty,
+                    max_gen_tokens,
+                    quant.clone(),
+                    None,
+                ),
+                "gemma3".to_string(),
+            )),
+            if let Some(model_id) = model_id {
+                model_id
+            } else {
+                "google/gemma-3-4b-it".to_string()
             },
             quant,
         ),
