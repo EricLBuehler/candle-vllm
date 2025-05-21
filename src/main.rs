@@ -265,8 +265,7 @@ async fn main() -> Result<(), APIError> {
     let logger = ftail::Ftail::new();
     let mut port = args.port;
     #[cfg(feature = "nccl")]
-    let ((default_pipelines, pipeline_config), global_rank, daemon_manager) = if args.multi_process
-    {
+    let (pipelines, global_rank, daemon_manager) = if args.multi_process {
         use candle_vllm::openai::communicator::init_subprocess;
         let (id, local_rank, global_rank, global_world_size, daemon_manager) =
             init_subprocess(device_ids.clone()).unwrap();
@@ -293,7 +292,7 @@ async fn main() -> Result<(), APIError> {
                     Some(global_rank),
                     Some(global_world_size),
                 )
-                .await?,
+                .await,
             global_rank,
             Some(daemon_manager),
         )
@@ -305,7 +304,7 @@ async fn main() -> Result<(), APIError> {
                 .load_model(
                     paths, dtype, &quant, device_ids, None, None, None, None, None,
                 )
-                .await?,
+                .await,
             0,
             None,
         )
@@ -322,17 +321,21 @@ async fn main() -> Result<(), APIError> {
     );
 
     #[cfg(not(feature = "nccl"))]
-    let ((default_pipelines, pipeline_config), global_rank) = {
+    let (pipelines, global_rank) = {
         let log_file = format!("candle-vllm.log");
         let _ = config_log(logger, args.log, log_file);
         (
             loader
                 .load_model(paths, dtype, &quant, device_ids, None, None)
-                .await?,
+                .await,
             0,
         )
     };
 
+    let (default_pipelines, pipeline_config) = match pipelines {
+        Err(e) => panic!("{:?}", e),
+        Ok((p, c)) => (p, c),
+    };
     let mut config: Option<Config> = None;
     let mut cache_config: Option<CacheConfig> = None;
 

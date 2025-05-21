@@ -24,7 +24,7 @@ use crate::{
             quantized_llama::GGUFLLaMa,
             quantized_phi3::GGUFPhi3,
             quantized_qwen2::GGUFQWen2,
-            qwen2::{Qwen2, QwenConfig},
+            qwen::{Qwen, QwenConfig},
             stable_lm::{StableLM, StableLMConfig},
             yi::{Yi, YiConfig},
             Config,
@@ -57,7 +57,7 @@ enum LLMModel {
     Llama(Llama),
     Phi2(Phi2),
     Phi3(Phi),
-    Qwen2(Qwen2),
+    Qwen(Qwen),
     Gemma(Gemma),
     Mistral(Mistral),
     Yi(Yi),
@@ -179,365 +179,375 @@ impl DefaultLoader {
             local_world_size.unwrap() - 1
         };
 
-        let (models, devices, config, sep_style) =
-            if quant.is_some() && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf") {
-                let device = crate::new_device(device_ids[0]).unwrap();
-                let path = paths.get_weight_filenames()[0].clone();
-                println!(
-                    "Loading quantized {} model from file {}",
-                    self.name,
-                    path.display()
-                );
-                let mut file = try_api!(std::fs::File::open(&path.clone()));
-                let s_cfg = specific_args.clone();
-                let nlayers = {
-                    let content =
-                        try_api!(gguf_file::Content::read(&mut file)
-                            .map_err(|e| e.with_path(path.clone())));
-                    let nlayers = match self.name.as_str() {
-                        "llama" | "llama3" => GGUFLLaMa::get_num_of_layers(content),
-                        "phi3" => GGUFPhi3::get_num_of_layers(content),
-                        "qwen2" => GGUFQWen2::get_num_of_layers(content),
-                        _ => panic!("Model not supported!"),
-                    };
-                    nlayers.unwrap()
-                };
-                let handle = progress_worker(
-                    Some(num_subprogress as usize),
-                    nlayers,
-                    Arc::clone(&reporter),
-                )
-                .await;
+        let (models, devices, config, sep_style) = if quant.is_some()
+            && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf")
+        {
+            let device = crate::new_device(device_ids[0]).unwrap();
+            let path = paths.get_weight_filenames()[0].clone();
+            println!(
+                "Loading quantized {} model from file {}",
+                self.name,
+                path.display()
+            );
+            let mut file = try_api!(std::fs::File::open(&path.clone()));
+            let s_cfg = specific_args.clone();
+            let nlayers = {
                 let content = try_api!(
                     gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
                 );
-                let (model, config, sep_style) = match self.name.as_str() {
-                    "llama" => {
-                        let model = try_api!(GGUFLLaMa::from_gguf(
-                            content,
-                            &mut file,
-                            &device,
-                            dtype,
-                            s_cfg,
-                            Arc::clone(&reporter),
-                        ));
-                        let cfg = model.get_config().clone();
-                        (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama)
-                    }
-                    "llama3" => {
-                        let model = try_api!(GGUFLLaMa::from_gguf(
-                            content,
-                            &mut file,
-                            &device,
-                            dtype,
-                            s_cfg,
-                            Arc::clone(&reporter),
-                        ));
-                        let cfg = model.get_config().clone();
-                        (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama3)
-                    }
-                    "phi3" => {
-                        let model = try_api!(GGUFPhi3::from_gguf(
-                            content,
-                            &mut file,
-                            &device,
-                            dtype,
-                            s_cfg,
-                            Arc::clone(&reporter),
-                        ));
-                        let cfg = model.get_config().clone();
-                        (LLMModel::Phi3GGUF(model), cfg, SeparatorStyle::Phi)
-                    }
-                    "qwen2" => {
-                        let model = try_api!(GGUFQWen2::from_gguf(
-                            content,
-                            &mut file,
-                            &device,
-                            dtype,
-                            s_cfg,
-                            Arc::clone(&reporter),
-                        ));
-                        let cfg = model.get_config().clone();
-                        (LLMModel::QWen2GGUF(model), cfg, SeparatorStyle::Qwen2)
-                    }
+                let nlayers = match self.name.as_str() {
+                    "llama" | "llama3" => GGUFLLaMa::get_num_of_layers(content),
+                    "phi3" => GGUFPhi3::get_num_of_layers(content),
+                    "qwen2" => GGUFQWen2::get_num_of_layers(content),
                     _ => panic!("Model not supported!"),
                 };
-                handle.join().unwrap();
-                (vec![model], vec![device], config.to_owned(), sep_style)
+                nlayers.unwrap()
+            };
+            let handle = progress_worker(
+                Some(num_subprogress as usize),
+                nlayers,
+                Arc::clone(&reporter),
+            )
+            .await;
+            let content = try_api!(
+                gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
+            );
+            let (model, config, sep_style) = match self.name.as_str() {
+                "llama" => {
+                    let model = try_api!(GGUFLLaMa::from_gguf(
+                        content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        s_cfg,
+                        Arc::clone(&reporter),
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama)
+                }
+                "llama3" => {
+                    let model = try_api!(GGUFLLaMa::from_gguf(
+                        content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        s_cfg,
+                        Arc::clone(&reporter),
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama3)
+                }
+                "phi3" => {
+                    let model = try_api!(GGUFPhi3::from_gguf(
+                        content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        s_cfg,
+                        Arc::clone(&reporter),
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::Phi3GGUF(model), cfg, SeparatorStyle::Phi)
+                }
+                "qwen2" => {
+                    let model = try_api!(GGUFQWen2::from_gguf(
+                        content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        s_cfg,
+                        Arc::clone(&reporter),
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::QWen2GGUF(model), cfg, SeparatorStyle::Qwen)
+                }
+                _ => panic!("Model not supported!"),
+            };
+            handle.join().unwrap();
+            (vec![model], vec![device], config.to_owned(), sep_style)
+        } else {
+            let config = match self.name.as_str() {
+                "llama" | "llama3" => {
+                    let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "phi2" => {
+                    let config: Phi2Config = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    //Phi2 use F32 type for kvcache
+                    config.into_config(false, DType::F32, &specific_args)
+                }
+                "phi3" => {
+                    let config: PhiConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "qwen2" | "qwen3" => {
+                    let config: QwenConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "gemma" => {
+                    let config: GemmaConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "mistral" => {
+                    let config: MistralConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "yi" => {
+                    let config: YiConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "stablelm" => {
+                    let config: StableLMConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                "deepseek" => {
+                    let config: DeepSeekConfig = try_api!(serde_json::from_slice(&try_api!(
+                        std::fs::read(paths.get_config_filename())
+                    ),));
+                    config.into_config(false, dtype, &specific_args)
+                }
+                _ => panic!("Model not supported!"),
+            };
+
+            println!("Model {:?}", config);
+
+            println!("Loading {} model.", self.name);
+            let handle = progress_worker(
+                Some(num_subprogress as usize),
+                config.num_hidden_layers,
+                Arc::clone(&reporter),
+            )
+            .await;
+
+            use crate::openai::distributed::Comm;
+            #[cfg(feature = "nccl")]
+            let id = if comm_id.is_some() {
+                comm_id.unwrap()
             } else {
-                let config = match self.name.as_str() {
-                    "llama" | "llama3" => {
-                        let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        config.into_config(false, dtype, &specific_args)
-                    }
-                    "phi2" => {
-                        let config: Phi2Config = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        //Phi2 use F32 type for kvcache
-                        config.into_config(false, DType::F32, &specific_args)
-                    }
-                    "phi3" => {
-                        let config: PhiConfig = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        config.into_config(false, dtype, &specific_args)
-                    }
-                    "qwen2" => {
-                        let config: QwenConfig = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        config.into_config(false, dtype, &specific_args)
-                    }
-                    "gemma" => {
-                        let config: GemmaConfig = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        config.into_config(false, dtype, &specific_args)
-                    }
-                    "mistral" => {
-                        let config: MistralConfig = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        config.into_config(false, dtype, &specific_args)
-                    }
-                    "yi" => {
-                        let config: YiConfig = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        config.into_config(false, dtype, &specific_args)
-                    }
-                    "stablelm" => {
-                        let config: StableLMConfig = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        config.into_config(false, dtype, &specific_args)
-                    }
-                    "deepseek" => {
-                        let config: DeepSeekConfig = try_api!(serde_json::from_slice(&try_api!(
-                            std::fs::read(paths.get_config_filename())
-                        ),));
-                        config.into_config(false, dtype, &specific_args)
-                    }
-                    _ => panic!("Model not supported!"),
-                };
+                cudarc::nccl::safe::Id::new().unwrap()
+            };
+            #[cfg(feature = "nccl")]
+            assert!(
+                (comm_id.is_some() && device_ids.len() == 1)
+                    || (comm_id.is_none() && device_ids.len() >= 1)
+            );
+            let results: Vec<_> = device_ids
+                .par_iter()
+                .enumerate()
+                .map(|(rank, dev_id)| {
+                    #[cfg(feature = "nccl")]
+                    let rank = if global_rank.is_some() {
+                        global_rank.unwrap()
+                    } else {
+                        rank
+                    };
+                    #[cfg(feature = "nccl")]
+                    let num_shards = if global_world_size.is_some() {
+                        global_world_size.unwrap()
+                    } else {
+                        device_ids.len()
+                    };
 
-                println!("Model {:?}", config);
+                    let paths: Vec<PathBuf> = paths.get_weight_filenames();
+                    let device = crate::new_device(*dev_id).unwrap();
+                    #[cfg(feature = "nccl")]
+                    let _ = device.as_cuda_device().unwrap().bind_to_thread();
 
-                println!("Loading {} model.", self.name);
-                let handle = progress_worker(
-                    Some(num_subprogress as usize),
-                    config.num_hidden_layers,
-                    Arc::clone(&reporter),
-                )
-                .await;
+                    #[cfg(feature = "nccl")]
+                    tracing::warn!(
+                        "create nccl comm channel rank {}, shards {}, id {:?}",
+                        rank,
+                        num_shards,
+                        id
+                    );
 
-                use crate::openai::distributed::Comm;
-                #[cfg(feature = "nccl")]
-                let id = if comm_id.is_some() {
-                    comm_id.unwrap()
-                } else {
-                    cudarc::nccl::safe::Id::new().unwrap()
-                };
-                #[cfg(feature = "nccl")]
-                assert!(
-                    (comm_id.is_some() && device_ids.len() == 1)
-                        || (comm_id.is_none() && device_ids.len() >= 1)
-                );
-                let results: Vec<_> = device_ids
-                    .par_iter()
-                    .enumerate()
-                    .map(|(rank, dev_id)| {
-                        #[cfg(feature = "nccl")]
-                        let rank = if global_rank.is_some() {
-                            global_rank.unwrap()
-                        } else {
-                            rank
-                        };
-                        #[cfg(feature = "nccl")]
-                        let num_shards = if global_world_size.is_some() {
-                            global_world_size.unwrap()
-                        } else {
-                            device_ids.len()
-                        };
-
-                        let paths: Vec<PathBuf> = paths.get_weight_filenames();
-                        let device = crate::new_device(*dev_id).unwrap();
-                        #[cfg(feature = "nccl")]
-                        let _ = device.as_cuda_device().unwrap().bind_to_thread();
-
-                        #[cfg(feature = "nccl")]
-                        tracing::warn!(
-                            "create nccl comm channel rank {}, shards {}, id {:?}",
+                    #[cfg(feature = "nccl")]
+                    let comm = Rc::new(
+                        Comm::from_rank(
+                            device.as_cuda_device().unwrap().cuda_device(),
                             rank,
                             num_shards,
-                            id
-                        );
+                            id,
+                        )
+                        .unwrap(),
+                    );
+                    #[cfg(feature = "nccl")]
+                    tracing::warn!("nccl comm created for rank {}", rank);
 
-                        #[cfg(feature = "nccl")]
-                        let comm = Rc::new(
-                            Comm::from_rank(
-                                device.as_cuda_device().unwrap().cuda_device(),
-                                rank,
-                                num_shards,
-                                id,
-                            )
-                            .unwrap(),
-                        );
-                        #[cfg(feature = "nccl")]
-                        tracing::warn!("nccl comm created for rank {}", rank);
+                    #[cfg(not(feature = "nccl"))]
+                    let comm = Rc::new(Comm::default());
 
-                        #[cfg(not(feature = "nccl"))]
-                        let comm = Rc::new(Comm::default());
+                    let vb = unsafe {
+                        candle_nn::var_builder::ShardedSafeTensors::var_builder(
+                            &paths, dtype, &device,
+                        )
+                        .unwrap()
+                    };
 
-                        let vb = unsafe {
-                            candle_nn::var_builder::ShardedSafeTensors::var_builder(
-                                &paths, dtype, &device,
-                            )
-                            .unwrap()
-                        };
+                    let (model, sep) = match self.name.as_str() {
+                        "llama" => (
+                            LLMModel::Llama(
+                                Llama::load(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            ),
+                            SeparatorStyle::Llama,
+                        ),
+                        "llama3" => (
+                            LLMModel::Llama(
+                                Llama::load(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            ),
+                            SeparatorStyle::Llama3,
+                        ),
+                        "phi2" => (
+                            LLMModel::Phi2(
+                                Phi2::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
+                                    .unwrap(),
+                            ),
+                            SeparatorStyle::Phi,
+                        ),
+                        "phi3" => (
+                            LLMModel::Phi3(
+                                Phi::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
+                                    .unwrap(),
+                            ),
+                            SeparatorStyle::Phi,
+                        ),
+                        "qwen2" | "qwen3" => (
+                            LLMModel::Qwen(
+                                Qwen::new(
+                                    self.name.as_str() == "qwen3",
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            ),
+                            SeparatorStyle::Qwen,
+                        ),
+                        "gemma" => (
+                            LLMModel::Gemma(
+                                Gemma::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            ),
+                            SeparatorStyle::Gemma,
+                        ),
+                        "mistral" => (
+                            LLMModel::Mistral(
+                                Mistral::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            ),
+                            SeparatorStyle::Mistral,
+                        ),
+                        "yi" => (
+                            LLMModel::Yi(
+                                Yi::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
+                                    .unwrap(),
+                            ),
+                            SeparatorStyle::Yi,
+                        ),
+                        "stablelm" => (
+                            LLMModel::StableLM(
+                                StableLM::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            ),
+                            SeparatorStyle::StableLM,
+                        ),
+                        "deepseek" => (
+                            LLMModel::DeepSeek(
+                                DeepSeek::load(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            ),
+                            SeparatorStyle::Llama3,
+                        ),
+                        _ => panic!("Model not supported!"),
+                    };
 
-                        let (model, sep) = match self.name.as_str() {
-                            "llama" => (
-                                LLMModel::Llama(try_api!(Llama::load(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Llama,
-                            ),
-                            "llama3" => (
-                                LLMModel::Llama(try_api!(Llama::load(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Llama3,
-                            ),
-                            "phi2" => (
-                                LLMModel::Phi2(try_api!(Phi2::new(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Phi,
-                            ),
-                            "phi3" => (
-                                LLMModel::Phi3(try_api!(Phi::new(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Phi,
-                            ),
-                            "qwen2" => (
-                                LLMModel::Qwen2(try_api!(Qwen2::new(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Qwen2,
-                            ),
-                            "gemma" => (
-                                LLMModel::Gemma(try_api!(Gemma::new(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Gemma,
-                            ),
-                            "mistral" => (
-                                LLMModel::Mistral(try_api!(Mistral::new(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Mistral,
-                            ),
-                            "yi" => (
-                                LLMModel::Yi(try_api!(Yi::new(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Yi,
-                            ),
-                            "stablelm" => (
-                                LLMModel::StableLM(try_api!(StableLM::new(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::StableLM,
-                            ),
-                            "deepseek" => (
-                                LLMModel::DeepSeek(try_api!(DeepSeek::load(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                ))),
-                                SeparatorStyle::Llama3,
-                            ),
-                            _ => panic!("Model not supported!"),
-                        };
+                    Ok((model, device, sep))
+                })
+                .collect();
+            handle.join().unwrap();
+            // Separate devices and models from the results
+            let mut devices = Vec::new();
+            let mut models = Vec::new();
+            let mut sep_style = Vec::new();
 
-                        Ok((model, device, sep))
-                    })
-                    .collect();
-
-                handle.join().unwrap();
-                // Separate devices and models from the results
-                let mut devices = Vec::new();
-                let mut models = Vec::new();
-                let mut sep_style = Vec::new();
-
-                for result in results {
-                    match result {
-                        Ok((model, device, sep)) => {
-                            devices.push(device);
-                            models.push(model);
-                            sep_style.push(sep)
-                        }
-                        Err(e) => {
-                            return Err(e.into());
-                        }
+            for result in results {
+                match result {
+                    Ok((model, device, sep)) => {
+                        devices.push(device);
+                        models.push(model);
+                        sep_style.push(sep)
+                    }
+                    Err(e) => {
+                        return Err(e);
                     }
                 }
+            }
 
-                (models, devices, config, sep_style[0].clone())
-            };
+            (models, devices, config, sep_style[0].clone())
+        };
 
         println!("Done loading.");
 
@@ -564,16 +574,25 @@ impl DefaultLoader {
             let cfg_tokenizer: TokenizerConfig = try_api!(serde_json::from_slice(try_api!(
                 &std::fs::read(tokenizer_cfg_file)
             )));
-            let bos = match cfg_tokenizer.bos_token {
-                BosEosToken(Either::Left(Some(id))) => Some(id),
-                BosEosToken(Either::Right(Some(content))) => content.content.clone(),
-                _ => None,
+            let bos = if cfg_tokenizer.bos_token.is_some() {
+                match cfg_tokenizer.bos_token.unwrap() {
+                    BosEosToken(Either::Left(Some(id))) => Some(id),
+                    BosEosToken(Either::Right(Some(content))) => content.content.clone(),
+                    _ => None,
+                }
+            } else {
+                None
             };
-            let eos = match cfg_tokenizer.eos_token {
-                BosEosToken(Either::Left(Some(id))) => Some(id),
-                BosEosToken(Either::Right(Some(content))) => content.content.clone(),
-                _ => None,
+            let eos = if cfg_tokenizer.eos_token.is_some() {
+                match cfg_tokenizer.eos_token.unwrap() {
+                    BosEosToken(Either::Left(Some(id))) => Some(id),
+                    BosEosToken(Either::Right(Some(content))) => content.content.clone(),
+                    _ => None,
+                }
+            } else {
+                None
             };
+
             (cfg_tokenizer.chat_template, bos, eos)
         } else {
             (None, None, None)
@@ -721,7 +740,7 @@ impl DefaultPipeline {
             LLMModel::Phi3(phi) => phi
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
-            LLMModel::Qwen2(qwen2) => qwen2
+            LLMModel::Qwen(qwen) => qwen
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
             LLMModel::Gemma(gemma) => gemma
@@ -894,7 +913,7 @@ impl DefaultPipeline {
             LLMModel::Llama(llama) => llama.get_config().clone(),
             LLMModel::Phi2(phi) => phi.get_config().clone(),
             LLMModel::Phi3(phi) => phi.get_config().clone(),
-            LLMModel::Qwen2(qwen2) => qwen2.get_config().clone(),
+            LLMModel::Qwen(qwen) => qwen.get_config().clone(),
             LLMModel::Gemma(gemma) => gemma.get_config().clone(),
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
