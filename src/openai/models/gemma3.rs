@@ -483,7 +483,6 @@ impl Attention {
         )?;
 
         let (q, k) = (q.to_dtype(v.dtype())?, k.to_dtype(v.dtype())?);
-
         let y = self.attn.forward(
             &q,
             &k,
