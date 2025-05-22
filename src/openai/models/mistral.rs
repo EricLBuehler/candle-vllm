@@ -260,7 +260,7 @@ impl Attention {
                 head_dim,
                 1. / ((head_dim as f32).sqrt()),
                 Some(kv_heads),
-                None,
+                cfg.sliding_window,
                 vb.device().clone(),
                 None,
             )?,
@@ -386,7 +386,6 @@ pub struct Mistral {
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
     lm_head: ReplicatedLinear,
-    sliding_window: Option<usize>,
     device: Device,
     dtype: DType,
     cfg: Config,
@@ -427,29 +426,10 @@ impl Mistral {
             layers,
             norm,
             lm_head,
-            sliding_window: cfg.sliding_window,
             device: device.clone(),
             dtype,
             cfg: cfg.clone(),
         })
-    }
-
-    fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
-        let sliding_window = self.sliding_window.unwrap_or(tgt_len + 1);
-        let mask: Vec<_> = (0..tgt_len)
-            .flat_map(|i| {
-                (0..tgt_len).map(move |j| {
-                    if i < j || j + sliding_window < i {
-                        f32::NEG_INFINITY
-                    } else {
-                        0.
-                    }
-                })
-            })
-            .collect();
-        let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
-        mask.expand((b_size, 1, tgt_len, tgt_len))?
-            .to_dtype(self.dtype)
     }
 
     pub fn forward(
@@ -463,7 +443,14 @@ impl Mistral {
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = self.prepare_decoder_attention_mask(b_size, seq_len)?;
+            let mask = super::get_attention_casual_mask(
+                &self.device,
+                self.dtype,
+                b_size,
+                seq_len,
+                input_positions[0][0],
+                self.cfg.sliding_window,
+            )?;
             Some(mask)
         };
         let mut xs = self.embed_tokens.forward(input_ids)?;
