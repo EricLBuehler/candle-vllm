@@ -16,7 +16,7 @@ use crate::openai::distributed::Comm;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use crate::SpecificConfig;
-use candle_core::{DType, Device, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor, D};
 use either::Either;
 use serde::Deserialize;
 use std::cell::RefCell;
@@ -184,6 +184,42 @@ impl Config {
     }
 }
 
+pub fn get_attention_casual_mask(
+    device: &Device,
+    dtype: DType,
+    b_size: usize,
+    tgt_len: usize,
+    seqlen_offset: usize,
+    sliding_window: Option<usize>,
+) -> Result<Tensor> {
+    let mask: Vec<_> = if let Some(sliding_window) = sliding_window {
+        (0..tgt_len)
+            .flat_map(|i| {
+                (0..tgt_len).map(move |j| {
+                    if i < j || j + sliding_window < i {
+                        f32::NEG_INFINITY
+                    } else {
+                        0.
+                    }
+                })
+            })
+            .collect()
+    } else {
+        (0..tgt_len)
+            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0f32 }))
+            .collect()
+    };
+    let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), device)?;
+    let mask = if seqlen_offset > 0 {
+        let mask0 = Tensor::zeros((tgt_len, seqlen_offset), DType::F32, device)?;
+        Tensor::cat(&[&mask0, &mask], D::Minus1)?
+    } else {
+        mask
+    };
+    mask.expand((b_size, 1, tgt_len, tgt_len + seqlen_offset))?
+        .to_dtype(dtype)
+}
+
 #[derive(Debug, Clone)]
 enum KvCache {
     Normal(candle_nn::kv_cache::KvCache),
@@ -277,7 +313,7 @@ impl AttentionSelect {
         comm: Rc<Comm>,
         device: &Device,
     ) -> Self {
-        if cfg.sliding_window.is_some() {
+        if false && cfg.sliding_window.is_some() {
             AttentionSelect::Naive(NaiveAttention::new(cfg, sliding_window))
         } else {
             let head_dim = cfg.head_dim.unwrap();
@@ -289,7 +325,7 @@ impl AttentionSelect {
                     head_dim,
                     1. / ((head_dim as f32).sqrt()),
                     Some(kv_heads),
-                    None,
+                    sliding_window,
                     device.clone(),
                     None,
                 )

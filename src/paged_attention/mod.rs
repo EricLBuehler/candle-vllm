@@ -170,6 +170,11 @@ impl PagedAttention {
         //  input_metadata: metadata for paged attention.
         //
         //  alibi_slopes: shape = [num_heads]
+        let max_context_len = if self.sliding_window.is_some() {
+            self.sliding_window.unwrap()
+        } else {
+            input_metadata.max_context_len.unwrap()
+        };
         paged_attention(
             &query,
             key_cache.as_ref().unwrap(),
@@ -177,7 +182,7 @@ impl PagedAttention {
             input_metadata.block_tables.as_ref().unwrap(),
             input_metadata.context_lens.as_ref().unwrap(),
             None,
-            input_metadata.max_context_len.unwrap(),
+            max_context_len,
             self.scale,
             softcapping.unwrap_or(1.0f64) as f32,
         )

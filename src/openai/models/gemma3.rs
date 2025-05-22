@@ -8,7 +8,7 @@ use crate::openai::models::RopeScaling;
 use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::SpecificConfig;
-use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
+use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Activation, RmsNorm};
 use either::Either;
@@ -189,7 +189,7 @@ struct RotaryEmbedding {
 
 impl RotaryEmbedding {
     pub fn create_cache(
-        dtype: DType,
+        _dtype: DType,
         local_sliding_window: Option<usize>,
         cfg: &Config,
         dev: &Device,
@@ -230,7 +230,7 @@ impl RotaryEmbedding {
             .to_dtype(DType::F32)?
             .reshape((t_len as usize, 1))?;
         let t = (t / factor)?;
-        let mut freqs = t.matmul(&inv_freq)?.to_dtype(dtype)?;
+        let freqs = t.matmul(&inv_freq)?;
         Ok((freqs.sin()?, freqs.cos()?))
     }
 
@@ -476,11 +476,13 @@ impl Attention {
         let k = self.k_norm.forward(&k)?;
 
         let (q, k) = self.rotary_emb.apply_rotary_emb_qkv(
-            &q,
-            &k,
+            &q.to_dtype(DType::F32)?,
+            &k.to_dtype(DType::F32)?,
             input_positions,
             self.local_sliding_window.is_some(),
         )?;
+
+        let (q, k) = (q.to_dtype(v.dtype())?, k.to_dtype(v.dtype())?);
 
         let y = self.attn.forward(
             &q,
@@ -592,7 +594,6 @@ pub struct Gemma3 {
     dtype: DType,
     hidden_size: usize,
     cfg: Config,
-    sliding_window: Option<usize>,
 }
 
 impl Gemma3 {
@@ -638,45 +639,7 @@ impl Gemma3 {
             dtype,
             hidden_size: cfg.hidden_size,
             cfg: cfg.clone(),
-            sliding_window: cfg.sliding_window,
         })
-    }
-
-    fn prepare_decoder_attention_mask(
-        &self,
-        b_size: usize,
-        tgt_len: usize,
-        seqlen_offset: usize,
-        sliding_window: Option<usize>,
-    ) -> Result<Tensor> {
-        let mask: Vec<_> = if let Some(sliding_window) = sliding_window {
-            (0..tgt_len)
-                .flat_map(|i| {
-                    (0..tgt_len).map(move |j| {
-                        if i < j || j + sliding_window < i {
-                            f32::NEG_INFINITY
-                        } else {
-                            0.
-                        }
-                    })
-                })
-                .collect()
-        } else {
-            (0..tgt_len)
-                .flat_map(|i| {
-                    (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0f32 })
-                })
-                .collect()
-        };
-        let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
-        let mask = if seqlen_offset > 0 {
-            let mask0 = Tensor::zeros((tgt_len, seqlen_offset), DType::F32, &self.device)?;
-            Tensor::cat(&[&mask0, &mask], D::Minus1)?
-        } else {
-            mask
-        };
-        mask.expand((b_size, 1, tgt_len, tgt_len + seqlen_offset))?
-            .to_dtype(self.dtype)
     }
 
     fn create_attention_masks(
@@ -688,14 +651,23 @@ impl Gemma3 {
         if seq_len <= 1 {
             return Ok((None, None));
         }
-
-        let mask = self.prepare_decoder_attention_mask(batch_size, seq_len, seqlen_offset, None)?;
-
-        let sliding_mask = self.prepare_decoder_attention_mask(
+        //normal mask
+        let mask = super::get_attention_casual_mask(
+            &self.device,
+            self.dtype,
             batch_size,
             seq_len,
             seqlen_offset,
-            self.sliding_window,
+            None,
+        )?;
+
+        let sliding_mask = super::get_attention_casual_mask(
+            &self.device,
+            self.dtype,
+            batch_size,
+            seq_len,
+            seqlen_offset,
+            self.cfg.sliding_window,
         )?;
 
         Ok((Some(mask), Some(sliding_mask)))

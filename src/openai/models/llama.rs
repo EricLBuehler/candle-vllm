@@ -28,6 +28,7 @@ pub struct LlamaConfig {
     pub rope_theta: f32,
     pub bos_token_id: TokenID,
     pub eos_token_id: TokenID,
+    pub sliding_window: Option<usize>,
     pub max_position_embeddings: Option<usize>,
     pub quantization_config: Option<QuantConfig>,
 }
@@ -58,7 +59,7 @@ impl LlamaConfig {
             bos_token_id: self.bos_token_id,
             eos_token_id: self.eos_token_id,
             max_seq_len: self.max_position_embeddings.unwrap_or(MAX_SEQ_LEN),
-            sliding_window: None,
+            sliding_window: self.sliding_window,
             sliding_window_pattern: None,
             hidden_act: None,
             tie_word_embeddings: false,
@@ -257,7 +258,7 @@ impl CausalSelfAttention {
                 head_dim,
                 1. / ((head_dim as f32).sqrt()),
                 Some(kv_heads),
-                None,
+                cfg.sliding_window,
                 vb.device().clone(),
                 None,
             )?,
@@ -378,16 +379,6 @@ pub struct Llama {
 }
 
 impl Llama {
-    fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
-        let mask: Vec<_> = (0..tgt_len)
-            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
-            .collect();
-        let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
-        mask.expand((b_size, 1, tgt_len, tgt_len))?
-            .contiguous()?
-            .to_dtype(self.dtype)
-    }
-
     pub fn forward(
         &self,
         x: &Tensor,
@@ -395,11 +386,18 @@ impl Llama {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (_b_sz, seq_len) = x.dims2()?;
+        let (b_size, seq_len) = x.dims2()?;
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = self.prepare_decoder_attention_mask(_b_sz, seq_len)?;
+            let mask = super::get_attention_casual_mask(
+                &self.device,
+                self.dtype,
+                b_size,
+                seq_len,
+                input_positions[0][0],
+                self.cfg.sliding_window,
+            )?;
             Some(mask)
         };
         let mut x = self.wte.forward(x)?;
