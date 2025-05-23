@@ -82,8 +82,7 @@ async fn check_length(
             .unwrap()
             .0
             .tokenizer()
-            .tokenizer()
-            .encode(prompt, false)
+            .encode_fast(prompt, false)
             .map_err(APIError::from)?
     };
 

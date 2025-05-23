@@ -601,11 +601,7 @@ impl LLMEngine {
                                 .map(|x| x.token.try_into().unwrap())
                                 .collect::<Vec<_>>();
                             let pipeline = e.get_pipeline(0usize).unwrap().0.as_ref();
-                            let data = pipeline
-                                .tokenizer()
-                                .tokenizer()
-                                .decode(&data, false)
-                                .unwrap();
+                            let data = pipeline.tokenizer().decode(&data, false).unwrap();
                             let choice = ChatChoice {
                                 message: ChatChoiceData {
                                     role: pipeline.get_past_conversation().get_roles().0.clone(),

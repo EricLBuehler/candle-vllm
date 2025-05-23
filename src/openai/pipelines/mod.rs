@@ -4,6 +4,7 @@ use crate::try_api;
 use candle_core::{Device, Tensor, WithDType};
 use dirs;
 use either::Either;
+use std::collections::HashMap;
 use std::{env, fs};
 /// The LLMEngine is effectively a wrapper around a ModulePipeline. It contains a Scheduler and a CacheEngine
 /// which are used to scheduler and manage the cache during generation requests, respectively.
@@ -55,3 +56,35 @@ pub(crate) fn get_token(
         }
     })
 }
+
+pub trait DecodeStreamTrait: Send + Sync {
+    fn step(&mut self, id: u32) -> Option<String>;
+}
+
+struct StreamWithTokenizer<M, N, PT, PP, D>
+where
+    M: tokenizers::Model + Send + Sync + 'static,
+    N: tokenizers::Normalizer + Send + Sync + 'static,
+    PT: tokenizers::PreTokenizer + Send + Sync + 'static,
+    PP: tokenizers::PostProcessor + Send + Sync + 'static,
+    D: tokenizers::Decoder + Send + Sync + 'static,
+{
+    _tokenizer: Box<tokenizers::TokenizerImpl<M, N, PT, PP, D>>,
+    stream: tokenizers::DecodeStream<'static, M, N, PT, PP, D>,
+}
+
+impl<M, N, PT, PP, D> DecodeStreamTrait for StreamWithTokenizer<M, N, PT, PP, D>
+where
+    M: tokenizers::Model + Send + Sync + 'static,
+    N: tokenizers::Normalizer + Send + Sync + 'static,
+    PT: tokenizers::PreTokenizer + Send + Sync + 'static,
+    PP: tokenizers::PostProcessor + Send + Sync + 'static,
+    D: tokenizers::Decoder + Send + Sync + 'static,
+{
+    fn step(&mut self, id: u32) -> Option<String> {
+        self.stream.step(id).ok().flatten()
+    }
+}
+
+type DecodeStreamType = Box<dyn DecodeStreamTrait + Send + Sync>;
+type StreamDecoderMap = HashMap<usize, DecodeStreamType>;
