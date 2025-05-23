@@ -38,7 +38,6 @@ use crate::{
 };
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, Tensor};
-use candle_examples::token_output_stream::TokenOutputStream;
 use either::Either;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
@@ -73,7 +72,7 @@ enum LLMModel {
 pub struct DefaultPipeline {
     model: LLMModel,
     args: SpecificConfig,
-    tokenizer: TokenOutputStream,
+    tokenizer: Tokenizer,
     logits_processor: LogitsProcessor,
     conversation: DefaultConversation,
     name: String,
@@ -654,11 +653,9 @@ impl DefaultLoader {
                     };
                     LogitsProcessor::from_sampling(SAMPLING_SEED, sampling)
                 };
-                let tokenizer_ = Tokenizer::from_file(paths.get_tokenizer_filename())
+                let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
                     .map_err(|x| APIError::new(x.to_string()))
                     .unwrap();
-                let tokenizer =
-                    candle_examples::token_output_stream::TokenOutputStream::new(tokenizer_);
 
                 let mut stop_token_ids = Vec::<u32>::new();
                 match &config.eos_token_id {
@@ -677,7 +674,7 @@ impl DefaultLoader {
                 //custom stop tokens
                 if let Some(custom_stop) = &config.custom_stop_tokens {
                     for stop in custom_stop {
-                        if let Some(token) = tokenizer.get_token(stop) {
+                        if let Some(token) = tokenizer.get_vocab(true).get(stop).copied() {
                             stop_token_ids.push(token)
                         };
                     }
@@ -695,13 +692,13 @@ impl DefaultLoader {
                 }
                 if stop_token_ids.is_empty() {
                     //if no eos_token defined in the config, use default
-                    if let Some(token) = tokenizer.get_token("<|endoftext|>") {
+                    if let Some(token) = tokenizer.get_vocab(true).get("<|endoftext|>").copied() {
                         stop_token_ids.push(token);
                     }
-                    if let Some(token) = tokenizer.get_token("<|end|>") {
+                    if let Some(token) = tokenizer.get_vocab(true).get("<|end|>").copied() {
                         stop_token_ids.push(token);
                     } else if stop_token_ids.is_empty() {
-                        let token = tokenizer.tokenizer().token_to_id(EOS_TOKEN).unwrap_or(0);
+                        let token = tokenizer.token_to_id(EOS_TOKEN).unwrap_or(0);
                         stop_token_ids.push(token);
                     }
                 }
@@ -887,8 +884,7 @@ impl DefaultPipeline {
                         }
                     }
                     _ => {
-                        let leaked: &'static _ =
-                            Box::leak(Box::new(self.tokenizer.tokenizer().clone()));
+                        let leaked: &'static _ = Box::leak(Box::new(self.tokenizer.clone()));
                         let decoder = leaked.decode_stream(false);
                         let wrapped = super::StreamWithTokenizer {
                             _tokenizer: unsafe { Box::from_raw(leaked as *const _ as *mut _) },
@@ -935,7 +931,7 @@ impl DefaultPipeline {
         &self.name
     }
 
-    pub fn tokenizer(&self) -> &TokenOutputStream {
+    pub fn tokenizer(&self) -> &Tokenizer {
         &self.tokenizer
     }
 
@@ -976,12 +972,9 @@ impl DefaultPipeline {
         &self.device
     }
 
-    pub fn reset_decoder(&mut self) -> Option<String> {
+    pub fn reset_decoder(&mut self) {
         let mut map = self.stream_decoders.write().unwrap();
         map.clear();
-        let ret = self.tokenizer.decode_rest().unwrap_or(None);
-        self.tokenizer.clear();
-        ret
     }
 
     pub fn rank(&self) -> usize {
