@@ -93,7 +93,7 @@ def chatloop(system_prompt: str, stream: bool, live: bool,
                             content = chunk.choices[0].delta.content
                             if content:
                                 if msg == "" and prefix == "" and content[0] == "<":
-                                    prefix = content # <think> tag can cause Markdown probem in the first line
+                                    prefix = content # <think> tag can cause Markdown problem in the first line
                                 msg += content
                                 l.update(Panel(Markdown(prefix + msg), title="Candle-vLLM Response", border_style="cyan"))
   

@@ -90,7 +90,7 @@ pub struct SamplingParams {
     /// rec. default = true
     pub skip_special_tokens: bool,
     /// Thinking flag for reasoning models
-    //  default = Flase
+    //  default = False
     pub thinking: Option<bool>,
 }
 
@@ -284,12 +284,12 @@ impl SamplingParams {
         }
         if self.top_p.is_some() && self.top_p.unwrap() < 1.0f32 - SAMPLING_EPS {
             return Err(APIError::new_str(
-                "top_p must be 1 when using greedy sampling (no temperature speicified).",
+                "top_p must be 1 when using greedy sampling (no temperature specified).",
             ));
         }
         if self.top_k.is_some() && self.top_k.unwrap() != -1 {
             return Err(APIError::new_str(
-                "top_k must be -1 when using greedy sampling (no temperature speicified).",
+                "top_k must be -1 when using greedy sampling (no temperature specified).",
             ));
         }
         Ok(())
