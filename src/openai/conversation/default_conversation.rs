@@ -103,6 +103,7 @@ impl Conversation for DefaultConversation {
     fn apply_chat_template(
         &self,
         add_generation_prompt: bool,
+        enable_thinking: bool,
     ) -> Result<String, ApplyChatTemplateError> {
         if self.chat_template.is_none() {
             return Err(ApplyChatTemplateError::GetTemplateError(
@@ -110,12 +111,15 @@ impl Conversation for DefaultConversation {
             ));
         }
         let mut env = Environment::new();
-        env.add_template(
-            self.name.as_str(),
-            self.chat_template.as_ref().unwrap().as_str(),
-        )
-        .map_err(ApplyChatTemplateError::AddTemplateError)
-        .unwrap();
+        env.set_lstrip_blocks(true);
+        env.set_trim_blocks(true);
+        env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
+        let template = self.chat_template.as_ref().unwrap();
+        let template = template.replace("[::-1]", "|reverse");
+
+        env.add_template(self.name.as_str(), template.as_str())
+            .map_err(ApplyChatTemplateError::AddTemplateError)
+            .unwrap();
         let template = env
             .get_template(&self.name)
             .map_err(ApplyChatTemplateError::GetTemplateError)?;
@@ -125,14 +129,18 @@ impl Conversation for DefaultConversation {
               add_generation_prompt => add_generation_prompt,
               bos_token => self.bos_token,
               eos_token => self.eos_token,
+              enable_thinking => enable_thinking,
             })
             .map_err(ApplyChatTemplateError::RenderTemplateError)
     }
     /// Convert this conversation to a String prompt
-    fn get_prompt(&mut self) -> String {
-        match self.apply_chat_template(true) {
+    fn get_prompt(&mut self, thinking: bool) -> String {
+        match self.apply_chat_template(true, thinking) {
             Ok(prompt) => prompt,
-            _ => {
+            Err(e) => {
+                if self.chat_template.is_some() {
+                    tracing::warn!("apply chat template failed {:?}", e);
+                }
                 //no chat template exists? using the built-in template
                 let default_sys_prompt = "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string();
                 let chat_template = self.chat_template.as_ref().unwrap_or(&default_sys_prompt);

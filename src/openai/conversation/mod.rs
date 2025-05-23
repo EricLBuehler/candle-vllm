@@ -11,9 +11,10 @@ pub trait Conversation {
     fn apply_chat_template(
         &self,
         add_generation_prompt: bool,
+        enable_thinking: bool,
     ) -> Result<String, ApplyChatTemplateError>;
 
-    fn get_prompt(&mut self) -> String;
+    fn get_prompt(&mut self, thinking: bool) -> String;
 
     fn clear_message(&mut self);
 }

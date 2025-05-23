@@ -41,7 +41,10 @@ pub struct PipelineConfig {
     pub default_max_tokens: usize,
     pub penalty: f32,
     pub repeat_last_n: usize,
-    pub temperature: f32,
+    pub temperature: Option<f32>,
+    pub top_k: Option<isize>,
+    pub top_p: Option<f32>,
+    pub thinking: Option<bool>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

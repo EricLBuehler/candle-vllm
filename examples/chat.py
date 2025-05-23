@@ -11,7 +11,7 @@ from rich.markdown import Markdown
 from rich.spinner import Spinner
 from rich.rule import Rule 
 from rich.panel import Panel
-
+from typing import Optional
 openai.api_key = "EMPTY"  # no key needed since we use local candle-vllm service
 openai.base_url = "http://localhost:2000/v1/"
 
@@ -33,7 +33,16 @@ def clear_console():
               help="Times per second for output refresh.")
 @click.option("--port", type=int, default=2000,
               help="Server port.")
-def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, frequency: int, port: int):
+@click.option("--temperature", type=float, default=None,
+            help="Sampling temperature")
+@click.option("--top_p", type=float, default=None,
+            help="Sampling top-9")
+@click.option("--top_k", type=int, default=None,
+            help="Sampling top-k")
+@click.option("--thinking", type=bool, default=None,
+              help="Enable thinking for reasoning models.")
+def chatloop(system_prompt: str, stream: bool, live: bool, 
+    max_tokens: int, frequency: int, port: int, temperature: Optional[float], top_k: Optional[int], top_p: Optional[float], thinking: Optional[bool]):
     """
     A command-line chatbot interface using OpenAI API and candle-vllm as backend.
     """
@@ -50,13 +59,13 @@ def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, freq
     while True:
         try:
             # User input
-            user_input = input("🙋 Please Input: ")
+            user_input = input("🙋 Please Input (Ctrl+C to start a new chat or exit): ")
             if user_input == "":
                 console.print("Multiline input: press Ctrl+D to finish, Ctrl+C to exit.")
                 user_input = sys.stdin.read()
                 console.print()
             user_msg = {"role": "user", "content": user_input}
-
+            extra_body = {"top_k": top_k, "thinking": thinking}
             # Model response
             try:
                 with Live(Spinner("dots", text="Connecting...", style="green"), transient=True, console=console):
@@ -65,10 +74,14 @@ def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, freq
                         messages=messages + [user_msg],
                         stream=True,
                         max_tokens = max_tokens,
+                        temperature = temperature,
+                        top_p = top_p,
+                        extra_body = extra_body,
                     )
                 
                 console.print(Rule(title="Candle-vLLM:", align="left", style="cyan"))
                 # Handle streaming response
+                prefix = ""
                 msg = ""
                 if live:
                     with Live(Panel("", title="Candle-vLLM Response", border_style="cyan"),
@@ -79,8 +92,10 @@ def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, freq
                         for chunk in response:
                             content = chunk.choices[0].delta.content
                             if content:
+                                if msg == "" and prefix == "" and content[0] == "<":
+                                    prefix = content # <think> tag can cause Markdown probem in the first line
                                 msg += content
-                                l.update(Panel(Markdown(msg), title="Candle-vLLM Response", border_style="cyan"))
+                                l.update(Panel(Markdown(prefix + msg), title="Candle-vLLM Response", border_style="cyan"))
   
                 else:
                     for chunk in response:
@@ -109,7 +124,7 @@ def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, freq
                                     auto_refresh=True,
                                     refresh_per_second=frequency,
                                     vertical_overflow="visible") as l:
-                                l.update(Panel(Markdown(m["content"]), title="Candle-vLLM Response", border_style="cyan"))
+                                l.update(Panel(Markdown(prefix + m["content"]), title="Candle-vLLM Response", border_style="cyan"))
                     console.out("")
                     console.print(Rule(style="cyan"), "")
             except KeyboardInterrupt:
@@ -122,8 +137,14 @@ def chatloop(system_prompt: str, stream: bool, live: bool, max_tokens: int, freq
                 console.log(f"Unexpected OpenAI error: {e}", style="bold red")
         
         except KeyboardInterrupt:
-            console.print("\nExiting.", style="bold green")
-            break
+            if len(messages) == 0:
+                console.print("\nExiting.", style="bold green")
+                break
+            messages.clear()
+            console.clear()
+            console.log("A new chat is started. Press Ctrl+C again to exit.", style="yellow")
+            continue
+ 
 
 if __name__ == "__main__":
     chatloop()

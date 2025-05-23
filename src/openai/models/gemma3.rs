@@ -61,8 +61,8 @@ pub struct GemmaTextConfig {
     pub(crate) rope_theta: f64,
     #[serde(default = "attention_bias")]
     pub(crate) attention_bias: bool,
-    #[serde(default = "query_pre_attn_scalar")]
-    pub(crate) query_pre_attn_scalar: usize,
+    // #[serde(default = "query_pre_attn_scalar")]
+    // pub(crate) query_pre_attn_scalar: usize,
     pub(crate) sliding_window: Option<usize>,
     pub(crate) final_logit_softcapping: Option<f64>,
     pub(crate) attn_logit_softcapping: Option<f64>,
@@ -86,7 +86,7 @@ serde_default!(f64, rms_norm_eps, 1e-6);
 serde_default!(bool, tie_word_embeddings, true);
 serde_default!(f64, rope_theta, 1_000_000.0);
 serde_default!(bool, attention_bias, false);
-serde_default!(usize, query_pre_attn_scalar, 256);
+// serde_default!(usize, query_pre_attn_scalar, 256);
 serde_default!(f64, rope_local_base_freq, 10_000.0);
 serde_default!(usize, sliding_window_pattern, 6);
 serde_default!(Activation, hidden_activation, Activation::Silu);
