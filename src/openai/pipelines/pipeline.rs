@@ -36,8 +36,6 @@ use crate::{
     paged_attention::input_metadata::InputMetadata,
     try_api, SpecificConfig,
 };
-use std::path::Path;
-
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, Tensor};
 use candle_examples::token_output_stream::TokenOutputStream;
@@ -45,7 +43,9 @@ use either::Either;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use rayon::prelude::*;
+use std::collections::HashMap;
 use std::collections::VecDeque;
+use std::path::Path;
 pub use std::rc::Rc;
 use std::sync::RwLock;
 use std::{path::PathBuf, sync::Arc};
@@ -81,6 +81,7 @@ pub struct DefaultPipeline {
     device: Device,
     stop_token_ids: Vec<u32>,
     rank: usize,
+    pub stream_decoders: RwLock<super::StreamDecoderMap>,
 }
 
 pub struct DefaultLoader {
@@ -728,6 +729,7 @@ impl DefaultLoader {
                     device: devices[rank].clone(),
                     stop_token_ids,
                     rank,
+                    stream_decoders: RwLock::new(HashMap::new()),
                 })
             })
             .collect();
@@ -868,25 +870,40 @@ impl DefaultPipeline {
             logits.to_owned()
         };
 
+        let group_ids: Vec<usize> = groups.into_iter().map(|group| group.group_id).collect();
+
         let next_tokens = self.logits_processor.sample(&logits).unwrap();
         let result: Vec<TokenOrFinishReason> = next_tokens
             .into_par_iter()
             .enumerate()
             .map(|(i, next_token)| {
-                let mut text = self
-                    .tokenizer
-                    .tokenizer()
-                    .decode(&[next_token], false)
-                    .unwrap_or(" ".to_string());
-                let origin_text = self
-                    .tokenizer
-                    .tokenizer()
-                    .id_to_token(next_token)
-                    .unwrap_or("".to_string());
-                //properly handle space token
-                if origin_text.contains("▁") && origin_text.replace("▁", "") == text {
-                    text = origin_text.replace("▁", " ");
+                let group_id = group_ids[i];
+                let mut text = "".to_string();
+                let mut decoder_map = self.stream_decoders.write().unwrap();
+                match decoder_map.get_mut(&group_id) {
+                    Some(decoder) => {
+                        if let Some(output) = decoder.step(next_token) {
+                            text = output
+                        }
+                    }
+                    _ => {
+                        let leaked: &'static _ =
+                            Box::leak(Box::new(self.tokenizer.tokenizer().clone()));
+                        let decoder = leaked.decode_stream(false);
+                        let wrapped = super::StreamWithTokenizer {
+                            _tokenizer: unsafe { Box::from_raw(leaked as *const _ as *mut _) },
+                            stream: decoder,
+                        };
+                        let mut boxed_decoder: Box<dyn super::DecodeStreamTrait + Send + Sync> =
+                            Box::new(wrapped);
+                        if let Some(output) = boxed_decoder.step(next_token) {
+                            text = output
+                        }
+                        //stream decoder for the new request
+                        decoder_map.insert(group_id, boxed_decoder);
+                    }
                 }
+
                 let custom_stop_token_match = if custom_stop_tokens[i].len() > 0
                     && custom_stop_tokens[i].contains(&text.trim().to_string())
                 {
@@ -960,6 +977,8 @@ impl DefaultPipeline {
     }
 
     pub fn reset_decoder(&mut self) -> Option<String> {
+        let mut map = self.stream_decoders.write().unwrap();
+        map.clear();
         let ret = self.tokenizer.decode_rest().unwrap_or(None);
         self.tokenizer.clear();
         ret
