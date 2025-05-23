@@ -1,6 +1,6 @@
 use super::{get_token, TokenOrFinishReason};
 use crate::backend::progress::{progress_worker, ProgressReporter};
-use crate::openai::logits_processor::{LogitsProcessor, Sampling};
+use crate::openai::logits_processor::LogitsProcessor;
 use crate::openai::models::TokenID;
 use crate::openai::requests::StopTokens;
 use crate::openai::sampling_params::{Logprobs, TopLogprob};
@@ -584,7 +584,10 @@ impl DefaultLoader {
             default_max_tokens,
             penalty: specific_args.penalty.unwrap_or(1.),
             repeat_last_n: specific_args.repeat_last_n.unwrap_or(64),
-            temperature: specific_args.temperature.unwrap_or(0.7),
+            temperature: specific_args.temperature,
+            top_k: specific_args.top_k,
+            top_p: specific_args.top_p,
+            thinking: Some(specific_args.thinking),
         };
 
         let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
@@ -640,18 +643,12 @@ impl DefaultLoader {
             .enumerate()
             .map(|(rank, model)| {
                 let logits_processor = {
-                    let temperature = f64::from(pipeline_config.temperature);
-                    let sampling = if temperature <= 0. {
-                        Sampling::ArgMax
-                    } else {
-                        match (specific_args.top_k, specific_args.top_p) {
-                            (None, None) => Sampling::All { temperature },
-                            (Some(k), None) => Sampling::TopK { k, temperature },
-                            (None, Some(p)) => Sampling::TopP { p, temperature },
-                            (Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
-                        }
-                    };
-                    LogitsProcessor::from_sampling(SAMPLING_SEED, sampling)
+                    LogitsProcessor::new(
+                        SAMPLING_SEED,
+                        pipeline_config.temperature,
+                        specific_args.top_k,
+                        specific_args.top_p,
+                    )
                 };
                 let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
                     .map_err(|x| APIError::new(x.to_string()))
@@ -868,8 +865,18 @@ impl DefaultPipeline {
         };
 
         let group_ids: Vec<usize> = groups.into_iter().map(|group| group.group_id).collect();
+        let param = &groups[0].sampling_params;
+        let sampling_params =
+            if param.temperature.is_some() && (param.top_k.is_some() || param.top_p.is_some()) {
+                Some(param.to_owned())
+            } else {
+                None
+            };
 
-        let next_tokens = self.logits_processor.sample(&logits).unwrap();
+        let next_tokens = self
+            .logits_processor
+            .sample(&logits, &sampling_params)
+            .unwrap();
         let result: Vec<TokenOrFinishReason> = next_tokens
             .into_par_iter()
             .enumerate()

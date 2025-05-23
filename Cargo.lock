@@ -548,6 +548,7 @@ dependencies = [
  "metal 0.27.0",
  "metal-kernels",
  "minijinja",
+ "minijinja-contrib",
  "mpi",
  "rand 0.9.0",
  "range-checked",
@@ -2221,10 +2222,21 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "minijinja"
-version = "1.0.21"
+version = "2.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "55e877d961d4f96ce13615862322df7c0b6d169d40cab71a7ef3f9b9e594451e"
+checksum = "dd72e8b4e42274540edabec853f607c015c73436159b06c39c7af85a20433155"
 dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "minijinja-contrib"
+version = "2.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "457f85f9c4c5b17d11fcf9bbe7c0dbba64843c5ee040005956f1a510b6679fe2"
+dependencies = [
+ "minijinja",
  "serde",
 ]
 

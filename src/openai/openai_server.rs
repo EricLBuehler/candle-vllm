@@ -67,7 +67,11 @@ async fn get_gen_prompt(
         }
     }
 
-    Ok(conversation.get_prompt())
+    Ok(conversation.get_prompt(
+        request
+            .thinking
+            .unwrap_or(data.pipeline_config.thinking.unwrap_or(false)),
+    ))
 }
 
 async fn check_length(
@@ -164,11 +168,9 @@ pub async fn chat_completions(
         request
             .repetition_penalty
             .unwrap_or(data.pipeline_config.penalty),
-        request
-            .temperature
-            .unwrap_or(data.pipeline_config.temperature),
-        request.top_p.unwrap_or(1.0),
-        request.top_k.unwrap_or(-1),
+        request.temperature.or(data.pipeline_config.temperature),
+        request.top_p.or(data.pipeline_config.top_p),
+        request.top_k.or(data.pipeline_config.top_k),
         request.use_beam_search.unwrap_or(false),
         1.0,
         EarlyStoppingCondition::UnlikelyBetterCandidates,
@@ -181,6 +183,7 @@ pub async fn chat_completions(
         None,
         None,
         request.skip_special_tokens.unwrap_or(true),
+        request.thinking.or(data.pipeline_config.thinking),
     );
     if sampling_params.is_err() {
         return ChatResponder::ValidationError(sampling_params.err().unwrap());
@@ -188,7 +191,7 @@ pub async fn chat_completions(
     let sampling_params = sampling_params.unwrap();
 
     let (response_tx, rx) = flume::unbounded();
-    // println!("{:?}", sampling_params);
+    tracing::info!("{:?}", sampling_params);
 
     let finish_notify = data.finish_notify.clone();
     let data_clone = data.clone();

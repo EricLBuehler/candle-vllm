@@ -20,13 +20,10 @@ pub enum StopTokens {
 pub struct ChatCompletionRequest {
     pub model: String,
     pub messages: Messages,
-    #[serde(default)]
     pub temperature: Option<f32>, //0.7
-    #[serde(default)]
-    pub top_p: Option<f32>, //1.0
+    pub top_p: Option<f32>,       //1.0
     #[serde(default)]
     pub n: Option<usize>, //1
-    #[serde(default)]
     pub max_tokens: Option<usize>, //None
     #[serde(default)]
     pub stop: Option<StopTokens>,
@@ -40,8 +37,6 @@ pub struct ChatCompletionRequest {
     pub logit_bias: Option<HashMap<String, f32>>, //None
     #[serde(default)]
     pub user: Option<String>, //None
-    #[serde(default)]
-    //Additional candle-vllm params
     pub top_k: Option<isize>, //-1
     #[serde(default)]
     pub best_of: Option<usize>, //None
@@ -55,6 +50,6 @@ pub struct ChatCompletionRequest {
     pub stop_token_ids: Option<Vec<usize>>, //[]
     #[serde(default)]
     pub logprobs: Option<bool>, //false
-    #[serde(default)]
     pub repetition_penalty: Option<f32>, //1.1
+    pub thinking: Option<bool>, //false
 }

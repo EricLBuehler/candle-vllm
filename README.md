@@ -43,6 +43,9 @@ Currently, candle-vllm supports chat serving for the following models.
 
 ## General Usage
 
+Chat demo on GPU (A100, BF16, QWen3-8B Reasoning Model)
+<img src="res/Qwen3-8B-Reasoning-A100.gif" width="85%" height="85%" >
+
 ### Build Candle-vLLM
 
 ```shell
@@ -70,7 +73,7 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 
 **Example:**
 ```shell
-[RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192] [--weight-path /home/weights/QwQ32B-GPTQ-4Bit] [qwen2] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95]
+[RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192] [--weight-path /home/weights/Qwen3-27B-GPTQ-4Bit] [qwen3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking]
 ```
 
 `ENV_PARAM`: RUST_LOG=warn
@@ -79,11 +82,11 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 
 `PROGRAM_PARAM`：--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192
 
-`MODEL_WEIGHT_PATH`: --weight-path /home/weights/QwQ32B-GPTQ-4Bit
+`MODEL_WEIGHT_PATH`: --weight-path /home/weights/Qwen3-27B-GPTQ-4Bit
 
-`MODEL_TYPE`: qwen2
+`MODEL_TYPE`: qwen3
 
-`MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 40 --top-p 0.95
+`MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking
 
 where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
 
@@ -196,14 +199,15 @@ Chat with the mini chatbot (plain text)
 python3 examples/chat.py
 ```
 
+Pass generation parameters (to reasoning models with `--thinking True`)
+```shell
+python3 examples/chat.py --temperature 0.7 --top-k 64 --top-p 0.9 --thinking True
+```
+
 Chat with the mini chatbot (live update with Markdown, may cause flick)
 ```shell
 python3 examples/chat.py --live
 ```
-
-Chat demo on GPU (A100, LLaMa3.1 8B)
-
-<img src="res/LLaMa3.1-8B-Chatbot-A100.gif" width="75%" height="75%" >
 
 Chat demo on Apple M4 (Phi3 3.8B)
 

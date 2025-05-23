@@ -55,13 +55,13 @@ pub struct SamplingParams {
     pub repetition_penalty: f32,
     /// Randomness of sampling.
     /// rec. default = 1
-    pub temperature: f32,
+    pub temperature: Option<f32>,
     /// Cumulative prob of the top tokens to consider, must be in (0, 1]. Set 1 to consider all toks.  
     /// rec. default = 1    
-    pub top_p: f32,
+    pub top_p: Option<f32>,
     /// Control the number of top tokens to consider, set -1 to consider all.
     /// rec. default = -1
-    pub top_k: isize,
+    pub top_k: Option<isize>,
     /// Use beam search instead of sampling.
     /// rec. default = false
     pub use_beam_search: bool,
@@ -89,6 +89,9 @@ pub struct SamplingParams {
     /// Skip special toks in output.
     /// rec. default = true
     pub skip_special_tokens: bool,
+    /// Thinking flag for reasoning models
+    //  default = False
+    pub thinking: Option<bool>,
 }
 
 impl SamplingParams {
@@ -99,9 +102,9 @@ impl SamplingParams {
         presence_penalty: f32,
         frequency_penalty: f32,
         repetition_penalty: f32,
-        temperature: f32,
-        top_p: f32,
-        top_k: isize,
+        temperature: Option<f32>,
+        top_p: Option<f32>,
+        top_k: Option<isize>,
         use_beam_search: bool,
         length_penalty: f32,
         early_stopping: EarlyStoppingCondition,
@@ -112,6 +115,7 @@ impl SamplingParams {
         logprobs: Option<usize>,
         prompt_logprobs: Option<usize>,
         skip_special_tokens: bool,
+        thinking: Option<bool>,
     ) -> Result<Self, APIError> {
         let this = Self {
             n,
@@ -132,6 +136,7 @@ impl SamplingParams {
             logprobs,
             prompt_logprobs,
             skip_special_tokens,
+            thinking,
         };
 
         this.verify_args()?;
@@ -139,7 +144,7 @@ impl SamplingParams {
             this.verify_beam_search()?;
         } else {
             this.verify_non_beam_search()?;
-            if this.temperature < SAMPLING_EPS {
+            if this.temperature.unwrap_or(0.0f32) < SAMPLING_EPS {
                 this.verify_greedy_sampling()?;
             }
         }
@@ -222,10 +227,10 @@ impl SamplingParams {
                 self.repetition_penalty
             )));
         }
-        if self.temperature < 0.0 {
+        if self.temperature.unwrap_or(0.0f32) < 0.0f32 {
             return Err(APIError::new(format!(
                 "temperature must be non-negative, got {}",
-                self.temperature
+                self.temperature.unwrap_or(0.0f32)
             )));
         }
         if self.max_tokens < 1 {
@@ -244,15 +249,15 @@ impl SamplingParams {
                 self.best_of
             )));
         }
-        if self.temperature > SAMPLING_EPS {
+        if self.temperature.is_some() && self.temperature.unwrap() > SAMPLING_EPS {
             return Err(APIError::new_str(
                 "temperature must be 0 when using beam search",
             ));
         }
-        if self.top_p < 1.0 - SAMPLING_EPS {
+        if self.top_p.is_some() && self.top_p.unwrap() < 1.0f32 - SAMPLING_EPS {
             return Err(APIError::new_str("top_p must be 1 when using beam search"));
         }
-        if self.top_k != -1 {
+        if self.top_k.is_some() && self.top_k.unwrap() != -1 {
             return Err(APIError::new_str("top_k must be -1 when using beam search"));
         }
         Ok(())
@@ -262,7 +267,9 @@ impl SamplingParams {
         if self.early_stopping != EarlyStoppingCondition::UnlikelyBetterCandidates {
             return Err(APIError::new_str("early_stopping is not effective and must be UnlikelyBetterCandidates when not using beam search."));
         }
-        if self.length_penalty < 1.0 - SAMPLING_EPS || self.length_penalty > 1.0 + SAMPLING_EPS {
+        if self.length_penalty < 1.0f32 - SAMPLING_EPS
+            || self.length_penalty > 1.0f32 + SAMPLING_EPS
+        {
             return Err(APIError::new_str("length_penalty is not effective and must be the default value of 1.0 when not using beam search."));
         }
         Ok(())
@@ -275,14 +282,14 @@ impl SamplingParams {
                 self.best_of
             )));
         }
-        if self.top_p < 1.0 - SAMPLING_EPS {
+        if self.top_p.is_some() && self.top_p.unwrap() < 1.0f32 - SAMPLING_EPS {
             return Err(APIError::new_str(
-                "top_p must be 1 when using greedy sampling.",
+                "top_p must be 1 when using greedy sampling (no temperature specified).",
             ));
         }
-        if self.top_k != -1 {
+        if self.top_k.is_some() && self.top_k.unwrap() != -1 {
             return Err(APIError::new_str(
-                "top_k must be -1 when using greedy sampling.",
+                "top_k must be -1 when using greedy sampling (no temperature specified).",
             ));
         }
         Ok(())

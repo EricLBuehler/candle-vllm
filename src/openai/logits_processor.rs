@@ -2,6 +2,7 @@
 use crate::backend::custom_ops::sort::ArgSortOp; //Use our custom sort kernel, fix kernel crash on A100
 use crate::candle::D;
 use crate::candle::{DType, Error, Result, Tensor};
+use crate::openai::sampling_params::SamplingParams;
 use rand::{distr::Distribution, SeedableRng};
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;
@@ -10,10 +11,10 @@ use std::sync::Mutex;
 #[derive(Clone, PartialEq, Debug)]
 pub enum Sampling {
     ArgMax,
-    All { temperature: f64 },
-    TopK { k: usize, temperature: f64 },
-    TopP { p: f64, temperature: f64 },
-    TopKThenTopP { k: usize, p: f64, temperature: f64 },
+    All { temperature: f32 },
+    TopK { k: usize, temperature: f32 },
+    TopP { p: f32, temperature: f32 },
+    TopKThenTopP { k: usize, p: f32, temperature: f32 },
 }
 
 pub struct LogitsProcessor {
@@ -30,16 +31,41 @@ impl LogitsProcessor {
         }
     }
 
-    pub fn new(seed: u64, temperature: Option<f64>, top_p: Option<f64>) -> Self {
+    pub fn new(
+        seed: u64,
+        temperature: Option<f32>,
+        top_k: Option<isize>,
+        top_p: Option<f32>,
+    ) -> Self {
+        let strategy = LogitsProcessor::get_strategy(temperature, top_k, top_p);
+        Self::from_sampling(seed, strategy)
+    }
+
+    pub fn get_strategy(
+        temperature: Option<f32>,
+        top_k: Option<isize>,
+        top_p: Option<f32>,
+    ) -> Sampling {
         let temperature = temperature.and_then(|v| if v < 1e-7 { None } else { Some(v) });
-        let sampling = match temperature {
-            None => Sampling::ArgMax,
-            Some(temperature) => match top_p {
-                None => Sampling::All { temperature },
-                Some(p) => Sampling::TopP { p, temperature },
-            },
+        let top_k: Option<usize> = if top_k.is_some() && top_k.unwrap() > 0 {
+            Some(top_k.unwrap() as usize)
+        } else {
+            None
         };
-        Self::from_sampling(seed, sampling)
+
+        let temperature: Option<f32> = if temperature.is_some() && temperature.unwrap() > 0. {
+            Some(temperature.unwrap())
+        } else {
+            None
+        };
+
+        match (temperature, top_k, top_p) {
+            (None, _, _) => Sampling::ArgMax,
+            (Some(temperature), None, None) => Sampling::All { temperature },
+            (Some(temperature), Some(k), None) => Sampling::TopK { k, temperature },
+            (Some(temperature), None, Some(p)) => Sampling::TopP { p, temperature },
+            (Some(temperature), Some(k), Some(p)) => Sampling::TopKThenTopP { k, p, temperature },
+        }
     }
 
     fn sample_argmax(&self, logits: &Tensor) -> Result<Vec<u32>> {
@@ -143,7 +169,11 @@ impl LogitsProcessor {
         Ok(vec_ret)
     }
 
-    pub fn sample(&self, logits: &Tensor) -> Result<Vec<u32>> {
+    pub fn sample(
+        &self,
+        logits: &Tensor,
+        sampling_params: &Option<SamplingParams>,
+    ) -> Result<Vec<u32>> {
         let logits = logits.to_dtype(DType::F32)?;
         let batch = logits.layout().dims()[0];
         let prs = |temperature: f64| -> Result<Tensor> {
@@ -152,17 +182,23 @@ impl LogitsProcessor {
             Ok(prs)
         };
 
-        let next_tokens = match &self.sampling {
+        let sampling = if sampling_params.is_some() {
+            let param = sampling_params.as_ref().unwrap();
+            LogitsProcessor::get_strategy(param.temperature, param.top_k, param.top_p)
+        } else {
+            self.sampling.to_owned()
+        };
+        let next_tokens = match &sampling {
             Sampling::ArgMax => self.sample_argmax(&logits)?,
             Sampling::All { temperature } => {
-                let prs = prs(*temperature)?.to_vec2()?;
+                let prs = prs(*temperature as f64)?.to_vec2()?;
                 (0..batch)
                     .into_iter()
                     .map(|b| self.sample_multinomial(&prs[b]).unwrap())
                     .collect()
             }
             Sampling::TopP { p, temperature } => {
-                let prs = prs(*temperature)?;
+                let prs = prs(*temperature as f64)?;
                 if *p <= 0.0 || *p >= 1.0 {
                     // simply sample from the predicted probability distribution
                     let prs = prs.to_vec2()?;
@@ -176,11 +212,11 @@ impl LogitsProcessor {
                 }
             }
             Sampling::TopK { k, temperature } => {
-                let prs = prs(*temperature)?;
+                let prs = prs(*temperature as f64)?;
                 self.sample_topk(&prs, *k)?
             }
             Sampling::TopKThenTopP { k, p, temperature } => {
-                let prs = prs(*temperature)?;
+                let prs = prs(*temperature as f64)?;
                 self.sample_topk_topp(&prs, *k, *p as f32)?
             }
         };
