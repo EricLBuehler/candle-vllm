@@ -411,7 +411,7 @@ impl SpecificConfig {
 pub fn get_model_loader(
     selected_model: ModelSelected,
     model_id: Option<String>,
-) -> (Box<DefaultLoader>, String, Option<String>) {
+) -> (Box<DefaultLoader>, String, String, Option<String>) {
     match selected_model {
         ModelSelected::Llama {
             repeat_last_n,
@@ -441,6 +441,7 @@ pub fn get_model_loader(
             } else {
                 "meta-llama/Llama-2-7b-chat-hf".to_string()
             },
+            "meta-llama/Llama-2-7b-chat-hf".to_string(),
             quant,
         ),
         ModelSelected::Llama3 {
@@ -472,6 +473,7 @@ pub fn get_model_loader(
             } else {
                 "meta-llama/Meta-Llama-3.1-8B-Instruct".to_string()
             },
+            "meta-llama/Meta-Llama-3.1-8B-Instruct".to_string(),
             quant,
         ),
         ModelSelected::Phi2 {
@@ -502,6 +504,7 @@ pub fn get_model_loader(
             } else {
                 "microsoft/microsoft/phi-2".to_string()
             },
+            "microsoft/microsoft/phi-2".to_string(),
             quant,
         ),
         ModelSelected::Phi3 {
@@ -532,6 +535,7 @@ pub fn get_model_loader(
             } else {
                 "microsoft/Phi-3-mini-4k-instruct".to_string()
             },
+            "microsoft/Phi-3-mini-4k-instruct".to_string(),
             quant,
         ),
         ModelSelected::Qwen2 {
@@ -562,6 +566,7 @@ pub fn get_model_loader(
             } else {
                 "Qwen/Qwen1.5-1.8B-Chat".to_string()
             },
+            "Qwen/Qwen1.5-1.8B-Chat".to_string(),
             quant,
         ),
         ModelSelected::Qwen3 {
@@ -593,6 +598,7 @@ pub fn get_model_loader(
             } else {
                 "Qwen/Qwen3-8B".to_string()
             },
+            "Qwen/Qwen3-8B".to_string(),
             quant,
         ),
         ModelSelected::Gemma {
@@ -623,6 +629,7 @@ pub fn get_model_loader(
             } else {
                 "google/gemma-2b-it".to_string()
             },
+            "google/gemma-2b-it".to_string(),
             quant,
         ),
         ModelSelected::Gemma3 {
@@ -654,6 +661,7 @@ pub fn get_model_loader(
             } else {
                 "google/gemma-3-4b-it".to_string()
             },
+            "google/gemma-3-4b-it".to_string(),
             quant,
         ),
         ModelSelected::Mistral {
@@ -684,6 +692,7 @@ pub fn get_model_loader(
             } else {
                 "mistralai/Mistral-7B-Instruct-v0.3".to_string()
             },
+            "mistralai/Mistral-7B-Instruct-v0.3".to_string(),
             quant,
         ),
 
@@ -715,6 +724,7 @@ pub fn get_model_loader(
             } else {
                 "01-ai/Yi-6B-Chat".to_string()
             },
+            "01-ai/Yi-6B-Chat".to_string(),
             quant,
         ),
 
@@ -744,6 +754,7 @@ pub fn get_model_loader(
             } else {
                 "stabilityai/stablelm-zephyr-3b".to_string()
             },
+            "stabilityai/stablelm-zephyr-3b".to_string(),
             quant,
         ),
         ModelSelected::DeepSeek {
@@ -776,6 +787,7 @@ pub fn get_model_loader(
             } else {
                 "deepseek-ai/DeepSeek-V2-Lite-Chat".to_string()
             },
+            "deepseek-ai/DeepSeek-V2-Lite-Chat".to_string(),
             quant,
         ),
     }

@@ -121,16 +121,39 @@ impl DefaultLoader {
     pub fn download_model(
         &self,
         model_id: String,
+        default_model_id: String,
+        weight_file: Option<String>,
+        quant: Option<String>,
         revision: Option<String>,
         hf_token: Option<String>,
         hf_token_path: Option<String>,
     ) -> Result<DefaultModelPaths, APIError> {
+        if quant.is_some() && quant.as_ref().unwrap() == "gguf" && weight_file.is_some() {
+            println!(
+                "Downloading GGUF file {} from repo {}, config files will retrieved form repo {}",
+                weight_file.as_ref().unwrap(),
+                model_id,
+                default_model_id
+            );
+            return self.download_gguf_model(
+                model_id,
+                default_model_id,
+                None,
+                weight_file.clone().unwrap(),
+                hf_token,
+                hf_token_path,
+            );
+        };
         let api = try_api!(ApiBuilder::new()
             .with_progress(true)
             .with_token(Some(get_token(hf_token, hf_token_path)?))
             .build());
         let revision = revision.unwrap_or("main".to_string());
-        let api = api.repo(Repo::with_revision(model_id, RepoType::Model, revision));
+        let api = api.repo(Repo::with_revision(
+            model_id,
+            RepoType::Model,
+            revision.clone(),
+        ));
 
         let tokenizer_filename = try_api!(api.get("tokenizer.json"));
 
@@ -156,6 +179,47 @@ impl DefaultLoader {
             tokenizer_filename,
             tokenizer_config_filename,
             config_filename,
+            filenames,
+        })
+    }
+
+    pub fn download_gguf_model(
+        &self,
+        model_id: String,
+        default_model_id: String,
+        revision: Option<String>,
+        filename: String,
+        hf_token: Option<String>,
+        hf_token_path: Option<String>,
+    ) -> Result<DefaultModelPaths, APIError> {
+        let api = hf_hub::api::sync::Api::new().unwrap();
+        let revision = revision.unwrap_or("main".to_string());
+        let mut filenames = vec![];
+        let filename = try_api!(api
+            .repo(hf_hub::Repo::with_revision(
+                model_id,
+                hf_hub::RepoType::Model,
+                revision.to_string(),
+            ))
+            .get(filename.as_str()));
+        filenames.push(filename);
+
+        let api = api.repo(Repo::with_revision(
+            default_model_id,
+            RepoType::Model,
+            revision,
+        ));
+        let tokenizer_filename = try_api!(api.get("tokenizer.json"));
+
+        let tokenizer_config_filename = match api.get("tokenizer_config.json") {
+            Ok(f) => f,
+            _ => "".into(),
+        };
+
+        Ok(DefaultModelPaths {
+            tokenizer_filename,
+            tokenizer_config_filename,
+            config_filename: "".into(),
             filenames,
         })
     }
@@ -200,7 +264,9 @@ impl DefaultLoader {
                 let nlayers = match self.name.as_str() {
                     "llama" | "llama3" => GGUFLLaMa::get_num_of_layers(content),
                     "phi3" => GGUFPhi3::get_num_of_layers(content),
-                    "qwen2" => GGUFQWen2::get_num_of_layers(content),
+                    "qwen2" | "qwen3" => {
+                        GGUFQWen2::get_num_of_layers(self.name.as_str() == "qwen3", content)
+                    }
                     _ => panic!("Model not supported!"),
                 };
                 nlayers.unwrap()
@@ -252,8 +318,9 @@ impl DefaultLoader {
                     let cfg = model.get_config().clone();
                     (LLMModel::Phi3GGUF(model), cfg, SeparatorStyle::Phi)
                 }
-                "qwen2" => {
+                "qwen2" | "qwen3" => {
                     let model = try_api!(GGUFQWen2::from_gguf(
+                        self.name.as_str() == "qwen3",
                         content,
                         &mut file,
                         &device,

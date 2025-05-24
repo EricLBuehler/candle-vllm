@@ -30,11 +30,13 @@ struct LayerWeights {
     attention_wq: QMatMul,
     attention_wk: QMatMul,
     attention_wv: QMatMul,
-    attention_bq: Tensor,
-    attention_bk: Tensor,
-    attention_bv: Tensor,
+    attention_bq: Option<Tensor>,
+    attention_bk: Option<Tensor>,
+    attention_bv: Option<Tensor>,
     attention_wo: QMatMul,
     attention_norm: RmsNorm,
+    q_norm: Option<RmsNorm>,
+    k_norm: Option<RmsNorm>,
     mlp: Mlp,
     ffn_norm: RmsNorm,
     n_head: usize,
@@ -82,13 +84,27 @@ impl LayerWeights {
     ) -> Result<Tensor> {
         let (b_sz, seq_len, _) = x.dims3()?;
 
-        let q = self.attention_wq.forward(x)?.to_dtype(self.dtype)?;
-        let k = self.attention_wk.forward(x)?.to_dtype(self.dtype)?;
-        let v = self.attention_wv.forward(x)?.to_dtype(self.dtype)?;
+        let q = self.attention_wq.forward(x)?;
+        let k = self.attention_wk.forward(x)?;
+        let v = self.attention_wv.forward(x)?;
 
-        let q = q.broadcast_add(&self.attention_bq)?;
-        let k = k.broadcast_add(&self.attention_bk)?;
-        let v = v.broadcast_add(&self.attention_bv)?;
+        let q = if self.attention_bq.is_some() {
+            q.broadcast_add(self.attention_bq.as_ref().unwrap())?
+        } else {
+            q
+        };
+
+        let k = if self.attention_bk.is_some() {
+            k.broadcast_add(self.attention_bk.as_ref().unwrap())?
+        } else {
+            k
+        };
+
+        let v = if self.attention_bv.is_some() {
+            v.broadcast_add(self.attention_bv.as_ref().unwrap())?
+        } else {
+            v
+        };
 
         let (q, k, v) = if seq_len == 1 {
             //no need transpose for seq_len == 1, change reshape dim
@@ -109,7 +125,25 @@ impl LayerWeights {
             (q.contiguous()?, k.contiguous()?, v.contiguous()?)
         };
 
+        let (q, k) = if self.q_norm.is_some() && self.k_norm.is_some() {
+            //Per‑head RMSNorm in qwen3
+            let q_flat = q.flatten(0, 2)?; // (B*H, L, D) -> (BHL, D) after transpose later
+            let k_flat = k.flatten(0, 2)?;
+            //q_norm and k_norm weights stored in f32 format in qwen3 gguf
+            let q_flat = self.q_norm.as_ref().unwrap().forward(&q_flat)?;
+            let k_flat = self.k_norm.as_ref().unwrap().forward(&k_flat)?;
+            let q = q_flat.reshape((b_sz, self.n_head, seq_len, self.head_dim))?;
+            let k = k_flat.reshape((b_sz, self.n_kv_head, seq_len, self.head_dim))?;
+            (q, k)
+        } else {
+            (q, k)
+        };
         let (q, k) = self.apply_rotary_emb(&q, &k, input_positions)?;
+        let (q, k, v) = (
+            q.to_dtype(self.dtype)?,
+            k.to_dtype(self.dtype)?,
+            v.to_dtype(self.dtype)?,
+        );
 
         let y = self.attn.forward(
             &q,
@@ -158,14 +192,15 @@ fn precomput_freqs_cis(
         .to_dtype(DType::F32)?
         .reshape((context_length, 1))?
         .matmul(&theta.reshape((1, theta.elem_count()))?)?;
-    let cos = idx_theta.cos()?.to_dtype(dtype)?;
-    let sin = idx_theta.sin()?.to_dtype(dtype)?;
+    let cos = idx_theta.cos()?;
+    let sin = idx_theta.sin()?;
     Ok((cos, sin))
 }
 
 impl GGUFQWen2 {
     pub fn into_config(
         embedding_length: usize,
+        head_dim: usize,
         i_size: usize,
         block_count: usize,
         head_count: usize,
@@ -177,7 +212,7 @@ impl GGUFQWen2 {
     ) -> Config {
         Config {
             hidden_size: embedding_length,
-            head_dim: Some(embedding_length / head_count),
+            head_dim: Some(head_dim),
             intermediate_size: i_size,
             vocab_size: 0,
             num_hidden_layers: block_count,
@@ -210,15 +245,19 @@ impl GGUFQWen2 {
         }
     }
 
-    pub fn get_num_of_layers(ct: gguf_file::Content) -> Result<usize> {
+    pub fn get_num_of_layers(qwen3: bool, ct: gguf_file::Content) -> Result<usize> {
         let md_get = |s: &str| match ct.metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
             Some(v) => Ok(v),
         };
-        Ok(md_get("qwen2.block_count")?.to_u32()? as usize)
+        Ok(
+            md_get(format!("qwen{}.block_count", if qwen3 { 3 } else { 2 }).as_str())?.to_u32()?
+                as usize,
+        )
     }
 
     pub fn from_gguf<R: std::io::Seek + std::io::Read>(
+        qwen3: bool,
         ct: gguf_file::Content,
         reader: &mut R,
         device: &Device,
@@ -232,18 +271,32 @@ impl GGUFQWen2 {
         };
         let reporter = progress_reporter.clone();
 
-        let head_count = md_get("qwen2.attention.head_count")?.to_u32()? as usize;
-        let head_count_kv = md_get("qwen2.attention.head_count_kv")?.to_u32()? as usize;
-        let embedding_length = md_get("qwen2.embedding_length")?.to_u32()? as usize;
-        let context_length = md_get("qwen2.context_length")?.to_u32()? as usize;
-        let block_count = md_get("qwen2.block_count")?.to_u32()? as usize;
-        let rms_norm_eps = md_get("qwen2.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
-        let rope_freq_base = md_get("qwen2.rope.freq_base")
+        let version = if qwen3 { 3 } else { 2 };
+        let head_count =
+            md_get(format!("qwen{}.attention.head_count", version).as_str())?.to_u32()? as usize;
+        let head_count_kv =
+            md_get(format!("qwen{}.attention.head_count_kv", version).as_str())?.to_u32()? as usize;
+
+        let head_dim = md_get(format!("qwen{}.attention.key_length", version).as_str());
+        let head_dim = if head_dim.is_ok() {
+            Some(head_dim.unwrap().to_u32()? as usize)
+        } else {
+            None
+        };
+        let embedding_length =
+            md_get(format!("qwen{}.embedding_length", version).as_str())?.to_u32()? as usize;
+        let context_length =
+            md_get(format!("qwen{}.context_length", version).as_str())?.to_u32()? as usize;
+        let block_count =
+            md_get(format!("qwen{}.block_count", version).as_str())?.to_u32()? as usize;
+        let rms_norm_eps =
+            md_get(format!("qwen{}.attention.layer_norm_rms_epsilon", version).as_str())?
+                .to_f32()? as f64;
+        let rope_freq_base = md_get(format!("qwen{}.rope.freq_base", version).as_str())
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
 
-        let head_dim = embedding_length / head_count;
-
+        let head_dim = head_dim.unwrap_or(embedding_length / head_count);
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;
         let norm = RmsNorm::from_qtensor(
@@ -269,9 +322,42 @@ impl GGUFQWen2 {
             let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
             let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
 
-            let attention_bq = ct.tensor(reader, &format!("{prefix}.attn_q.bias"), device)?;
-            let attention_bk = ct.tensor(reader, &format!("{prefix}.attn_k.bias"), device)?;
-            let attention_bv = ct.tensor(reader, &format!("{prefix}.attn_v.bias"), device)?;
+            let attention_bq = ct.tensor(reader, &format!("{prefix}.attn_q.bias"), device);
+            let attention_bk = ct.tensor(reader, &format!("{prefix}.attn_k.bias"), device);
+            let attention_bv = ct.tensor(reader, &format!("{prefix}.attn_v.bias"), device);
+
+            let attention_bq = if attention_bq.is_ok() {
+                Some(
+                    attention_bq
+                        .unwrap()
+                        .dequantize(device)?
+                        .to_dtype(DType::F32)?,
+                )
+            } else {
+                None
+            };
+
+            let attention_bk = if attention_bk.is_ok() {
+                Some(
+                    attention_bk
+                        .unwrap()
+                        .dequantize(device)?
+                        .to_dtype(DType::F32)?,
+                )
+            } else {
+                None
+            };
+
+            let attention_bv = if attention_bv.is_ok() {
+                Some(
+                    attention_bv
+                        .unwrap()
+                        .dequantize(device)?
+                        .to_dtype(DType::F32)?,
+                )
+            } else {
+                None
+            };
 
             let attention_wo =
                 ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
@@ -293,16 +379,27 @@ impl GGUFQWen2 {
             let attention_norm =
                 ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?;
             let ffn_norm = ct.tensor(reader, &format!("{prefix}.ffn_norm.weight"), device)?;
+            let (q_norm, k_norm) = if qwen3 {
+                let q_norm = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), device)?;
+                let k_norm = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), device)?;
+                let q_norm = RmsNorm::from_qtensor(q_norm, rms_norm_eps)?;
+                let k_norm = RmsNorm::from_qtensor(k_norm, rms_norm_eps)?;
+                (Some(q_norm), Some(k_norm))
+            } else {
+                (None, None)
+            };
 
             layers.push(LayerWeights {
                 attention_wq: QMatMul::from_qtensor(attention_wq)?,
                 attention_wk: QMatMul::from_qtensor(attention_wk)?,
                 attention_wv: QMatMul::from_qtensor(attention_wv)?,
-                attention_bq: attention_bq.dequantize(device)?.to_dtype(dtype)?,
-                attention_bk: attention_bk.dequantize(device)?.to_dtype(dtype)?,
-                attention_bv: attention_bv.dequantize(device)?.to_dtype(dtype)?,
+                attention_bq,
+                attention_bk,
+                attention_bv,
                 attention_wo: QMatMul::from_qtensor(attention_wo)?,
                 attention_norm: RmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
+                q_norm,
+                k_norm,
                 cos: cos.clone(),
                 sin: sin.clone(),
                 mlp,
@@ -312,7 +409,7 @@ impl GGUFQWen2 {
                 head_dim,
                 attn: PagedAttention::new(
                     head_count as usize,
-                    (embedding_length / head_count) as usize,
+                    head_dim,
                     1. / ((head_dim as f32).sqrt()),
                     Some(head_count_kv as usize),
                     None,
@@ -331,6 +428,7 @@ impl GGUFQWen2 {
             output,
             cfg: GGUFQWen2::into_config(
                 embedding_length,
+                head_dim,
                 0,
                 block_count,
                 head_count,

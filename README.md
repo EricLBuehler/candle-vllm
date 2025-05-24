@@ -128,9 +128,16 @@ Run **QwQ-32B GGUF/GGML** models on **CUDA or Mac/Metal** devices
 target/release/candle-vllm --port 2000 --model-id Qwen/QwQ-32B --dtype bf16 --weight-path ./ --weight-file qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
 ```
 
-Run **GGUF/GGML** models on **Mac/Metal** devices (assume gguf model downloaded in `/Users/Downloads`)
+Run **GGUF/GGML** models on **Mac/Metal** devices
+
+From local path (assume gguf model downloaded in `/Users/Downloads`):
 ```shell
-cargo run --release --features metal -- --port 2000 --model-id microsoft/Phi-3.5-mini-instruct --dtype bf16 --weight-path /Users/Downloads --weight-file Phi-3.5-mini-instruct-Q4_K_M.gguf phi3 --quant gguf --temperature 0. --penalty 1.0
+cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /Users/Downloads --weight-file Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
+```
+
+Using model-id and filename:
+```shell
+cargo run --release --features metal -- --port 2000 --dtype bf16 --model-id unsloth/Qwen3-8B-GGUF --weight-file Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
 ```
 **Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
 
