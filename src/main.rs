@@ -171,7 +171,7 @@ fn config_log(
 #[tokio::main]
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
-    let (loader, model_id, defulat_model_id, quant) =
+    let (loader, model_id, default_model_id, quant) =
         get_model_loader(args.command, args.model_id.clone());
     if args.model_id.is_none() {
         println!("No model id specified, using the default model_id or specified in the weight_path to retrieve config files!");
@@ -200,12 +200,13 @@ async fn main() -> Result<(), APIError> {
             tokenizer_filename: {
                 //we need to download tokenizer for the ggufl/ggml model
                 let api = hf_hub::api::sync::Api::new().unwrap();
-                let api = api.model(defulat_model_id.clone());
+                let api = api.model(default_model_id.clone());
                 match api.get("tokenizer.json") {
                     Ok(f) => f,
                     _ => {
                         if !Path::new(path).join("tokenizer.json").exists() {
-                            panic!("Unable to download or obtain tokenizer.json from model path!");
+                            panic!("Failed to retrieve tokenizer.json. \
+                                Please check your network connection or ensure 'tokenizer.json' exists in the model directory.");
                         } else {
                             Path::new(path).join("tokenizer.json")
                         }
@@ -214,7 +215,7 @@ async fn main() -> Result<(), APIError> {
             },
             tokenizer_config_filename: {
                 let api = hf_hub::api::sync::Api::new().unwrap();
-                let api = api.model(defulat_model_id.clone());
+                let api = api.model(default_model_id.clone());
                 match api.get("tokenizer_config.json") {
                     Ok(f) => f,
                     _ => {
@@ -238,7 +239,7 @@ async fn main() -> Result<(), APIError> {
             //try download model anonymously
             let loaded = loader.download_model(
                 model_id.clone(),
-                defulat_model_id.clone(),
+                default_model_id.clone(),
                 args.weight_file.clone(),
                 quant.clone(),
                 None,
@@ -273,7 +274,7 @@ async fn main() -> Result<(), APIError> {
                 }
                 loader.download_model(
                     model_id,
-                    defulat_model_id,
+                    default_model_id,
                     args.weight_file,
                     quant.clone(),
                     None,

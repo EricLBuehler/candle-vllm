@@ -118,8 +118,7 @@ impl Conversation for DefaultConversation {
         let template = template.replace("[::-1]", "|reverse");
 
         env.add_template(self.name.as_str(), template.as_str())
-            .map_err(ApplyChatTemplateError::AddTemplateError)
-            .unwrap();
+            .map_err(ApplyChatTemplateError::AddTemplateError)?;
         let template = env
             .get_template(&self.name)
             .map_err(ApplyChatTemplateError::GetTemplateError)?;

@@ -502,9 +502,9 @@ pub fn get_model_loader(
             if let Some(model_id) = model_id {
                 model_id
             } else {
-                "microsoft/microsoft/phi-2".to_string()
+                "microsoft/phi-2".to_string()
             },
-            "microsoft/microsoft/phi-2".to_string(),
+            "microsoft/phi-2".to_string(),
             quant,
         ),
         ModelSelected::Phi3 {

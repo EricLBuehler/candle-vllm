@@ -36,7 +36,7 @@ def clear_console():
 @click.option("--temperature", type=float, default=None,
             help="Sampling temperature")
 @click.option("--top_p", type=float, default=None,
-            help="Sampling top-9")
+            help="Sampling top-p")
 @click.option("--top_k", type=int, default=None,
             help="Sampling top-k")
 @click.option("--thinking", type=bool, default=None,
