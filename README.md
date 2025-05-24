@@ -42,6 +42,9 @@ Currently, candle-vllm supports chat serving for the following model structures.
 Chat demo on GPU (A100, BF16, QWen3-8B Reasoning Model)
 <img src="res/Qwen3-8B-Reasoning-A100.gif" width="85%" height="85%" >
 
+Chat demo on **Apple Silicon** (M4 with 16GB unified memory, Q2K, QWen3-8B)
+<img src="res/Qwen3-8B-Apple-M4.gif" width="85%" height="85%" >
+
 ### Build Candle-vLLM
 
 ```shell
@@ -128,9 +131,16 @@ Run **QwQ-32B GGUF/GGML** models on **CUDA or Mac/Metal** devices
 target/release/candle-vllm --port 2000 --model-id Qwen/QwQ-32B --dtype bf16 --weight-path ./ --weight-file qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
 ```
 
-Run **GGUF/GGML** models on **Mac/Metal** devices (assume gguf model downloaded in `/Users/Downloads`)
+Run **GGUF/GGML** models on **Mac/Metal** devices
+
+From local path (assume gguf model downloaded in `/Users/Downloads`):
 ```shell
-cargo run --release --features metal -- --port 2000 --model-id microsoft/Phi-3.5-mini-instruct --dtype bf16 --weight-path /Users/Downloads --weight-file Phi-3.5-mini-instruct-Q4_K_M.gguf phi3 --quant gguf --temperature 0. --penalty 1.0
+cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /Users/Downloads --weight-file Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
+```
+
+Using model-id and filename:
+```shell
+cargo run --release --features metal -- --port 2000 --dtype bf16 --model-id unsloth/Qwen3-8B-GGUF --weight-file Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
 ```
 **Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
 
@@ -204,10 +214,6 @@ Chat with the mini chatbot (live update with Markdown, may cause flick)
 ```shell
 python3 examples/chat.py --live
 ```
-
-Chat demo on Apple M4 (Phi3 3.8B)
-
-<img src="res/Phi3-3.8B-Chatbot-Apple-M4.gif" width="75%" height="75%" >
 
 #### Option 2: Chat with naive ChatUI (or popular dify frontend)
 Install naive ChatUI and its dependencies:

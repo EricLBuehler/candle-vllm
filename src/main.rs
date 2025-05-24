@@ -171,9 +171,10 @@ fn config_log(
 #[tokio::main]
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
-    let (loader, model_id, quant) = get_model_loader(args.command, args.model_id.clone());
+    let (loader, model_id, default_model_id, quant) =
+        get_model_loader(args.command, args.model_id.clone());
     if args.model_id.is_none() {
-        println!("No model id specified, using the default model or specified in the weight_path!");
+        println!("No model id specified, using the default model_id or specified in the weight_path to retrieve config files!");
     }
 
     let paths = match (&args.weight_path, &args.weight_file) {
@@ -199,15 +200,32 @@ async fn main() -> Result<(), APIError> {
             tokenizer_filename: {
                 //we need to download tokenizer for the ggufl/ggml model
                 let api = hf_hub::api::sync::Api::new().unwrap();
-                let api = api.model(model_id.clone());
-                api.get("tokenizer.json").unwrap()
+                let api = api.model(default_model_id.clone());
+                match api.get("tokenizer.json") {
+                    Ok(f) => f,
+                    _ => {
+                        if !Path::new(path).join("tokenizer.json").exists() {
+                            panic!("Failed to retrieve tokenizer.json. \
+                                Please check your network connection or ensure 'tokenizer.json' exists in the model directory.");
+                        } else {
+                            Path::new(path).join("tokenizer.json")
+                        }
+                    }
+                }
             },
             tokenizer_config_filename: {
                 let api = hf_hub::api::sync::Api::new().unwrap();
-                let api = api.model(model_id.clone());
+                let api = api.model(default_model_id.clone());
                 match api.get("tokenizer_config.json") {
                     Ok(f) => f,
-                    _ => "".into(),
+                    _ => {
+                        if !Path::new(path).join("tokenizer_config.json").exists() {
+                            println!("Warning: Unable to download or obtain tokenizer_config.json from model path! No chat_template!");
+                            "".into()
+                        } else {
+                            Path::new(path).join("tokenizer_config.json")
+                        }
+                    }
                 }
             },
             config_filename: PathBuf::new(),
@@ -218,28 +236,52 @@ async fn main() -> Result<(), APIError> {
             },
         },
         _ => {
-            if args.hf_token.is_none() && args.hf_token_path.is_none() {
-                //no token provided
-                let token_path = format!(
-                    "{}/.cache/huggingface/token",
-                    dirs::home_dir()
-                        .ok_or(APIError::new_str("No home directory"))?
-                        .display()
-                );
-                if !Path::new(&token_path).exists() {
-                    //also no token cache
-                    use std::io::Write;
-                    let mut input_token = String::new();
-                    println!("Please provide your huggingface token to download model:\n");
-                    std::io::stdin()
-                        .read_line(&mut input_token)
-                        .expect("Failed to read token!");
-                    std::fs::create_dir_all(Path::new(&token_path).parent().unwrap()).unwrap();
-                    let mut output = std::fs::File::create(token_path).unwrap();
-                    write!(output, "{}", input_token.trim()).expect("Failed to save token!");
+            //try download model anonymously
+            let loaded = loader.download_model(
+                model_id.clone(),
+                default_model_id.clone(),
+                args.weight_file.clone(),
+                quant.clone(),
+                None,
+                args.hf_token.clone(),
+                args.hf_token_path.clone(),
+            );
+            if loaded.is_ok() {
+                loaded.unwrap()
+            } else {
+                //if it's failed, try using huggingface token
+                println!("Try request model using cached huggingface token...");
+                if args.hf_token.is_none() && args.hf_token_path.is_none() {
+                    //no token provided
+                    let token_path = format!(
+                        "{}/.cache/huggingface/token",
+                        dirs::home_dir()
+                            .ok_or(APIError::new_str("No home directory"))?
+                            .display()
+                    );
+                    if !Path::new(&token_path).exists() {
+                        //also no token cache
+                        use std::io::Write;
+                        let mut input_token = String::new();
+                        println!("Unable to request model, please provide your huggingface token to download model:\n");
+                        std::io::stdin()
+                            .read_line(&mut input_token)
+                            .expect("Failed to read token!");
+                        std::fs::create_dir_all(Path::new(&token_path).parent().unwrap()).unwrap();
+                        let mut output = std::fs::File::create(token_path).unwrap();
+                        write!(output, "{}", input_token.trim()).expect("Failed to save token!");
+                    }
                 }
+                loader.download_model(
+                    model_id,
+                    default_model_id,
+                    args.weight_file,
+                    quant.clone(),
+                    None,
+                    args.hf_token,
+                    args.hf_token_path,
+                )?
             }
-            loader.download_model(model_id, None, args.hf_token, args.hf_token_path)?
         }
     };
 

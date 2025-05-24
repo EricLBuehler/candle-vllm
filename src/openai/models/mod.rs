@@ -8,7 +8,7 @@ pub mod phi2;
 pub mod phi3;
 pub mod quantized_llama;
 pub mod quantized_phi3;
-pub mod quantized_qwen2;
+pub mod quantized_qwen;
 pub mod qwen;
 pub mod stable_lm;
 pub mod yi;
