@@ -20,25 +20,21 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 
 ## Develop Status
 
-Currently, candle-vllm supports chat serving for the following models.
+Currently, candle-vllm supports chat serving for the following model structures.
 
 | Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K` or `Marlin`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
 |--|--|--|--|--|--|--|
-| #1 | **LLAMA** |✅|65 tks/s (LLaMa3.1 8B) | 553 tks/s (LLaMa3.1 8B) | 75 tks/s (LLaMa3.1 8B), **115 tks/s (LLaMa3.1 8B, Marlin)** |**968 tks/s (LLaMa3.1 8B)**|
-| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), **115 tks/s (7B, Marlin)** |**981 tks/s (7B)**|
-| #3 | **Phi (v1, v1.5, v2)** |✅|97 tks/s (2.7B, F32+BF16)|TBD|-|TBD|
-| #4 | **Phi-3** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
-| #5 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|TBD|
-| #6 | **StableLM** |✅|99 tks/s (3B)|TBD|-|TBD|
-| #7 | BigCode/StarCode |TBD|TBD|TBD |-|TBD|
-| #8 | ChatGLM |TBD|TBD|TBD |-|TBD|
-| #9 | **QWen3** |✅|81 tks/s (8B)|831 tks/s (8B) |-|TBD|
-| #10 | **Google Gemma** |✅|130 tks/s (2B)|TBD |**73 tks/s (Gemma2-9B, Marlin)** |**587 tks/s (Gemma2-9B)**|
-| #11 | **DeepSeek-R1-Distill-QWen** |TBD|TBD|TBD|**62 tks (QWen 14B)**|TBD|
-| #12 | **DeepSeek-R1-Distill-LLaMa** |TBD|TBD|TBD|**108 tks (LLaMa3.1 8B)**|TBD|
-| #13 | Moondream-2 (Multimodal LLM) |TBD|TBD|TBD |-|TBD|
-| #14 | **DeepSeek V2/V3/R1** |✅|TBD|TBD |-|TBD|
-| #15 | **QwQ-32B (GGUF)** |✅|TBD|TBD |36 tks/s (Q4K)|TBD|
+| #1 | **LLAMA** |✅|65 tks/s (8B) | 553 tks/s (8B) | 75 tks/s (8B), 115 tks/s (8B, **Marlin**) |968 tks/s (8B)|
+| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), 115 tks/s (7B, **Marlin**) |981 tks/s (7B)|
+| #3 | **Phi** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
+| #4 | **QWen2/Qwen3** |✅|81 tks/s (8B)|831 tks/s (8B) |-|TBD|S
+| #4 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|TBD|
+| #5 | **StableLM** |✅|99 tks/s (3B)|TBD|-|TBD|
+| #6 | **Gemma-2/Gemma-3** |✅|60 tks/s (9B)|TBD |73 tks/s (9B, **Marlin**) |587 tks/s (9B)|
+| #7 | **DeepSeek-R1-Distill-QWen** |✅|48 tks (14B)|TBD|62 tks (14B)|TBD|
+| #8 | **DeepSeek-R1-Distill-LLaMa** |✅|65 tks (8B)|TBD|108 tks (8B)|TBD|
+| #9 | **DeepSeek V2/V3/R1** |✅|TBD|TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|TBD|
+| #10 | **QwQ-32B** |✅|30 tks/s **(32B, tp=2)**|TBD |36 tks/s **(32B, Q4K, GGUF)**|TBD|
 
 
 ## General Usage
@@ -161,14 +157,14 @@ If you encountered problems under Multi-threaded Multi-GPU mode, you may:
 export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
 ```
 
-Run **DeepSeek-R1 (671B/685B) on Lower GPU Memory Setups**, e.g., **single-node** with `8 x A100(48GB)`
+Run **DeepSeek-R1 (671B/685B) on Lower GPU Memory Setups**, e.g., **single-node** with `8 x RTX4090(48GB modified)`
 ```shell
 python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ 
 RUST_LOG=warn cargo run --release --features cuda,nccl -- --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0 --num-experts-offload-per-rank 11
 ```
 **Note:** This setup offloads 11 experts per rank (a total of 88 out of 256 experts) to the CPU (around 125GB additional host memory required). During inference, these offloaded experts are swapped back into GPU memory as needed. If you have even less GPU memory, consider increasing the `--num-experts-offload-per-rank` parameter (up to a maximum of 32 experts per rank in this case).
 
-Run **DeepSeek-R1 (671B/685B) on multi-node**, e.g., (`8 x A100(48GB)` x 2 nodes)
+Run **DeepSeek-R1 (671B/685B) on multi-node**, e.g., (`8 x A100(40GB)` x 2 nodes)
 ```shell
 sudo apt update
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
