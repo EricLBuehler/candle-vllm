@@ -24,7 +24,7 @@ use crate::{
             phi3::{Phi, PhiConfig},
             quantized_llama::GGUFLLaMa,
             quantized_phi3::GGUFPhi3,
-            quantized_qwen2::GGUFQWen2,
+            quantized_qwen::GGUFQWen,
             qwen::{Qwen, QwenConfig},
             stable_lm::{StableLM, StableLMConfig},
             yi::{Yi, YiConfig},
@@ -66,7 +66,7 @@ enum LLMModel {
     DeepSeek(DeepSeek),
     LlamaGGUF(GGUFLLaMa),
     Phi3GGUF(GGUFPhi3),
-    QWen2GGUF(GGUFQWen2),
+    QWenGGUF(GGUFQWen),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -265,7 +265,7 @@ impl DefaultLoader {
                     "llama" | "llama3" => GGUFLLaMa::get_num_of_layers(content),
                     "phi3" => GGUFPhi3::get_num_of_layers(content),
                     "qwen2" | "qwen3" => {
-                        GGUFQWen2::get_num_of_layers(self.name.as_str() == "qwen3", content)
+                        GGUFQWen::get_num_of_layers(self.name.as_str() == "qwen3", content)
                     }
                     _ => panic!("Model not supported!"),
                 };
@@ -319,7 +319,7 @@ impl DefaultLoader {
                     (LLMModel::Phi3GGUF(model), cfg, SeparatorStyle::Phi)
                 }
                 "qwen2" | "qwen3" => {
-                    let model = try_api!(GGUFQWen2::from_gguf(
+                    let model = try_api!(GGUFQWen::from_gguf(
                         self.name.as_str() == "qwen3",
                         content,
                         &mut file,
@@ -329,7 +329,7 @@ impl DefaultLoader {
                         Arc::clone(&reporter),
                     ));
                     let cfg = model.get_config().clone();
-                    (LLMModel::QWen2GGUF(model), cfg, SeparatorStyle::Qwen)
+                    (LLMModel::QWenGGUF(model), cfg, SeparatorStyle::Qwen)
                 }
                 _ => panic!("Model not supported!"),
             };
@@ -859,7 +859,7 @@ impl DefaultPipeline {
             LLMModel::LlamaGGUF(llama) => llama
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
-            LLMModel::QWen2GGUF(qwen2) => qwen2
+            LLMModel::QWenGGUF(qwen) => qwen
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
         }
@@ -1041,7 +1041,7 @@ impl DefaultPipeline {
             LLMModel::DeepSeek(deepseek) => deepseek.get_config().clone(),
             LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),
-            LLMModel::QWen2GGUF(qwen2) => qwen2.get_config().clone(),
+            LLMModel::QWenGGUF(qwen) => qwen.get_config().clone(),
         }
     }
 

@@ -167,7 +167,7 @@ impl LayerWeights {
     }
 }
 
-pub struct GGUFQWen2 {
+pub struct GGUFQWen {
     tok_embeddings: Embedding,
     layers: Vec<LayerWeights>,
     norm: RmsNorm,
@@ -197,7 +197,7 @@ fn precomput_freqs_cis(
     Ok((cos, sin))
 }
 
-impl GGUFQWen2 {
+impl GGUFQWen {
     pub fn into_config(
         embedding_length: usize,
         head_dim: usize,
@@ -426,7 +426,7 @@ impl GGUFQWen2 {
             layers,
             norm,
             output,
-            cfg: GGUFQWen2::into_config(
+            cfg: GGUFQWen::into_config(
                 embedding_length,
                 head_dim,
                 0,
