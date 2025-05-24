@@ -42,6 +42,9 @@ Currently, candle-vllm supports chat serving for the following model structures.
 Chat demo on GPU (A100, BF16, QWen3-8B Reasoning Model)
 <img src="res/Qwen3-8B-Reasoning-A100.gif" width="85%" height="85%" >
 
+Chat demo on **Apple Silicon** (M4 with 16GB unified memory, Q2K, QWen3-8B)
+<img src="res/Qwen3-8B-Apple-M4.gif" width="85%" height="85%" >
+
 ### Build Candle-vLLM
 
 ```shell
@@ -211,10 +214,6 @@ Chat with the mini chatbot (live update with Markdown, may cause flick)
 ```shell
 python3 examples/chat.py --live
 ```
-
-Chat demo on Apple M4 (Phi3 3.8B)
-
-<img src="res/Phi3-3.8B-Chatbot-Apple-M4.gif" width="75%" height="75%" >
 
 #### Option 2: Chat with naive ChatUI (or popular dify frontend)
 Install naive ChatUI and its dependencies:
