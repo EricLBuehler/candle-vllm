@@ -405,33 +405,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "candle-core"
-version = "0.8.4"
-source = "git+https://github.com/huggingface/candle.git#64296090907922aeaf5e647017197a8c8de6dce4"
-dependencies = [
- "byteorder",
- "gemm 0.17.1",
- "half",
- "memmap2",
- "num-traits",
- "num_cpus",
- "rand 0.9.0",
- "rand_distr",
- "rayon",
- "safetensors",
- "thiserror 1.0.61",
- "ug",
- "yoke",
- "zip",
-]
-
-[[package]]
 name = "candle-examples"
 version = "0.8.3"
 source = "git+https://github.com/guoqingbao/candle.git?branch=candle-main#fec66116b7638dd607a675e61806de913c65b471"
 dependencies = [
  "anyhow",
- "candle-core 0.8.3",
+ "candle-core",
  "candle-nn",
  "candle-transformers",
  "csv",
@@ -452,7 +431,7 @@ source = "git+https://github.com/guoqingbao/candle.git?branch=candle-main#fec661
 dependencies = [
  "anyhow",
  "bindgen_cuda 0.1.5",
- "candle-core 0.8.3",
+ "candle-core",
  "half",
 ]
 
@@ -481,7 +460,7 @@ version = "0.8.3"
 source = "git+https://github.com/guoqingbao/candle.git?branch=candle-main#fec66116b7638dd607a675e61806de913c65b471"
 dependencies = [
  "accelerate-src",
- "candle-core 0.8.3",
+ "candle-core",
  "candle-metal-kernels",
  "half",
  "intel-mkl-src",
@@ -500,7 +479,7 @@ source = "git+https://github.com/guoqingbao/candle.git?branch=candle-main#fec661
 dependencies = [
  "accelerate-src",
  "byteorder",
- "candle-core 0.8.3",
+ "candle-core",
  "candle-flash-attn",
  "candle-nn",
  "fancy-regex",
@@ -522,7 +501,7 @@ dependencies = [
  "anyhow",
  "axum",
  "bincode",
- "candle-core 0.8.3",
+ "candle-core",
  "candle-examples",
  "candle-flash-attn",
  "candle-nn",
@@ -2208,7 +2187,7 @@ name = "metal-kernels"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "candle-core 0.8.4",
+ "candle-core",
  "metal 0.27.0",
  "once_cell",
  "thiserror 1.0.61",

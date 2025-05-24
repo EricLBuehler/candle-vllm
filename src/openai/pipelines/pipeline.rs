@@ -191,9 +191,9 @@ impl DefaultLoader {
                 self.name,
                 path.display()
             );
-            let mut file = try_api!(std::fs::File::open(&path.clone()));
             let s_cfg = specific_args.clone();
             let nlayers = {
+                let mut file = try_api!(std::fs::File::open(&path.clone()));
                 let content = try_api!(
                     gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
                 );
@@ -211,6 +211,7 @@ impl DefaultLoader {
                 Arc::clone(&reporter),
             )
             .await;
+            let mut file = try_api!(std::fs::File::open(&path.clone()));
             let content = try_api!(
                 gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
             );
@@ -685,6 +686,12 @@ impl DefaultLoader {
                     if chat_template.as_ref().unwrap().find("<|eot_id|>").is_some() {
                         tracing::warn!("custom stop token <|eot_id|> in chat template");
                         stop_token_ids.push(128009)
+                    }
+                    if chat_template.as_ref().unwrap().find("<|end|>").is_some() {
+                        tracing::warn!("custom stop token <|end|> in chat template");
+                        if let Some(token) = tokenizer.get_vocab(true).get("<|end|>").copied() {
+                            stop_token_ids.push(token)
+                        };
                     }
                 }
                 if stop_token_ids.is_empty() {
