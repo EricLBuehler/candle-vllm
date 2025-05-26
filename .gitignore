@@ -7,4 +7,5 @@ libpagedattention.a
 *.gz
 kernels/src/lib.rs
 *.log
-Cargo.lock
+/Cargo.lock
+*.lock
