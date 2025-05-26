@@ -8,3 +8,4 @@ libpagedattention.a
 kernels/src/lib.rs
 *.log
 Cargo.lock
+*.lock
