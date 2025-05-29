@@ -14,6 +14,7 @@ use std::env;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokenizers::Encoding;
+use tokio::sync::Notify;
 use tokio::time::Duration;
 use uuid::Uuid;
 // fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
@@ -193,11 +194,16 @@ pub async fn chat_completions(
     let (response_tx, rx) = flume::unbounded();
     tracing::info!("{:?}", sampling_params);
 
-    let finish_notify = data.finish_notify.clone();
     let data_clone = data.clone();
     let request_id_clone = request_id.clone();
     let stream_request = request.stream.is_some_and(|x| x);
     let model_name = request.model.clone();
+    let sync_notify = Arc::new(Notify::new());
+    let sync_completion_notify = if stream_request {
+        None
+    } else {
+        Some(Arc::clone(&sync_notify))
+    };
 
     let _ = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
@@ -210,7 +216,12 @@ pub async fn chat_completions(
                     SystemTime::now(),
                     sampling_params,
                     request.logprobs.unwrap_or(false),
-                    Some(response_tx),
+                    if stream_request {
+                        Some(response_tx)
+                    } else {
+                        None
+                    },
+                    sync_completion_notify,
                 );
                 model.notify.notify_one();
             }
@@ -235,7 +246,8 @@ pub async fn chat_completions(
         )
     } else {
         // wait until current response finished
-        finish_notify.notified().await;
+        tracing::warn!("waiting response for sync request {}", request_id_clone);
+        sync_notify.as_ref().notified().await;
         let model = data_clone.model.read().unwrap();
         if !model.completion_records.contains_key(&request_id_clone) {
             return ChatResponder::ModelError(APIError::from(format!(

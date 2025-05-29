@@ -166,6 +166,10 @@ impl DaemonManager {
         *IS_MASTER_RANK.lock().unwrap()
     }
 
+    pub fn set_master_rank(master: bool) {
+        *IS_MASTER_RANK.lock().unwrap() = master;
+    }
+
     #[cfg(feature = "mpi")]
     pub fn new_mpi() -> Self {
         let (universe, threading) =
@@ -174,7 +178,7 @@ impl DaemonManager {
             panic!("MPI implementation may not support `threading::Multiple`");
         }
         let world = universe.world();
-        *IS_MASTER_RANK.lock().unwrap() = world.rank() == 0;
+        Self::set_master_rank(world.rank() == 0);
         Self {
             daemon_streams: None,
             main_stream: None,
@@ -585,7 +589,7 @@ pub fn init_subprocess(
                 use rayon::iter::IntoParallelRefIterator;
                 use rayon::iter::ParallelIterator;
                 *IS_DAEMON.lock().unwrap() = false;
-                *IS_MASTER_RANK.lock().unwrap() = true;
+                DaemonManager::set_master_rank(true);
                 let _: Vec<std::process::Child> = device_ids[1..]
                     .par_iter()
                     .enumerate()

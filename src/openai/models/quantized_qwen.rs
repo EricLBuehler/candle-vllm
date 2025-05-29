@@ -181,7 +181,7 @@ fn precomput_freqs_cis(
     freq_base: f32,
     context_length: usize,
     device: &Device,
-    dtype: DType,
+    _dtype: DType,
 ) -> Result<(Tensor, Tensor)> {
     let theta: Vec<_> = (0..head_dim)
         .step_by(2)

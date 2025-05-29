@@ -1,7 +1,6 @@
 use candle_core::Device;
 use std::sync::{Arc, RwLock};
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
-use tokio::sync::Notify;
 
 use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
 
@@ -81,7 +80,6 @@ pub struct OpenAIServerData {
     pub pipeline_config: PipelineConfig,
     pub record_conversation: bool,
     pub device: Device,
-    pub finish_notify: Arc<Notify>,
 }
 
 pub mod conversation;
