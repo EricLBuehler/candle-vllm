@@ -59,7 +59,7 @@ pub struct LLMEngine {
     config: Config,
     group_id: usize,
     pub notify: Arc<Notify>,
-    pub finish_notify: Arc<Notify>,
+    sync_notifies: HashMap<String, Option<Arc<Notify>>>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
     sequence_groups: RwLock<VecDeque<Arc<SequenceGroup>>>,
     multi_process: bool,
@@ -95,7 +95,6 @@ impl LLMEngine {
         cache_config: &CacheConfig,
         config: &Config,
         notify: Arc<Notify>,
-        finish_notify: Arc<Notify>,
         holding_time: usize,
         num_shards: usize,
         multi_process: bool,
@@ -110,7 +109,6 @@ impl LLMEngine {
             config: config.clone(),
             group_id: 0,
             notify: notify.clone(),
-            finish_notify: finish_notify.clone(),
             completion_records: HashMap::new(),
             sequence_groups: RwLock::new(VecDeque::new()),
             multi_process,
@@ -118,6 +116,7 @@ impl LLMEngine {
             cur_tasks: RwLock::new(Vec::<TaskData>::new()),
             #[cfg(feature = "nccl")]
             daemon_manager: RwLock::new(daemon_manager),
+            sync_notifies: HashMap::new(),
         }));
         let engine_clone = engine.clone();
 
@@ -149,7 +148,7 @@ impl LLMEngine {
                                     let mut e = engine.write().unwrap();
                                     for task in data {
                                         warn!("Add request {} to task list!", task.request_id);
-                                        e.add_request(task.prompt, task.request_id, task.created, task.sampling_params, task.use_logprobs, None);
+                                        e.add_request(task.prompt, task.request_id, task.created, task.sampling_params, task.use_logprobs, None, None.into());
                                     }
                                     continue;
                                 }
@@ -202,8 +201,13 @@ impl LLMEngine {
                     for request_id in result.keys() {
                         let mut e = engine.write().unwrap();
                         e.completion_records.insert(request_id.to_string(), result[request_id].clone());
+                        if e.sync_notifies.contains_key(request_id)  {
+                            let notify = e.sync_notifies.get(request_id).unwrap();
+                            if notify.is_some() {
+                                notify.as_ref().unwrap().notify_one();
+                            }
+                        }
                     }
-                    finish_notify.notify_one();
 
                     //chat completion statistics
                     let overall_usage = ChatCompletionUsageResponse {
@@ -955,6 +959,7 @@ impl LLMEngine {
         sampling_params: SamplingParams,
         use_logprobs: bool,
         sender: Option<Sender<ChatResponse>>,
+        sync_notify: Option<Arc<Notify>>,
     ) {
         let prompt_len = prompt.get_ids().len();
         let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
@@ -981,7 +986,11 @@ impl LLMEngine {
         self.group_id += 1;
 
         self.scheduler.add_sequence(seq_group);
-
+        let sync_notify = sync_notify.clone();
+        if sync_notify.is_some() {
+            self.sync_notifies
+                .insert(request_id.clone(), Some(sync_notify.unwrap()));
+        }
         #[cfg(feature = "nccl")]
         let do_log = DaemonManager::is_master_rank();
         #[cfg(not(feature = "nccl"))]

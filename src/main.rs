@@ -339,6 +339,8 @@ async fn main() -> Result<(), APIError> {
             Some(daemon_manager),
         )
     } else {
+        use candle_vllm::openai::communicator::DaemonManager;
+        DaemonManager::set_master_rank(true); //master rank default for multithreaded mode
         let log_file = format!("candle-vllm-{}ranks.log", device_ids.len());
         let _ = config_log(logger, args.log, log_file);
         (
@@ -413,7 +415,7 @@ async fn main() -> Result<(), APIError> {
     let cache_config = cache_config.as_ref().unwrap().clone();
     let config = config.as_ref().unwrap().clone();
     println!("Cache config {:?}", cache_config);
-    let finish_notify = Arc::new(Notify::new());
+
     let llm_engine = LLMEngine::new(
         pipelines,
         SchedulerConfig {
@@ -422,7 +424,6 @@ async fn main() -> Result<(), APIError> {
         &cache_config,
         &config,
         Arc::new(Notify::new()),
-        finish_notify.clone(),
         args.holding_time,
         num_shards,
         args.multi_process,
@@ -437,7 +438,6 @@ async fn main() -> Result<(), APIError> {
         model: llm_engine,
         record_conversation: args.record_conversation,
         device: Device::Cpu,
-        finish_notify: finish_notify.clone(),
     };
 
     if global_rank != 0 {

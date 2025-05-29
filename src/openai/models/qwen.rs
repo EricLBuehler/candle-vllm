@@ -18,6 +18,7 @@ use std::sync::{Arc, RwLock};
 pub struct QwenConfig {
     pub vocab_size: usize,
     pub hidden_size: usize,
+    pub head_dim: Option<usize>,
     pub intermediate_size: usize,
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
@@ -51,7 +52,10 @@ impl QwenConfig {
             };
         Config {
             hidden_size: self.hidden_size,
-            head_dim: Some(self.hidden_size / self.num_attention_heads),
+            head_dim: Some(
+                self.head_dim
+                    .unwrap_or(self.hidden_size / self.num_attention_heads),
+            ),
             intermediate_size: self.intermediate_size,
             vocab_size: self.vocab_size,
             num_hidden_layers: self.num_hidden_layers,
@@ -93,7 +97,9 @@ struct RotaryEmbedding {
 
 impl RotaryEmbedding {
     fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
-        let dim = cfg.hidden_size / cfg.num_attention_heads;
+        let dim = cfg
+            .head_dim
+            .unwrap_or(cfg.hidden_size / cfg.num_attention_heads);
         let max_seq_len = cfg.max_seq_len;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
@@ -218,7 +224,7 @@ impl Attention {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads;
-        let head_dim = hidden_sz / num_heads;
+        let head_dim = cfg.head_dim.unwrap_or(hidden_sz / num_heads);
 
         let q_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
