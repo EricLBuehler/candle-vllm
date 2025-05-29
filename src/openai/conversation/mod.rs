@@ -2,7 +2,7 @@ pub mod default_conversation;
 use serde::Serialize;
 /// A trait for using conversation managers with a `ModulePipeline`.
 pub trait Conversation {
-    fn set_system_message(&mut self, system_message: String);
+    fn set_system_message(&mut self, system_message: Option<String>);
 
     fn append_message(&mut self, role: String, message: String);
 

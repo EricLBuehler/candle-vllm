@@ -37,7 +37,7 @@ pub enum SeparatorStyle {
 #[allow(dead_code)]
 pub struct DefaultConversation {
     name: String,
-    system_message: String,
+    system_message: Option<String>,
     chat_template: Option<String>,
     messages: Vec<Message>,
     sep_style: SeparatorStyle,
@@ -68,7 +68,7 @@ impl DefaultConversation {
     ) -> Self {
         Self {
             name,
-            system_message: "".to_string(),
+            system_message: None,
             chat_template,
             messages,
             sep_style,
@@ -83,7 +83,7 @@ impl DefaultConversation {
 
 impl Conversation for DefaultConversation {
     /// Set the system message.
-    fn set_system_message(&mut self, system_message: String) {
+    fn set_system_message(&mut self, system_message: Option<String>) {
         self.system_message = system_message;
     }
 
@@ -143,7 +143,11 @@ impl Conversation for DefaultConversation {
                 //no chat template exists? using the built-in template
                 let default_sys_prompt = "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string();
                 let chat_template = self.chat_template.as_ref().unwrap_or(&default_sys_prompt);
-                let system_prompt = chat_template.format(&[self.system_message.clone()]);
+                let system_prompt = if self.system_message.is_some() {
+                    chat_template.format(&[self.system_message.clone().unwrap()])
+                } else {
+                    "".to_string()
+                };
                 match self.sep_style {
                     SeparatorStyle::AddColonSingle
                     | SeparatorStyle::AddColonSpaceSingle
