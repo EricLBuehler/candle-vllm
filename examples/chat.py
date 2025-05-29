@@ -22,7 +22,8 @@ def clear_console():
     print("\n")
 
 @click.command()
-@click.argument("system_prompt", type=str, required=False)
+@click.option("--system_prompt", type=str, default=None, 
+              help="System prompt for model request")
 @click.option("--stream", is_flag=True, default=False,
               help="Enable streaming output for responses.")
 @click.option("--live", is_flag=True, default=False,
@@ -41,7 +42,7 @@ def clear_console():
             help="Sampling top-k")
 @click.option("--thinking", type=bool, default=None,
               help="Enable thinking for reasoning models.")
-def chatloop(system_prompt: str, stream: bool, live: bool, 
+def chatloop(system_prompt: Optional[str], stream: bool, live: bool, 
     max_tokens: int, frequency: int, port: int, temperature: Optional[float], top_k: Optional[int], top_p: Optional[float], thinking: Optional[bool]):
     """
     A command-line chatbot interface using OpenAI API and candle-vllm as backend.

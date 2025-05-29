@@ -60,10 +60,10 @@ async fn get_gen_prompt(
                     .clone();
 
                 if role == "system" {
-                    conversation.set_system_message(content);
-                } else {
-                    conversation.append_message(role.to_string(), content)
+                    tracing::info!("system prompt found: {}", content);
+                    conversation.set_system_message(Some(content.clone()));
                 }
+                conversation.append_message(role.to_string(), content)
             }
         }
     }

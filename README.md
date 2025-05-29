@@ -207,7 +207,7 @@ python3 examples/chat.py
 
 Pass generation parameters (to reasoning models with `--thinking True`)
 ```shell
-python3 examples/chat.py --temperature 0.7 --top-k 64 --top-p 0.9 --thinking True
+python3 examples/chat.py --temperature 0.7 --top_k 64 --top_p 0.9 --thinking True --system_prompt "Thinking big!"
 ```
 
 Chat with the mini chatbot (live update with Markdown, may cause flick)
