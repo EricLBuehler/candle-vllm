@@ -1,6 +1,7 @@
 pub mod deepseek;
 pub mod gemma;
 pub mod gemma3;
+pub mod glm4;
 pub mod linear;
 pub mod llama;
 pub mod mistral;
@@ -312,8 +313,9 @@ impl AttentionSelect {
         sliding_window: Option<usize>,
         comm: Rc<Comm>,
         device: &Device,
+        paged: bool,
     ) -> Self {
-        if false && cfg.sliding_window.is_some() {
+        if !paged {
             AttentionSelect::Naive(NaiveAttention::new(cfg, sliding_window))
         } else {
             let head_dim = cfg.head_dim.unwrap();

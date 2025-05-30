@@ -434,7 +434,13 @@ impl Attention {
             head_dim,
             rotary_emb: rotary_emb.clone(),
             local_sliding_window,
-            attn: super::AttentionSelect::new(cfg, local_sliding_window, comm.clone(), vb.device()),
+            attn: super::AttentionSelect::new(
+                cfg,
+                local_sliding_window,
+                comm.clone(),
+                vb.device(),
+                true,
+            ),
         })
     }
 

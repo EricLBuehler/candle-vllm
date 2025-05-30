@@ -848,6 +848,7 @@ pub fn linear_no_bias_x(
     quant: &Option<String>,
     quant_config: &Option<QuantConfig>,
     dtype: DType,
+    merged_chunks: Option<(usize, usize)>, //(chunk_idx, num_of_chunks)
 ) -> Result<LinearX> {
     if let Some(quatized_type) = quant {
         //quantized weight in k x n (shift dim in original shards)
@@ -880,7 +881,20 @@ pub fn linear_no_bias_x(
         ))))
     } else {
         //weight in n x k (use original shards)
-        let ws = vb.get_with_hints((out_dim, in_dim), "weight", shards)?;
+        let ws = if merged_chunks.is_some() {
+            let (chunk_idx, chunks) = merged_chunks.unwrap();
+            vb.get_with_hints(
+                (out_dim, in_dim),
+                "weight",
+                shard(
+                    shards.dim,
+                    chunk_idx * shards.world_size + shards.rank,
+                    chunks * shards.world_size,
+                ),
+            )?
+        } else {
+            vb.get_with_hints((out_dim, in_dim), "weight", shards)?
+        };
         let ln = Linear::new(ws, None);
         Ok(LinearX(Either::Left(ln)))
     }
@@ -895,10 +909,20 @@ pub fn linear_b_x(
     quant: &Option<String>,
     quant_config: &Option<QuantConfig>,
     dtype: DType,
+    merged_chunks: Option<(usize, usize)>,
 ) -> Result<LinearX> {
     if bias {
         linear_x(in_dim, out_dim, vb, shard, quant, quant_config, dtype)
     } else {
-        linear_no_bias_x(in_dim, out_dim, vb, shard, quant, quant_config, dtype)
+        linear_no_bias_x(
+            in_dim,
+            out_dim,
+            vb,
+            shard,
+            quant,
+            quant_config,
+            dtype,
+            merged_chunks,
+        )
     }
 }
