@@ -289,6 +289,30 @@ pub enum ModelSelected {
         quant: Option<String>,
     },
 
+    GLM4 {
+        /// Control the application of repeat penalty for the last n tokens
+        #[arg(long)]
+        repeat_last_n: Option<usize>,
+
+        #[arg(long)]
+        temperature: Option<f32>,
+
+        #[arg(long)]
+        top_p: Option<f32>,
+
+        #[arg(long)]
+        top_k: Option<isize>,
+
+        #[arg(long)]
+        penalty: Option<f32>,
+
+        #[arg(long)]
+        max_gen_tokens: Option<usize>,
+
+        #[arg(long)]
+        quant: Option<String>,
+    },
+
     /// Select the deepseek model (default deepseek-v2-lite-chat).
     DeepSeek {
         /// Control the application of repeat penalty for the last n tokens
@@ -364,6 +388,7 @@ impl Display for ModelSelected {
             ModelSelected::Mistral { .. } => write!(f, "mistral"),
             ModelSelected::Yi { .. } => write!(f, "yi"),
             ModelSelected::StableLM { .. } => write!(f, "stablelm"),
+            ModelSelected::GLM4 { .. } => write!(f, "glm4"),
             ModelSelected::DeepSeek { .. } => write!(f, "deepseek"),
         }
     }
@@ -755,6 +780,37 @@ pub fn get_model_loader(
                 "stabilityai/stablelm-zephyr-3b".to_string()
             },
             "stabilityai/stablelm-zephyr-3b".to_string(),
+            quant,
+        ),
+        ModelSelected::GLM4 {
+            repeat_last_n,
+            temperature,
+            top_k,
+            top_p,
+            penalty,
+            max_gen_tokens,
+            quant,
+        } => (
+            Box::new(DefaultLoader::new(
+                SpecificConfig::new(
+                    repeat_last_n,
+                    temperature,
+                    top_k,
+                    top_p,
+                    penalty,
+                    max_gen_tokens,
+                    quant.clone(),
+                    None,
+                    false,
+                ),
+                "glm4".to_string(),
+            )),
+            if let Some(model_id) = model_id {
+                model_id
+            } else {
+                "ZhipuAI/GLM-4-9B-0414".to_string()
+            },
+            "ZhipuAI/GLM-4-9B-0414".to_string(),
             quant,
         ),
         ModelSelected::DeepSeek {

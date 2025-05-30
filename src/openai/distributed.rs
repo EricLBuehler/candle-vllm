@@ -54,6 +54,31 @@ impl TensorParallelColumnLinear {
     }
 }
 
+pub struct MergedParallelColumnLinear {
+    linears: Vec<TensorParallelColumnLinear>,
+    biases: Vec<Option<Tensor>>,
+}
+
+impl MergedParallelColumnLinear {
+    pub fn new(linears: Vec<TensorParallelColumnLinear>) -> Self {
+        Self {
+            linears,
+            biases: Vec::new(),
+        }
+    }
+    pub fn forward(&self, x: &Tensor) -> Result<Vec<Tensor>> {
+        let mut xss = Vec::<Tensor>::new();
+        for i in 0..self.linears.len() {
+            let mut xs = self.linears[i].forward(x)?;
+            if let Some(bias) = &self.biases[i] {
+                xs = xs.broadcast_add(bias)?;
+            }
+            xss.push(xs);
+        }
+        Ok(xss)
+    }
+}
+
 pub struct TensorParallelRowLinear {
     linear: Linear,
     #[cfg(feature = "nccl")]
@@ -224,6 +249,7 @@ impl TensorParallelColumnLinear {
             quant,
             quant_config,
             dtype,
+            None,
         )?;
         Ok(Self { linear, bias: bs })
     }
@@ -238,6 +264,45 @@ impl TensorParallelColumnLinear {
     //     let weight = Tensor::cat(&weights, 0)?.contiguous()?;
     //     Ok(Self::new(Linear::new(weight, None)))
     // }
+}
+
+impl MergedParallelColumnLinear {
+    pub fn load_merged_with_hints(
+        in_dim: usize,
+        out_dim: usize,
+        chunk: usize,
+        vb: VarBuilder,
+        comm: Rc<Comm>,
+        quant: &Option<String>,
+        quant_config: &Option<QuantConfig>,
+    ) -> Result<Self> {
+        let rank = comm.rank();
+        let size = comm.world_size();
+        let dtype = vb.dtype();
+        if quant.is_some() || quant_config.is_some() {
+            candle_core::bail!("Merged quantized weight is not supported at the moment!");
+        }
+        let mut vec_linear = Vec::<TensorParallelColumnLinear>::new();
+        for chunk_idx in 0..chunk {
+            let linear = linear(
+                in_dim,
+                out_dim,
+                vb.clone(),
+                shard(0, rank, size),
+                quant,
+                quant_config,
+                dtype,
+                Some((chunk_idx, chunk)),
+            )?;
+
+            let ln = TensorParallelColumnLinear { linear, bias: None };
+            vec_linear.push(ln);
+        }
+        Ok(Self {
+            linears: vec_linear,
+            biases: vec![None; chunk],
+        })
+    }
 }
 
 impl TensorParallelRowLinear {
@@ -266,6 +331,7 @@ impl TensorParallelRowLinear {
             quant,
             quant_config,
             dtype,
+            None,
         )?;
         Ok(Self::new_with_bias(linear, bs, comm))
     }
@@ -316,6 +382,7 @@ impl ReplicatedLinear {
             quant,
             quant_config,
             dtype,
+            None,
         )?;
         Ok(Self { linear, bias: None })
     }
@@ -341,6 +408,7 @@ impl ReplicatedLinear {
                 quant,
                 quant_config,
                 dtype,
+                None,
             )?;
             Ok(Self {
                 linear,
