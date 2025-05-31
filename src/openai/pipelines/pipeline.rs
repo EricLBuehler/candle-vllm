@@ -696,8 +696,8 @@ impl DefaultLoader {
             thinking: Some(specific_args.thinking),
         };
 
-        //fallback to use downloaded tokenizer_config.json
-        //since the embedded chat_template in gguf file may have some problem
+        //the embedded chat_template in gguf file may not be funtional
+        //TODO(guoqingbao): solve problems for embedded chat_template
         let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
         let tokenizer_cfg = if tokenizer_cfg_file.display().to_string() != ""
             && Path::exists(&tokenizer_cfg_file)
