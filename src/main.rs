@@ -78,7 +78,7 @@ struct Args {
     kvcache_mem_gpu: usize,
 
     /// Available CPU memory for kvcache (MB)
-    #[arg(long, default_value_t = 512)]
+    #[arg(long, default_value_t = 128)]
     kvcache_mem_cpu: usize,
 
     /// Record conversation (default false, the client need to record chat history)
@@ -213,7 +213,21 @@ async fn main() -> Result<(), APIError> {
                     }
                 }
             },
-            tokenizer_config_filename: Path::new(path).join("tokenizer_config.json"),
+            tokenizer_config_filename: {
+                let api = hf_hub::api::sync::Api::new().unwrap();
+                let api = api.model(default_model_id.clone());
+                match api.get("tokenizer_config.json") {
+                    Ok(f) => f,
+                    _ => {
+                        if !Path::new(path).join("tokenizer_config.json").exists() {
+                            println!("Warning: Unable to download or obtain tokenizer_config.json from model path! No chat_template!");
+                            "".into()
+                        } else {
+                            Path::new(path).join("tokenizer_config.json")
+                        }
+                    }
+                }
+            },
             config_filename: PathBuf::new(),
             filenames: if Path::new(path).join(file).exists() {
                 vec![Path::new(path).join(file).into()]
