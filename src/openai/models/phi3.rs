@@ -535,7 +535,7 @@ impl Phi {
                 self.dtype,
                 b_size,
                 seq_len,
-                input_positions[0][0],
+                input_positions,
                 self.cfg.sliding_window,
             )?;
             Some(mask)

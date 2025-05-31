@@ -238,9 +238,10 @@ pub fn get_attention_casual_mask(
     dtype: DType,
     b_size: usize,
     tgt_len: usize,
-    seqlen_offset: usize,
+    positions: &[Vec<usize>],
     sliding_window: Option<usize>,
 ) -> Result<Tensor> {
+    let seqlen_offset = positions[0][0]; //TODO(guoqingbao): position for each request
     let mask: Vec<_> = if let Some(sliding_window) = sliding_window {
         (0..tgt_len)
             .flat_map(|i| {
