@@ -432,8 +432,8 @@ async fn main() -> Result<(), APIError> {
 
     #[cfg(feature = "nccl")]
     if args.multi_process {
-        let e = server_data.model.read().unwrap();
-        let mut daemon_manager = e.daemon_manager.write().unwrap();
+        let e = server_data.model.read();
+        let mut daemon_manager = e.daemon_manager.write();
         daemon_manager.as_mut().unwrap().mpi_sync();
     }
 
