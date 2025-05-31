@@ -185,7 +185,7 @@ impl Config {
     }
 }
 
-//chat tempalte embeded in the gguf file
+//chat template embedded in the gguf file
 pub fn get_tokenizer_cfg(ct: &candle_core::quantized::gguf_file::Content) -> Option<String> {
     use serde_json::json;
     let md_get = |s: &str| match ct.metadata.get(s) {

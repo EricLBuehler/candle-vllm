@@ -1,8 +1,8 @@
-use candle_core::Device;
-use std::sync::{Arc, RwLock};
-use tokenizers::{EncodeInput, Encoding, Tokenizer};
-
 use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
+use candle_core::Device;
+use parking_lot::RwLock;
+use std::sync::Arc;
+use tokenizers::{EncodeInput, Encoding, Tokenizer};
 
 #[cfg(feature = "nccl")]
 pub mod communicator;

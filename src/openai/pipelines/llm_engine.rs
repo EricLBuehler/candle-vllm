@@ -26,11 +26,11 @@ use crate::{
 use candle_core::{Device, Tensor};
 use either::Either;
 use flume::Sender;
+use parking_lot::RwLock;
 #[cfg(feature = "nccl")]
 use rayon::iter::IntoParallelRefIterator;
 #[cfg(feature = "nccl")]
 use rayon::iter::ParallelIterator;
-use std::sync::RwLock;
 use std::time::SystemTime;
 use std::{
     collections::{HashMap, VecDeque},
@@ -133,8 +133,8 @@ impl LLMEngine {
                         if !DaemonManager::is_master_rank() {
                             info!("daemon process wait_task!");
                             let message = {
-                                let e = engine.read().unwrap();
-                                let mut daemon_manager = e.daemon_manager.write().unwrap();
+                                let e = engine.read();
+                                let mut daemon_manager = e.daemon_manager.write();
                                 daemon_manager.as_mut().unwrap().receive_message()
                             };
                             match message {
@@ -145,7 +145,7 @@ impl LLMEngine {
                                     info!("A continue message before start!");
                                 }
                                 Ok(MessageType::Data(data)) => {
-                                    let mut e = engine.write().unwrap();
+                                    let mut e = engine.write();
                                     for task in data {
                                         warn!("Add request {} to task list!", task.request_id);
                                         e.add_request(task.prompt, task.request_id, task.created, task.sampling_params, task.use_logprobs, None, None.into());
@@ -170,9 +170,9 @@ impl LLMEngine {
                             notify.notified().await;
                             let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
                             {
-                                let e = engine.read().unwrap();
-                                let mut daemon_manager = e.daemon_manager.write().unwrap();
-                                let mut cur_tasks = e.cur_tasks.write().unwrap();
+                                let e = engine.read();
+                                let mut daemon_manager = e.daemon_manager.write();
+                                let mut cur_tasks = e.cur_tasks.write();
                                 let send_tasks = cur_tasks.clone();
                                 if send_tasks.len() < 1 {
                                     continue
@@ -197,16 +197,6 @@ impl LLMEngine {
                     let result = &results[0];
                     if results.len() == 0 || result.len() == 0 {
                         continue;
-                    }
-                    for request_id in result.keys() {
-                        let mut e = engine.write().unwrap();
-                        e.completion_records.insert(request_id.to_string(), result[request_id].clone());
-                        if e.sync_notifies.contains_key(request_id)  {
-                            let notify = e.sync_notifies.get(request_id).unwrap();
-                            if notify.is_some() {
-                                notify.as_ref().unwrap().notify_one();
-                            }
-                        }
                     }
 
                     //chat completion statistics
@@ -340,7 +330,7 @@ impl LLMEngine {
         #[cfg(feature = "nccl")]
         {
             warn!("Start processing...");
-            let e = engine.read().unwrap();
+            let e = engine.read();
             let (pipeline, _) = e.get_pipeline(rank).unwrap();
             let device = pipeline.device();
             let _ = device.as_cuda_device().unwrap().bind_to_thread();
@@ -350,7 +340,7 @@ impl LLMEngine {
                 if !multi_process {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
-                let e = engine.read().unwrap();
+                let e = engine.read();
                 if !e.scheduler.has_unfinished_sequences() {
                     warn!("generate_once: no unfinished_sequences, break");
                     break;
@@ -358,13 +348,13 @@ impl LLMEngine {
             }
             if rank == 0 {
                 //only the first rank thread perform task scheduling
-                let mut e = engine.write().unwrap();
+                let mut e = engine.write();
                 let scheduler_outputs = e.scheduler.schedule();
                 if !scheduler_outputs.ignored_seq_groups.is_empty() {
                     todo!();
                 }
                 e.execute_scheduler_ops(&scheduler_outputs, 0).unwrap();
-                let mut groups = e.sequence_groups.write().unwrap();
+                let mut groups = e.sequence_groups.write();
 
                 *groups = match Arc::try_unwrap(scheduler_outputs.scheduled) {
                     Ok(deq) => deq,
@@ -373,8 +363,8 @@ impl LLMEngine {
             };
 
             let scheduled: VecDeque<Arc<SequenceGroup>> = {
-                let e = engine.read().unwrap();
-                let x = e.sequence_groups.read().unwrap();
+                let e = engine.read();
+                let x = e.sequence_groups.read();
                 x.clone()
             };
             if scheduled.len() == 0 {
@@ -384,7 +374,7 @@ impl LLMEngine {
             let seqs = scheduled[0].get_seqs();
             //run partial models in parallel
             let logits = {
-                let e = engine.read().unwrap();
+                let e = engine.read();
                 let (pipeline, cache_engine) = e.get_pipeline(rank).unwrap();
                 let device = pipeline.device();
                 let PreparedInputs {
@@ -419,15 +409,15 @@ impl LLMEngine {
             let optional_results = if do_sample {
                 let sample = {
                     //only the first rank thread perform sampling
-                    let mut e = engine.write().unwrap();
+                    let mut e = engine.write();
                     let default_pipeline = e.get_mut_pipeline(0usize).unwrap().0.as_mut();
                     default_pipeline.sample(&logits, &scheduled).unwrap()
                 };
 
                 #[cfg(feature = "nccl")]
                 if multi_process {
-                    let e = engine.read().unwrap();
-                    let mut daemon_manager = e.daemon_manager.write().unwrap();
+                    let e = engine.read();
+                    let mut daemon_manager = e.daemon_manager.write();
                     let mut logprobs: Vec<TaskSampleData> = Vec::new();
                     for s in &sample {
                         match s {
@@ -450,8 +440,8 @@ impl LLMEngine {
                 if multi_process && !DaemonManager::is_master_rank() {
                     let _ = logits.to_device(&Device::Cpu).unwrap(); //sync
                     let message = {
-                        let e = engine.read().unwrap();
-                        let mut daemon_manager = e.daemon_manager.write().unwrap();
+                        let e = engine.read();
+                        let mut daemon_manager = e.daemon_manager.write();
                         daemon_manager.as_mut().unwrap().receive_message()
                     };
                     let mut logprobs: Vec<TokenOrFinishReason> = Vec::new();
@@ -483,8 +473,8 @@ impl LLMEngine {
             };
 
             {
-                let e = engine.read().unwrap();
-                let mut cur_group = e.sequence_groups.write().unwrap();
+                let e = engine.read();
+                let mut cur_group = e.sequence_groups.write();
                 cur_group.clear();
             }
 
@@ -502,7 +492,7 @@ impl LLMEngine {
                             prompt_finish_times.insert(*group.get_id(), SystemTime::now());
                         }
                         if let Some(sender) = &group.sender {
-                            let e = engine.read().unwrap();
+                            let e = engine.read();
                             let (pipeline, _) = e.get_pipeline(rank).unwrap();
                             let chunk = e.get_stream_response(
                                 group.request_id.clone(),
@@ -525,7 +515,7 @@ impl LLMEngine {
                     Either::Right(finish_reason) => {
                         let seq = group.get_seqs().values().nth(0).unwrap();
                         if let Some(sender) = &group.sender {
-                            let e = engine.read().unwrap();
+                            let e = engine.read();
                             let (pipeline, _) = e.get_pipeline(rank).unwrap();
                             let chunk = e.get_stream_response(
                                 group.request_id.clone(),
@@ -545,7 +535,7 @@ impl LLMEngine {
             }
 
             {
-                let mut e = engine.write().unwrap();
+                let mut e = engine.write();
                 e.scheduler.free_finished_sequence_groups();
             }
 
@@ -597,7 +587,7 @@ impl LLMEngine {
                     };
 
                     if do_sync_response {
-                        let e = engine.read().unwrap();
+                        let e = engine.read();
                         for (index, seq) in top_n.iter().enumerate() {
                             let outputs = seq.deref_mut().get_output_tokens();
                             let data = outputs
@@ -646,6 +636,18 @@ impl LLMEngine {
 
                     responses.insert(group.request_id.clone(), (choices, usage));
 
+                    if do_sync_response {
+                        //sync response notification
+                        for request_id in responses.keys() {
+                            let mut e = engine.write();
+                            e.completion_records
+                                .insert(request_id.to_string(), responses[request_id].clone());
+                            let notify = e.sync_notifies.get(request_id).unwrap();
+                            if notify.is_some() {
+                                notify.as_ref().unwrap().notify_one();
+                            }
+                        }
+                    }
                     if let Some(sender) = &group.sender {
                         let seq = group.get_seqs().values().nth(0).unwrap();
                         if seq.deref().get_finish_reason() != "abort" {
@@ -663,7 +665,7 @@ impl LLMEngine {
 
             #[cfg(feature = "nccl")]
             if multi_process {
-                let mut e = engine.write().unwrap();
+                let mut e = engine.write();
                 if DaemonManager::is_master_rank() {
                     if aborted_sequences.len() > 0 {
                         warn!(
@@ -671,7 +673,7 @@ impl LLMEngine {
                             aborted_sequences.len()
                         );
                     }
-                    let mut daemon_manager = e.daemon_manager.write().unwrap();
+                    let mut daemon_manager = e.daemon_manager.write();
                     let _ = daemon_manager
                         .as_mut()
                         .unwrap()
@@ -682,7 +684,7 @@ impl LLMEngine {
                         });
                 } else {
                     if e.scheduler.has_unfinished_sequences() {
-                        let mut daemon_manager = e.daemon_manager.write().unwrap();
+                        let mut daemon_manager = e.daemon_manager.write();
                         match Self::sync_process(
                             daemon_manager.as_mut().unwrap(),
                             MessageType::Continue,
@@ -710,7 +712,7 @@ impl LLMEngine {
         }
 
         if rank == 0 {
-            let mut e = engine.write().unwrap();
+            let mut e = engine.write();
             let default_pipeline = e.get_mut_pipeline(rank).unwrap().0.as_mut();
             default_pipeline.reset_decoder();
         }
@@ -718,8 +720,8 @@ impl LLMEngine {
         #[cfg(feature = "nccl")]
         if multi_process && DaemonManager::is_master_rank() {
             warn!("Sending finish message to subprocesses");
-            let e = engine.read().unwrap();
-            let mut daemon_manager = e.daemon_manager.write().unwrap();
+            let e = engine.read();
+            let mut daemon_manager = e.daemon_manager.write();
             let _ = daemon_manager
                 .as_mut()
                 .unwrap()
@@ -1013,7 +1015,7 @@ impl LLMEngine {
                 sampling_params,
                 use_logprobs,
             };
-            let mut cur_tasks = self.cur_tasks.write().unwrap();
+            let mut cur_tasks = self.cur_tasks.write();
             cur_tasks.push(task);
         }
     }
