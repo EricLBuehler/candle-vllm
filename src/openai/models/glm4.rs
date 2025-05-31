@@ -488,15 +488,6 @@ impl GLM4 {
         })
     }
 
-    fn prepare_decoder_attention_mask(&self, b_size: usize, tgt_len: usize) -> Result<Tensor> {
-        let mask: Vec<_> = (0..tgt_len)
-            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
-            .collect();
-        let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), &self.device)?;
-        mask.expand((b_size, 1, tgt_len, tgt_len))?
-            .to_dtype(self.dtype)
-    }
-
     pub fn forward(
         &self,
         input_ids: &Tensor,
@@ -508,7 +499,14 @@ impl GLM4 {
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = self.prepare_decoder_attention_mask(b_size, seq_len)?;
+            let mask = super::get_attention_casual_mask(
+                &self.device,
+                self.dtype,
+                b_size,
+                seq_len,
+                input_positions,
+                self.cfg.sliding_window,
+            )?;
             Some(mask)
         };
         let mut xs = self.embedding.forward(input_ids)?;
@@ -534,8 +532,10 @@ impl GLM4 {
                 )?
             }
         }
-        let xs = xs.apply(&self.norm)?;
-        let xs = xs.i((.., seq_len - 1, ..))?;
+        let xs = xs
+            .i((.., seq_len - 1, ..))?
+            .contiguous()?
+            .apply(&self.norm)?;
         self.lm_head.forward(&xs)?.to_dtype(DType::F32)
     }
 

@@ -286,13 +286,14 @@ impl LLMEngine {
     }
 
     #[cfg(feature = "nccl")]
-    pub fn sync_process(
-        daemon_manager: &mut DaemonManager,
-        msg_send: MessageType,
-    ) -> Option<Vec<usize>> {
+    pub fn sync_process(engine: &Arc<RwLock<Self>>, msg_send: MessageType) -> Option<Vec<usize>> {
+        let mut e = engine.write();
         if !DaemonManager::is_master_rank() {
             debug!("waiting sync message!");
-            let message = { daemon_manager.receive_message() };
+            let message = {
+                let mut daemon_manager = e.daemon_manager.write();
+                daemon_manager.as_mut().unwrap().receive_message()
+            };
             match message {
                 Ok(MessageType::Abort(ids)) => {
                     return Some(ids);
@@ -304,7 +305,24 @@ impl LLMEngine {
                 Ok(MessageType::Continue) => {
                     debug!("continue message!");
                 }
-                Ok(MessageType::Start) | Ok(MessageType::Data(_)) | Ok(MessageType::Sample(_)) => {
+                Ok(MessageType::Data(data)) => {
+                    for task in data {
+                        warn!(
+                            "Add request {} to task list (continuous batching)!",
+                            task.request_id
+                        );
+                        e.add_request(
+                            task.prompt,
+                            task.request_id,
+                            task.created,
+                            task.sampling_params,
+                            task.use_logprobs,
+                            None,
+                            None.into(),
+                        );
+                    }
+                }
+                Ok(MessageType::Start) | Ok(MessageType::Sample(_)) => {
                     info!("other message!");
                 }
                 _ => {
@@ -314,7 +332,10 @@ impl LLMEngine {
             };
         } else {
             debug!("sending sync message!");
-            let _ = daemon_manager.send_message(&msg_send);
+            let _ = {
+                let mut daemon_manager = e.daemon_manager.write();
+                daemon_manager.as_mut().unwrap().send_message(&msg_send)
+            };
         }
         return None;
     }
@@ -642,9 +663,9 @@ impl LLMEngine {
                             let mut e = engine.write();
                             e.completion_records
                                 .insert(request_id.to_string(), responses[request_id].clone());
-                            let notify = e.sync_notifies.get(request_id).unwrap();
+                            let notify = e.sync_notifies.get(request_id);
                             if notify.is_some() {
-                                notify.as_ref().unwrap().notify_one();
+                                notify.unwrap().as_ref().unwrap().notify_one();
                             }
                         }
                     }
@@ -665,30 +686,45 @@ impl LLMEngine {
 
             #[cfg(feature = "nccl")]
             if multi_process {
-                let mut e = engine.write();
                 if DaemonManager::is_master_rank() {
+                    let e = engine.write();
+                    let mut daemon_manager = e.daemon_manager.write();
                     if aborted_sequences.len() > 0 {
                         warn!(
                             "Sending abort message ({} sequence(s)) to subprocesses!",
                             aborted_sequences.len()
                         );
-                    }
-                    let mut daemon_manager = e.daemon_manager.write();
-                    let _ = daemon_manager
-                        .as_mut()
-                        .unwrap()
-                        .send_message(&if aborted_sequences.len() > 0 {
-                            MessageType::Abort(aborted_sequences)
+                        let _ = daemon_manager
+                            .as_mut()
+                            .unwrap()
+                            .send_message(&MessageType::Abort(aborted_sequences));
+                    } else {
+                        let mut cur_tasks = e.cur_tasks.write();
+                        let send_tasks = cur_tasks.clone();
+                        if send_tasks.len() > 0 {
+                            warn!(
+                                "Sending {} tasks to subprocesses (continuous batching)",
+                                send_tasks.len()
+                            );
+                            let _ = daemon_manager
+                                .as_mut()
+                                .unwrap()
+                                .send_message(&MessageType::Data(send_tasks));
+                            cur_tasks.clear();
                         } else {
-                            MessageType::Continue
-                        });
+                            let _ = daemon_manager
+                                .as_mut()
+                                .unwrap()
+                                .send_message(&MessageType::Continue);
+                        }
+                    }
                 } else {
-                    if e.scheduler.has_unfinished_sequences() {
-                        let mut daemon_manager = e.daemon_manager.write();
-                        match Self::sync_process(
-                            daemon_manager.as_mut().unwrap(),
-                            MessageType::Continue,
-                        ) {
+                    let has_unfinished_sequences = {
+                        let e = engine.read();
+                        e.scheduler.has_unfinished_sequences()
+                    };
+                    if has_unfinished_sequences {
+                        match Self::sync_process(&engine, MessageType::Continue) {
                             Some(ids) => {
                                 for group in scheduled.iter() {
                                     let seq = group.get_seqs().values().nth(0).unwrap();
@@ -707,7 +743,10 @@ impl LLMEngine {
                         }
                     }
                 }
-                e.scheduler.free_finished_sequence_groups();
+                {
+                    let mut e = engine.write();
+                    e.scheduler.free_finished_sequence_groups();
+                }
             };
         }
 

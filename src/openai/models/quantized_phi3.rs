@@ -172,6 +172,7 @@ pub struct GGUFPhi3 {
     output: QLinear,
     cfg: Config,
     dtype: DType,
+    device: Device,
 }
 
 fn precomput_freqs_cis(
@@ -340,21 +341,8 @@ impl GGUFPhi3 {
                 s_cfg,
             ),
             dtype,
+            device: device.clone(),
         })
-    }
-
-    fn prepare_decoder_attention_mask(
-        &self,
-        b_size: usize,
-        tgt_len: usize,
-        device: &Device,
-    ) -> Result<Tensor> {
-        let mask: Vec<_> = (0..tgt_len)
-            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
-            .collect();
-        let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), device)?;
-        mask.expand((b_size, 1, tgt_len, tgt_len))?
-            .to_dtype(self.dtype)
     }
 
     pub fn forward(
@@ -365,10 +353,18 @@ impl GGUFPhi3 {
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_sz, seq_len) = xs.dims2()?;
-        let mask = if seq_len == 1 {
+        let mask = if seq_len <= 1 {
             None
         } else {
-            Some(self.prepare_decoder_attention_mask(b_sz, seq_len, xs.device())?)
+            let mask = super::get_attention_casual_mask(
+                &self.device,
+                self.dtype,
+                b_sz,
+                seq_len,
+                input_positions,
+                self.cfg.sliding_window,
+            )?;
+            Some(mask)
         };
         let mut xs = self.tok_embeddings.forward(xs)?;
 
@@ -407,7 +403,10 @@ impl GGUFPhi3 {
                 xs = (ys + residual)?
             }
         }
-        let xs = xs.i((.., seq_len - 1, ..))?.apply(&self.output_norm)?;
+        let xs = xs
+            .i((.., seq_len - 1, ..))?
+            .contiguous()?
+            .apply(&self.output_norm)?;
         self.output.forward(&xs)
     }
 

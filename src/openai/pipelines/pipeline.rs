@@ -696,7 +696,7 @@ impl DefaultLoader {
             thinking: Some(specific_args.thinking),
         };
 
-        //the embedded chat_template in gguf file may not be funtional
+        //the embedded chat_template in gguf file may not be functional
         //TODO(guoqingbao): solve problems for embedded chat_template
         let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
         let tokenizer_cfg = if tokenizer_cfg_file.display().to_string() != ""

@@ -436,7 +436,7 @@ impl Phi2 {
                 DType::F32,
                 b_size,
                 seq_len,
-                input_positions[0][0],
+                input_positions,
                 self.cfg.sliding_window,
             )?;
             Some(mask)
@@ -462,7 +462,10 @@ impl Phi2 {
                 )?
             }
         }
-        let xs = xs.apply(&self.final_layernorm)?.i((.., seq_len - 1, ..))?;
+        let xs = xs
+            .apply(&self.final_layernorm)?
+            .i((.., seq_len - 1, ..))?
+            .contiguous()?;
 
         self.lm_head.forward(&xs)
     }

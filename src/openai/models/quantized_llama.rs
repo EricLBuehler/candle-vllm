@@ -219,6 +219,7 @@ pub struct GGUFLLaMa {
     output: QMatMul,
     cfg: Config,
     dtype: DType,
+    device: Device,
 }
 
 fn precomput_freqs_cis(
@@ -370,6 +371,7 @@ impl GGUFLLaMa {
                 s_cfg,
             ),
             dtype,
+            device: ct.device.clone(),
         })
     }
 
@@ -529,21 +531,8 @@ impl GGUFLLaMa {
                 s_cfg,
             ),
             dtype,
+            device: device.clone(),
         })
-    }
-
-    fn prepare_decoder_attention_mask(
-        &self,
-        b_size: usize,
-        tgt_len: usize,
-        device: &Device,
-    ) -> Result<Tensor> {
-        let mask: Vec<_> = (0..tgt_len)
-            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0. }))
-            .collect();
-        let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), device)?;
-        mask.expand((b_size, 1, tgt_len, tgt_len))?
-            .to_dtype(self.dtype)
     }
 
     pub fn forward(
@@ -558,10 +547,18 @@ impl GGUFLLaMa {
             seq_len < self.cfg.max_seq_len,
             "Input token length exceed maximum context allowed for this model."
         );
-        let mask = if seq_len == 1 {
+        let mask = if seq_len <= 1 {
             None
         } else {
-            Some(self.prepare_decoder_attention_mask(b_sz, seq_len, x.device())?)
+            let mask = super::get_attention_casual_mask(
+                &self.device,
+                self.dtype,
+                b_sz,
+                seq_len,
+                input_positions,
+                self.cfg.sliding_window,
+            )?;
+            Some(mask)
         };
         let mut layer_in = self.tok_embeddings.forward(x)?;
 
@@ -603,8 +600,10 @@ impl GGUFLLaMa {
                 layer_in = x
             }
         }
-        let x = self.norm.forward(&layer_in)?;
-        let x = x.i((.., seq_len - 1, ..))?;
+        let x = layer_in
+            .i((.., seq_len - 1, ..))?
+            .contiguous()?
+            .apply(&self.norm)?;
         self.output.forward(&x)
     }
 
