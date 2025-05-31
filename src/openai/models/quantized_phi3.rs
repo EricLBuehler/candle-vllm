@@ -251,7 +251,7 @@ impl GGUFPhi3 {
     }
 
     pub fn from_gguf<R: std::io::Seek + std::io::Read>(
-        ct: gguf_file::Content,
+        ct: &gguf_file::Content,
         reader: &mut R,
         device: &Device,
         dtype: DType,

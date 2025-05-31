@@ -78,7 +78,7 @@ struct Args {
     kvcache_mem_gpu: usize,
 
     /// Available CPU memory for kvcache (MB)
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long, default_value_t = 512)]
     kvcache_mem_cpu: usize,
 
     /// Record conversation (default false, the client need to record chat history)
@@ -213,21 +213,7 @@ async fn main() -> Result<(), APIError> {
                     }
                 }
             },
-            tokenizer_config_filename: {
-                let api = hf_hub::api::sync::Api::new().unwrap();
-                let api = api.model(default_model_id.clone());
-                match api.get("tokenizer_config.json") {
-                    Ok(f) => f,
-                    _ => {
-                        if !Path::new(path).join("tokenizer_config.json").exists() {
-                            println!("Warning: Unable to download or obtain tokenizer_config.json from model path! No chat_template!");
-                            "".into()
-                        } else {
-                            Path::new(path).join("tokenizer_config.json")
-                        }
-                    }
-                }
-            },
+            tokenizer_config_filename: Path::new(path).join("tokenizer_config.json"),
             config_filename: PathBuf::new(),
             filenames: if Path::new(path).join(file).exists() {
                 vec![Path::new(path).join(file).into()]
@@ -389,7 +375,7 @@ async fn main() -> Result<(), APIError> {
             let cfg = pipeline.get_model_config();
             let cache_cfg = get_cache_config(
                 args.kvcache_mem_gpu,
-                args.kvcache_mem_cpu,
+                args.kvcache_mem_cpu, //dummy 512MB for cpu
                 args.block_size,
                 &cfg,
                 num_shards,
@@ -455,7 +441,7 @@ async fn main() -> Result<(), APIError> {
         println!(
             "\nMaximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):"
         );
-        for batch in [1, 8, 16, 32, 64, 128] {
+        for batch in [1, 8, 16, 32] {
             println!(
                 "-> Batch {}: {}",
                 batch,

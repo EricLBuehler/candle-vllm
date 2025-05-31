@@ -39,7 +39,7 @@ serde_default_fn!(usize, first_k_dense_replace, 0);
 serde_default_fn!(bool, norm_topk_prob, false);
 serde_default_fn!(ScoringFunc, scoring_func, ScoringFunc::Softmax);
 serde_default_fn!(Activation, hidden_act, Activation::Silu);
-serde_default_fn!(bool, tie_word_embeddings, false);
+// serde_default_fn!(bool, tie_word_embeddings, false);
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct DeepSeekConfig {

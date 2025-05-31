@@ -258,7 +258,7 @@ impl GGUFQWen {
 
     pub fn from_gguf<R: std::io::Seek + std::io::Read>(
         qwen3: bool,
-        ct: gguf_file::Content,
+        ct: &gguf_file::Content,
         reader: &mut R,
         device: &Device,
         dtype: DType,
@@ -464,6 +464,10 @@ impl GGUFQWen {
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let (b_sz, seq_len) = x.dims2()?;
+        assert!(
+            seq_len < self.cfg.max_seq_len,
+            "Input token length exceed maximum context allowed for this model."
+        );
         let mask = if seq_len == 1 {
             None
         } else {
