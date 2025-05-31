@@ -674,17 +674,7 @@ impl DefaultLoader {
                 }
             }
 
-            let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
-            let tokenizer_cfg = if tokenizer_cfg_file.display().to_string() != ""
-                && Path::exists(&tokenizer_cfg_file)
-            {
-                let tokenizer_cfg: Option<String> =
-                    std::fs::read_to_string(tokenizer_cfg_file).ok();
-                tokenizer_cfg
-            } else {
-                None
-            };
-            (models, devices, config, tokenizer_cfg, sep_style[0].clone())
+            (models, devices, config, None, sep_style[0].clone())
         };
 
         println!("Done loading.");
@@ -704,6 +694,18 @@ impl DefaultLoader {
             top_k: specific_args.top_k,
             top_p: specific_args.top_p,
             thinking: Some(specific_args.thinking),
+        };
+
+        //the embedded chat_template in gguf file may not be funtional
+        //TODO(guoqingbao): solve problems for embedded chat_template
+        let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
+        let tokenizer_cfg = if tokenizer_cfg_file.display().to_string() != ""
+            && Path::exists(&tokenizer_cfg_file)
+        {
+            let tokenizer_cfg: Option<String> = std::fs::read_to_string(tokenizer_cfg_file).ok();
+            tokenizer_cfg
+        } else {
+            tokenizer_cfg
         };
 
         let (chat_template, bos_token, eos_token): (
