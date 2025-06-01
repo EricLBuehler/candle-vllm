@@ -476,7 +476,7 @@ async fn main() -> Result<(), APIError> {
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(Arc::new(server_data));
 
-    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port))
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
         .await
         .map_err(|e| APIError::new(e.to_string()))?;
     axum::serve(listener, app)
