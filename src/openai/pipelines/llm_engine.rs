@@ -1,9 +1,10 @@
 use super::{DefaultPipeline, _make_tensor_with_pad};
 #[cfg(feature = "nccl")]
-use crate::openai::communicator::{DaemonManager, MessageType, TaskData, TaskSampleData};
+use crate::openai::communicator::{DaemonManager, MessageType, TaskSampleData};
 #[cfg(feature = "nccl")]
 use crate::openai::pipelines::TokenOrFinishReason;
 use crate::openai::streaming::ChatResponse;
+use crate::openai::TaskData;
 use crate::scheduler::Scheduler;
 use crate::{
     openai::{
@@ -53,18 +54,19 @@ const _PAD_SLOT_ID: i64 = -1;
 
 pub struct LLMEngine {
     pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
-    scheduler: Scheduler,
+    pub scheduler: Scheduler,
     seq_id: usize,
     cache_config: CacheConfig,
     config: Config,
     group_id: usize,
     pub notify: Arc<Notify>,
     sync_notifies: HashMap<String, Option<Arc<Notify>>>,
+    senders: HashMap<String, Option<Arc<Sender<ChatResponse>>>>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
     sequence_groups: RwLock<VecDeque<Arc<SequenceGroup>>>,
     multi_process: bool,
-    #[cfg(feature = "nccl")]
-    cur_tasks: RwLock<Vec<TaskData>>,
+    num_shards: usize,
+    waiting_tasks: RwLock<Vec<TaskData>>,
     #[cfg(feature = "nccl")]
     pub daemon_manager: RwLock<Option<DaemonManager>>,
 }
@@ -112,11 +114,12 @@ impl LLMEngine {
             completion_records: HashMap::new(),
             sequence_groups: RwLock::new(VecDeque::new()),
             multi_process,
-            #[cfg(feature = "nccl")]
-            cur_tasks: RwLock::new(Vec::<TaskData>::new()),
+            num_shards,
+            waiting_tasks: RwLock::new(Vec::<TaskData>::new()),
             #[cfg(feature = "nccl")]
             daemon_manager: RwLock::new(daemon_manager),
             sync_notifies: HashMap::new(),
+            senders: HashMap::new(),
         }));
         let engine_clone = engine.clone();
 
@@ -125,73 +128,30 @@ impl LLMEngine {
             ranks.push(rank);
         }
 
+        #[cfg(feature = "nccl")]
+        let is_master_rank = DaemonManager::is_master_rank();
+        #[cfg(not(feature = "nccl"))]
+        let is_master_rank = true;
+
         let _ = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
                 loop {
-                    #[cfg(feature = "nccl")]
-                    if multi_process {
-                        if !DaemonManager::is_master_rank() {
-                            info!("daemon process wait_task!");
-                            let message = {
-                                let e = engine.read();
-                                let mut daemon_manager = e.daemon_manager.write();
-                                daemon_manager.as_mut().unwrap().receive_message()
-                            };
-                            match message {
-                                Ok(MessageType::Start) => {
-                                    info!("A start message*****!");
-                                }
-                                Ok(MessageType::Continue) => {
-                                    info!("A continue message before start!");
-                                }
-                                Ok(MessageType::Data(data)) => {
-                                    let mut e = engine.write();
-                                    for task in data {
-                                        warn!("Add request {} to task list!", task.request_id);
-                                        e.add_request(task.prompt, task.request_id, task.created, task.sampling_params, task.use_logprobs, None, None.into());
-                                    }
-                                    continue;
-                                }
-                                Ok(MessageType::Sample(_)) => {
-                                    info!("A sample message before start!");
-                                    continue;
-                                }
-                                Ok(MessageType::Abort(_)) | Ok(MessageType::Finish) | Ok(MessageType::Close) => {
-                                    info!("A abort/finish or close message before start!");
-                                    continue;
-                                }
-                                _=> {
-                                    warn!("Invalid message, perhaps the main process is exited!");
-                                    panic!("Exit process");
-                                }
-                            };
-
-                        } else {
-                            notify.notified().await;
-                            let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
-                            {
-                                let e = engine.read();
-                                let mut daemon_manager = e.daemon_manager.write();
-                                let mut cur_tasks = e.cur_tasks.write();
-                                let send_tasks = cur_tasks.clone();
-                                if send_tasks.len() < 1 {
-                                    continue
-                                }
-                                warn!("Sending {} tasks to {} subprocesses", send_tasks.len(), num_shards - 1);
-                                let _ = daemon_manager.as_mut().unwrap().send_message(&MessageType::Data(send_tasks));
-                                cur_tasks.clear();
-                                let _ = daemon_manager.as_mut().unwrap().send_message(&MessageType::Start);
-                            }
-                        }
-                    }
-                    if !multi_process {
-                        notify.notified().await; // Blocking call to wait for notification
+                    if is_master_rank {
+                        notify.notified().await;
                         let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
                     }
+                    {
+                        let mut e = engine.write();
+                        if e.sync_waiting_task_to_group() {
+                            let _ = tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+                            continue;
+                        }
+                    }
+
                     let results = Self::generate_parallel(&engine, ranks.clone(), multi_process).await;
 
                     #[cfg(feature = "nccl")]
-                    if multi_process && !DaemonManager::is_master_rank() {
+                    if multi_process && !is_master_rank {
                         continue;
                     }
                     let result = &results[0];
@@ -245,6 +205,112 @@ impl LLMEngine {
         Ok(engine_clone)
     }
 
+    pub fn sync_waiting_task_to_group(&mut self) -> bool {
+        let mut continue_loop = false;
+        #[cfg(feature = "nccl")]
+        let is_master_rank = DaemonManager::is_master_rank();
+        #[cfg(not(feature = "nccl"))]
+        let is_master_rank = true;
+
+        #[cfg(feature = "nccl")]
+        if self.multi_process && !is_master_rank {
+            debug!("daemon process sync task!");
+            let message = {
+                let mut daemon_manager = self.daemon_manager.write();
+                daemon_manager.as_mut().unwrap().receive_message()
+            };
+            match message {
+                Ok(MessageType::Continue) | Ok(MessageType::Sample(_)) => {
+                    debug!("A start/continue/sample message*****!");
+                    continue_loop = true;
+                }
+                Ok(MessageType::Data(data)) => {
+                    debug!("A data message*****!");
+                    for task in data {
+                        let seq_group = self.create_sequence_group(
+                            task.seq_id,
+                            task.group_id,
+                            &task.prompt,
+                            &task.request_id,
+                            task.created,
+                            &task.sampling_params,
+                            task.use_logprobs,
+                            None,
+                        );
+                        info!("Daemon process: add_sequence to group {}", task.group_id);
+                        self.scheduler.add_sequence(seq_group);
+                    }
+                }
+                Ok(MessageType::Abort(_)) | Ok(MessageType::Finish) | Ok(MessageType::Close) => {
+                    warn!("A abort/finish or close message!");
+                    continue_loop = true;
+                }
+                _ => {
+                    warn!("Invalid message, perhaps the main process is exited!");
+                    panic!("Exit process");
+                }
+            };
+        }
+
+        if is_master_rank {
+            let (send_tasks, num_send_tasks) = {
+                let waiting_tasks = self.waiting_tasks.write();
+                let send_tasks = waiting_tasks.clone();
+                let num_send_tasks = send_tasks.len();
+                (send_tasks, num_send_tasks)
+            };
+
+            for task in &send_tasks {
+                let sender: Option<Sender<ChatResponse>> = self
+                    .senders
+                    .get(&task.request_id)
+                    .and_then(|opt_arc_sender| {
+                        opt_arc_sender.as_ref().map(|arc| arc.as_ref().clone())
+                    });
+                let seq_group = self.create_sequence_group(
+                    task.seq_id,
+                    task.group_id,
+                    &task.prompt,
+                    &task.request_id,
+                    task.created,
+                    &task.sampling_params,
+                    task.use_logprobs,
+                    sender,
+                );
+                tracing::info!("Main process: add_sequence to group {}", task.group_id);
+                self.scheduler.add_sequence(seq_group);
+            }
+
+            #[cfg(feature = "nccl")]
+            if self.multi_process {
+                let mut daemon_manager = self.daemon_manager.write();
+                if num_send_tasks > 0 {
+                    warn!(
+                        "Sending {} tasks to {} subprocesses",
+                        num_send_tasks,
+                        self.num_shards - 1
+                    );
+                    let _ = daemon_manager
+                        .as_mut()
+                        .unwrap()
+                        .send_message(&MessageType::Data(send_tasks));
+                } else {
+                    let _ = daemon_manager
+                        .as_mut()
+                        .unwrap()
+                        .send_message(&MessageType::Continue);
+                    continue_loop = true;
+                }
+            }
+
+            {
+                let mut waiting_tasks = self.waiting_tasks.write();
+                waiting_tasks.clear();
+            }
+        }
+        continue_loop
+    }
+
     pub fn get_pipeline(&self, rank: usize) -> Option<&(Box<DefaultPipeline>, CacheEngine)> {
         self.pipelines.get(&rank)
     }
@@ -286,58 +352,70 @@ impl LLMEngine {
     }
 
     #[cfg(feature = "nccl")]
-    pub fn sync_process(engine: &Arc<RwLock<Self>>, msg_send: MessageType) -> Option<Vec<usize>> {
-        let mut e = engine.write();
-        if !DaemonManager::is_master_rank() {
-            debug!("waiting sync message!");
+    pub fn sync_abort_sequences(
+        &self,
+        scheduled: &VecDeque<Arc<SequenceGroup>>,
+        aborted_sequences: Vec<usize>,
+    ) {
+        if DaemonManager::is_master_rank() {
+            if aborted_sequences.len() > 0 {
+                warn!(
+                    "Sending abort message ({} sequence(s)) to subprocesses!",
+                    aborted_sequences.len()
+                );
+                {
+                    warn!("engine.write write for aborted_sequences");
+                    let mut daemon_manager = self.daemon_manager.write();
+                    let _ = daemon_manager
+                        .as_mut()
+                        .unwrap()
+                        .send_message(&MessageType::Abort(aborted_sequences));
+                }
+            } else {
+                let mut daemon_manager = self.daemon_manager.write();
+                let _ = daemon_manager
+                    .as_mut()
+                    .unwrap()
+                    .send_message(&MessageType::Continue);
+            }
+        } else {
             let message = {
-                let mut daemon_manager = e.daemon_manager.write();
+                let mut daemon_manager = self.daemon_manager.write();
                 daemon_manager.as_mut().unwrap().receive_message()
             };
             match message {
                 Ok(MessageType::Abort(ids)) => {
-                    return Some(ids);
+                    for group in scheduled.iter() {
+                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        if ids.contains(&seq.deref().get_id()) {
+                            seq.deref_mut().set_finish_reason("abort".to_string());
+                            warn!("abort sequence ({}) in subprocess!", seq.deref().get_id());
+                        }
+                    }
                 }
                 Ok(MessageType::Finish) | Ok(MessageType::Close) => {
                     warn!("A abort/finish or close message!");
-                    return Some(Vec::<usize>::new());
-                }
-                Ok(MessageType::Continue) => {
-                    debug!("continue message!");
-                }
-                Ok(MessageType::Data(data)) => {
-                    for task in data {
+                    for group in scheduled.iter() {
+                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        seq.deref_mut().set_finish_reason("abort".to_string());
                         warn!(
-                            "Add request {} to task list (continuous batching)!",
-                            task.request_id
-                        );
-                        e.add_request(
-                            task.prompt,
-                            task.request_id,
-                            task.created,
-                            task.sampling_params,
-                            task.use_logprobs,
-                            None,
-                            None.into(),
+                            "abort/finish sequence ({}) in subprocess!",
+                            seq.deref().get_id()
                         );
                     }
                 }
-                Ok(MessageType::Start) | Ok(MessageType::Sample(_)) => {
+                Ok(MessageType::Continue) | Ok(MessageType::Sample(_)) => {
                     info!("other message!");
+                }
+                Ok(MessageType::Data(_)) => {
+                    warn!("data message found!");
                 }
                 _ => {
                     warn!("invalid message!");
                     panic!("Exit process")
                 }
             };
-        } else {
-            debug!("sending sync message!");
-            let _ = {
-                let mut daemon_manager = e.daemon_manager.write();
-                daemon_manager.as_mut().unwrap().send_message(&msg_send)
-            };
         }
-        return None;
     }
 
     pub fn generate_once(
@@ -686,68 +764,15 @@ impl LLMEngine {
 
             #[cfg(feature = "nccl")]
             if multi_process {
-                if DaemonManager::is_master_rank() {
-                    let e = engine.write();
-                    let mut daemon_manager = e.daemon_manager.write();
-                    if aborted_sequences.len() > 0 {
-                        warn!(
-                            "Sending abort message ({} sequence(s)) to subprocesses!",
-                            aborted_sequences.len()
-                        );
-                        let _ = daemon_manager
-                            .as_mut()
-                            .unwrap()
-                            .send_message(&MessageType::Abort(aborted_sequences));
-                    } else {
-                        let mut cur_tasks = e.cur_tasks.write();
-                        let send_tasks = cur_tasks.clone();
-                        if send_tasks.len() > 0 {
-                            warn!(
-                                "Sending {} tasks to subprocesses (continuous batching)",
-                                send_tasks.len()
-                            );
-                            let _ = daemon_manager
-                                .as_mut()
-                                .unwrap()
-                                .send_message(&MessageType::Data(send_tasks));
-                            cur_tasks.clear();
-                        } else {
-                            let _ = daemon_manager
-                                .as_mut()
-                                .unwrap()
-                                .send_message(&MessageType::Continue);
-                        }
-                    }
-                } else {
-                    let has_unfinished_sequences = {
-                        let e = engine.read();
-                        e.scheduler.has_unfinished_sequences()
-                    };
-                    if has_unfinished_sequences {
-                        match Self::sync_process(&engine, MessageType::Continue) {
-                            Some(ids) => {
-                                for group in scheduled.iter() {
-                                    let seq = group.get_seqs().values().nth(0).unwrap();
-                                    if ids.is_empty() || ids.contains(&seq.deref().get_id()) {
-                                        seq.deref_mut().set_finish_reason("abort".to_string());
-                                        warn!(
-                                            "abort sequence ({}) in subprocess!",
-                                            seq.deref().get_id()
-                                        );
-                                    }
-                                }
-                            }
-                            _ => {
-                                debug!("sync continue message -> continue!");
-                            }
-                        }
-                    }
-                }
-                {
-                    let mut e = engine.write();
-                    e.scheduler.free_finished_sequence_groups();
-                }
+                let mut e = engine.write();
+                e.sync_abort_sequences(&scheduled, aborted_sequences);
+                e.scheduler.free_finished_sequence_groups();
             };
+
+            {
+                let mut e = engine.write();
+                e.sync_waiting_task_to_group();
+            }
         }
 
         if rank == 0 {
@@ -992,17 +1017,17 @@ impl LLMEngine {
         })
     }
 
-    pub fn add_request(
+    pub fn create_sequence_group(
         &mut self,
-        prompt: Encoding,
-        request_id: String,
+        seq_id: usize,
+        group_id: usize,
+        prompt: &Encoding,
+        request_id: &String,
         created: SystemTime,
-        sampling_params: SamplingParams,
+        sampling_params: &SamplingParams,
         use_logprobs: bool,
         sender: Option<Sender<ChatResponse>>,
-        sync_notify: Option<Arc<Notify>>,
-    ) {
-        let prompt_len = prompt.get_ids().len();
+    ) -> SequenceGroup {
         let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
             prompt
                 .get_ids()
@@ -1010,52 +1035,68 @@ impl LLMEngine {
                 .iter()
                 .map(|x| *x as usize)
                 .collect::<Vec<_>>(),
-            self.seq_id,
+            seq_id,
             self.cache_config.block_size,
         ))));
-        self.seq_id += 1;
         let seq_group = SequenceGroup::new(
             &[seq],
             get_created_time_secs(),
-            self.group_id,
+            group_id,
             request_id.clone(),
             created,
             sampling_params.clone(),
             use_logprobs,
             sender,
         );
-        self.group_id += 1;
+        seq_group
+    }
 
-        self.scheduler.add_sequence(seq_group);
+    pub fn add_request(
+        &mut self,
+        prompt: Encoding,
+        request_id: String,
+        created: SystemTime,
+        sampling_params: SamplingParams,
+        use_logprobs: bool,
+        sender: Option<Arc<Sender<ChatResponse>>>,
+        sync_notify: Option<Arc<Notify>>,
+    ) {
+        let prompt_len = prompt.get_ids().len();
         let sync_notify = sync_notify.clone();
         if sync_notify.is_some() {
             self.sync_notifies
                 .insert(request_id.clone(), Some(sync_notify.unwrap()));
         }
+        let sender_clone = sender.clone();
+        if sender_clone.is_some() {
+            self.senders
+                .insert(request_id.clone(), Some(sender_clone.unwrap()));
+        }
+
         #[cfg(feature = "nccl")]
         let do_log = DaemonManager::is_master_rank();
         #[cfg(not(feature = "nccl"))]
         let do_log = true;
         if do_log {
             println!(
-                "Request {} with length {} added to sequence group.",
+                "Request {} with length {} added to sequence waiting group.",
                 request_id.clone(),
                 prompt_len
             );
         }
 
-        #[cfg(feature = "nccl")]
-        if self.multi_process && !DaemonManager::is_daemon() {
-            info!("add task to list");
-            let task = TaskData {
-                prompt,
-                request_id,
-                created,
-                sampling_params,
-                use_logprobs,
-            };
-            let mut cur_tasks = self.cur_tasks.write();
-            cur_tasks.push(task);
-        }
+        let task = TaskData {
+            seq_id: self.seq_id,
+            group_id: self.group_id,
+            prompt,
+            request_id,
+            created,
+            sampling_params,
+            use_logprobs,
+        };
+        let mut waiting_tasks = self.waiting_tasks.write();
+        waiting_tasks.push(task);
+        self.seq_id += 1;
+        self.group_id += 1;
     }
 }

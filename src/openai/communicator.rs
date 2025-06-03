@@ -1,6 +1,7 @@
 #[allow(unused_imports)]
 use crate::openai::distributed::{Comm, Id};
-use crate::openai::sampling_params::{Logprobs, SamplingParams};
+use crate::openai::sampling_params::Logprobs;
+use crate::openai::TaskData;
 use bincode;
 use core::ffi::c_char;
 use interprocess::local_socket::traits::{Listener, Stream};
@@ -12,8 +13,7 @@ use std::env;
 use std::io::Read;
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
-use std::time::SystemTime;
-use tokenizers::Encoding;
+
 use tracing::{info, warn};
 pub(crate) const DAEMON_PAYLOAD: &str = "__CANDLE_VLLM_DAEMON_INTERNAL";
 use lazy_static::lazy_static;
@@ -92,15 +92,6 @@ pub enum RankData {
         rank: usize,
         device_id: usize,
     },
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct TaskData {
-    pub prompt: Encoding,
-    pub request_id: String,
-    pub created: SystemTime,
-    pub sampling_params: SamplingParams,
-    pub use_logprobs: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
