@@ -217,7 +217,7 @@ pub async fn chat_completions(
                     sampling_params,
                     request.logprobs.unwrap_or(false),
                     if stream_request {
-                        Some(response_tx)
+                        Some(Arc::new(response_tx))
                     } else {
                         None
                     },
