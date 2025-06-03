@@ -227,7 +227,7 @@ impl LLMEngine {
                 Ok(MessageType::Data(data)) => {
                     debug!("A data message*****!");
                     for task in data {
-                        let seq_group = self.create_seqence_group(
+                        let seq_group = self.create_sequence_group(
                             task.seq_id,
                             task.group_id,
                             &task.prompt,
@@ -267,7 +267,7 @@ impl LLMEngine {
                     .and_then(|opt_arc_sender| {
                         opt_arc_sender.as_ref().map(|arc| arc.as_ref().clone())
                     });
-                let seq_group = self.create_seqence_group(
+                let seq_group = self.create_sequence_group(
                     task.seq_id,
                     task.group_id,
                     &task.prompt,
@@ -352,7 +352,7 @@ impl LLMEngine {
     }
 
     #[cfg(feature = "nccl")]
-    pub fn sync_abort_sequenes(
+    pub fn sync_abort_sequences(
         &self,
         scheduled: &VecDeque<Arc<SequenceGroup>>,
         aborted_sequences: Vec<usize>,
@@ -765,7 +765,7 @@ impl LLMEngine {
             #[cfg(feature = "nccl")]
             if multi_process {
                 let mut e = engine.write();
-                e.sync_abort_sequenes(&scheduled, aborted_sequences);
+                e.sync_abort_sequences(&scheduled, aborted_sequences);
                 e.scheduler.free_finished_sequence_groups();
             };
 
@@ -1017,7 +1017,7 @@ impl LLMEngine {
         })
     }
 
-    pub fn create_seqence_group(
+    pub fn create_sequence_group(
         &mut self,
         seq_id: usize,
         group_id: usize,
