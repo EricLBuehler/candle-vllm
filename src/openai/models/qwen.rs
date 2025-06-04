@@ -74,7 +74,7 @@ impl QwenConfig {
             tie_word_embeddings: self.tie_word_embeddings,
             rope_scaling: None,
             original_max_position_embeddings: None,
-            attention_bias: self.attention_bias.unwrap_or(false),
+            attention_bias: self.attention_bias.unwrap_or(true),
             partial_rotary_factor: None,
             qk_layer_rms_norm: None,
             kv_cache_dtype,
