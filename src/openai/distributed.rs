@@ -227,16 +227,21 @@ impl TensorParallelColumnLinear {
         let size = comm.world_size();
         let dtype = vb.dtype();
         let bs = if bias {
-            let full_bias = vb.get((out_dim,), "bias")?;
-            if comm.world_size() > 1 {
-                //match bias to its corresponding partial weight
-                let out_dim_partition = out_dim / comm.world_size();
-                let full_bias = full_bias
-                    .narrow(0, comm.rank() * out_dim_partition, out_dim_partition)?
-                    .contiguous()?;
-                Some(full_bias)
+            let full_bias = vb.get((out_dim,), "bias");
+            if full_bias.is_ok() {
+                if comm.world_size() > 1 {
+                    //match bias to its corresponding partial weight
+                    let out_dim_partition = out_dim / comm.world_size();
+                    let full_bias = full_bias
+                        .unwrap()
+                        .narrow(0, comm.rank() * out_dim_partition, out_dim_partition)?
+                        .contiguous()?;
+                    Some(full_bias)
+                } else {
+                    Some(vb.get((out_dim,), "bias")?)
+                }
             } else {
-                Some(vb.get((out_dim,), "bias")?)
+                None
             }
         } else {
             None
