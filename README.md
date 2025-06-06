@@ -138,6 +138,11 @@ From local path (assume gguf model downloaded in `/Users/Downloads`):
 cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /Users/Downloads --weight-file Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
 ```
 
+Or simply pass the **absolute path** of the gguf file:
+```shell
+cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-file /Users/Downloads/Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
+```
+
 Using model-id and filename:
 ```shell
 cargo run --release --features metal -- --port 2000 --dtype bf16 --model-id unsloth/Qwen3-8B-GGUF --weight-file Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0

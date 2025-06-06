@@ -176,9 +176,8 @@ async fn main() -> Result<(), APIError> {
             .init();
     }
 
-    let (loader, model_id, default_model_id, quant) =
-        get_model_loader(args.command, args.model_id.clone());
-    if args.model_id.is_none() {
+    let (loader, model_id, quant) = get_model_loader(args.command, args.model_id.clone());
+    if args.model_id.is_none() && args.weight_path.is_none() && args.weight_file.is_none() {
         info!("No model id specified, using the default model_id or specified in the weight_path to retrieve config files!");
     }
 
@@ -201,21 +200,23 @@ async fn main() -> Result<(), APIError> {
             },
         },
         //model in a quantized file (gguf/ggml format)
-        (Some(path), Some(file)) => DefaultModelPaths {
+        (path, Some(file)) => DefaultModelPaths {
             tokenizer_filename: PathBuf::new(),
             tokenizer_config_filename: PathBuf::new(),
             config_filename: PathBuf::new(),
-            filenames: if Path::new(path).join(file).exists() {
-                vec![Path::new(path).join(file).into()]
-            } else {
-                panic!("Model file not found {}", file);
+            filenames: {
+                let path = path.clone().unwrap_or("".to_string());
+                if Path::new(&path).join(file).exists() {
+                    vec![Path::new(&path).join(file).into()]
+                } else {
+                    panic!("Model file not found {}", file);
+                }
             },
         },
         _ => {
             //try download model anonymously
             let loaded = loader.download_model(
                 model_id.clone(),
-                default_model_id.clone(),
                 args.weight_file.clone(),
                 quant.clone(),
                 None,
@@ -250,7 +251,6 @@ async fn main() -> Result<(), APIError> {
                 }
                 loader.download_model(
                     model_id,
-                    default_model_id,
                     args.weight_file,
                     quant.clone(),
                     None,
