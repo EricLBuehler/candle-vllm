@@ -124,7 +124,6 @@ impl DefaultLoader {
     pub fn download_model(
         &self,
         model_id: String,
-        default_model_id: String,
         weight_file: Option<String>,
         quant: Option<String>,
         revision: Option<String>,
@@ -133,17 +132,11 @@ impl DefaultLoader {
     ) -> Result<DefaultModelPaths, APIError> {
         if quant.is_some() && quant.as_ref().unwrap() == "gguf" && weight_file.is_some() {
             info!(
-                "Downloading GGUF file {} from repo {}, config files will retrieved form repo {}",
+                "Downloading GGUF file {} from repo {}",
                 weight_file.as_ref().unwrap(),
                 model_id,
-                default_model_id
             );
-            return self.download_gguf_model(
-                model_id,
-                default_model_id,
-                None,
-                weight_file.clone().unwrap(),
-            );
+            return self.download_gguf_model(model_id, None, weight_file.clone().unwrap());
         };
         let api = try_api!(ApiBuilder::new()
             .with_progress(true)
@@ -187,7 +180,6 @@ impl DefaultLoader {
     pub fn download_gguf_model(
         &self,
         model_id: String,
-        default_model_id: String,
         revision: Option<String>,
         filename: String,
     ) -> Result<DefaultModelPaths, APIError> {
@@ -203,21 +195,9 @@ impl DefaultLoader {
             .get(filename.as_str()));
         filenames.push(filename);
 
-        let api = api.repo(Repo::with_revision(
-            default_model_id,
-            RepoType::Model,
-            revision,
-        ));
-        let tokenizer_filename = try_api!(api.get("tokenizer.json"));
-
-        let tokenizer_config_filename = match api.get("tokenizer_config.json") {
-            Ok(f) => f,
-            _ => "".into(),
-        };
-
         Ok(DefaultModelPaths {
-            tokenizer_filename,
-            tokenizer_config_filename,
+            tokenizer_filename: "".into(),
+            tokenizer_config_filename: "".into(),
             config_filename: "".into(),
             filenames,
         })
