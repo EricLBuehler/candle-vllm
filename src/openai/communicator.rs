@@ -198,10 +198,10 @@ impl DaemonManager {
         if DaemonManager::is_running_under_mpirun() && self.is_distributed() {
             //sync mpi processes across nodes
             if DaemonManager::is_master_rank() {
-                println!("Sync MPI processes across nodes (from master rank)!");
+                info!("Sync MPI processes across nodes (from master rank)!");
                 self.send_message(&MessageType::Continue).is_ok()
             } else {
-                println!("Sync MPI processes across nodes (from daemon rank)!");
+                info!("Sync MPI processes across nodes (from daemon rank)!");
                 match self.receive_message() {
                     Ok(MessageType::Continue) => true,
                     _ => false,
@@ -508,13 +508,13 @@ pub fn init_subprocess(
             //multi-node
             #[cfg(feature = "mpi")]
             {
-                println!("Running with MPI!");
+                info!("Running with MPI!");
                 let daemon_manager = DaemonManager::new_mpi();
                 let world = daemon_manager.mpi_world.as_ref().unwrap();
                 let world_size = world.size(); // total processes
                 let rank = world.rank(); // global rank
                                          // let root_process = world.process_at_rank(0);
-                println!("[Rank {}] Hello from MPI!", rank);
+                info!("[Rank {}] Hello from MPI!", rank);
                 let mut raw_id = if rank == 0 {
                     // Rank 0 generates unique ID
                     *Id::new().unwrap().internal()
@@ -525,7 +525,7 @@ pub fn init_subprocess(
                 // Broadcast the raw_id to all ranks
                 world.broadcast_into(0, &mut raw_id);
                 let id = Id::uninit(raw_id);
-                println!("unique id: {:?}", id);
+                info!("unique id: {:?}", id);
                 let local_rank = rank as usize % local_world_size;
                 *IS_DAEMON.lock().unwrap() = local_rank != 0;
                 (
@@ -537,7 +537,7 @@ pub fn init_subprocess(
                 )
             }
         } else {
-            println!("Running on single node!");
+            info!("Running on single node!");
             //single node
             if let Ok(payload) = env::var(DAEMON_PAYLOAD) {
                 let payload: RankData = serde_json::from_str(&payload)?;
@@ -553,11 +553,11 @@ pub fn init_subprocess(
                 let mut connect_retry_count = 0;
                 loop {
                     if daemon_manager.is_ok() {
-                        println!("Connected to the main process!");
+                        info!("Connected to the main process!");
                         break;
                     } else if connect_retry_count < 60 {
                         connect_retry_count += 1;
-                        println!(
+                        warn!(
                             "Retry connect to main process' data channel ({:?})!",
                             daemon_manager
                         );
@@ -569,7 +569,7 @@ pub fn init_subprocess(
                         );
                         continue;
                     } else {
-                        println!("{:?}", daemon_manager);
+                        info!("{:?}", daemon_manager);
                         break;
                     }
                 }
@@ -614,12 +614,12 @@ pub fn init_subprocess(
                     false,
                     Some(local_world_size - 1),
                 )?;
-                println!("All subprocess workers have connected to the main processes!");
+                warn!("All subprocess workers have connected to the main processes!");
                 (0, 0, local_world_size, id, daemon_manager)
             }
         };
 
-    println!(
+    info!(
         "local_rank {}, global_rank {}, local_world_size {}, global_world_size {}",
         local_rank, global_rank, local_world_size, global_world_size,
     );

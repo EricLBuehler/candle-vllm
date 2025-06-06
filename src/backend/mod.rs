@@ -1,4 +1,5 @@
 mod cache;
+pub mod gguf;
 pub mod gptq;
 mod paged_attention;
 #[cfg(feature = "cuda")]

@@ -6,7 +6,7 @@ use clap::Subcommand;
 use openai::pipelines::pipeline::DefaultLoader;
 use std::fmt::Display;
 use std::path::Path;
-
+use tracing::warn;
 pub mod backend;
 pub mod openai;
 pub mod paged_attention;
@@ -853,7 +853,7 @@ pub fn hub_load_local_safetensors(
     path: &String,
     json_file: &str,
 ) -> Result<Vec<std::path::PathBuf>> {
-    println!("{:}", Path::new(path).join(json_file).display());
+    tracing::info!("{:}", Path::new(path).join(json_file).display());
     let jsfile = std::fs::File::open(Path::new(path).join(json_file))?;
     let json: serde_json::Value = serde_json::from_reader(&jsfile).map_err(candle::Error::wrap)?;
     let weight_map = match json.get("weight_map") {
@@ -884,13 +884,13 @@ pub fn new_device(ordinal: usize) -> Result<Device> {
     } else {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         {
-            println!(
+            warn!(
                 "Running on CPU, to run on GPU(metal), build this example with `--features metal`"
             );
         }
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
         {
-            println!("Running on CPU, to run on GPU, build this example with `--features cuda`");
+            warn!("Running on CPU, to run on GPU, build this example with `--features cuda`");
         }
         Ok(Device::Cpu)
     }

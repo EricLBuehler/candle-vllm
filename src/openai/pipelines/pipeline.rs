@@ -18,7 +18,6 @@ use crate::{
             deepseek::{DeepSeek, DeepSeekConfig},
             gemma::{Gemma, GemmaConfig},
             gemma3::{Gemma3, Gemma3Config},
-            get_tokenizer_cfg,
             glm4::{GLMConfig, GLM4},
             llama::{Llama, LlamaConfig},
             mistral::{Mistral, MistralConfig},
@@ -51,6 +50,7 @@ pub use std::rc::Rc;
 use std::sync::RwLock;
 use std::{path::PathBuf, sync::Arc};
 use tokenizers::Tokenizer;
+use tracing::{info, warn};
 const EOS_TOKEN: &str = "</s>";
 const SAMPLING_SEED: u64 = 299792458;
 const MIN_GEN_TOKENS: usize = 128;
@@ -132,7 +132,7 @@ impl DefaultLoader {
         hf_token_path: Option<String>,
     ) -> Result<DefaultModelPaths, APIError> {
         if quant.is_some() && quant.as_ref().unwrap() == "gguf" && weight_file.is_some() {
-            println!(
+            info!(
                 "Downloading GGUF file {} from repo {}, config files will retrieved form repo {}",
                 weight_file.as_ref().unwrap(),
                 model_id,
@@ -244,12 +244,12 @@ impl DefaultLoader {
             local_world_size.unwrap() - 1
         };
 
-        let (models, devices, config, tokenizer_cfg, sep_style) = if quant.is_some()
+        let (models, devices, config, sep_style) = if quant.is_some()
             && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf")
         {
             let device = crate::new_device(device_ids[0]).unwrap();
             let path = paths.get_weight_filenames()[0].clone();
-            println!(
+            info!(
                 "Loading quantized {} model from file {}",
                 self.name,
                 path.display()
@@ -280,7 +280,7 @@ impl DefaultLoader {
             let content = try_api!(
                 gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
             );
-            let (model, config, tokenizer_cfg, sep_style) = match self.name.as_str() {
+            let (model, config, sep_style) = match self.name.as_str() {
                 "llama" => {
                     let model = try_api!(GGUFLLaMa::from_gguf(
                         &content,
@@ -291,12 +291,7 @@ impl DefaultLoader {
                         Arc::clone(&reporter),
                     ));
                     let cfg = model.get_config().clone();
-                    (
-                        LLMModel::LlamaGGUF(model),
-                        cfg,
-                        get_tokenizer_cfg(&content),
-                        SeparatorStyle::Llama,
-                    )
+                    (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama)
                 }
                 "llama3" => {
                     let model = try_api!(GGUFLLaMa::from_gguf(
@@ -308,12 +303,7 @@ impl DefaultLoader {
                         Arc::clone(&reporter),
                     ));
                     let cfg = model.get_config().clone();
-                    (
-                        LLMModel::LlamaGGUF(model),
-                        cfg,
-                        get_tokenizer_cfg(&content),
-                        SeparatorStyle::Llama3,
-                    )
+                    (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama3)
                 }
                 "phi3" => {
                     let model = try_api!(GGUFPhi3::from_gguf(
@@ -325,12 +315,7 @@ impl DefaultLoader {
                         Arc::clone(&reporter),
                     ));
                     let cfg = model.get_config().clone();
-                    (
-                        LLMModel::Phi3GGUF(model),
-                        cfg,
-                        get_tokenizer_cfg(&content),
-                        SeparatorStyle::Phi,
-                    )
+                    (LLMModel::Phi3GGUF(model), cfg, SeparatorStyle::Phi)
                 }
                 "qwen2" | "qwen3" => {
                     let model = try_api!(GGUFQWen::from_gguf(
@@ -343,23 +328,12 @@ impl DefaultLoader {
                         Arc::clone(&reporter),
                     ));
                     let cfg = model.get_config().clone();
-                    (
-                        LLMModel::QWenGGUF(model),
-                        cfg,
-                        get_tokenizer_cfg(&content),
-                        SeparatorStyle::Qwen,
-                    )
+                    (LLMModel::QWenGGUF(model), cfg, SeparatorStyle::Qwen)
                 }
                 _ => panic!("Model not supported!"),
             };
             handle.join().unwrap();
-            (
-                vec![model],
-                vec![device],
-                config.to_owned(),
-                tokenizer_cfg,
-                sep_style,
-            )
+            (vec![model], vec![device], config.to_owned(), sep_style)
         } else {
             let config = match self.name.as_str() {
                 "llama" | "llama3" => {
@@ -432,9 +406,9 @@ impl DefaultLoader {
                 _ => panic!("Model not supported!"),
             };
 
-            println!("Model {:?}", config);
+            info!("Model {:?}", config);
 
-            println!("Loading {} model.", self.name);
+            info!("Loading {} model.", self.name);
             let handle = progress_worker(
                 Some(num_subprogress as usize),
                 config.num_hidden_layers,
@@ -674,10 +648,10 @@ impl DefaultLoader {
                 }
             }
 
-            (models, devices, config, None, sep_style[0].clone())
+            (models, devices, config, sep_style[0].clone())
         };
 
-        println!("Done loading.");
+        warn!("Done loading.");
 
         //max and min number of tokens generated per request
         let default_max_tokens = specific_args
@@ -696,63 +670,10 @@ impl DefaultLoader {
             thinking: Some(specific_args.thinking),
         };
 
-        //the embedded chat_template in gguf file may not be functional
-        //TODO(guoqingbao): solve problems for embedded chat_template
-        let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
-        let tokenizer_cfg = if tokenizer_cfg_file.display().to_string() != ""
-            && Path::exists(&tokenizer_cfg_file)
-        {
-            let tokenizer_cfg: Option<String> = std::fs::read_to_string(tokenizer_cfg_file).ok();
-            tokenizer_cfg
-        } else {
-            tokenizer_cfg
-        };
-
-        let (chat_template, bos_token, eos_token): (
-            Option<String>,
-            Option<String>,
-            Option<String>,
-        ) = if tokenizer_cfg.is_some() {
-            let cfg_tokenizer: TokenizerConfig =
-                try_api!(serde_json::from_str(&tokenizer_cfg.unwrap().as_str()));
-            let bos = if cfg_tokenizer.bos_token.is_some() {
-                match cfg_tokenizer.bos_token.unwrap() {
-                    BosEosToken(Either::Left(Some(id))) => Some(id),
-                    BosEosToken(Either::Right(Some(content))) => content.content.clone(),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-            let eos = if cfg_tokenizer.eos_token.is_some() {
-                match cfg_tokenizer.eos_token.unwrap() {
-                    BosEosToken(Either::Left(Some(id))) => Some(id),
-                    BosEosToken(Either::Right(Some(content))) => content.content.clone(),
-                    _ => None,
-                }
-            } else {
-                None
-            };
-
-            (cfg_tokenizer.chat_template, bos, eos)
-        } else {
-            (None, None, None)
-        };
-
         #[cfg(feature = "nccl")]
         let global_rank = global_rank.unwrap_or(0);
         #[cfg(not(feature = "nccl"))]
         let global_rank = local_rank.unwrap_or(0);
-
-        if global_rank == 0 {
-            if chat_template.is_some() {
-                println!("Chat Template {} \n", chat_template.as_ref().unwrap());
-            } else {
-                println!("Warning: Missing tokenizer_config.json \n Warning: Chat Template not found, use built-in template which may not correct!");
-            }
-            println!("{:?}", pipeline_config);
-            println!("{:?}", specific_args);
-        }
 
         let pipelines = models
             .into_iter()
@@ -766,9 +687,81 @@ impl DefaultLoader {
                         specific_args.top_p,
                     )
                 };
-                let tokenizer = Tokenizer::from_file(paths.get_tokenizer_filename())
-                    .map_err(|x| APIError::new(x.to_string()))
-                    .unwrap();
+                let tokenizer_file = paths.get_tokenizer_filename();
+                let (tokenizer, chat_template, bos_token, eos_token): (
+                    Tokenizer,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                ) = if tokenizer_file.display().to_string() != "" && Path::exists(&tokenizer_file) {
+                    let tokenizer = Tokenizer::from_file(tokenizer_file.clone())
+                        .map_err(|x| APIError::new(x.to_string()))
+                        .unwrap();
+
+                    let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
+                    let (chat_template, bos, eos) = if Path::exists(&tokenizer_cfg_file) {
+                        let tokenizer_cfg: Option<String> =
+                            std::fs::read_to_string(tokenizer_cfg_file).ok();
+                        let cfg_tokenizer: TokenizerConfig =
+                            serde_json::from_str(&tokenizer_cfg.unwrap().as_str()).unwrap();
+                        let bos = if cfg_tokenizer.bos_token.is_some() {
+                            match cfg_tokenizer.bos_token.unwrap() {
+                                BosEosToken(Either::Left(Some(id))) => Some(id),
+                                BosEosToken(Either::Right(Some(content))) => content.content.clone(),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+                        let eos = if cfg_tokenizer.eos_token.is_some() {
+                            match cfg_tokenizer.eos_token.unwrap() {
+                                BosEosToken(Either::Left(Some(id))) => Some(id),
+                                BosEosToken(Either::Right(Some(content))) => content.content.clone(),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+
+                        (cfg_tokenizer.chat_template, bos, eos)
+                    } else {
+                        (None, None, None)
+                    };
+                    (tokenizer, chat_template, bos, eos)
+                } else if quant.is_some() && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf") {
+                    use crate::backend::gguf::{get_gguf_info, Content, GGUFInfo};
+                    let filename = paths.get_weight_filenames()[0].clone();
+                    let mut readers = Vec::new();
+                    readers.push(std::fs::File::open(filename).unwrap());
+                    let mut readers = readers.iter_mut().collect::<Vec<_>>();
+                    let content = Content::from_readers(&mut readers).unwrap();
+                    let GGUFInfo {
+                        tokenizer,
+                        bos,
+                        eos,
+                        unk: _,
+                        context_length: _,
+                        chat_template,
+                    } = get_gguf_info(&content).unwrap();
+                    (
+                        tokenizer,
+                        chat_template,
+                        bos,
+                        eos,
+                    )
+                } else {
+                    panic!("Missing tokenizer file!");
+                };
+
+                if rank == 0 && global_rank == 0 {
+                    if chat_template.is_some() {
+                        info!("Chat Template {} \n", chat_template.as_ref().unwrap());
+                    } else {
+                        info!("Warning: Missing tokenizer_config.json \n Warning: Chat Template not found, use built-in template which may not correct!");
+                    }
+                    info!("{:?}", pipeline_config);
+                    info!("{:?}", specific_args);
+                }
 
                 let mut stop_token_ids = Vec::<u32>::new();
                 match &config.eos_token_id {
@@ -791,6 +784,14 @@ impl DefaultLoader {
                             stop_token_ids.push(token)
                         };
                     }
+                }
+
+                if let Some(eos) = &eos_token {
+                    if let Some(token) = tokenizer.get_vocab(true).get(eos).copied() {
+                        if !stop_token_ids.contains(&token) {
+                            stop_token_ids.push(token)
+                        }
+                    };
                 }
 
                 if chat_template.is_some() {

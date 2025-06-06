@@ -180,13 +180,13 @@ impl LLMEngine {
                             .unwrap_or(0),
                     };
 
-                    println!(
+                    warn!(
                         "\r\n [{} requests] Prefilling: {} prompt tokens processed in {} seconds",
                         result.len(),
                         overall_usage.prompt_tokens,
                         overall_usage.prompt_time_costs / 1000
                     );
-                    println!(
+                    warn!(
                         "\r\n [{} requests] Decoding: {} tokens processed in {} seconds ({:.02} tokens/s)",
                         result.len(),
                         overall_usage.completion_tokens,
@@ -428,7 +428,7 @@ impl LLMEngine {
         let mut prompt_finish_times = HashMap::<usize, SystemTime>::new();
         #[cfg(feature = "nccl")]
         {
-            warn!("Start processing...");
+            info!("Start processing...");
             let e = engine.read();
             let (pipeline, _) = e.get_pipeline(rank).unwrap();
             let device = pipeline.device();
@@ -441,7 +441,7 @@ impl LLMEngine {
                 }
                 let e = engine.read();
                 if !e.scheduler.has_unfinished_sequences() {
-                    warn!("generate_once: no unfinished_sequences, break");
+                    info!("generate_once: no unfinished_sequences, break");
                     break;
                 }
             }
@@ -602,7 +602,7 @@ impl LLMEngine {
                             );
                             let ret = sender.send(ChatResponse::Chunk(chunk));
                             if ret.is_err() {
-                                println!(
+                                warn!(
                                     "Send stream response error! (sequence id {})",
                                     seq.deref().get_id()
                                 );
@@ -625,7 +625,7 @@ impl LLMEngine {
                             );
                             let ret = sender.send(ChatResponse::Chunk(chunk));
                             if ret.is_err() {
-                                println!("Send stream finish response error!");
+                                warn!("Send stream finish response error!");
                             }
                         };
                         seq.deref_mut().set_finish_reason(finish_reason)
@@ -654,7 +654,7 @@ impl LLMEngine {
                     #[cfg(not(feature = "nccl"))]
                     let do_log = true;
                     if do_log {
-                        println!(
+                        warn!(
                             "Request {} decoding {} tokens finished in {} seconds",
                             group.request_id,
                             decoded_tokens,
@@ -1078,7 +1078,7 @@ impl LLMEngine {
         #[cfg(not(feature = "nccl"))]
         let do_log = true;
         if do_log {
-            println!(
+            warn!(
                 "Request {} with length {} added to sequence waiting group.",
                 request_id.clone(),
                 prompt_len

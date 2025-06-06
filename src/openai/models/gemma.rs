@@ -14,7 +14,7 @@ use candle_nn::{Activation, RmsNorm};
 use std::iter::zip;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-
+use tracing::warn;
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct GemmaConfig {
     pub attention_bias: bool,
@@ -49,7 +49,7 @@ impl GemmaConfig {
         let hidden_act = match (self.hidden_act, self.hidden_activation) {
             (None, Some(act)) | (Some(act), None) => Some(act),
             (Some(act), Some(_)) => {
-                println!("both hidden_act and hidden_activation are set");
+                warn!("both hidden_act and hidden_activation are set");
                 Some(act)
             }
             (None, None) => panic!("none of hidden_act and hidden_activation are set"),
