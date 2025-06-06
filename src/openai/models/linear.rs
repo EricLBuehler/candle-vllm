@@ -30,7 +30,7 @@ pub use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use either::Either;
 use std::sync::Arc;
-
+use tracing::warn;
 #[derive(Clone, Debug)]
 pub struct Linear {
     weight: Tensor,
@@ -318,7 +318,7 @@ pub fn qlinear(
                 {
                     //only model with 4-bit and desc_act==false can be repacked to marlin format
                     if cfg.quant_method == "marlin" {
-                        println!("The current GPTQ model does no compatible with marlin format because one of the following conditions: !cfg.sym || cfg.bits != 4 || (cfg.group_size != 128 && cfg.group_size != -1) || (cfg.desc_act == true)");
+                        warn!("The current GPTQ model does no compatible with marlin format because one of the following conditions: !cfg.sym || cfg.bits != 4 || (cfg.group_size != 128 && cfg.group_size != -1) || (cfg.desc_act == true)");
                     }
                     //conventional gptq format
                     Ok(Linear {

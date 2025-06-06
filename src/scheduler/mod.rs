@@ -10,7 +10,7 @@ pub mod block_engine;
 /// operations issued by the scheduler.
 pub mod cache_engine;
 pub mod sequence;
-
+use tracing::warn;
 type CPUBlockFrom = usize;
 type GPUBlockFrom = usize;
 type CPUBlockTo = usize;
@@ -93,7 +93,7 @@ impl Scheduler {
                 match can_allocate {
                     AllocStatus::Later => break, //If we can only allocate later, do not bother iterating over the rest.
                     AllocStatus::Impossible => {
-                        println!(
+                        warn!(
                             "Input prompt with length of {} tokens is too long and exceeds capacity of block engine.",
                             seq_group.get_prompt_len()
                         );

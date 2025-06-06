@@ -16,6 +16,7 @@ use std::time::SystemTime;
 use tokenizers::Encoding;
 use tokio::sync::Notify;
 use tokio::time::Duration;
+use tracing::info;
 use uuid::Uuid;
 // fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
 //     let current_name = {
@@ -157,7 +158,7 @@ pub async fn chat_completions(
     }
     let token_ids: Encoding = token_ids.unwrap();
 
-    println!("\n\n\nPrompt {:?}", prompt);
+    info!("\n\n\nPrompt {:?}", prompt);
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
 

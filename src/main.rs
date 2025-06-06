@@ -171,10 +171,16 @@ fn config_log(
 #[tokio::main]
 async fn main() -> Result<(), APIError> {
     let args = Args::parse();
+    if !args.log {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .init();
+    }
+
     let (loader, model_id, default_model_id, quant) =
         get_model_loader(args.command, args.model_id.clone());
     if args.model_id.is_none() {
-        println!("No model id specified, using the default model_id or specified in the weight_path to retrieve config files!");
+        info!("No model id specified, using the default model_id or specified in the weight_path to retrieve config files!");
     }
 
     let paths = match (&args.weight_path, &args.weight_file) {
@@ -197,37 +203,8 @@ async fn main() -> Result<(), APIError> {
         },
         //model in a quantized file (gguf/ggml format)
         (Some(path), Some(file)) => DefaultModelPaths {
-            tokenizer_filename: {
-                //we need to download tokenizer for the ggufl/ggml model
-                let api = hf_hub::api::sync::Api::new().unwrap();
-                let api = api.model(default_model_id.clone());
-                match api.get("tokenizer.json") {
-                    Ok(f) => f,
-                    _ => {
-                        if !Path::new(path).join("tokenizer.json").exists() {
-                            panic!("Failed to retrieve tokenizer.json. \
-                                Please check your network connection or ensure 'tokenizer.json' exists in the model directory.");
-                        } else {
-                            Path::new(path).join("tokenizer.json")
-                        }
-                    }
-                }
-            },
-            tokenizer_config_filename: {
-                let api = hf_hub::api::sync::Api::new().unwrap();
-                let api = api.model(default_model_id.clone());
-                match api.get("tokenizer_config.json") {
-                    Ok(f) => f,
-                    _ => {
-                        if !Path::new(path).join("tokenizer_config.json").exists() {
-                            println!("Warning: Unable to download or obtain tokenizer_config.json from model path! No chat_template!");
-                            "".into()
-                        } else {
-                            Path::new(path).join("tokenizer_config.json")
-                        }
-                    }
-                }
-            },
+            tokenizer_filename: PathBuf::new(),
+            tokenizer_config_filename: PathBuf::new(),
             config_filename: PathBuf::new(),
             filenames: if Path::new(path).join(file).exists() {
                 vec![Path::new(path).join(file).into()]
@@ -250,7 +227,7 @@ async fn main() -> Result<(), APIError> {
                 loaded.unwrap()
             } else {
                 //if it's failed, try using huggingface token
-                println!("Try request model using cached huggingface token...");
+                info!("Try request model using cached huggingface token...");
                 if args.hf_token.is_none() && args.hf_token_path.is_none() {
                     //no token provided
                     let token_path = format!(
@@ -263,7 +240,7 @@ async fn main() -> Result<(), APIError> {
                         //also no token cache
                         use std::io::Write;
                         let mut input_token = String::new();
-                        println!("Unable to request model, please provide your huggingface token to download model:\n");
+                        warn!("Unable to request model, please provide your huggingface token to download model:\n");
                         std::io::stdin()
                             .read_line(&mut input_token)
                             .expect("Failed to read token!");
@@ -414,7 +391,7 @@ async fn main() -> Result<(), APIError> {
 
     let cache_config = cache_config.as_ref().unwrap().clone();
     let config = config.as_ref().unwrap().clone();
-    println!("Cache config {:?}", cache_config);
+    info!("Cache config {:?}", cache_config);
 
     let llm_engine = LLMEngine::new(
         pipelines,
@@ -441,7 +418,7 @@ async fn main() -> Result<(), APIError> {
     };
 
     if global_rank != 0 {
-        println!("\nDaemon service started at rank {}.", global_rank);
+        info!("\nDaemon service started at rank {}.", global_rank);
     }
 
     #[cfg(feature = "nccl")]
@@ -452,17 +429,15 @@ async fn main() -> Result<(), APIError> {
     }
 
     if global_rank == 0 {
-        println!(
-            "\nMaximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):"
-        );
-        for batch in [1, 8, 16, 32] {
+        info!("Maximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):");
+        for batch in [1, 8] {
             println!(
                 "-> Batch {}: {}",
                 batch,
                 std::cmp::min(kvcached_tokens / batch, max_model_len)
             );
         }
-        println!("\nServer started at http://127.0.0.1:{}.", port);
+        warn!("Server started at http://0.0.0.0:{}.", port);
     }
 
     let allow_origin = AllowOrigin::any();
