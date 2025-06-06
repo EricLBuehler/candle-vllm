@@ -16,7 +16,6 @@ use candle_vllm::scheduler::SchedulerConfig;
 use candle_vllm::{get_model_loader, hub_load_local_safetensors, ModelSelected};
 use clap::Parser;
 use std::{path::PathBuf, sync::Arc};
-#[cfg(feature = "nccl")]
 use tracing::{info, warn};
 const SIZE_IN_MB: usize = 1024 * 1024;
 use candle_vllm::openai::models::Config;

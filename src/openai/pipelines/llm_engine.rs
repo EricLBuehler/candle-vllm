@@ -40,9 +40,7 @@ use std::{
 };
 use tokenizers::Encoding;
 use tokio::sync::Notify;
-use tracing::warn;
-#[cfg(feature = "nccl")]
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 #[allow(dead_code)]
 struct PreparedInputs {
     tokens: Tensor,
