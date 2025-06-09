@@ -178,23 +178,29 @@ impl LLMEngine {
                             .unwrap_or(0),
                     };
 
-                    warn!(
-                        "\r\n [{} requests] Prefilling: {} prompt tokens processed in {} seconds",
+                    let prompt_tps : f32 = result.values().map(|(_, usage)| {
+                        //time costs in milliseconds
+                        usage.prompt_tokens as f32  * 1000f32 / f32::max(usage.prompt_time_costs as f32, 1f32)
+                    }).sum::<f32>() / result.len() as f32;
+
+                    let decode_tps : f32 = result.values().map(|(_, usage)| {
+                        //time costs in milliseconds
+                        usage.completion_tokens as f32  * 1000f32 / f32::max(usage.completion_time_costs as f32, 1f32)
+                    }).sum::<f32>() / result.len() as f32;
+
+                    println!(
+                        "\r\n [{} requests] Prefilling: {} prompt tokens processed (avg tps {:.02} tokens/s, throughput {:.02} tokens/s)",
                         result.len(),
                         overall_usage.prompt_tokens,
-                        overall_usage.prompt_time_costs / 1000
+                        prompt_tps,
+                        prompt_tps * result.len() as f32,
                     );
-                    warn!(
-                        "\r\n [{} requests] Decoding: {} tokens processed in {} seconds ({:.02} tokens/s)",
+                    println!(
+                        "\r\n [{} requests] Decoding: {} tokens processed (avg tps {:.02} tokens/s, throughput {:.02} tokens/s)",
                         result.len(),
                         overall_usage.completion_tokens,
-                        overall_usage.completion_time_costs / 1000,
-                        overall_usage.completion_tokens as f32 * 1000.0
-                            / if overall_usage.completion_time_costs > 0 {
-                                overall_usage.completion_time_costs as f32
-                            } else {
-                                1f32
-                            }
+                        decode_tps,
+                        decode_tps * result.len() as f32,
                     );
                 }
             });
@@ -275,7 +281,7 @@ impl LLMEngine {
                     task.use_logprobs,
                     sender,
                 );
-                tracing::info!("Main process: add_sequence to group {}", task.group_id);
+                tracing::debug!("Main process: add_sequence to group {}", task.group_id);
                 self.scheduler.add_sequence(seq_group);
             }
 
@@ -426,7 +432,7 @@ impl LLMEngine {
         let mut prompt_finish_times = HashMap::<usize, SystemTime>::new();
         #[cfg(feature = "nccl")]
         {
-            info!("Start processing...");
+            debug!("Start processing...");
             let e = engine.read();
             let (pipeline, _) = e.get_pipeline(rank).unwrap();
             let device = pipeline.device();
@@ -439,7 +445,6 @@ impl LLMEngine {
                 }
                 let e = engine.read();
                 if !e.scheduler.has_unfinished_sequences() {
-                    info!("generate_once: no unfinished_sequences, break");
                     break;
                 }
             }
@@ -653,10 +658,10 @@ impl LLMEngine {
                     let do_log = true;
                     if do_log {
                         warn!(
-                            "Request {} decoding {} tokens finished in {} seconds",
-                            group.request_id,
+                            "Decoding {} tokens finished in {} seconds ({})",
                             decoded_tokens,
-                            completion_time_costs / 1000
+                            completion_time_costs / 1000,
+                            group.request_id,
                         );
                     }
                     // Create choices from the group
@@ -748,7 +753,7 @@ impl LLMEngine {
                     if let Some(sender) = &group.sender {
                         let seq = group.get_seqs().values().nth(0).unwrap();
                         if seq.deref().get_finish_reason() != "abort" {
-                            warn!(
+                            debug!(
                                 "Sending completion message to client! (sequence id {})",
                                 seq.deref().get_id()
                             );
@@ -790,7 +795,7 @@ impl LLMEngine {
                 .send_message(&MessageType::Finish);
         }
 
-        warn!("generate_once: finished generation");
+        debug!("generate_once: finished generation");
         Ok(responses)
     }
 }
@@ -1077,9 +1082,9 @@ impl LLMEngine {
         let do_log = true;
         if do_log {
             warn!(
-                "Request {} with length {} added to sequence waiting group.",
+                "New Request with length {} ({}).",
+                prompt_len,
                 request_id.clone(),
-                prompt_len
             );
         }
 
