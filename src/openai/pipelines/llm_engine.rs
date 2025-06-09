@@ -179,12 +179,12 @@ impl LLMEngine {
                     };
 
                     let prompt_tps : f32 = result.values().map(|(_, usage)| {
-                        //time costs in miliseconds
+                        //time costs in milliseconds
                         usage.prompt_tokens as f32  * 1000f32 / f32::max(usage.prompt_time_costs as f32, 1f32)
                     }).sum::<f32>() / result.len() as f32;
 
                     let decode_tps : f32 = result.values().map(|(_, usage)| {
-                        //time costs in miliseconds
+                        //time costs in milliseconds
                         usage.completion_tokens as f32  * 1000f32 / f32::max(usage.completion_time_costs as f32, 1f32)
                     }).sum::<f32>() / result.len() as f32;
 
