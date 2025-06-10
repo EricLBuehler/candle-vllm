@@ -23,6 +23,7 @@ use crate::{
             mistral::{Mistral, MistralConfig},
             phi2::{Phi2, Phi2Config},
             phi3::{Phi, PhiConfig},
+            quantized_glm4::GGUFGLM4,
             quantized_llama::GGUFLLaMa,
             quantized_phi3::GGUFPhi3,
             quantized_qwen::GGUFQWen,
@@ -70,6 +71,7 @@ enum LLMModel {
     LlamaGGUF(GGUFLLaMa),
     Phi3GGUF(GGUFPhi3),
     QWenGGUF(GGUFQWen),
+    GLM4GGUF(GGUFGLM4),
 }
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
@@ -246,6 +248,7 @@ impl DefaultLoader {
                     "qwen2" | "qwen3" => {
                         GGUFQWen::get_num_of_layers(self.name.as_str() == "qwen3", content)
                     }
+                    "glm4" => GGUFGLM4::get_num_of_layers(content),
                     _ => panic!("Model not supported!"),
                 };
                 nlayers.unwrap()
@@ -309,6 +312,18 @@ impl DefaultLoader {
                     ));
                     let cfg = model.get_config().clone();
                     (LLMModel::QWenGGUF(model), cfg, SeparatorStyle::Qwen)
+                }
+                "glm4" => {
+                    let model = try_api!(GGUFGLM4::from_gguf(
+                        &content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        s_cfg,
+                        Arc::clone(&reporter),
+                    ));
+                    let cfg = model.get_config().clone();
+                    (LLMModel::GLM4GGUF(model), cfg, SeparatorStyle::GLM)
                 }
                 _ => panic!("Model not supported!"),
             };
@@ -894,6 +909,9 @@ impl DefaultPipeline {
             LLMModel::QWenGGUF(qwen) => qwen
                 .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
                 .map_err(APIError::from),
+            LLMModel::GLM4GGUF(glm4) => glm4
+                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .map_err(APIError::from),
         }
     }
 
@@ -1075,6 +1093,7 @@ impl DefaultPipeline {
             LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),
             LLMModel::QWenGGUF(qwen) => qwen.get_config().clone(),
+            LLMModel::GLM4GGUF(glm4) => glm4.get_config().clone(),
         }
     }
 

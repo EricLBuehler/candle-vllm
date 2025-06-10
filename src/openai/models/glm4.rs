@@ -81,7 +81,7 @@ impl GLMConfig {
     }
 }
 
-struct RotaryEmbedding {
+pub struct RotaryEmbedding {
     cos: Tensor,
     sin: Tensor,
     // inv_freq: Tensor,
@@ -96,7 +96,7 @@ struct RotaryEmbedding {
 // }
 
 impl RotaryEmbedding {
-    fn new(cfg: &Config, _dtype: DType, dev: &Device) -> Result<Self> {
+    pub fn new(cfg: &Config, _dtype: DType, dev: &Device) -> Result<Self> {
         let dim = cfg
             .head_dim
             .unwrap_or(cfg.hidden_size / cfg.num_attention_heads);
@@ -156,7 +156,7 @@ impl RotaryEmbedding {
     //     Ok((cos, sin))
     // }
 
-    fn apply_rotary_emb(&self, xs: &Tensor, input_positions: &[Vec<usize>]) -> Result<Tensor> {
+    pub fn apply_rotary_emb(&self, xs: &Tensor, input_positions: &[Vec<usize>]) -> Result<Tensor> {
         let (b_size, _num_heads, seq_len, _headdim) = xs.dims4()?;
         // let (cos, sin) = self.update(seq_len, &position_ids, &xs.device())?;
         let mut embeds = Vec::new();
