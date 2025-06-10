@@ -1,5 +1,4 @@
 use super::{ApplyChatTemplateError, Conversation, Message};
-use dyn_fmt::AsStrFormatExt;
 use minijinja::{context, Environment};
 
 pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
@@ -31,6 +30,7 @@ pub enum SeparatorStyle {
     Phoenix,
     Robin,
     FalconChat,
+    GLM,
 }
 
 /// A struct for managing prompt templates and conversation history.
@@ -141,10 +141,8 @@ impl Conversation for DefaultConversation {
                     tracing::warn!("apply chat template failed {:?}", e);
                 }
                 //no chat template exists? using the built-in template
-                let default_sys_prompt = "[INST] <<SYS>>\n{}\n<</SYS>>\n\n [/INST]".to_string();
-                let chat_template = self.chat_template.as_ref().unwrap_or(&default_sys_prompt);
                 let system_prompt = if self.system_message.is_some() {
-                    chat_template.format(&[self.system_message.clone().unwrap()])
+                    format!("<|system|>\n {}", self.system_message.clone().unwrap())
                 } else {
                     "".to_string()
                 };
@@ -379,6 +377,21 @@ impl Conversation for DefaultConversation {
                         }
                         for message in &self.messages {
                             accum += &format!("{}: {}{}", message.role, message.content, self.sep);
+                        }
+                        accum
+                    }
+
+                    SeparatorStyle::GLM => {
+                        let mut accum = "[gMASK]<sop>".to_string();
+                        accum += &system_prompt.clone();
+                        for (_, message) in self.messages.iter().enumerate() {
+                            if message.role.clone() == self.roles.0 {
+                                //user message
+                                accum += &format!("<|user|>\n {}", message.content);
+                            } else if message.role.clone() == self.roles.1 {
+                                //assistant message
+                                accum += &format!("<|assistant|>\n {}", message.content);
+                            }
                         }
                         accum
                     }

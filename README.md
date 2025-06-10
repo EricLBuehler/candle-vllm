@@ -35,7 +35,7 @@ Currently, candle-vllm supports chat serving for the following model structures.
 | #8 | **DeepSeek-R1-Distill-LLaMa** |✅|65 tks (8B)|TBD|108 tks (8B)|TBD|
 | #9 | **DeepSeek V2/V3/R1** |✅|TBD|TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|TBD|
 | #10 | **QwQ-32B** |✅|30 tks/s **(32B, tp=2)**|TBD |36 tks/s **(32B, Q4K, GGUF)**|TBD|
-
+| #11 | **GLM4** |✅|55 tks/s **(9B)**|TBD |92 tks/s **(9B, Q4K, GGUF)**|TBD|
 
 ## General Usage
 
@@ -87,7 +87,7 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 
 `MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking
 
-where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
 
 ## Detailed Usage
 
