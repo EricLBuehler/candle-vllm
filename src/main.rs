@@ -197,12 +197,12 @@ fn get_dtype(dtype: Option<String>) -> DType {
                     )
                 };
                 info!(
-                    "CUDA compute compability: {}.{}",
+                    "CUDA compute capability: {}.{}",
                     compute_major, compute_minor,
                 );
                 if dtype != DType::F32 && compute_major < 8 {
                     warn!(
-                        "CUDA compute compability: {} (<8), switched to F16 cause no BF16 support.",
+                        "CUDA compute capability: {} (<8), switched to F16 cause no BF16 support.",
                         compute_major
                     );
                     DType::F16
