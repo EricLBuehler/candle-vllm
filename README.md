@@ -18,33 +18,39 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support `Multi-GPU` inference (both `multi-process` and  `multi-threaded` mode)
 - Support `Multi-node` inference with MPI runner
 
-## Develop Status
+## Supported Models
 
-Currently, candle-vllm supports chat serving for the following model structures.
+  <details>
+    <summary>Show supported model architectures</summary>
+    Currently, candle-vllm supports chat serving for the following model structures.
 
-| Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K` or `Marlin`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
-|--|--|--|--|--|--|--|
-| #1 | **LLAMA** |✅|65 tks/s (8B) | 553 tks/s (8B) | 75 tks/s (8B), 115 tks/s (8B, **Marlin**) |968 tks/s (8B)|
-| #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), 115 tks/s (7B, **Marlin**) |981 tks/s (7B)|
-| #3 | **Phi** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
-| #4 | **QWen2/Qwen3** |✅|81 tks/s (8B)|831 tks/s (8B) |-|TBD|S
-| #4 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|TBD|
-| #5 | **StableLM** |✅|99 tks/s (3B)|TBD|-|TBD|
-| #6 | **Gemma-2/Gemma-3** |✅|60 tks/s (9B)|TBD |73 tks/s (9B, **Marlin**) |587 tks/s (9B)|
-| #7 | **DeepSeek-R1-Distill-QWen** |✅|48 tks (14B)|TBD|62 tks (14B)|TBD|
-| #8 | **DeepSeek-R1-Distill-LLaMa** |✅|65 tks (8B)|TBD|108 tks (8B)|TBD|
-| #9 | **DeepSeek V2/V3/R1** |✅|TBD|TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|TBD|
-| #10 | **QwQ-32B** |✅|30 tks/s **(32B, tp=2)**|TBD |36 tks/s **(32B, Q4K, GGUF)**|TBD|
-| #11 | **GLM4** |✅|55 tks/s **(9B)**|TBD |92 tks/s **(9B, Q4K, GGUF)**|TBD|
+    | Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K` or `Marlin`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
+    |--|--|--|--|--|--|--|
+    | #1 | **LLAMA** |✅|65 tks/s (8B) | 553 tks/s (8B) | 75 tks/s (8B), 115 tks/s (8B, **Marlin**) |968 tks/s (8B)|
+    | #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), 115 tks/s (7B, **Marlin**) |981 tks/s (7B)|
+    | #3 | **Phi** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
+    | #4 | **QWen2/Qwen3** |✅|81 tks/s (8B)|831 tks/s (8B) |-|TBD|S
+    | #4 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|TBD|
+    | #5 | **StableLM** |✅|99 tks/s (3B)|TBD|-|TBD|
+    | #6 | **Gemma-2/Gemma-3** |✅|60 tks/s (9B)|TBD |73 tks/s (9B, **Marlin**) |587 tks/s (9B)|
+    | #7 | **DeepSeek-R1-Distill-QWen** |✅|48 tks (14B)|TBD|62 tks (14B)|TBD|
+    | #8 | **DeepSeek-R1-Distill-LLaMa** |✅|65 tks (8B)|TBD|108 tks (8B)|TBD|
+    | #9 | **DeepSeek V2/V3/R1** |✅|TBD|TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|TBD|
+    | #10 | **QwQ-32B** |✅|30 tks/s **(32B, tp=2)**|TBD |36 tks/s **(32B, Q4K, GGUF)**|TBD|
+    | #11 | **GLM4** |✅|55 tks/s **(9B)**|TBD |92 tks/s **(9B, Q4K, GGUF)**|TBD|
+  </details>
+
+### Demo Video
+  <details>
+    <summary>Show Demo Video</summary>
+    Chat demo on GPU (A100, BF16, QWen3-8B Reasoning Model)
+    <img src="res/Qwen3-8B-Reasoning-A100.gif" width="85%" height="85%" >
+
+    Chat demo on **Apple Silicon** (M4 with 16GB unified memory, Q2K, QWen3-8B)
+    <img src="res/Qwen3-8B-Apple-M4.gif" width="85%" height="85%" >
+  </details>
 
 ## General Usage
-
-Chat demo on GPU (A100, BF16, QWen3-8B Reasoning Model)
-<img src="res/Qwen3-8B-Reasoning-A100.gif" width="85%" height="85%" >
-
-Chat demo on **Apple Silicon** (M4 with 16GB unified memory, Q2K, QWen3-8B)
-<img src="res/Qwen3-8B-Apple-M4.gif" width="85%" height="85%" >
-
 ### Build Candle-vLLM
 
 ```shell
@@ -68,360 +74,508 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 
 ### Build/Run Parameters
 
-[`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`MODEL_TYPE`] [`MODEL_PARAM`]
-
-**Example:**
-```shell
-[RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192] [--weight-path /home/weights/Qwen3-27B-GPTQ-4Bit] [qwen3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking]
-```
-
-`ENV_PARAM`: RUST_LOG=warn
-
-`BUILD_PARAM`: --release --features cuda,nccl
-
-`PROGRAM_PARAM`：--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192
-
-`MODEL_WEIGHT_PATH`: --weight-path /home/weights/Qwen3-27B-GPTQ-4Bit
-
-`MODEL_TYPE`: qwen3
-
-`MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking
-
-where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
-
-## Detailed Usage
-
-Run **Uncompressed** models
-```shell
-target/release/candle-vllm --port 2000 --weight-path /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --temperature 0. --penalty 1.0
-```
-
-Run **Marlin-compatible GPTQ models** (Suggested, fastest approach)
-```shell
-#model format (4-bit GPTQ, 128-group, desc_act=False)
-target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
-
-# If you don't have such model, you can convert Uncompressed model to Marlin-compatible format using the given script
-python3 examples/convert_marlin.py --src /home/DeepSeek-R1-Distill-Qwen-14B/ --dst /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
-```
-
-Run **Marlin-compatible AWQ models**,
-```shell
-python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-target/release/candle-vllm --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
-```
-
-**Note:** Candle-vLLM will repack the GPTQ/AWQ model into Marlin format during model loading
 
 
-Run **Marlin-format models**
-```shell
-# If you have Marlin-format model, run it with (--quant marlin)
-target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/ qwen2 --quant marlin --penalty 1.0 --temperature 0.
-```
+- [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`MODEL_TYPE`] [`MODEL_PARAM`]  
+  <details>
+    <summary>Show details</summary>
 
-You may also run specific model using **Huggingface model-id**, e.g.,
-```shell
-target/release/candle-vllm --port 2000 --model-id meta-llama/Llama-2-7b-chat-hf llama
-target/release/candle-vllm --port 2000 --model-id avoroshilov/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g --quant gptq --penalty 1.0 --temperature 0.
-```
+    **Example:**
 
-Run **QwQ-32B GGUF/GGML** models on **CUDA or Mac/Metal** devices
-```shell
-target/release/candle-vllm --port 2000 --model-id Qwen/QwQ-32B --dtype bf16 --weight-path ./ --weight-file qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
-```
+    ```shell
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192] [--weight-path /home/weights/Qwen3-27B-GPTQ-4Bit] [qwen3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking]
+    ```
 
-Run **GGUF/GGML** models on **Mac/Metal** devices
+    `ENV_PARAM`: RUST_LOG=warn
 
-From local path (assume gguf model downloaded in `/Users/Downloads`):
-```shell
-cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-path /Users/Downloads --weight-file Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
-```
+    `BUILD_PARAM`: --release --features cuda,nccl
 
-Or simply pass the **absolute path** of the gguf file:
-```shell
-cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-file /Users/Downloads/Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
-```
+    `PROGRAM_PARAM`：--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192
 
-Using model-id and filename:
-```shell
-cargo run --release --features metal -- --port 2000 --dtype bf16 --model-id unsloth/Qwen3-8B-GGUF --weight-file Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0. --penalty 1.0
-```
-**Note:** `dtype` in gguf/ggml mode is used for kv cache and attention, you may choose `f32` or `bf16`, while, `f16` is not recommended.
+    `MODEL_WEIGHT_PATH`: --weight-path /home/weights/Qwen3-27B-GPTQ-4Bit
+
+    `MODEL_TYPE`: qwen3
+
+    `MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking
+
+    where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+  </details>
 
 
-Run **Multi-process Multi-GPU**
 
-```shell
-target/release/candle-vllm --multi-process --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
-```
+## How to run?
 
-```shell
-target/release/candle-vllm --multi-process --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant gptq --temperature 0. --penalty 1.0
-```
+- Run **Uncompressed** models 
+  <details>
+    <summary>Show command</summary>
 
-Run **Multi-threaded Multi-GPU** (for debug purpose)
-```shell
-#simply remove the "--multi-process"
-target/debug/candle-vllm --port 2000 --device-ids "0,1" --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --temperature 0. --penalty 1.0
-```
-**Note:** number of GPUs (`--device-ids`) used must be aligned to 2^n (e.g., 2, 4, or 8).
+    **Local Path**
 
-If you encountered problems under Multi-threaded Multi-GPU mode, you may:
-```shell
-export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
-```
+    ```shell
+    target/release/candle-vllm --port 2000 --weight-path /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --temperature 0. --penalty 1.0
+    ```
 
-Run **DeepSeek-R1 (671B/685B) on Lower GPU Memory Setups**, e.g., **single-node** with `8 x RTX4090(48GB modified)`
-```shell
-python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ 
-RUST_LOG=warn cargo run --release --features cuda,nccl -- --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0 --num-experts-offload-per-rank 11
-```
-**Note:** This setup offloads 11 experts per rank (a total of 88 out of 256 experts) to the CPU (around 125GB additional host memory required). During inference, these offloaded experts are swapped back into GPU memory as needed. If you have even less GPU memory, consider increasing the `--num-experts-offload-per-rank` parameter (up to a maximum of 32 experts per rank in this case).
+    **Model-ID (download from Huggingface)**
 
-Run **DeepSeek-R1 (671B/685B) on multi-node**, e.g., (`8 x A100(40GB)` x 2 nodes)
-```shell
-sudo apt update
-sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
-sudo apt install clang libclang-dev
-cargo build --release --features cuda,nccl,mpi #build with mpi feature
-python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ #convert awq deepseek to marlin-compatible format
-#running multinode inference with mpi runner
-sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0
-```
-**Note**: MPI Runner requires `identical` hardware and software configurations for all nodes, please ensure weights and candle-vllm binaries located in the identical folders in difference nodes. The the nodes need to be ssh (port 22 in this case) passwordless for each other (root user if `--allow-run-as-root`). `%NET_INTERFACE%` is the active network interface obtained through command 'ifconfig -a'. You may disable InfiniBand if it's not available in the nodes by insert env "-x NCCL_IB_DISABLE=1". Where, `hostfile` can be defined as:
+    ```shell
+    target/release/candle-vllm --model-id deepseek-ai/DeepSeek-R1-0528-Qwen3-8B qwen3
+    ```
 
-Example (two nodes, each with 8 GPUs)
-```
-192.168.1.100 slots=8
-192.168.1.101 slots=8
-```
+  </details>
 
-### Chat frontend (any frontend compatible with openai API, simple options available below):
-#### Option 1: Chat with Chat.py (for simple tests)
-Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
+- Run **GGUF** models 
+  <details>
+    <summary>Show command</summary>
 
-```shell
-python3 -m pip install openai rich click
-```
+    **Local Path (with port, dtype, sampling parameter specified)**
 
-Chat with the mini chatbot (plain text)
-```shell
-python3 examples/chat.py
-```
+    ```shell
+    target/release/candle-vllm --port 2000 --dtype bf16 --weight-file /home/data/DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0.7 --penalty 1.1
+    ```
 
-Pass generation parameters (to reasoning models with `--thinking True`)
-```shell
-python3 examples/chat.py --temperature 0.7 --top_k 64 --top_p 0.9 --thinking True --system_prompt "Thinking big!"
-```
+    **Model-ID (download from Huggingface)**
 
-Chat with the mini chatbot (live update with Markdown, may cause flick)
-```shell
-python3 examples/chat.py --live
-```
+    ```shell
+    target/release/candle-vllm --model-id unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF --weight-file DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf
+    ```
 
-#### Option 2: Chat with naive ChatUI (or popular dify frontend)
-Install naive ChatUI and its dependencies:
+  </details>
 
-```
-git clone git@github.com:guoqingbao/candle-vllm-demo.git
-cd candle-vllm-demo
-apt install npm #install npm if needed
-npm install n -g #update node js if needed
-n stable #update node js if needed
-npm i -g pnpm #install pnpm manager
-pnpm install #install ChatUI dependencies
-```
+- Run **GGUF** models on **Apple Silicon**
+  <details>
+    <summary>Show command</summary>
 
-Launching the ChatUI:
-```
-pnpm run dev # run the ChatUI
-```
+    **Local Path (assume model downloaded in /home)**
 
-#### Trouble shooting for Nodejs error
-`ENOSPC: System limit for number of file watchers reached`
-```
-echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
-```
+    ```shell
+    cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-file /home/qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
+    ```
 
-#### Option 3: Chat completion request with HTTP post
+    **Model-ID (download from Huggingface)**
 
-``` shell
-curl -X POST "http://127.0.0.1:2000/v1/chat/completions" \
-     -H "Content-Type: application/json" \
-     -H "Authorization: Bearer YOUR_API_KEY" \
-     -d '{
-           "model": "llama7b",
-           "messages": [
-               {"role": "user", "content": "Explain how to best learn Rust."}
-           ],
-           "temperature": 0.7,
-          "max_tokens": 128,
-          "stop": {"Single":"</s>"}
-       }'
-```
-Sample response:
+    ```shell
+    cargo run --release --features metal -- --port 2000 --dtype bf16 --model-id Qwen/QwQ-32B-GGUF --weight-file qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
+    ```
 
-```
-{"id":"cmpl-53092967-c9cf-40e0-ae26-d7ac786d59e8","choices":[{"message":{"content":" Learning any programming language requires a combination of theory, practice, and dedication. Here are some steps and resources to help you learn Rust effectively:\n\n1. Start with the basics:\n\t* Understand the syntax and basic structure of Rust programs.\n\t* Learn about variables, data types, loops, and control structures.\n\t* Familiarize yourself with Rust's ownership system and borrowing mechanism.\n2. Read the Rust book:\n\t* The Rust book is an official resource that provides a comprehensive introduction to the language.\n\t* It covers topics such","role":"[INST]"},"finish_reason":"length","index":0,"logprobs":null}],"created":1718784498,"model":"llama7b","object":"chat.completion","usage":{"completion_tokens":129,"prompt_tokens":29,"total_tokens":158}}
-```
+  </details>
 
-#### Option 4: Chat completion with with openai package
+- Run **Any uncompressed models as quantized with in-situ quantization**
+  <details>
+    <summary>Show command</summary>
 
-In your terminal, install the `openai` Python package by running `pip install openai`. I use version `1.3.5`.
+    **Simply add `quant` parameter when running unquantized models**
 
-Then, create a new Python file and write the following code:
-```python
-import openai
+    ```shell
+    target/release/candle-vllm --port 2000 --weight-path /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --quant q4k --temperature 0. --penalty 1.0
+    ```
 
-openai.api_key = "EMPTY"
+    Options for in-site `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
 
-openai.base_url = "http://localhost:2000/v1/"
+  </details>
 
-completion = openai.chat.completions.create(
-    model="llama",
-    messages=[
-        {
-            "role": "user",
-            "content": "Explain how to best learn Rust.",
-        },
-    ],
-    max_tokens = 64,
-)
-print(completion.choices[0].message.content)
-```
-After the `candle-vllm` service is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
+- Run **Marlin-compatible GPTQ models** models (4-bit GPTQ, 128-group, desc_act=False)
+  <details>
+    <summary>Show command</summary>
+
+    **Local Path**
+
+    ```shell
+    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
+    ```
+
+    **Model-ID (download from Huggingface)**
+
+    ```shell
+    target/release/candle-vllm --model-id thesven/Llama-3-8B-GPTQ-4bit llama3 --quant gptq
+    ```
+
+    **Convert Any uncompressed model to marlin-compatible format**
+    ```shell
+    python3 examples/convert_marlin.py --src /home/DeepSeek-R1-Distill-Qwen-14B/ --dst /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
+    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
+    ```
+
+  </details>
+
+- Run **Marlin-compatible AWQ models** models
+  <details>
+    <summary>Show command</summary>
+
+    **Convert AWQ model to Marlin-compatible format**
+    ```shell
+    python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
+    ```
+
+    **Run the converted AWQ model**
+    ```shell
+    target/release/candle-vllm --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
+    ```
+
+  </details>
+
+- Run **Marlin-format models** models
+  <details>
+    <summary>Show command</summary>
+
+    ```shell
+    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/ qwen2 --quant marlin --penalty 1.0 --temperature 0.
+    ```
+
+  </details>
 
 
-## Batched requests
+- Run **Large models using multi-process mode (Multi-GPU)**
+  <details>
+    <summary>Show command</summary>
 
-Install openai API first
-```
-python3 -m pip install openai
-```
+    **QwQ-32B BF16 model on two GPUs**
+    ```shell
+    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
+    ```
 
-Run the benchmark test
-``` shell
-python3 examples/benchmark.py --batch 16 --max_tokens 1024
-```
-Refer to `examples/benchmark.py`
+    **QwQ-32B 4-bit AWQ model on two GPUs**
 
-``` python
-async def benchmark():
-    model = "mistral7b"
-    max_tokens = 1024
-    # 16 requests
-    prompts = ["Explain how to best learn Rust.", 
-               "Please talk about deep learning in 100 words.", 
-               "Do you know the capital city of China? Talk the details of you known.", 
-               "Who is the best female actor in the world? Explain why.",
-               "How to dealing with depression?",
-               "How to make money in short time?",
-               "What is the future trend of large language model?",
-               "The famous tech companies in the world.",
-               "Explain how to best learn Rust.", 
-               "Please talk about deep learning in 100 words.", 
-               "Do you know the capital city of China? Talk the details of you known.", 
-               "Who is the best female actor in the world? Explain why.",
-               "How to dealing with depression?",
-               "How to make money in short time?",
-               "What is the future trend of large language model?",
-               "The famous tech companies in the world."]
+    1) Convert AWQ model to Marlin-compatible format
+    ```shell
+    python3 examples/convert_awq_marlin.py --src /home/QwQ-32B-AWQ/ --dst /home/QwQ-32B-AWQ-Marlin/ --bits 4 --method awq --group 128 --nk False
+    ```
+
+    2) Run the converted AWQ model
+    ```shell
+    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B-AWQ-Marlin/ qwen2 --quant awq --penalty 1.0 --temperature 0.
+    ```
+
+    **Note:** number of GPUs (`--device-ids`) used must be aligned to 2^n (e.g., 2, 4, or 8).
+  </details>
+
+- Run **Large models using multi-threaded mode (Multi-GPU, for debug purpose)**
+  <details>
+    <summary>Show command</summary>
+
+    Simply remove the `--multi-process` parameter
+
+    **QwQ-32B BF16 model on two GPUs**
+    ```shell
+    cargo run --release --features cuda,nccl -- --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
+    ```
+
+    If you encountered problems under Multi-threaded Multi-GPU mode, you may:
+    ```shell
+    export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
+    ```
+
+  </details>
+
+- Run **DeepSeek-R1 (671B/685B) on Lower GPU Memories (CPU offloading)**
+  <details>
+    <summary>Show command</summary>
+
+    **1. Convert DeepSeek-R1-AWQ model to Marlin-compatible format**
+    ```shell
+    python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ 
+    ```
+
+    **2. Run DeepSeek-R1 model on 8 x A100(40GB)**
+    ```shell
+    cargo run --release --features cuda,nccl -- --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0 --num-experts-offload-per-rank 15
+    ```
+
+    **Note:** This setup offloads 15 experts per rank (a total of 120 out of 256 experts) to the CPU (around 150GB additional host memory required). During inference, these offloaded experts are swapped back into GPU memory as needed. If you have even less GPU memory, consider increasing the `--num-experts-offload-per-rank` parameter (up to a maximum of 32 experts per rank in this case).
+
+  </details>
+
+- Run **DeepSeek-R1 (671B/685B) on Multi-node**
+  <details>
+    <summary>Show command</summary>
+
+    **1. Install MPI and build with MPI feature**
+    ```shell
+    sudo apt update
+    sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
+    sudo apt install clang libclang-dev
+    #clone the repo on the same directory of the two node and build
+    cargo build --release --features cuda,nccl,mpi #build with mpi feature
+    ```
+
+    **2. Convert AWQ deepseek to Marlin-compatible format**
+    ```shell
+    python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ 
+    ```
+
+    **3. Config Multi-node Environment**
+
+    MPI Runner requires `identical` hardware and software configurations for all nodes, please ensure weights and candle-vllm binaries located in the identical folders in difference nodes. The the nodes need to be ssh (port 22 in this case) passwordless for each other (root user if `--allow-run-as-root`). `%NET_INTERFACE%` is the active network interface obtained through command 'ifconfig -a'. You may disable InfiniBand if it's not available in the nodes by insert env "-x NCCL_IB_DISABLE=1". Where, `hostfile` can be defined as:
+
+    Example (two nodes, each with 8 GPUs)
+    ```
+    192.168.1.100 slots=8
+    192.168.1.101 slots=8
+    ```
+
+    **4. Run the model on two nodes with MPI runner**
+    ```shell
+    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0
+    ```
+  </details>
+
+## How to send request(s) to the backend?
+
+**Run chat frontend after starting the backend service**
+
+Chat frontend (any frontend compatible with openai API, simple options available below):
+
+- **Option 1: Chat with Chat.py (for simple tests)**
+  <details>
+    <summary>Show Option 1</summary>
     
-    # send 16 chat requests at the same time
-    tasks: List[asyncio.Task] = []
-    for i in range(len(prompts)):
-        tasks.append(
-            asyncio.create_task(
-                chat_completion(model, max_tokens, prompts[i]))
-        )
+    ****
+    Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
 
-    # obtain the corresponding stream object for each request
-    outputs: List[Stream[ChatCompletionChunk]] = await asyncio.gather(*tasks)
+    ```shell
+    python3 -m pip install openai rich click
+    ```
 
-    # tasks for streaming chat responses
-    tasks_stream: List[asyncio.Task] = []
-    for i in range(len(outputs)):
-        tasks_stream.append(
-            asyncio.create_task(
-                stream_response(i, outputs[i]))
-        )
+    Chat with the mini chatbot (plain text)
+    ```shell
+    python3 examples/chat.py
+    ```
 
-    # gathering the response texts
-    outputs: List[(int, str)] = await asyncio.gather(*tasks_stream)
+    Pass generation parameters (to reasoning models with `--thinking True`)
+    ```shell
+    python3 examples/chat.py --temperature 0.7 --top_k 64 --top_p 0.9 --thinking True --system_prompt "Thinking big!"
+    ```
 
-    # print the results, you may find chat completion statistics in the backend server (i.e., candle-vllm)
-    for idx, output in outputs:
-        print("\n\n Response {}: \n\n {}".format(idx, output))
+    Chat with the mini chatbot (live update with Markdown, may cause flick)
+    ```shell
+    python3 examples/chat.py --live
+    ```
+  <details>
+
+- **Option 2: Chat with naive ChatUI (or popular dify frontend)**
+  <details>
+    <summary>Show Option 2</summary>
+
+    Install naive ChatUI and its dependencies:
+
+    ```
+    git clone git@github.com:guoqingbao/candle-vllm-demo.git
+    cd candle-vllm-demo
+    apt install npm #install npm if needed
+    npm install n -g #update node js if needed
+    n stable #update node js if needed
+    npm i -g pnpm #install pnpm manager
+    pnpm install #install ChatUI dependencies
+    ```
+
+    Launching the ChatUI:
+    ```
+    pnpm run dev # run the ChatUI
+    ```
+
+    **Trouble shooting for Nodejs error**
+    `ENOSPC: System limit for number of file watchers reached`
+    ```
+    echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
+    ```
+  </details>
+
+- **Option 3: Chat completion request with HTTP post**
+  <details>
+    <summary>Show Option 3</summary>
+
+    ``` shell
+    curl -X POST "http://127.0.0.1:2000/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer YOUR_API_KEY" \
+        -d '{
+            "model": "llama7b",
+            "messages": [
+                {"role": "user", "content": "Explain how to best learn Rust."}
+            ],
+            "temperature": 0.7,
+            "max_tokens": 128,
+            "stop": {"Single":"</s>"}
+        }'
+    ```
+    Sample response:
+
+    ```
+    {"id":"cmpl-53092967-c9cf-40e0-ae26-d7ac786d59e8","choices":[{"message":{"content":" Learning any programming language requires a combination of theory, practice, and dedication. Here are some steps and resources to help you learn Rust effectively:\n\n1. Start with the basics:\n\t* Understand the syntax and basic structure of Rust programs.\n\t* Learn about variables, data types, loops, and control structures.\n\t* Familiarize yourself with Rust's ownership system and borrowing mechanism.\n2. Read the Rust book:\n\t* The Rust book is an official resource that provides a comprehensive introduction to the language.\n\t* It covers topics such","role":"[INST]"},"finish_reason":"length","index":0,"logprobs":null}],"created":1718784498,"model":"llama7b","object":"chat.completion","usage":{"completion_tokens":129,"prompt_tokens":29,"total_tokens":158}}
+    ```
+  </details>
+
+- **Option 4: Chat completion with with openai package**
+  <details>
+    <summary>Show Option 4</summary>
+
+    In your terminal, install the `openai` Python package by running `pip install openai`. I use version `1.3.5`.
+
+    Then, create a new Python file and write the following code:
+    ```python
+    import openai
+
+    openai.api_key = "EMPTY"
+
+    openai.base_url = "http://localhost:2000/v1/"
+
+    completion = openai.chat.completions.create(
+        model="llama",
+        messages=[
+            {
+                "role": "user",
+                "content": "Explain how to best learn Rust.",
+            },
+        ],
+        max_tokens = 64,
+    )
+    print(completion.choices[0].message.content)
+    ```
+    After the `candle-vllm` service is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
 
 
-asyncio.run(benchmark())
-```
+    **Batched requests**
+
+    Install openai API first
+    ```
+    python3 -m pip install openai
+    ```
+
+    Run the benchmark test
+    ``` shell
+    python3 examples/benchmark.py --batch 16 --max_tokens 1024
+    ```
+    Refer to `examples/benchmark.py`
+
+    ``` python
+    async def benchmark():
+        model = "mistral7b"
+        max_tokens = 1024
+        # 16 requests
+        prompts = ["Explain how to best learn Rust.", 
+                "Please talk about deep learning in 100 words.", 
+                "Do you know the capital city of China? Talk the details of you known.", 
+                "Who is the best female actor in the world? Explain why.",
+                "How to dealing with depression?",
+                "How to make money in short time?",
+                "What is the future trend of large language model?",
+                "The famous tech companies in the world.",
+                "Explain how to best learn Rust.", 
+                "Please talk about deep learning in 100 words.", 
+                "Do you know the capital city of China? Talk the details of you known.", 
+                "Who is the best female actor in the world? Explain why.",
+                "How to dealing with depression?",
+                "How to make money in short time?",
+                "What is the future trend of large language model?",
+                "The famous tech companies in the world."]
+        
+        # send 16 chat requests at the same time
+        tasks: List[asyncio.Task] = []
+        for i in range(len(prompts)):
+            tasks.append(
+                asyncio.create_task(
+                    chat_completion(model, max_tokens, prompts[i]))
+            )
+
+        # obtain the corresponding stream object for each request
+        outputs: List[Stream[ChatCompletionChunk]] = await asyncio.gather(*tasks)
+
+        # tasks for streaming chat responses
+        tasks_stream: List[asyncio.Task] = []
+        for i in range(len(outputs)):
+            tasks_stream.append(
+                asyncio.create_task(
+                    stream_response(i, outputs[i]))
+            )
+
+        # gathering the response texts
+        outputs: List[(int, str)] = await asyncio.gather(*tasks_stream)
+
+        # print the results, you may find chat completion statistics in the backend server (i.e., candle-vllm)
+        for idx, output in outputs:
+            print("\n\n Response {}: \n\n {}".format(idx, output))
+
+
+    asyncio.run(benchmark())
+    ```
+  </details>
 
 ## GPTQ/AWQ/Marlin 4-bit quantization
-Candle-vllm now supports GPTQ/AWQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
+- **Candle-vllm supports GPTQ/AWQ (Marlin kernel)**
+  <details>
+    <summary>Show details</summary>
 
-```shell
-cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
-```
-or, convert existing AWQ 4bit model to marlin compatible format
-```shell
-python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
-```
+    Candle-vllm now supports GPTQ/AWQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
 
-You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 
+    ```shell
+    cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
+    ```
+    or, convert existing AWQ 4bit model to marlin compatible format
+    ```shell
+    python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
+    cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
+    ```
 
-**Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment. 
+    You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 
 
-## In-situ quantization (or in-situ marlin conversion)
+    **Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment. 
+  </details>
 
-Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) or `4-bit GPTQ/AWQ` weights into any GGML format (or `marlin format`) during model loading. This feature helps conserve GPU memory (or speedup inference performance through marlin kernel), making it more efficient for consumer-grade GPUs (e.g., RTX 4090). To use this feature, simply supply the quant parameter when running candle-vllm.
+## In-situ quantization
+- **Candle-vllm supports in-situ quantization and in-situ marlin conversion**
+  <details>
+    <summary>Show quantization config</summary>
 
-For unquantized models:
+    Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) or `4-bit GPTQ/AWQ` weights into any GGML format (or `marlin format`) during model loading. This feature helps conserve GPU memory (or speedup inference performance through marlin kernel), making it more efficient for consumer-grade GPUs (e.g., RTX 4090). To use this feature, simply supply the quant parameter when running candle-vllm.
 
-```
-cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
-```
+    **For unquantized models:**
 
-For quantized 4-bit GPTQ model:
+    ```
+    cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+    ```
 
-```
-cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
-```
+    Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
 
-Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "marlin", "gguf", "ggml", "gptq", "awq"]
+    **For quantized 4-bit GPTQ model:**
 
-**Please note**:
+    ```
+    cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
+    ```
 
-1) It may takes few minutes to load F32/F16/BF16 models into quantized;
+    **Please note for marlin**:
 
-2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`) and 4-bit AWQ (after conversion using the given script);
+    1) It may takes few minutes to load F32/F16/BF16 models into quantized;
 
-3) Marlin format only supported in CUDA platform.
+    2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`) and 4-bit AWQ (after conversion using the given script);
 
-## Usage Help
-For kvcache configuration, set `kvcache_mem_cpu` and `kvcache_mem_gpu`, default 4GB CPU memory and 4GB GPU memory for kvcache. 
+    3) Marlin format only supported in CUDA platform.
+  </details>
 
-For chat history settings, set `record_conversation` to `true` to let candle-vllm remember chat history. By `default`, candle-vllm `does not` record chat history; instead, the client sends both the messages and the contextual history to candle-vllm. If record_conversation is set to `true`, the client sends only new chat messages to candle-vllm, and candle-vllm is responsible for recording the previous chat messages. However, this approach requires per-session chat recording, which is not yet implemented, so the default approach `record_conversation=false` is recommended.
+## Other Usage
+- KV Cache config, sampling parameter, etc.
+  <details>
+    <summary>Show details</summary>
+    For kvcache configuration, set `kvcache_mem_cpu` and `kvcache_mem_gpu`, default 4GB CPU memory and 4GB GPU memory for kvcache. 
 
-For chat streaming, the `stream` flag in chat request need to be set to `True`.
+    For chat history settings, set `record_conversation` to `true` to let candle-vllm remember chat history. By `default`, candle-vllm `does not` record chat history; instead, the client sends both the messages and the contextual history to candle-vllm. If record_conversation is set to `true`, the client sends only new chat messages to candle-vllm, and candle-vllm is responsible for recording the previous chat messages. However, this approach requires per-session chat recording, which is not yet implemented, so the default approach `record_conversation=false` is recommended.
 
-You may supply `penalty` and `temperature` to the model to **prevent potential repetitions**, for example:
+    For chat streaming, the `stream` flag in chat request need to be set to `True`.
 
-```
-cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
-```
+    You may supply `penalty` and `temperature` to the model to **prevent potential repetitions**, for example:
 
-`--max-gen-tokens` parameter is used to control the maximum output tokens per chat response. The value will be set to 1/5 of max_sequence_len by default.
+    ```
+    cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
+    ```
 
-For `consumer GPUs`, it is suggested to run the models under GGML formats (or Marlin format), e.g.,
+    `--max-gen-tokens` parameter is used to control the maximum output tokens per chat response. The value will be set to 1/5 of max_sequence_len by default.
 
-```
-cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
-```
+    For `consumer GPUs`, it is suggested to run the models under GGML formats (or Marlin format), e.g.,
 
-where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"].
+    ```
+    cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+    ```
+
+    where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"].
+  </details>
 
 ## Report issue
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
