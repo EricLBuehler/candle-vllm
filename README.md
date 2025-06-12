@@ -497,7 +497,6 @@ Chat frontend (any frontend compatible with openai API, simple options available
         for idx, output in outputs:
             print("\n\n Response {}: \n\n {}".format(idx, output))
 
-
     asyncio.run(benchmark())
     ```
   </details>
