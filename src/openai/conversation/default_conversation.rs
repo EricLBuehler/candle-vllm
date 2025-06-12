@@ -115,8 +115,11 @@ impl Conversation for DefaultConversation {
         env.set_trim_blocks(true);
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         let template = self.chat_template.as_ref().unwrap();
-        let template = template.replace("[::-1]", "|reverse");
-
+        let mut template = template.replace("[::-1]", "|reverse");
+        if template.find("{{ meta }}").is_some() {
+            template = template.replace("{%- set meta = message.get(\"metadata\", \"\") %}", "");
+            template = template.replace("{{ meta }}", "");
+        }
         env.add_template(self.name.as_str(), template.as_str())
             .map_err(ApplyChatTemplateError::AddTemplateError)?;
         let template = env
