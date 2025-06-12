@@ -43,8 +43,8 @@ tracing = "0.1.40"
 range-checked = { git = "https://github.com/EricLBuehler/range-checked.git", version = "0.1.0" }
 either = { version = "1.13.0", features = ["serde"] }
 dirs = "5.0.1"
-minijinja = { version = "2.0.2", features = ["builtins", "json"] }
-minijinja-contrib = { version = "2.0.2", features = ["pycompat"] }
+minijinja = { version = "2.10.2", features = ["builtins", "json"] }
+minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 kernels = {path = "./kernels", version="0.1.0", optional = true}
@@ -60,6 +60,7 @@ mpi = { version = "0.8.0", optional = true}
 parking_lot = "0.12"
 akin = "0.4.0"
 itertools = "0.13.0"
+chrono = "0.4.41"
 
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]

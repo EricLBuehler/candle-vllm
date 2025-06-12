@@ -252,11 +252,7 @@ pub fn get_gguf_chat_template<R: std::io::Seek + std::io::Read>(
         metadata: content.get_metadata(),
     };
     let props = PropsGGUFTemplate::try_from(metadata)?;
-    let chat_template = match props.chat_template {
-        Some(chat_template) => Some(chat_template.replace('\n', "\\n")),
-        _ => None,
-    };
-    Ok(chat_template)
+    Ok(props.chat_template)
 }
 
 pub struct GGUFInfo {
