@@ -2,6 +2,11 @@
     <img src="./res/candle_vllm_logo.png" alt="candle vLLM" width=55%/>
 </p>
 
+<p align="center">
+  <a href="./README.md">English</a> |
+  <a href="./README-CN.md">简体中文</a> |
+</p>
+
 [![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
 
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
@@ -11,7 +16,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
 - Streaming support in generation.
 - Efficient management of key-value cache with PagedAttention.
-- Continuous batching.
+- Continuous batching (batched decoding for incoming requests over time).
 - `In-situ` quantization (and `In-situ` marlin format conversion)
 - `GPTQ/Marlin` format quantization (4-bit)
 - Support `Mac/Metal` devices
@@ -19,10 +24,9 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support `Multi-node` inference with MPI runner
 
 ## Supported Models
-
+- Currently, candle-vllm supports chat serving for the following model structures.
   <details>
     <summary>Show supported model architectures</summary>
-    Currently, candle-vllm supports chat serving for the following model structures.
 
     | Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K` or `Marlin`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
     |--|--|--|--|--|--|--|
@@ -41,9 +45,11 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
   </details>
 
 ### Demo Video
+- Nvidia GPU and Apple Silicon
+
   <details>
     <summary>Show Demo Video</summary>
-    Chat demo on GPU (A100, BF16, QWen3-8B Reasoning Model)
+    Chat demo on **GPU** (A100, BF16, QWen3-8B Reasoning Model)
     <img src="res/Qwen3-8B-Reasoning-A100.gif" width="85%" height="85%" >
 
     Chat demo on **Apple Silicon** (M4 with 16GB unified memory, Q2K, QWen3-8B)
@@ -62,10 +68,10 @@ cd candle-vllm
 #Make sure the CUDA Toolkit can be found in the system PATH
 export PATH=$PATH:/usr/local/cuda/bin/
 
-#single-node
+#single-node compilation (single gpu, or multi-gpus on single machine)
 cargo build --release --features cuda,nccl
 
-#multinode
+#multinode compilation (multi-gpus, multiple machines)
 sudo apt update
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
 sudo apt install clang libclang-dev
@@ -73,8 +79,6 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 ```
 
 ### Build/Run Parameters
-
-
 
 - [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`MODEL_TYPE`] [`MODEL_PARAM`]  
   <details>
@@ -98,7 +102,7 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 
     `MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking
 
-    where, `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+    where, `--kvcache-mem-gpu` is the key parameter to control KV cache usage (increase this for large batch); `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
   </details>
 
 
@@ -213,7 +217,7 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 
   </details>
 
-- Run **Marlin-format models** models
+- Run **Marlin-format** models
   <details>
     <summary>Show command</summary>
 
@@ -328,7 +332,6 @@ Chat frontend (any frontend compatible with openai API, simple options available
   <details>
     <summary>Show Option 1</summary>
     
-    ****
     Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
 
     ```shell
@@ -494,38 +497,16 @@ Chat frontend (any frontend compatible with openai API, simple options available
         for idx, output in outputs:
             print("\n\n Response {}: \n\n {}".format(idx, output))
 
-
     asyncio.run(benchmark())
     ```
   </details>
 
-## GPTQ/AWQ/Marlin 4-bit quantization
-- **Candle-vllm supports GPTQ/AWQ (Marlin kernel)**
-  <details>
-    <summary>Show details</summary>
-
-    Candle-vllm now supports GPTQ/AWQ (Marlin kernel), you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
-
-    ```shell
-    cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
-    ```
-    or, convert existing AWQ 4bit model to marlin compatible format
-    ```shell
-    python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-    cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
-    ```
-
-    You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 
-
-    **Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment. 
-  </details>
-
 ## In-situ quantization
-- **Candle-vllm supports in-situ quantization and in-situ marlin conversion**
+- **Loading unquantized models as gguf quantized or marlin format**
   <details>
     <summary>Show quantization config</summary>
 
-    Candle-vllm now supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) or `4-bit GPTQ/AWQ` weights into any GGML format (or `marlin format`) during model loading. This feature helps conserve GPU memory (or speedup inference performance through marlin kernel), making it more efficient for consumer-grade GPUs (e.g., RTX 4090). To use this feature, simply supply the quant parameter when running candle-vllm.
+    Candle-vllm supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) into any GGML/GGUF format, or `4-bit GPTQ/AWQ` weights into `marlin format` during model loading. This feature helps conserve GPU memory and speedup inference performance, making it more efficient for consumer-grade GPUs (e.g., RTX 4090). To use this feature, simply supply the `quant` parameter when running candle-vllm.
 
     **For unquantized models:**
 
@@ -545,7 +526,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
 
     1) It may takes few minutes to load F32/F16/BF16 models into quantized;
 
-    2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`) and 4-bit AWQ (after conversion using the given script);
+    2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`) and 4-bit AWQ (after conversion using the given script, refer to `Other Usage`);
 
     3) Marlin format only supported in CUDA platform.
   </details>
@@ -554,7 +535,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
 - KV Cache config, sampling parameter, etc.
   <details>
     <summary>Show details</summary>
-    For kvcache configuration, set `kvcache_mem_cpu` and `kvcache_mem_gpu`, default 4GB CPU memory and 4GB GPU memory for kvcache. 
+    The `kvcache-mem-gpu` parameter is used to control kv cache, default 4GB GPU memory, increase this for large batch and long-context inference. 
 
     For chat history settings, set `record_conversation` to `true` to let candle-vllm remember chat history. By `default`, candle-vllm `does not` record chat history; instead, the client sends both the messages and the contextual history to candle-vllm. If record_conversation is set to `true`, the client sends only new chat messages to candle-vllm, and candle-vllm is responsible for recording the previous chat messages. However, this approach requires per-session chat recording, which is not yet implemented, so the default approach `record_conversation=false` is recommended.
 
@@ -577,9 +558,31 @@ Chat frontend (any frontend compatible with openai API, simple options available
     where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"].
   </details>
 
+- **Use Marlin kernel to speedup GPTQ/AWQ models**
+  <details>
+    <summary>Show details</summary>
+
+    Candle-vllm now supports GPTQ/AWQ Marlin kernel, you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
+
+    ```shell
+    cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
+    ```
+
+    or, convert existing AWQ 4bit model to marlin compatible format
+
+    ```shell
+    python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
+    cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
+    ```
+
+    You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 
+
+    **Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment. 
+  </details>
+
 ## Report issue
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
-[issue](https://github.com/EricLBuehler/candle-lora/issues).
+[issue](https://github.com/EricLBuehler/candle-vllm/issues).
 
 
 ## Contributing
