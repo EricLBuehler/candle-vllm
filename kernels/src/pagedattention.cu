@@ -430,6 +430,12 @@ __global__ void paged_attention_v1_kernel(
   const int kv_block_stride,
   const int kv_head_stride,
   const float softscapping) {
+  if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
+    #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+      return;
+    #endif
+  }
+
   paged_attention_kernel<scalar_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS>(
     /* exp_sums */ nullptr, /* max_logits */ nullptr,
     out, q, k_cache, v_cache, num_kv_heads, scale, block_tables, context_lens,
@@ -460,6 +466,11 @@ __global__ void paged_attention_v2_kernel(
   const int kv_block_stride,
   const int kv_head_stride,
   const float softscapping) {
+  if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
+    #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+      return;
+    #endif
+  }
   paged_attention_kernel<scalar_t, HEAD_SIZE, BLOCK_SIZE, NUM_THREADS, PARTITION_SIZE>(
     exp_sums, max_logits, tmp_out, q, k_cache, v_cache, num_kv_heads, scale,
     block_tables, context_lens, max_num_blocks_per_seq, alibi_slopes,
