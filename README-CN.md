@@ -333,15 +333,17 @@ cargo build --release --features cuda,nccl,mpi #构建MPI功能
     如果你想使用全部 GPU 进行推理，下面的 NUMA 绑定配置可以获得最佳性能：
 
     ```shell
-    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
+    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
     ```
 
     如果你只使用 4 张 GPU，可以使用如下的 NUMA 绑定方式：
     
     ```shell
-    MAP_NUMA_NODE=0,0,0,0 cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
+    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
     ```
 
+    以上命令中 `numactl --cpunodebind=0 --membind=0`指定了master进程（master rank）绑定的NUMA node，其必须与 `MAP_NUMA_NODE`相匹配。
+    
     注意： 绑定顺序可能会根据你的硬件配置有所不同。
   </details>
 
