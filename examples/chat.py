@@ -138,10 +138,14 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                 console.log(f"Unexpected OpenAI error: {e}", style="bold red")
         
         except KeyboardInterrupt:
-            if len(messages) == 0:
+            if len(messages) == 0 or (len(messages) == 1 and messages[0]["role"]=="system"):
                 console.print("\nExiting.", style="bold green")
                 break
+
             messages.clear()
+            # Reinsert the system prompt for the next chat session
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
             console.clear()
             console.log("A new chat is started. Press Ctrl+C again to exit.", style="yellow")
             continue
