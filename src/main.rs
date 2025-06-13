@@ -428,7 +428,7 @@ async fn main() -> Result<(), APIError> {
     }
 
     if global_rank == 0 {
-        info!("Maximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):");
+        warn!("Maximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):");
         for batch in [1, 8] {
             println!(
                 "-> Batch {}: {}",

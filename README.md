@@ -322,6 +322,33 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
     ```
   </details>
 
+- Run with **NUMA binding**
+  <details>
+    <summary>Show command</summary>
+
+    **Prerequisite**
+    Ensure your machine has more than one NUMA node (i.e., more than one physical CPU), and install numactl:
+    ```shell
+    sudo apt-get install numactl
+    ```
+
+    Suppose your machine has 8 GPUs and 2 NUMA nodes, with each set of 4 GPUs bound to a different NUMA node.
+    To achieve optimal performance during inference using all GPUs, use the following NUMA binding:
+
+    ```shell
+    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
+    ```
+
+    To use only 4 GPUs, you can apply this NUMA binding:
+    
+    ```shell
+    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
+    ```
+    *where* `numactl --cpunodebind=0 --membind=0` above indicates NUMA binding for the master rank (master process) which should be matched to `MAP_NUMA_NODE`.
+
+    Note: The exact NUMA binding sequence may vary depending on your hardware configuration.
+  </details>
+
 ## How to send request(s) to the backend?
 
 **Run chat frontend after starting the backend service**

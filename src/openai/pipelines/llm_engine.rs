@@ -241,7 +241,7 @@ impl LLMEngine {
                             task.use_logprobs,
                             None,
                         );
-                        info!("Daemon process: add_sequence to group {}", task.group_id);
+                        tracing::debug!("Daemon process: add_sequence to group {}", task.group_id);
                         self.scheduler.add_sequence(seq_group);
                     }
                 }

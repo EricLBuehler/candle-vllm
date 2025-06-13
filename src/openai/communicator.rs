@@ -579,6 +579,15 @@ pub fn init_subprocess(
                 use rayon::iter::IndexedParallelIterator;
                 use rayon::iter::IntoParallelRefIterator;
                 use rayon::iter::ParallelIterator;
+
+                let nodes_map: Vec<u32> = if let Ok(p) = std::env::var("MAP_NUMA_NODE") {
+                    p.split(',')
+                        .filter_map(|s| s.trim().parse::<u32>().ok())
+                        .collect()
+                } else {
+                    vec![]
+                };
+
                 *IS_DAEMON.lock().unwrap() = false;
                 DaemonManager::set_master_rank(true);
                 let _: Vec<std::process::Child> = device_ids[1..]
@@ -587,7 +596,30 @@ pub fn init_subprocess(
                     .map(|(rank, dev_id)| {
                         let exe_path = env::current_exe().expect("Failed to get current exe");
                         let args: Vec<String> = env::args().collect();
-                        let mut cmd = Command::new(exe_path);
+                        let mut cmd = if nodes_map.len() > 0 && rank + 1 < nodes_map.len() {
+                            #[cfg(any(target_os = "linux", target_os = "macos"))]
+                            {
+                                if which::which("numactl").is_err() {
+                                    panic!("numactl not installed!\nInstall with: sudo apt-get install numactl");
+                                } else {
+                                    tracing::info!("numactl found!");
+                                }
+                            }
+                            let mut cmd = Command::new("numactl");
+                            cmd.args([
+                                format!("--cpunodebind={}", nodes_map[rank + 1]),
+                                format!("--membind={}", nodes_map[rank + 1]),
+                            ]);
+                            tracing::info!(
+                                "run subprocess (rank {}) bind to numa node {}",
+                                rank + 1,
+                                nodes_map[rank + 1]
+                            );
+                            cmd.arg(exe_path);
+                            cmd
+                        } else {
+                            Command::new(exe_path)
+                        };
                         cmd.args(&args[1..]);
 
                         let data = RankData::Init {
@@ -606,7 +638,7 @@ pub fn init_subprocess(
                         cmd.stderr(std::process::Stdio::null());
                         cmd.stdin(std::process::Stdio::null());
 
-                        cmd.spawn().expect("Failed to spawn process")
+                        cmd.spawn().expect(format!("Failed to spawn process {:?}", cmd).as_str())
                     })
                     .collect();
                 let daemon_manager = DaemonManager::new_channel(
