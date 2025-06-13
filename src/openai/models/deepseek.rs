@@ -495,24 +495,21 @@ impl Attention {
         let (q_nope, mut q_pe) = {
             let q = self.q.forward(xs)?;
             let q = q.reshape((bs, seq_len, self.num_attention_heads, self.q_head_dim))?;
-            let q_split = q.split(
+            let (q_nope, q_pe) = q.split2(
                 &[moe_cfg.qk_nope_head_dim, moe_cfg.qk_rope_head_dim],
                 D::Minus1,
             )?;
-            let q_nope = q_split[0].transpose(1, 2)?;
-            let q_pe = q_split[1].contiguous()?.transpose(1, 2)?;
+            let q_nope = q_nope.transpose(1, 2)?;
+            let q_pe = q_pe.contiguous()?.transpose(1, 2)?;
             (q_nope, q_pe)
         };
 
-        let mut compressed_kv = self.kv_a_proj_with_mqa.forward(xs)?;
-        let ckv_split =
-            compressed_kv.split(&[moe_cfg.kv_lora_rank, moe_cfg.qk_rope_head_dim], D::Minus1)?;
-        compressed_kv = ckv_split[0].clone();
-        let mut k_pe = {
-            let k_pe = ckv_split[1].clone();
-            k_pe.reshape((bs, seq_len, 1, moe_cfg.qk_rope_head_dim))?
-                .transpose(1, 2)?
-        };
+        let compressed_kv = self.kv_a_proj_with_mqa.forward(xs)?;
+        let (compressed_kv, k_pe) =
+            compressed_kv.split2(&[moe_cfg.kv_lora_rank, moe_cfg.qk_rope_head_dim], D::Minus1)?;
+        let mut k_pe = k_pe
+            .reshape((bs, seq_len, 1, moe_cfg.qk_rope_head_dim))?
+            .transpose(1, 2)?;
         let kv = {
             let kv = self
                 .kv_b_proj
@@ -526,9 +523,8 @@ impl Attention {
             .transpose(1, 2)?
         };
 
-        let kv_split = kv.split(&[moe_cfg.qk_nope_head_dim, moe_cfg.v_head_dim], D::Minus1)?;
-        let k_nope = kv_split[0].clone();
-        let mut v = kv_split[1].clone().contiguous()?;
+        let (k_nope, v) = kv.split2(&[moe_cfg.qk_nope_head_dim, moe_cfg.v_head_dim], D::Minus1)?;
+        let mut v = v.contiguous()?;
 
         (q_pe, k_pe) = self.rotary_emb.forward(
             &q_pe.to_dtype(DType::F32)?,
@@ -1119,10 +1115,11 @@ impl DeepSeek {
                 )?;
             }
         }
-        let xs = x.apply(&self.norm)?;
-        let xs = xs.i((.., seq_len - 1, ..))?.contiguous()?;
-        let logits = self.lm_head.forward(&xs)?;
-        logits.to_dtype(DType::F32)
+        let xs = x
+            .i((.., seq_len - 1, ..))?
+            .contiguous()?
+            .apply(&self.norm)?;
+        self.lm_head.forward(&xs)
     }
 
     pub fn get_config(&self) -> &Config {

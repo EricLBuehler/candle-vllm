@@ -121,6 +121,7 @@ impl TopKLastDimOp for Tensor {
 
 pub trait SplitOp {
     fn split<D: Dim>(&self, splits: &[usize], dim: D) -> Result<Vec<Tensor>>;
+    fn split2<D: Dim>(&self, splits: &[usize], dim: D) -> Result<(Tensor, Tensor)>;
 }
 
 impl SplitOp for Tensor {
@@ -133,6 +134,15 @@ impl SplitOp for Tensor {
             index += *split;
         }
         Ok(split_res)
+    }
+
+    fn split2<D: Dim>(&self, splits: &[usize], dim: D) -> Result<(Tensor, Tensor)> {
+        assert!(splits.len() == 2, "splits must be 2");
+        let dim = dim.to_index(self.shape(), "split")?;
+        Ok((
+            self.narrow(dim, 0, splits[0])?,
+            self.narrow(dim, splits[0], splits[1])?,
+        ))
     }
 }
 
