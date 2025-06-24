@@ -65,17 +65,25 @@ sudo apt install libssl-dev pkg-config -y
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
 
-#确保CUDA Toolkit在系统PATH中
+#Mac/Metal平台编译命令
+cargo build --release --features metal
+
+#CUDA平台：确保CUDA Toolkit在系统PATH中
 export PATH=$PATH:/usr/local/cuda/bin/
 
-#单节点（单机单卡或单机多卡）编译命令
+#CUDA平台：单节点（单机单卡或单机多卡）编译命令
 cargo build --release --features cuda,nccl
 
-#多节点（多机推理）编译命令
+#CUDA平台：单节点（使用flash attention kernel，适用于长上下文推理）编译命令
+cargo build --release --features cuda,nccl,flash-attn
+
+#CUDA平台：多节点（多机推理）编译命令
 sudo apt update
 sudo apt install libopenmpi-dev openmpi-bin -y #安装MPI
 sudo apt install clang libclang-dev
-cargo build --release --features cuda,nccl,mpi #构建MPI功能
+cargo build --release --features cuda,nccl,mpi #包含MPI功能
+#或
+cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash attention与MPI功能
 ```
 
 ### 构建/运行参数

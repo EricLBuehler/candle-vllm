@@ -115,22 +115,19 @@ impl LayerWeights {
             v.to_dtype(self.dtype)?,
         );
 
-        let y = self.attn.forward(
-            &q,
-            &k,
-            &v,
-            mask,
-            cache.map(|(k_, _)| k_.clone()),
-            cache.map(|(_, v_)| v_.clone()),
-            input_metadata,
-            None,
-        )?;
-
-        let y = if mask.is_some() {
-            y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))?
-        } else {
-            y.reshape((b_sz, seq_len, ()))?
-        };
+        let y = self
+            .attn
+            .forward(
+                &q,
+                &k,
+                &v,
+                mask,
+                cache.map(|(k_, _)| k_.clone()),
+                cache.map(|(_, v_)| v_.clone()),
+                input_metadata,
+                None,
+            )?
+            .reshape((b_sz, seq_len, ()))?;
 
         let y = self.attention_wo.forward(&y.to_dtype(x.dtype())?)?;
         Ok(y)
@@ -391,15 +388,14 @@ impl GGUFGLM4 {
         let mask = if seq_len <= 1 {
             None
         } else {
-            let mask = super::get_attention_casual_mask(
+            super::get_attention_casual_mask(
                 &self.device,
                 self.dtype,
                 b_sz,
                 seq_len,
                 input_positions,
                 self.cfg.sliding_window,
-            )?;
-            Some(mask)
+            )
         };
         let mut layer_in = self.tok_embeddings.forward(x)?;
         if let Some(kv_caches) = kv_caches {

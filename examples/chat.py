@@ -60,7 +60,7 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
     while True:
         try:
             # User input
-            user_input = input("🙋 Please Input (Ctrl+C to start a new chat or exit): ")
+            user_input = input("\n🙋 Please Input (Ctrl+C to start a new chat or exit): ")
             if user_input == "":
                 console.print("Multiline input: press Ctrl+D to finish, Ctrl+C to exit.")
                 user_input = sys.stdin.read()

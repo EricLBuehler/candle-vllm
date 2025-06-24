@@ -15,17 +15,17 @@ anyhow = "1.0.75"
 rand = "0.9.0"
 rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", branch = "candle-main" }
-candle-examples = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", branch = "candle-main" }
+candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "0334796" }
+candle-examples = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "0334796" }
 #candle-lora = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 #candle-lora-macro = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 #candle-lora-transformers = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", branch = "candle-main" }
+candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "0334796" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
 tokenizers = "0.21.1"
 uuid = { version = "1.5.0", features = ["v4"] }
-candle-transformers = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", branch = "candle-main" }
+candle-transformers = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "0334796" }
 hf-hub = "0.4.1"
 serde_json = "1.0.108"
 derive_more = "0.99.17"
@@ -33,7 +33,7 @@ accelerate-src = { version = "0.3.2", optional = true }
 intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"], optional = true }
 cudarc = {version = "0.13.9", features = ["f16", "cuda-version-from-build-system"], optional = true }
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
-candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", branch = "candle-main", optional = true }
+candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "0334796" }
 clap = { version = "4.4.7", features = ["derive"] }
 #candle-sampling = { git = "https://github.com/EricLBuehler/candle-sampling.git", version = "0.2.0" }
 futures = "0.3.29"
@@ -68,7 +68,7 @@ accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/acceler
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:kernels"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "dep:metal-kernels", "dep:metal"]
 cudnn = ["candle-core/cudnn"]
-flash-attn = ["cuda", "candle-transformers/flash-attn"]
+flash-attn = ["cuda", "candle-transformers/flash-attn", "dep:candle-flash-attn"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
 nccl = ["cuda", "cudarc/nccl"]
 mpi = ["cuda", "cudarc/nccl", "dep:mpi"]

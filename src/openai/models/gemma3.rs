@@ -664,7 +664,7 @@ impl Gemma3 {
             seq_len,
             input_positions,
             None,
-        )?;
+        );
 
         let sliding_mask = super::get_attention_casual_mask(
             &self.device,
@@ -673,9 +673,9 @@ impl Gemma3 {
             seq_len,
             input_positions,
             self.cfg.sliding_window,
-        )?;
+        );
 
-        Ok((Some(mask), Some(sliding_mask)))
+        Ok((mask, sliding_mask))
     }
 
     pub fn forward(

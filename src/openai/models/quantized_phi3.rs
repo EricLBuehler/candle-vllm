@@ -106,7 +106,7 @@ impl LayerWeights {
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_sz, seq_len, n_embd) = x.dims3()?;
+        let (b_sz, seq_len, _) = x.dims3()?;
         let qkv = self.attn_qkv.forward(x)?;
 
         let query_pos = self.n_head * self.head_dim;
@@ -143,22 +143,19 @@ impl LayerWeights {
 
         let (q, k) = self.apply_rotary_emb(&q, &k, input_positions)?;
 
-        let y = self.attn.forward(
-            &q,
-            &k,
-            &v,
-            mask,
-            cache.map(|(k_, _)| k_.clone()),
-            cache.map(|(_, v_)| v_.clone()),
-            input_metadata,
-            None,
-        )?;
-
-        let y = if mask.is_some() {
-            y.transpose(1, 2)?.reshape(&[b_sz, seq_len, n_embd])?
-        } else {
-            y.reshape(&[b_sz, seq_len, n_embd])?
-        };
+        let y = self
+            .attn
+            .forward(
+                &q,
+                &k,
+                &v,
+                mask,
+                cache.map(|(k_, _)| k_.clone()),
+                cache.map(|(_, v_)| v_.clone()),
+                input_metadata,
+                None,
+            )?
+            .reshape((b_sz, seq_len, ()))?;
 
         let y = self.attn_output.forward(&y.to_dtype(x.dtype())?)?;
         Ok(y)
@@ -356,15 +353,14 @@ impl GGUFPhi3 {
         let mask = if seq_len <= 1 {
             None
         } else {
-            let mask = super::get_attention_casual_mask(
+            super::get_attention_casual_mask(
                 &self.device,
                 self.dtype,
                 b_sz,
                 seq_len,
                 input_positions,
                 self.cfg.sliding_window,
-            )?;
-            Some(mask)
+            )
         };
         let mut xs = self.tok_embeddings.forward(xs)?;
 

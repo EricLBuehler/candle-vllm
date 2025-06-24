@@ -499,15 +499,14 @@ impl GLM4 {
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = super::get_attention_casual_mask(
+            super::get_attention_casual_mask(
                 &self.device,
                 self.dtype,
                 b_size,
                 seq_len,
                 input_positions,
                 self.cfg.sliding_window,
-            )?;
-            Some(mask)
+            )
         };
         let mut xs = self.embedding.forward(input_ids)?;
 
