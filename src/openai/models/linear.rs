@@ -212,18 +212,9 @@ pub fn qlinear(
                     )
                 },
                 if marlin_format { "B" } else { "qweight" },
-                Default::default(),
+                shards,
                 DType::U32,
             )?;
-
-            let ws = if shards.world_size > 1 {
-                let dim_size = ws.dims()[shards.dim];
-                let start = shards.rank * (dim_size / shards.world_size);
-                ws.narrow(shards.dim, start, dim_size / shards.world_size)?
-                    .contiguous()?
-            } else {
-                ws
-            };
 
             let scale_and_zero_size = in_dim / (cfg.group_size as usize);
             let scales = vb
@@ -273,21 +264,12 @@ pub fn qlinear(
                     workspace: Some(workspace),
                 })
             } else {
-                let mut qzeros = vb.get_with_hints_dtype(
+                let qzeros = vb.get_with_hints_dtype(
                     (scale_and_zero_size, out_dim / (32 / cfg.bits)),
                     "qzeros",
-                    Default::default(),
+                    shards,
                     DType::U32,
                 )?;
-                qzeros = if shards.world_size > 1 {
-                    let dim_size = qzeros.dims()[shards.dim];
-                    let start = shards.rank * (dim_size / shards.world_size);
-                    qzeros
-                        .narrow(shards.dim, start, dim_size / shards.world_size)?
-                        .contiguous()?
-                } else {
-                    qzeros
-                };
                 let g_idx = if cfg.quant_method == "gptq" {
                     let mut g_idx = vb.get_with_hints_dtype(
                         (in_dim,),

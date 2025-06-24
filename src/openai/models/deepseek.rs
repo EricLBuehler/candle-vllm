@@ -558,11 +558,7 @@ impl Attention {
             y = y.narrow(D::Minus1, 0, moe_cfg.v_head_dim)?;
         }
 
-        y = if attention_mask.is_some() {
-            y.transpose(1, 2)?.reshape((bs, seq_len, ()))?
-        } else {
-            y.reshape((bs, seq_len, ()))?
-        };
+        y = y.reshape((bs, seq_len, ()))?;
 
         self.o_proj.forward(&y)
     }
@@ -1084,15 +1080,14 @@ impl DeepSeek {
         let attention_mask = if seq_len == 1 {
             None
         } else {
-            let mask = super::get_attention_casual_mask(
+            super::get_attention_casual_mask(
                 &self.device,
                 self.dtype,
                 bs,
                 seq_len,
                 input_positions,
                 self.cfg.sliding_window,
-            )?;
-            Some(mask)
+            )
         };
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), block) in zip(kv_caches.iter(), &self.layers) {

@@ -280,6 +280,14 @@ async fn main() -> Result<(), APIError> {
         num_shards == 1,
         "More than one shard was given, but NCCL is not enabled for parallel inference!"
     );
+
+    if num_shards > 1
+        && quant.is_some()
+        && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf")
+    {
+        panic!("Multiple device-ids detected: ggml/gguf model is not supported for multi-rank inference!");
+    }
+
     let logger = ftail::Ftail::new();
     let mut port = args.port;
     #[cfg(feature = "nccl")]

@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, Result, Tensor};
+use candle_core::{Device, Result, Tensor};
 
 use crate::backend::{paged_attention, reshape_and_cache};
 
@@ -79,6 +79,48 @@ impl PagedAttention {
         let (batch_size, attention_heads, seq_len, head_size) = query.shape().dims4()?;
         let (_, key_value_heads, _, _) = key.shape().dims4()?;
 
+        #[cfg(feature = "flash-attn")]
+        let att = if input_metadata.is_prompt {
+            let k = candle_transformers::utils::repeat_kv(
+                key.clone(),
+                attention_heads / key_value_heads,
+            )?
+            .contiguous()?;
+            let v = candle_transformers::utils::repeat_kv(
+                value.clone(),
+                attention_heads / key_value_heads,
+            )?
+            .contiguous()?;
+
+            let q = query.transpose(1, 2)?;
+            let k = k.transpose(1, 2)?;
+            let v = v.transpose(1, 2)?;
+            let attn = if self.sliding_window.is_some() {
+                candle_flash_attn::flash_attn_windowed_softcap(
+                    &q,
+                    &k,
+                    &v,
+                    self.scale as f32,
+                    Some(softcapping.unwrap_or(0.0f64) as f32),
+                    self.sliding_window,
+                    Some(0),
+                )?
+            } else {
+                candle_flash_attn::flash_attn_softcap(
+                    &q,
+                    &k,
+                    &v,
+                    self.scale as f32,
+                    Some(softcapping.unwrap_or(0.0f64) as f32),
+                    true,
+                )?
+            };
+            Some(attn)
+        } else {
+            None
+        };
+
+        #[cfg(not(feature = "flash-attn"))]
         let att = match attention_mask {
             None => None,
             Some(mask) => {
@@ -101,8 +143,9 @@ impl PagedAttention {
                 };
 
                 let att = att.broadcast_add(mask)?;
-                let att = candle_nn::ops::softmax_last_dim(&att.to_dtype(DType::F32)?)?
-                    .to_dtype(att.dtype())?;
+                let att =
+                    candle_nn::ops::softmax_last_dim(&att.to_dtype(candle_core::DType::F32)?)?
+                        .to_dtype(att.dtype())?;
                 if key_value_heads != attention_heads {
                     let value_repeat = if key_value_heads == 1 {
                         value.broadcast_as((batch_size, attention_heads, seq_len, head_size))?
@@ -110,9 +153,9 @@ impl PagedAttention {
                         Tensor::cat(&vec![&value; attention_heads / key_value_heads], 2)?
                             .reshape((batch_size, attention_heads, seq_len, head_size))?
                     };
-                    Some(att.matmul(&value_repeat.contiguous()?)?)
+                    Some(att.matmul(&value_repeat.contiguous()?)?.transpose(1, 2)?)
                 } else {
-                    Some(att.matmul(value)?)
+                    Some(att.matmul(value)?.transpose(1, 2)?)
                 }
             }
         };

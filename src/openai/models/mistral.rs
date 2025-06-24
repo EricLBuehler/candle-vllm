@@ -309,22 +309,20 @@ impl Attention {
         let q = q.to_dtype(v.dtype())?;
         let k = k.to_dtype(v.dtype())?;
 
-        let y = self.attn.forward(
-            &q,
-            &k,
-            &v,
-            attention_mask,
-            cache.map(|(k_, _)| k_.clone()),
-            cache.map(|(_, v_)| v_.clone()),
-            input_metadata,
-            None,
-        )?;
+        let y = self
+            .attn
+            .forward(
+                &q,
+                &k,
+                &v,
+                attention_mask,
+                cache.map(|(k_, _)| k_.clone()),
+                cache.map(|(_, v_)| v_.clone()),
+                input_metadata,
+                None,
+            )?
+            .reshape((b_sz, seq_len, ()))?;
 
-        let y = if attention_mask.is_some() {
-            y.transpose(1, 2)?.reshape((b_sz, seq_len, ()))?
-        } else {
-            y.reshape((b_sz, seq_len, ()))?
-        };
         let y = self.o_proj.forward(&y)?;
         Ok(y)
     }
@@ -443,15 +441,14 @@ impl Mistral {
         let attention_mask = if seq_len <= 1 {
             None
         } else {
-            let mask = super::get_attention_casual_mask(
+            super::get_attention_casual_mask(
                 &self.device,
                 self.dtype,
                 b_size,
                 seq_len,
                 input_positions,
                 self.cfg.sliding_window,
-            )?;
-            Some(mask)
+            )
         };
         let mut xs = self.embed_tokens.forward(input_ids)?;
         if let Some(kv_caches) = kv_caches {

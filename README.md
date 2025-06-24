@@ -65,17 +65,25 @@ sudo apt install libssl-dev pkg-config -y
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
 
+## Mac/Metal (single-node only)
+cargo build --release --features metal
+
 #Make sure the CUDA Toolkit can be found in the system PATH
 export PATH=$PATH:/usr/local/cuda/bin/
 
-#single-node compilation (single gpu, or multi-gpus on single machine)
+#CUDA: single-node compilation (single gpu, or multi-gpus on single machine)
 cargo build --release --features cuda,nccl
 
-#multinode compilation (multi-gpus, multiple machines)
+#CUDA: single-node compilation with flash attention (takes few minutes for the first build, faster inference for long-context)
+cargo build --release --features cuda,nccl,flash-attn
+
+#CUDA: multinode compilation with MPI (multi-gpus, multiple machines)
 sudo apt update
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
 sudo apt install clang libclang-dev
 cargo build --release --features cuda,nccl,mpi #build with mpi feature
+# or
+cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn and mpi features
 ```
 
 ### Build/Run Parameters
