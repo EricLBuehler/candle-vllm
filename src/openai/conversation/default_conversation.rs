@@ -1,5 +1,6 @@
 use super::{ApplyChatTemplateError, Conversation, Message};
-use minijinja::{context, Environment};
+use minijinja::{context, value::Kwargs, Environment, Error, ErrorKind, Value};
+use serde::{Deserialize, Serialize};
 
 pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
 pub const DEFAULT_SEP: &str = "\n";
@@ -81,6 +82,50 @@ impl DefaultConversation {
     }
 }
 
+fn tojson(value: Value, kwargs: Kwargs) -> Result<Value, Error> {
+    if let Ok(indent) = kwargs.get("indent") {
+        let mut buf = Vec::new();
+        let repeat = b" ".repeat(indent);
+        let formatter = serde_json::ser::PrettyFormatter::with_indent(&repeat);
+        let mut ser = serde_json::Serializer::with_formatter(&mut buf, formatter);
+        value.serialize(&mut ser).unwrap();
+        String::from_utf8(buf).map_err(|err| {
+            Error::new(ErrorKind::BadSerialization, "cannot serialize to JSON").with_source(err)
+        })
+    } else {
+        serde_json::to_string(&value).map_err(|err| {
+            Error::new(ErrorKind::BadSerialization, "cannot serialize to JSON").with_source(err)
+        })
+    }
+    .map_err(|err| {
+        Error::new(ErrorKind::InvalidOperation, "cannot serialize to JSON").with_source(err)
+    })
+    .map(|s| {
+        // When this filter is used the return value is safe for both HTML and JSON
+        let mut rv = String::with_capacity(s.len());
+        for c in s.chars() {
+            match c {
+                '<' => rv.push_str("\\u003c"),
+                '>' => rv.push_str("\\u003e"),
+                '&' => rv.push_str("\\u0026"),
+                '\'' => rv.push_str("\\u0027"),
+                _ => rv.push(c),
+            }
+        }
+        Value::from_safe_string(rv)
+    })
+}
+
+fn strftime_now(fmt: String) -> Result<String, minijinja::Error> {
+    let date = chrono::Utc::now();
+    let date_string = date.format(&fmt).to_string();
+    Ok(date_string)
+}
+
+fn raise_exception(msg: String) -> Result<String, minijinja::Error> {
+    Err(minijinja::Error::new(ErrorKind::InvalidOperation, msg))
+}
+
 impl Conversation for DefaultConversation {
     /// Set the system message.
     fn set_system_message(&mut self, system_message: Option<String>) {
@@ -122,6 +167,14 @@ impl Conversation for DefaultConversation {
         }
         env.add_template(self.name.as_str(), template.as_str())
             .map_err(ApplyChatTemplateError::AddTemplateError)?;
+
+        env.add_function("raise_exception", raise_exception);
+        env.add_filter("tojson", tojson);
+        env.add_function("strftime_now", strftime_now);
+
+        let date = chrono::Utc::now();
+        let date_string = date.format("%d, %B, %Y").to_string();
+
         let template = env
             .get_template(&self.name)
             .map_err(ApplyChatTemplateError::GetTemplateError)?;
@@ -132,6 +185,7 @@ impl Conversation for DefaultConversation {
               bos_token => self.bos_token,
               eos_token => self.eos_token,
               enable_thinking => enable_thinking,
+              date_string => date_string,
             })
             .map_err(ApplyChatTemplateError::RenderTemplateError)
     }
