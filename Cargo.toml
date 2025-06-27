@@ -60,6 +60,7 @@ mpi = { version = "0.8.0", optional = true}
 parking_lot = "0.12"
 akin = "0.4.0"
 itertools = "0.13.0"
+ahash = "0.8.11"
 
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]

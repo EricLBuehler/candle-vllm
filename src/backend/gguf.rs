@@ -422,7 +422,7 @@ fn bpe_tokenizer(p: &PropsGGUF) -> Result<(Tokenizer, TokenizerKind)> {
         })
         .collect::<Vec<_>>();
 
-    let mut vocab = HashMap::new();
+    let mut vocab = ahash::AHashMap::new();
     for (i, token) in p.tokens.iter().enumerate() {
         #[allow(clippy::cast_possible_truncation)]
         vocab.insert(token.clone(), i as u32);
