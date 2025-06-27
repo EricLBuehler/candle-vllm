@@ -33,6 +33,7 @@ __device__ inline void mma(const typename ScalarType<scalar_t>::FragA& a_frag,
   const uint32_t* a = reinterpret_cast<const uint32_t*>(&a_frag);
   const uint32_t* b = reinterpret_cast<const uint32_t*>(&frag_b);
   float* c = reinterpret_cast<float*>(&frag_c);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   if constexpr (std::is_same<scalar_t, half>::value) {
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
@@ -41,7 +42,6 @@ __device__ inline void mma(const typename ScalarType<scalar_t>::FragA& a_frag,
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]),
           "f"(c[0]), "f"(c[1]), "f"(c[2]), "f"(c[3]));
   } 
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   else if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
@@ -59,10 +59,12 @@ template <typename scalar_t>
 __device__ inline void ldsm4(typename ScalarType<scalar_t>::FragA& frag_a,
                              const void* smem_ptr) {
   uint32_t* a = reinterpret_cast<uint32_t*>(&frag_a);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   uint32_t smem = static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(a[0]), "=r"(a[1]), "=r"(a[2]), "=r"(a[3])
                : "r"(smem));
+#endif
 }
 
 // Lookup-table based 3-input logical operation; explicitly used for
@@ -276,7 +278,7 @@ __global__ void Marlin(
     if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
       return;
     }
-  #endif
+  #else
 
   using Dtype = ScalarType<scalar_t>;
   using scalar_t2 = typename ScalarType<scalar_t>::scalar_t2;
@@ -1328,6 +1330,7 @@ __global__ void Marlin(
       }
     }
   }
+  #endif
 }
 
 
