@@ -33,6 +33,7 @@ __device__ inline void mma(const typename ScalarType<scalar_t>::FragA& a_frag,
   const uint32_t* a = reinterpret_cast<const uint32_t*>(&a_frag);
   const uint32_t* b = reinterpret_cast<const uint32_t*>(&frag_b);
   float* c = reinterpret_cast<float*>(&frag_c);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   if constexpr (std::is_same<scalar_t, half>::value) {
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
@@ -40,7 +41,8 @@ __device__ inline void mma(const typename ScalarType<scalar_t>::FragA& a_frag,
         : "=f"(c[0]), "=f"(c[1]), "=f"(c[2]), "=f"(c[3])
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]),
           "f"(c[0]), "f"(c[1]), "f"(c[2]), "f"(c[3]));
-  } else if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
+  } 
+  else if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
         "{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%10,%11,%12,%13};\n"
@@ -48,6 +50,7 @@ __device__ inline void mma(const typename ScalarType<scalar_t>::FragA& a_frag,
         : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]),
           "f"(c[0]), "f"(c[1]), "f"(c[2]), "f"(c[3]));
   }
+#endif
 }
 
 // Instruction for loading a full 16x16 matrix fragment of operand A from shared
@@ -56,10 +59,12 @@ template <typename scalar_t>
 __device__ inline void ldsm4(typename ScalarType<scalar_t>::FragA& frag_a,
                              const void* smem_ptr) {
   uint32_t* a = reinterpret_cast<uint32_t*>(&frag_a);
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   uint32_t smem = static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
   asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                : "=r"(a[0]), "=r"(a[1]), "=r"(a[2]), "=r"(a[3])
                : "r"(smem));
+#endif
 }
 
 // Lookup-table based 3-input logical operation; explicitly used for
@@ -122,13 +127,14 @@ __device__ inline typename ScalarType<nv_bfloat16>::FragB
   typename ScalarType<nv_bfloat16>::FragB frag_b;
   static constexpr uint32_t MUL = 0x3F803F80;
   static constexpr uint32_t ADD = 0xC308C308;
-
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   frag_b[0] = __hfma2(*reinterpret_cast<nv_bfloat162*>(&lo),
                       *reinterpret_cast<const nv_bfloat162*>(&MUL),
                       *reinterpret_cast<const nv_bfloat162*>(&ADD));
   frag_b[1] = __hfma2(*reinterpret_cast<nv_bfloat162*>(&hi),
                       *reinterpret_cast<const nv_bfloat162*>(&MUL),
                       *reinterpret_cast<const nv_bfloat162*>(&ADD));
+#endif
   return frag_b;
 }
 
@@ -170,13 +176,14 @@ dequant<nv_bfloat16, ScalarTypeID::kU4>(int q) {
   typename ScalarType<nv_bfloat16>::FragB frag_b;
   static constexpr uint32_t MUL = 0x3F803F80;
   static constexpr uint32_t ADD = 0xC300C300;
-
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   frag_b[0] = __hfma2(*reinterpret_cast<nv_bfloat162*>(&lo),
                       *reinterpret_cast<const nv_bfloat162*>(&MUL),
                       *reinterpret_cast<const nv_bfloat162*>(&ADD));
   frag_b[1] = __hfma2(*reinterpret_cast<nv_bfloat162*>(&hi),
                       *reinterpret_cast<const nv_bfloat162*>(&MUL),
                       *reinterpret_cast<const nv_bfloat162*>(&ADD));
+#endif
   return frag_b;
 }
 // Multiply dequantized values by the corresponding quantization scale; used
@@ -267,6 +274,12 @@ __global__ void Marlin(
   // ensures good utilization of all SMs for many kinds of shape and GPU
   // configurations, while requiring as few slow global cross-threadblock
   // reductions as possible.
+  #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ < 800
+    if constexpr (std::is_same<scalar_t, nv_bfloat16>::value) {
+      return;
+    }
+  #else
+
   using Dtype = ScalarType<scalar_t>;
   using scalar_t2 = typename ScalarType<scalar_t>::scalar_t2;
   using FragA = typename ScalarType<scalar_t>::FragA;
@@ -1317,6 +1330,7 @@ __global__ void Marlin(
       }
     }
   }
+  #endif
 }
 
 

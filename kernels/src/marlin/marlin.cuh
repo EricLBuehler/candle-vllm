@@ -40,6 +40,7 @@ constexpr int div_ceil(int a, int b) { return (a + b - 1) / b; }
 __device__ inline void cp_async4_pred(void* smem_ptr, const void* glob_ptr,
                                       bool pred = true) {
   const int BYTES = 16;
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   uint32_t smem = static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
   asm volatile(
       "{\n"
@@ -48,28 +49,35 @@ __device__ inline void cp_async4_pred(void* smem_ptr, const void* glob_ptr,
       "   @p cp.async.cg.shared.global [%1], [%2], %3;\n"
       "}\n" ::"r"((int)pred),
       "r"(smem), "l"(glob_ptr), "n"(BYTES));
+#endif
 }
 
 // Asynchronous global->shared copy
 __device__ inline void cp_async4(void* smem_ptr, const void* glob_ptr) {
   const int BYTES = 16;
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   uint32_t smem = static_cast<uint32_t>(__cvta_generic_to_shared(smem_ptr));
   asm volatile(
       "{\n"
       "   cp.async.cg.shared.global [%0], [%1], %2;\n"
       "}\n" ::"r"(smem),
       "l"(glob_ptr), "n"(BYTES));
+#endif
 }
 
 // Async copy fence.
 __device__ inline void cp_async_fence() {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   asm volatile("cp.async.commit_group;\n" ::);
+#endif
 }
 
 // Wait until at most `n` async copy stages are still pending.
 template <int n>
 __device__ inline void cp_async_wait() {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   asm volatile("cp.async.wait_group %0;\n" ::"n"(n));
+#endif
 }
 
 // Wait until barrier reaches `count`, then lock for current threadblock.
