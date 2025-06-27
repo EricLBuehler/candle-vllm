@@ -24,7 +24,19 @@ fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=src/nonzero_bitwise.cu");
     println!("cargo:rerun-if-changed=src/sort.cu");
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap_or("".to_string()));
-    let builder = bindgen_cuda::Builder::default().arg("--expt-relaxed-constexpr");
+    let mut builder = bindgen_cuda::Builder::default().arg("--expt-relaxed-constexpr");
+    let mut is_target_msvc = false;
+    if let Ok(target) = std::env::var("TARGET") {
+        if target.contains("msvc") {
+            is_target_msvc = true;
+            builder = builder.arg("-D_USE_MATH_DEFINES");
+        }
+    }
+
+    if !is_target_msvc {
+        builder = builder.arg("-Xcompiler").arg("-fPIC");
+    }
+
     println!("cargo:info={builder:?}");
     builder.build_lib(build_dir.join("libpagedattention.a"));
 
