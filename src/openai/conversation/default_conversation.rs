@@ -1,6 +1,6 @@
 use super::{ApplyChatTemplateError, Conversation, Message};
 use minijinja::{context, value::Kwargs, Environment, Error, ErrorKind, Value};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
 pub const DEFAULT_SEP: &str = "\n";
