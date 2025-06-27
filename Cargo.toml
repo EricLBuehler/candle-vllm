@@ -23,7 +23,7 @@ candle-examples = { git = "https://github.com/guoqingbao/candle.git", version = 
 candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "0334796" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
-tokenizers = "0.21.1"
+tokenizers = "0.21.2"
 uuid = { version = "1.5.0", features = ["v4"] }
 candle-transformers = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "0334796" }
 hf-hub = "0.4.1"
