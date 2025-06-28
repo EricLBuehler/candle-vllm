@@ -374,4 +374,34 @@ extern "C" {
         inplace: bool,
         stream: i64,
     );
+
+    pub fn copy_blocks_kernel_bf16(
+        key_cache_ptrs: *mut c_void,
+        value_cache_ptrs: *mut c_void,
+        block_mapping: *const c_void,
+        num_layers: i32,
+        num_pairs: i32,
+        numel_per_block: i32,
+        stream: i64,
+    );
+
+    pub fn copy_blocks_kernel_f16(
+        key_cache_ptrs: *mut c_void,
+        value_cache_ptrs: *mut c_void,
+        block_mapping: *const c_void,
+        num_layers: i32,
+        num_pairs: i32,
+        numel_per_block: i32,
+        stream: i64,
+    );
+
+    pub fn copy_blocks_kernel_f32(
+        key_cache_ptrs: *mut c_void,
+        value_cache_ptrs: *mut c_void,
+        block_mapping: *const c_void,
+        num_layers: i32,
+        num_pairs: i32,
+        numel_per_block: i32,
+        stream: i64,
+    );
 }

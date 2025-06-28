@@ -1,9 +1,5 @@
 #[cfg(feature = "cuda")]
-use crate::{
-    backend::{get_or_load_func, Conjoined},
-    openai::responses::APIError,
-    try_api,
-};
+use crate::{openai::responses::APIError, try_api};
 #[cfg(feature = "metal")]
 use candle_core::{
     backend::BackendStorage, CpuStorage, Device, IndexOp, Layout, MetalDevice, MetalStorage,
@@ -11,13 +7,13 @@ use candle_core::{
 };
 #[cfg(feature = "cuda")]
 use candle_core::{
-    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr, LaunchAsync, LaunchConfig},
+    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr},
     cuda_backend::CudaStorageSlice,
     Device, IndexOp, Storage, Tensor,
 };
 #[cfg(feature = "cuda")]
-const COPY_BLOCKS_KERNEL_NAME: &str = "copy_blocks_kernel";
-use std::{collections::HashMap, iter::zip, ptr::NonNull};
+use kernels::ffi::{copy_blocks_kernel_bf16, copy_blocks_kernel_f16, copy_blocks_kernel_f32};
+use std::{collections::HashMap, iter::zip};
 
 /// # Safety
 /// Unsafe due to passing pointers
@@ -27,6 +23,8 @@ pub unsafe fn copy_blocks(
     value_caches: Vec<&mut Tensor>,
     block_mapping: HashMap<usize, Vec<usize>>,
 ) -> Result<(), APIError> {
+    use candle_core::DType;
+
     let cache_dev = key_caches.first().unwrap().device();
     let Device::Cuda(dev) = cache_dev else {
         panic!("Expected the key caches to be on a CUDA device.")
@@ -54,6 +52,8 @@ pub unsafe fn copy_blocks(
     key_cache_ptrs.reserve_exact(num_layers as usize);
     let mut value_cache_ptrs = Vec::new();
     value_cache_ptrs.reserve_exact(num_layers as usize);
+    let mut dtype = DType::F32;
+
     for (key_cache, value_cache) in zip(&key_caches, &value_caches) {
         try_api!(key_cache.to_device(cache_dev));
         try_api!(value_cache.to_device(cache_dev));
@@ -80,16 +80,17 @@ pub unsafe fn copy_blocks(
             unreachable!()
         };
         // let value_ptr = *try_api!(value_storage.as_cuda_slice::<u8>()).device_ptr();
-
         let (key_ptr, value_ptr) = match (&key_storage.slice, &value_storage.slice) {
             (CudaStorageSlice::BF16(slice_key), CudaStorageSlice::BF16(slice_value)) => {
                 let ptr_key = *slice_key.slice(0..).device_ptr();
                 let ptr_value = *slice_value.slice(0..).device_ptr();
+                dtype = DType::BF16;
                 (ptr_key, ptr_value)
             }
             (CudaStorageSlice::F16(slice_key), CudaStorageSlice::F16(slice_value)) => {
                 let ptr_key = *slice_key.slice(0..).device_ptr();
                 let ptr_value = *slice_value.slice(0..).device_ptr();
+                dtype = DType::F16;
                 (ptr_key, ptr_value)
             }
             (CudaStorageSlice::F32(slice_key), CudaStorageSlice::F32(slice_value)) => {
@@ -115,19 +116,10 @@ pub unsafe fn copy_blocks(
         }
     }
     let num_pairs: u32 = (block_mapping_vec.len() / 2).try_into().unwrap();
-    let block_mapping_ptr = Conjoined::new(
-        NonNull::new(block_mapping_vec.as_mut_ptr()).unwrap(),
-        &mut block_mapping_vec,
-    );
 
-    let key_cache_ptr = Conjoined::new(
-        NonNull::new(key_cache_ptrs.as_mut_ptr()).unwrap(),
-        &mut key_cache_ptrs,
-    );
-    let value_cache_ptr = Conjoined::new(
-        NonNull::new(value_cache_ptrs.as_mut_ptr()).unwrap(),
-        &mut value_cache_ptrs,
-    );
+    let key_cache_ptr = key_cache_ptrs.as_mut_ptr() as *mut core::ffi::c_void;
+    let value_cache_ptr = value_cache_ptrs.as_mut_ptr() as *mut core::ffi::c_void;
+    let block_mapping_ptr = block_mapping_vec.as_mut_ptr() as *const core::ffi::c_void;
 
     let numel_per_block: u32 = try_api!(key_caches.first().unwrap().i(0))
         .shape()
@@ -136,33 +128,43 @@ pub unsafe fn copy_blocks(
         .product::<usize>()
         .try_into()
         .unwrap();
-    let launch_conf = LaunchConfig {
-        grid_dim: (num_layers, num_pairs, 1u32),
-        block_dim: (numel_per_block.min(1024), 1u32, 1u32),
-        shared_mem_bytes: 0,
-    };
-    let stream = try_api!(dev.fork_default_stream());
 
-    let kernel = try_api!(get_or_load_func(
-        kernels::COPY_BLOCKS_KERNEL,
-        COPY_BLOCKS_KERNEL_NAME,
-        key_caches.first().unwrap().dtype(),
-        None,
-        &dev,
-    ));
-
-    try_api!(unsafe {
-        kernel.launch_on_stream(
-            &stream,
-            launch_conf,
-            (
+    match dtype {
+        DType::BF16 => {
+            copy_blocks_kernel_bf16(
                 key_cache_ptr,
                 value_cache_ptr,
                 block_mapping_ptr,
+                num_layers as i32,
+                num_pairs as i32,
                 numel_per_block as i32,
-            ),
-        )
-    });
+                *dev.cu_stream() as i64,
+            );
+        }
+        DType::F16 => {
+            copy_blocks_kernel_f16(
+                key_cache_ptr,
+                value_cache_ptr,
+                block_mapping_ptr,
+                num_layers as i32,
+                num_pairs as i32,
+                numel_per_block as i32,
+                *dev.cu_stream() as i64,
+            );
+        }
+        DType::F32 => {
+            copy_blocks_kernel_f32(
+                key_cache_ptr,
+                value_cache_ptr,
+                block_mapping_ptr,
+                num_layers as i32,
+                num_pairs as i32,
+                numel_per_block as i32,
+                *dev.cu_stream() as i64,
+            );
+        }
+        _ => {}
+    }
 
     Ok(())
 }

@@ -120,44 +120,70 @@ impl PagedAttention {
             None
         };
 
-        #[cfg(not(feature = "flash-attn"))]
-        let att = match attention_mask {
-            None => None,
-            Some(mask) => {
-                //Only perform key/value repeat in prefiling stage, this will reduce kvcache
-                //and remove redundant repeat_kv in decoding stage
-                let att = if key_value_heads != attention_heads {
-                    let key_repeat = if key_value_heads == 1 {
-                        key.broadcast_as((batch_size, attention_heads, seq_len, head_size))?
-                    } else {
-                        Tensor::cat(&vec![&key; attention_heads / key_value_heads], 2)?
-                            .reshape((batch_size, attention_heads, seq_len, head_size))?
-                    };
-                    (query.matmul(&key_repeat.t()?.contiguous()?)? * f64::from(self.scale))?
-                } else {
-                    (query.matmul(&key.t()?)? * f64::from(self.scale))?
-                };
-                let att = match softcapping {
-                    None => att,
-                    Some(sc) => ((att / sc)?.tanh()? * sc)?,
-                };
-
-                let att = att.broadcast_add(mask)?;
-                let att =
-                    candle_nn::ops::softmax_last_dim(&att.to_dtype(candle_core::DType::F32)?)?
-                        .to_dtype(att.dtype())?;
-                if key_value_heads != attention_heads {
-                    let value_repeat = if key_value_heads == 1 {
-                        value.broadcast_as((batch_size, attention_heads, seq_len, head_size))?
-                    } else {
-                        Tensor::cat(&vec![&value; attention_heads / key_value_heads], 2)?
-                            .reshape((batch_size, attention_heads, seq_len, head_size))?
-                    };
-                    Some(att.matmul(&value_repeat.contiguous()?)?.transpose(1, 2)?)
-                } else {
-                    Some(att.matmul(value)?.transpose(1, 2)?)
-                }
+        fn repeat_kv(x: &Tensor, n_rep: usize) -> Result<Tensor> {
+            if n_rep == 1 {
+                Ok(x.to_owned())
+            } else {
+                let (b_sz, n_kv_head, seq_len, head_dim) = x.dims4()?;
+                Tensor::cat(&vec![&x; n_rep], 2)?.reshape((
+                    b_sz,
+                    n_kv_head * n_rep,
+                    seq_len,
+                    head_dim,
+                ))
             }
+        }
+
+        #[cfg(not(feature = "flash-attn"))]
+        let att = if input_metadata.is_prompt {
+            //chunked attention for each sequence
+            let chunk_size = 1024;
+            let mut attn_chunks = vec![];
+
+            let key_seq = if key_value_heads != attention_heads {
+                repeat_kv(key, attention_heads / key_value_heads)?
+            } else {
+                key.clone()
+            };
+
+            let value_seq = if key_value_heads != attention_heads {
+                repeat_kv(value, attention_heads / key_value_heads)?
+            } else {
+                value.clone()
+            };
+
+            let num_chunks = (seq_len + chunk_size - 1) / chunk_size;
+
+            for c in 0..num_chunks {
+                let offset = c * chunk_size;
+                let len = chunk_size.min(seq_len - offset);
+                //chunk at query is correct for the following
+                let q_chunk = query.narrow(2, offset, len)?.contiguous()?;
+                let mut att = (q_chunk.matmul(&key_seq.t()?)? * f64::from(self.scale))?;
+
+                if let Some(sc) = softcapping {
+                    att = ((att / sc)?.tanh()? * sc)?;
+                }
+
+                if let Some(mask) = &attention_mask {
+                    //mask needs to be chunked
+                    let q_chunk_mask = mask.narrow(2, offset, len)?; // shape: [1, 1, chunk_len, K_len]
+                    att = att.broadcast_add(&q_chunk_mask)?;
+                }
+
+                att = candle_nn::ops::softmax_last_dim(&att.to_dtype(candle_core::DType::F32)?)?
+                    .to_dtype(att.dtype())?;
+
+                let att_chunk = att.matmul(&value_seq)?;
+                attn_chunks.push(att_chunk);
+            }
+            Some(
+                Tensor::cat(&attn_chunks, 2)?
+                    .contiguous()?
+                    .transpose(1, 2)?,
+            )
+        } else {
+            None
         };
 
         // // paged-attn expects [batch_size, num_tokens, num_heads, head_size]
