@@ -12,7 +12,7 @@ use candle_core::{
     Device, IndexOp, Storage, Tensor,
 };
 #[cfg(feature = "cuda")]
-use kernels::ffi::{copy_blocks_kernel_bf16, copy_blocks_kernel_f16, copy_blocks_kernel_f32};
+use kernels::ffi::{copy_blocks_bf16, copy_blocks_f16, copy_blocks_f32};
 use std::{collections::HashMap, iter::zip};
 
 /// # Safety
@@ -130,8 +130,8 @@ pub unsafe fn copy_blocks(
         .unwrap();
 
     match dtype {
-        DType::BF16 => {
-            copy_blocks_kernel_bf16(
+        DType::BF16 => unsafe {
+            copy_blocks_bf16(
                 key_cache_ptr,
                 value_cache_ptr,
                 block_mapping_ptr,
@@ -140,9 +140,9 @@ pub unsafe fn copy_blocks(
                 numel_per_block as i32,
                 *dev.cu_stream() as i64,
             );
-        }
-        DType::F16 => {
-            copy_blocks_kernel_f16(
+        },
+        DType::F16 => unsafe {
+            copy_blocks_f16(
                 key_cache_ptr,
                 value_cache_ptr,
                 block_mapping_ptr,
@@ -151,9 +151,9 @@ pub unsafe fn copy_blocks(
                 numel_per_block as i32,
                 *dev.cu_stream() as i64,
             );
-        }
-        DType::F32 => {
-            copy_blocks_kernel_f32(
+        },
+        DType::F32 => unsafe {
+            copy_blocks_f32(
                 key_cache_ptr,
                 value_cache_ptr,
                 block_mapping_ptr,
@@ -162,7 +162,7 @@ pub unsafe fn copy_blocks(
                 numel_per_block as i32,
                 *dev.cu_stream() as i64,
             );
-        }
+        },
         _ => {}
     }
 
