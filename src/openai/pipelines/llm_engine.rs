@@ -757,6 +757,8 @@ impl LLMEngine {
                                 "Sending completion message to client! (sequence id {})",
                                 seq.deref().get_id()
                             );
+                            let e = engine.read();
+                            e.scheduler.print_free_blocks();
                             let _ = sender.send(ChatResponse::Done);
                         } else {
                             aborted_sequences.push(seq.deref().get_id());
@@ -788,6 +790,7 @@ impl LLMEngine {
         if multi_process && DaemonManager::is_master_rank() {
             warn!("Sending finish message to subprocesses");
             let e = engine.read();
+            e.scheduler.print_free_blocks();
             let mut daemon_manager = e.daemon_manager.write();
             let _ = daemon_manager
                 .as_mut()

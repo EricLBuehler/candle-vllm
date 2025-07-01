@@ -222,6 +222,15 @@ impl Scheduler {
             self._free(&group);
         }
     }
+
+    pub fn print_free_blocks(&self) {
+        let free_blocks = self.block_engine.get_num_free_blocks();
+        tracing::info!(
+            "Available kvcache blocks {} (for {} tokens)",
+            free_blocks,
+            free_blocks * self.block_engine.get_block_size()
+        );
+    }
 }
 
 impl Scheduler {

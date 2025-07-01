@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{hash_map::Entry, HashMap, VecDeque},
     hash::Hash,
     marker::PhantomData,
     ops::Deref,
@@ -78,7 +78,7 @@ impl Hash for PhysicalTokenBlock {
 
 impl Eq for PhysicalTokenBlock {}
 
-type BlockTable = Vec<Arc<PhysicalTokenBlock>>;
+type BlockTable = VecDeque<Arc<PhysicalTokenBlock>>;
 struct GPUAllocator;
 struct CPUAllocator;
 
@@ -108,7 +108,7 @@ struct Allocator<T> {
 
 impl<T> Allocator<T> {
     fn allocate(&mut self) -> Arc<PhysicalTokenBlock> {
-        let block = self.free_blocks.pop().unwrap();
+        let block = self.free_blocks.pop_front().unwrap();
         block.deref_mut().refcount = 1;
         block
     }
@@ -122,16 +122,16 @@ impl<T> Allocator<T> {
         }
         block.deref_mut().refcount -= 1;
         if block.deref_mut().refcount == 0 {
-            self.free_blocks.push(block);
+            self.free_blocks.push_back(block);
         }
     }
 }
 
 impl Allocator<GPUAllocator> {
     fn new(block_size: usize, num_blocks: usize) -> Self {
-        let mut free_blocks = Vec::new();
+        let mut free_blocks = VecDeque::new();
         for id in 0..num_blocks {
-            free_blocks.push(Arc::new(PhysicalTokenBlock(Mutex::new(
+            free_blocks.push_back(Arc::new(PhysicalTokenBlock(Mutex::new(
                 _PhysicalTokenBlock {
                     block_id: id,
                     block_size,
@@ -153,9 +153,9 @@ impl Allocator<GPUAllocator> {
 
 impl Allocator<CPUAllocator> {
     fn new(block_size: usize, num_blocks: usize) -> Self {
-        let mut free_blocks = Vec::new();
+        let mut free_blocks = VecDeque::new();
         for id in 0..num_blocks {
-            free_blocks.push(Arc::new(PhysicalTokenBlock(Mutex::new(
+            free_blocks.push_back(Arc::new(PhysicalTokenBlock(Mutex::new(
                 _PhysicalTokenBlock {
                     block_id: id,
                     block_size,
@@ -188,6 +188,7 @@ pub struct BlockEngine {
     gpu_allocator: Allocator<GPUAllocator>,
     cpu_allocator: Allocator<CPUAllocator>,
     pub block_tables: HashMap<SeqID, BlockTable>,
+    block_size: usize,
 }
 
 impl BlockEngine {
@@ -198,7 +199,16 @@ impl BlockEngine {
             gpu_allocator: Allocator::<GPUAllocator>::new(block_size, num_gpu_blocks),
             cpu_allocator: Allocator::<CPUAllocator>::new(block_size, num_cpu_blocks),
             block_tables: HashMap::new(),
+            block_size,
         }
+    }
+
+    pub fn get_block_size(&self) -> usize {
+        self.block_size
+    }
+
+    pub fn get_num_free_blocks(&self) -> usize {
+        *self.gpu_allocator.get_num_free_blocks()
     }
 
     pub fn can_allocate(&self, seq_group: &SequenceGroup) -> AllocStatus {
@@ -215,9 +225,9 @@ impl BlockEngine {
     }
 
     pub fn allocate(&mut self, seq_group: &SequenceGroup) {
-        let mut block_table = Vec::new();
+        let mut block_table = VecDeque::new();
         for _logcical_idx in 0..seq_group.get_total_logical_token_blocks() {
-            block_table.push(self.gpu_allocator.allocate());
+            block_table.push_back(self.gpu_allocator.allocate());
         }
         for seq_id in seq_group.get_seqs().keys() {
             self.block_tables.insert(*seq_id, block_table.clone());
@@ -264,7 +274,7 @@ impl BlockEngine {
         // GPU block to a CPU block
         let mut new_mapping = HashMap::new();
         for seq_id in seq_group.get_seqs().keys() {
-            let mut new_block_table = Vec::new();
+            let mut new_block_table = VecDeque::new();
             let block_table = self.block_tables.get(seq_id).unwrap();
 
             for gpu_block in block_table {
@@ -283,7 +293,7 @@ impl BlockEngine {
                         cpu_block.deref_mut().refcount += 1;
                         cpu_block
                     };
-                new_block_table.push(cpu_block);
+                new_block_table.push_back(cpu_block);
                 self.gpu_allocator.free_block(gpu_block.clone());
             }
             self.block_tables.insert(*seq_id, new_block_table);
@@ -305,11 +315,11 @@ impl BlockEngine {
 
         match sequence.deref_mut().blocks_to_add_new_tok() {
             1 => {
-                table.push(self.gpu_allocator.allocate());
+                table.push_back(self.gpu_allocator.allocate());
                 None
             }
             0 => {
-                let last_block = table.last_mut().unwrap();
+                let last_block = table.back_mut().unwrap();
                 assert!(last_block.deref_mut().is_gpu);
                 if last_block.deref_mut().refcount == 1 {
                     None
@@ -345,7 +355,7 @@ impl BlockEngine {
         // CPU block to a GPU block
         let mut new_mapping = HashMap::new();
         for seq_id in seq_group.get_seqs().keys() {
-            let mut new_block_table = Vec::new();
+            let mut new_block_table = VecDeque::new();
             let block_table = self.block_tables.get(seq_id).unwrap();
 
             for cpu_block in block_table {
@@ -364,7 +374,7 @@ impl BlockEngine {
                         gpu_block.deref_mut().refcount += 1;
                         gpu_block
                     };
-                new_block_table.push(gpu_block);
+                new_block_table.push_back(gpu_block);
                 self.gpu_allocator.free_block(cpu_block.clone());
             }
             self.block_tables.insert(*seq_id, new_block_table);
