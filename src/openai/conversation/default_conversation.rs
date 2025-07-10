@@ -161,7 +161,7 @@ impl Conversation for DefaultConversation {
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         let template = self.chat_template.as_ref().unwrap();
         let mut template = template.replace("[::-1]", "|reverse");
-        if template.find("{{ meta }}").is_some() {
+        if template.contains("{{ meta }}") {
             template = template.replace("{%- set meta = message.get(\"metadata\", \"\") %}", "");
             template = template.replace("{{ meta }}", "");
         }
@@ -198,11 +198,11 @@ impl Conversation for DefaultConversation {
                     tracing::warn!("apply chat template failed {:?}", e);
                 }
                 //no chat template exists? using the built-in template
-                let system_prompt = if self.system_message.is_some() {
-                    format!("<|system|>\n {}", self.system_message.clone().unwrap())
-                } else {
-                    "".to_string()
-                };
+                let system_prompt = self
+                    .system_message
+                    .as_ref()
+                    .map_or("".to_string(), |msg| format!("<|system|>\n {msg}"));
+
                 match self.sep_style {
                     SeparatorStyle::AddColonSingle
                     | SeparatorStyle::AddColonSpaceSingle
@@ -441,7 +441,7 @@ impl Conversation for DefaultConversation {
                     SeparatorStyle::GLM => {
                         let mut accum = "[gMASK]<sop>".to_string();
                         accum += &system_prompt.clone();
-                        for (_, message) in self.messages.iter().enumerate() {
+                        for message in self.messages.iter() {
                             if message.role.clone() == self.roles.0 {
                                 //user message
                                 accum += &format!("<|user|>\n {}", message.content);

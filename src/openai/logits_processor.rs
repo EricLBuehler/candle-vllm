@@ -47,17 +47,9 @@ impl LogitsProcessor {
         top_p: Option<f32>,
     ) -> Sampling {
         let temperature = temperature.and_then(|v| if v < 1e-7 { None } else { Some(v) });
-        let top_k: Option<usize> = if top_k.is_some() && top_k.unwrap() > 0 {
-            Some(top_k.unwrap() as usize)
-        } else {
-            None
-        };
+        let top_k: Option<usize> = top_k.filter(|&k| k > 0).map(|k| k as usize);
 
-        let temperature: Option<f32> = if temperature.is_some() && temperature.unwrap() > 0. {
-            Some(temperature.unwrap())
-        } else {
-            None
-        };
+        let temperature: Option<f32> = temperature.filter(|&t| t > 0.0);
 
         match (temperature, top_k, top_p) {
             (None, _, _) => Sampling::ArgMax,
@@ -182,18 +174,16 @@ impl LogitsProcessor {
             Ok(prs)
         };
 
-        let sampling = if sampling_params.is_some() {
-            let param = sampling_params.as_ref().unwrap();
-            LogitsProcessor::get_strategy(param.temperature, param.top_k, param.top_p)
-        } else {
-            self.sampling.to_owned()
-        };
+        let sampling = sampling_params.as_ref().map_or_else(
+            || self.sampling.to_owned(),
+            |param| LogitsProcessor::get_strategy(param.temperature, param.top_k, param.top_p),
+        );
+
         let next_tokens = match &sampling {
             Sampling::ArgMax => self.sample_argmax(&logits)?,
             Sampling::All { temperature } => {
                 let prs = prs(*temperature as f64)?.to_vec2()?;
                 (0..batch)
-                    .into_iter()
                     .map(|b| self.sample_multinomial(&prs[b]).unwrap())
                     .collect()
             }
@@ -203,7 +193,6 @@ impl LogitsProcessor {
                     // simply sample from the predicted probability distribution
                     let prs = prs.to_vec2()?;
                     (0..batch)
-                        .into_iter()
                         .map(|b| self.sample_multinomial(&prs[b]).unwrap())
                         .collect()
                 } else {

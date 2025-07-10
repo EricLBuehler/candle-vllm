@@ -152,7 +152,7 @@ impl PagedAttention {
                 value.clone()
             };
 
-            let num_chunks = (seq_len + chunk_size - 1) / chunk_size;
+            let num_chunks = seq_len.div_ceil(chunk_size);
 
             for c in 0..num_chunks {
                 let offset = c * chunk_size;
@@ -239,11 +239,11 @@ impl PagedAttention {
         //  input_metadata: metadata for paged attention.
         //
         //  alibi_slopes: shape = [num_heads]
-        let max_context_len = if self.sliding_window.is_some() {
-            self.sliding_window.unwrap()
-        } else {
-            input_metadata.max_context_len.unwrap()
-        };
+        let max_context_len = self
+            .sliding_window
+            .or(input_metadata.max_context_len)
+            .expect("max_context_len must be set");
+
         paged_attention(
             &query,
             key_cache.as_ref().unwrap(),

@@ -418,7 +418,7 @@ impl ReplicatedLinear {
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let mut xs = self.linear.forward(&x)?;
+        let mut xs = self.linear.forward(x)?;
         if let Some(bias) = &self.bias {
             xs = xs.broadcast_add(bias)?;
         }

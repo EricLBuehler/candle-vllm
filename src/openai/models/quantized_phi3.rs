@@ -92,10 +92,7 @@ impl LayerWeights {
             q_embeds.push(q_embed);
             k_embeds.push(k_embed);
         }
-        Ok((
-            Tensor::cat(&q_embeds, 0).unwrap(),
-            Tensor::cat(&k_embeds, 0).unwrap(),
-        ))
+        Ok((Tensor::cat(&q_embeds, 0)?, Tensor::cat(&k_embeds, 0)?))
     }
 
     fn forward_attn(
@@ -219,7 +216,7 @@ impl GGUFPhi3 {
             use_flash_attn: false,
             bos_token_id: super::TokenID(Either::Left(Some(1))),
             eos_token_id: super::TokenID(Either::Left(Some(2))),
-            max_seq_len: max_seq_len,
+            max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,
             hidden_act: None,
@@ -277,13 +274,13 @@ impl GGUFPhi3 {
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;
         let output_norm = rms_norm(ct.tensor(reader, "output_norm.weight", device)?, rms_eps)?;
-        let output = QLinear::new(&ct, reader, "output", device)?;
+        let output = QLinear::new(ct, reader, "output", device)?;
 
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {
             let prefix = format!("blk.{layer_idx}");
-            let ffn_up = QLinear::new(&ct, reader, &format!("{prefix}.ffn_up"), device)?;
-            let ffn_down = QLinear::new(&ct, reader, &format!("{prefix}.ffn_down"), device)?;
+            let ffn_up = QLinear::new(ct, reader, &format!("{prefix}.ffn_up"), device)?;
+            let ffn_down = QLinear::new(ct, reader, &format!("{prefix}.ffn_down"), device)?;
             let mlp = Mlp {
                 ffn_up,
                 ffn_down,
@@ -298,8 +295,8 @@ impl GGUFPhi3 {
                 rms_eps,
             )?;
             layers.push(LayerWeights {
-                attn_qkv: QLinear::new(&ct, reader, &format!("{prefix}.attn_qkv"), device)?,
-                attn_output: QLinear::new(&ct, reader, &format!("{prefix}.attn_output"), device)?,
+                attn_qkv: QLinear::new(ct, reader, &format!("{prefix}.attn_qkv"), device)?,
+                attn_output: QLinear::new(ct, reader, &format!("{prefix}.attn_output"), device)?,
                 attn_norm,
                 ffn_norm,
                 mlp,

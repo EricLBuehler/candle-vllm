@@ -18,19 +18,6 @@ use tokio::sync::Notify;
 use tokio::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
-// fn verify_model(data: &OpenAIServerData<'_>, model_name: &String) -> Result<(), APIError> {
-//     let current_name = {
-//         let model = data.model.lock().unwrap();
-//         model.get_pipeline().name().to_string()
-//     };
-//     if &current_name != model_name {
-//         Err(APIError::new(format!(
-//             "Model name `{model_name}` is invalid."
-//         )))
-//     } else {
-//         Ok(())
-//     }
-// }
 
 // Get prompt, roles
 async fn get_gen_prompt(
@@ -38,11 +25,10 @@ async fn get_gen_prompt(
     request: &ChatCompletionRequest,
 ) -> Result<String, APIError> {
     let mut model = data.model.write();
-    let conversation = model
+    let pipeline = model
         .get_mut_pipeline(0)
-        .unwrap()
-        .0
-        .get_conversation(data.record_conversation);
+        .ok_or(APIError::new("Missing pipeline".to_string()))?;
+    let conversation = pipeline.0.get_conversation(data.record_conversation);
 
     match &request.messages {
         Messages::Literal(msg) => {
@@ -83,9 +69,10 @@ async fn check_length(
 ) -> Result<Encoding, APIError> {
     let token_ids = {
         let model = data.model.read();
-        model
+        let pipeline = model
             .get_pipeline(0)
-            .unwrap()
+            .ok_or(APIError::new("Missing pipeline".to_string()))?;
+        pipeline
             .0
             .tokenizer()
             .encode_fast(prompt, false)
@@ -123,12 +110,6 @@ pub async fn chat_completions(
     State(data): State<Arc<OpenAIServerData>>,
     request: Json<ChatCompletionRequest>,
 ) -> ChatResponder {
-    // let model_name = &request.model;
-    // let res = verify_model(&data, model_name);
-    // if res.is_err() {
-    //     return Either::Left(Err(res.err().unwrap()));
-    // }
-
     #[cfg(feature = "nccl")]
     use crate::openai::communicator::DaemonManager;
     #[cfg(feature = "nccl")]
@@ -146,23 +127,21 @@ pub async fn chat_completions(
         ));
     }
 
-    let prompt = get_gen_prompt(&data, &request).await;
-    if prompt.is_err() {
-        return ChatResponder::ValidationError(prompt.err().unwrap());
-    }
-    let prompt = prompt.unwrap();
+    let prompt = match get_gen_prompt(&data, &request).await {
+        Ok(p) => p,
+        Err(e) => return ChatResponder::ValidationError(e),
+    };
 
-    let token_ids = check_length(&request, prompt.clone(), &data).await;
-    if token_ids.is_err() {
-        return ChatResponder::ValidationError(token_ids.err().unwrap());
-    }
-    let token_ids: Encoding = token_ids.unwrap();
+    let token_ids: Encoding = match check_length(&request, prompt.clone(), &data).await {
+        Ok(ids) => ids,
+        Err(e) => return ChatResponder::ValidationError(e),
+    };
 
     debug!("\n\n\nPrompt {:?}", prompt);
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
 
-    let sampling_params = SamplingParams::new(
+    let sampling_params = match SamplingParams::new(
         request.n.unwrap_or(1),
         request.best_of,
         request.presence_penalty.unwrap_or(0.0),
@@ -186,11 +165,10 @@ pub async fn chat_completions(
         None,
         request.skip_special_tokens.unwrap_or(true),
         request.thinking.or(data.pipeline_config.thinking),
-    );
-    if sampling_params.is_err() {
-        return ChatResponder::ValidationError(sampling_params.err().unwrap());
-    }
-    let sampling_params = sampling_params.unwrap();
+    ) {
+        Ok(params) => params,
+        Err(e) => return ChatResponder::ValidationError(e),
+    };
 
     let (response_tx, rx) = flume::unbounded();
     tracing::info!("{:?}", sampling_params);
@@ -252,8 +230,7 @@ pub async fn chat_completions(
         let model = data_clone.model.read();
         if !model.completion_records.contains_key(&request_id_clone) {
             return ChatResponder::ModelError(APIError::from(format!(
-                "Unable to generate response for request {}",
-                request_id_clone
+                "Unable to generate response for request {request_id_clone}"
             )));
         }
 

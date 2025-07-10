@@ -145,10 +145,7 @@ impl LayerWeights {
             q_embeds.push(q_embed);
             k_embeds.push(k_embed);
         }
-        Ok((
-            Tensor::cat(&q_embeds, 0).unwrap(),
-            Tensor::cat(&k_embeds, 0).unwrap(),
-        ))
+        Ok((Tensor::cat(&q_embeds, 0)?, Tensor::cat(&k_embeds, 0)?))
     }
 
     fn forward_attn(
@@ -267,7 +264,7 @@ impl GGUFLLaMa {
             use_flash_attn: false,
             bos_token_id: super::TokenID(Either::Left(Some(128256))),
             eos_token_id: super::TokenID(Either::Left(Some(128257))),
-            max_seq_len: max_seq_len,
+            max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,
             hidden_act: None,
@@ -295,13 +292,8 @@ impl GGUFLLaMa {
         s_cfg: SpecificConfig,
     ) -> Result<Self> {
         let head_dim = (ct.hparams.n_embd / ct.hparams.n_head) as usize;
-        let (cos, sin) = precomput_freqs_cis(
-            head_dim,
-            10000.,
-            MAX_SEQ_LEN as usize,
-            &ct.device,
-            DType::F32,
-        )?;
+        let (cos, sin) =
+            precomput_freqs_cis(head_dim, 10000., MAX_SEQ_LEN, &ct.device, DType::F32)?;
         let tok_embeddings = ct.remove("tok_embeddings.weight")?;
         let tok_embeddings = tok_embeddings.dequantize(&ct.device)?;
         let norm = RmsNorm::from_qtensor(ct.remove("norm.weight")?, 1e-5)?;
@@ -407,16 +399,13 @@ impl GGUFLLaMa {
         let embedding_length = md_get("llama.embedding_length")?.to_u32()? as usize;
         // let rope_dim = md_get("llama.rope.dimension_count")?.to_u32()? as usize;
         let context_length = md_get("llama.context_length")?.to_u32();
-        let context_length = if context_length.is_ok() {
-            context_length.unwrap() as usize
-        } else {
-            MAX_SEQ_LEN as usize
-        };
+        let context_length = context_length.map_or(MAX_SEQ_LEN, |v| v as usize);
+
         let head_dim = md_get("llama.attention.key_length");
         let head_dim = if head_dim.is_ok() {
             head_dim.unwrap().to_u32()? as usize
         } else {
-            (embedding_length / head_count) as usize
+            embedding_length / head_count
         };
 
         // Strangely this value is generally 1e-6 in GGUF file but used to be 1e-5 by default.

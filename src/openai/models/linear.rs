@@ -183,20 +183,11 @@ pub fn qlinear(
 ) -> Result<Linear> {
     match quant_config {
         Some(cfg) => {
-            let marlin_compatible = if (cfg.quant_method != "gptq" && cfg.quant_method != "awq")
-                || (cfg.bits != 4 && cfg.bits != 8)
-            {
-                false
-            } else {
-                true
-            };
-            let marlin_format = if cfg.checkpoint_format.is_some()
-                && cfg.checkpoint_format.as_ref().unwrap() == "marlin"
-            {
-                true
-            } else {
-                false
-            };
+            let marlin_compatible = (cfg.quant_method != "gptq" && cfg.quant_method != "awq")
+                || (cfg.bits != 4 && cfg.bits != 8);
+            let marlin_format = cfg.checkpoint_format.is_some()
+                && cfg.checkpoint_format.as_ref().unwrap() == "marlin";
+
             let ws = vb.get_with_hints_dtype(
                 if cfg.quant_method == "gptq" {
                     //quantized gptq (k/pack_factor, n) format
@@ -293,9 +284,9 @@ pub fn qlinear(
 
                 if (cfg.sym.is_some() && !cfg.sym.unwrap())
                     || cfg.bits != 4
-                    || (cfg.group_size != 64 && cfg.group_size != 128 && cfg.group_size != -1)
+                    || !matches!(cfg.group_size, 64 | 128 | -1)
                     || (cfg.desc_act.is_some()
-                        && cfg.desc_act.unwrap() == true
+                        && cfg.desc_act.unwrap()
                         && cfg.quant_method == "gptq")
                 {
                     //only model with 4-bit and desc_act==false can be repacked to marlin format
@@ -362,8 +353,8 @@ pub fn qlinear(
                     let scales = if marlin_compatible {
                         marlin_permute_scales(
                             &scales,
-                            in_dim_partition as usize,
-                            out_dim_partition as usize,
+                            in_dim_partition,
+                            out_dim_partition,
                             cfg.group_size,
                             cfg.bits as u32,
                         )?
@@ -517,7 +508,7 @@ impl QLinear {
                 );
                 QLinear::from_linear(
                     linear,
-                    cfg.group_size as i32,
+                    cfg.group_size,
                     cfg.bits as i32,
                     cfg.quant_method == "awq",
                 )
@@ -661,7 +652,7 @@ impl QLinear {
                 } else {
                     let wdim = w.dims()[w.dims().len() - 1];
                     x.reshape((bsize * seq_len, dim1, dim2))?
-                        .matmul(&w)?
+                        .matmul(w)?
                         .reshape((bsize, seq_len, dim1, wdim))?
                 }
             }
@@ -672,11 +663,11 @@ impl QLinear {
                 } else {
                     let wdim = w.dims()[w.dims().len() - 1];
                     x.reshape((bsize * seq_len, dim))?
-                        .matmul(&w)?
+                        .matmul(w)?
                         .reshape((bsize, seq_len, wdim))?
                 }
             }
-            _ => x.matmul(&w)?,
+            _ => x.matmul(w)?,
         };
         // let x = x.to_dtype(DType::F16)?;
         if let Some(bias) = &self.bias {
@@ -715,7 +706,7 @@ impl Module for QLinear {
                         o.reshape((bsize, seq_len, dim1, ()))?
                     }
                     [_, _, _] => gptq_matmul(
-                        &x,
+                        x,
                         qw,
                         scale,
                         qzeros,
@@ -810,14 +801,14 @@ pub fn linear_x(
     dtype: DType,
 ) -> Result<LinearX> {
     if let Some(quantized_type) = quant {
-        let ln = qlinear(in_dim, out_dim, vb, shard, quant_config, true, dtype).unwrap();
+        let ln = qlinear(in_dim, out_dim, vb, shard, quant_config, true, dtype)?;
         Ok(LinearX(Either::Right(QLinear::from_linear_x(
             ln,
             quantized_type.clone(),
             quant_config,
         ))))
     } else {
-        let ln = linear(in_dim, out_dim, vb, shard).unwrap();
+        let ln = linear(in_dim, out_dim, vb, shard)?;
         Ok(LinearX(Either::Left(ln)))
     }
 }
@@ -839,14 +830,10 @@ pub fn linear_no_bias_x(
             out_dim,
             vb,
             shard(
-                if shards.world_size < 2 {
+                if shards.world_size < 2 || shards.dim == 1 {
                     0
                 } else {
-                    if shards.dim == 1 {
-                        0
-                    } else {
-                        1
-                    }
+                    1
                 },
                 shards.rank,
                 shards.world_size,

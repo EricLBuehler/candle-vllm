@@ -153,7 +153,7 @@ impl LLMEngine {
                         continue;
                     }
                     let result = &results[0];
-                    if results.len() == 0 || result.len() == 0 {
+                    if results.is_empty() || result.is_empty() {
                         continue;
                     }
 
@@ -469,7 +469,7 @@ impl LLMEngine {
                 let x = e.sequence_groups.read();
                 x.clone()
             };
-            if scheduled.len() == 0 {
+            if scheduled.is_empty() {
                 continue; //data not ready
             }
 
@@ -506,7 +506,7 @@ impl LLMEngine {
                 false
             };
             #[cfg(not(feature = "nccl"))]
-            let do_sample = if rank == 0 { true } else { false };
+            let do_sample = rank == 0;
 
             let optional_results = if do_sample {
                 let sample = {
@@ -601,7 +601,7 @@ impl LLMEngine {
                                 group.arrival_time,
                                 Some(logprobs.bytes.clone()),
                                 None,
-                                &pipeline,
+                                pipeline,
                             );
                             let ret = sender.send(ChatResponse::Chunk(chunk));
                             if ret.is_err() {
@@ -624,7 +624,7 @@ impl LLMEngine {
                                 group.arrival_time,
                                 None,
                                 Some(finish_reason.clone()),
-                                &pipeline,
+                                pipeline,
                             );
                             let ret = sender.send(ChatResponse::Chunk(chunk));
                             if ret.is_err() {
@@ -745,8 +745,8 @@ impl LLMEngine {
                             e.completion_records
                                 .insert(request_id.to_string(), responses[request_id].clone());
                             let notify = e.sync_notifies.get(request_id);
-                            if notify.is_some() {
-                                notify.unwrap().as_ref().unwrap().notify_one();
+                            if let Some(Some(notify)) = notify {
+                                notify.notify_one();
                             }
                         }
                     }
@@ -1028,7 +1028,7 @@ impl LLMEngine {
         seq_id: usize,
         group_id: usize,
         prompt: &Encoding,
-        request_id: &String,
+        request_id: &str,
         created: SystemTime,
         sampling_params: &SamplingParams,
         use_logprobs: bool,
@@ -1044,17 +1044,16 @@ impl LLMEngine {
             seq_id,
             self.cache_config.block_size,
         ))));
-        let seq_group = SequenceGroup::new(
+        SequenceGroup::new(
             &[seq],
             get_created_time_secs(),
             group_id,
-            request_id.clone(),
+            request_id.to_owned(),
             created,
             sampling_params.clone(),
             use_logprobs,
             sender,
-        );
-        seq_group
+        )
     }
 
     pub fn add_request(
@@ -1069,14 +1068,13 @@ impl LLMEngine {
     ) {
         let prompt_len = prompt.get_ids().len();
         let sync_notify = sync_notify.clone();
-        if sync_notify.is_some() {
-            self.sync_notifies
-                .insert(request_id.clone(), Some(sync_notify.unwrap()));
+        if let Some(sync) = sync_notify {
+            self.sync_notifies.insert(request_id.clone(), Some(sync));
         }
+
         let sender_clone = sender.clone();
-        if sender_clone.is_some() {
-            self.senders
-                .insert(request_id.clone(), Some(sender_clone.unwrap()));
+        if let Some(sender) = sender_clone {
+            self.senders.insert(request_id.clone(), Some(sender));
         }
 
         #[cfg(feature = "nccl")]

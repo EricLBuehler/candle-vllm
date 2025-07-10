@@ -152,44 +152,6 @@ impl SamplingParams {
         Ok(this)
     }
 
-    // pub fn get_logits_processor<'a>(
-    //     &self,
-    //     seed: u64,
-    //     tokenizer: &'a Tokenizer,
-    //     top_n_logprobs: usize,
-    // ) -> LogitsProcessor<'a> {
-    //     if self.top_k == -1 && self.top_p == 1. {
-    //         // Greedy
-    //         LogitsProcessor::new(
-    //             seed,
-    //             Some(self.temperature.into()),
-    //             SamplingMethod::Multinomial,
-    //             top_n_logprobs,
-    //             tokenizer,
-    //         )
-    //     } else if self.top_k > 0 && self.top_p == 1. {
-    //         // Top-k
-    //         LogitsProcessor::new(
-    //             seed,
-    //             Some(self.temperature.into()),
-    //             SamplingMethod::TopK(self.top_k.try_into().unwrap()),
-    //             top_n_logprobs,
-    //             tokenizer,
-    //         )
-    //     } else if self.top_k == -1 && self.top_p != 1. {
-    //         // Top-p
-    //         LogitsProcessor::new(
-    //             seed,
-    //             Some(self.temperature.into()),
-    //             SamplingMethod::TopP(self.top_p.into()),
-    //             top_n_logprobs,
-    //             tokenizer,
-    //         )
-    //     } else {
-    //         unreachable!()
-    //     }
-    // }
-
     fn verify_args(&self) -> Result<(), APIError> {
         if self.n < 1 {
             return Err(APIError::new(format!(
@@ -249,17 +211,21 @@ impl SamplingParams {
                 self.best_of
             )));
         }
-        if self.temperature.is_some() && self.temperature.unwrap() > SAMPLING_EPS {
+
+        if self.temperature.is_some_and(|t| t > SAMPLING_EPS) {
             return Err(APIError::new_str(
                 "temperature must be 0 when using beam search",
             ));
         }
-        if self.top_p.is_some() && self.top_p.unwrap() < 1.0f32 - SAMPLING_EPS {
+
+        if self.top_p.is_some_and(|p| p < 1.0 - SAMPLING_EPS) {
             return Err(APIError::new_str("top_p must be 1 when using beam search"));
         }
-        if self.top_k.is_some() && self.top_k.unwrap() != -1 {
+
+        if self.top_k.is_some_and(|k| k != -1) {
             return Err(APIError::new_str("top_k must be -1 when using beam search"));
         }
+
         Ok(())
     }
 
@@ -282,16 +248,19 @@ impl SamplingParams {
                 self.best_of
             )));
         }
-        if self.top_p.is_some() && self.top_p.unwrap() < 1.0f32 - SAMPLING_EPS {
+
+        if self.top_p.is_some_and(|p| p < 1.0 - SAMPLING_EPS) {
             return Err(APIError::new_str(
                 "top_p must be 1 when using greedy sampling (no temperature specified).",
             ));
         }
-        if self.top_k.is_some() && self.top_k.unwrap() != -1 {
+
+        if self.top_k.is_some_and(|k| k != -1) {
             return Err(APIError::new_str(
                 "top_k must be -1 when using greedy sampling (no temperature specified).",
             ));
         }
+
         Ok(())
     }
 }

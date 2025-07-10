@@ -36,7 +36,7 @@ impl candle::CustomOp1 for ArgSort {
         let dev = storage.device();
         let elem_count = layout.shape().elem_count();
         let ncols = self.last_dim as i32;
-        let nrows = (elem_count as i32 / ncols) as i32;
+        let nrows = elem_count as i32 / ncols;
         let dst = unsafe { dev.alloc::<u32>(elem_count) }.w()?;
 
         use std::ffi::c_void;

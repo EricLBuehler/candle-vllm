@@ -123,7 +123,7 @@ fn get_cache_config(
         / config.num_hidden_layers
         / 2;
     CacheConfig {
-        block_size: block_size,
+        block_size,
         num_gpu_blocks: Some(num_gpu_blocks),
         num_cpu_blocks: Some(num_cpu_blocks),
         fully_init: true,
@@ -152,8 +152,8 @@ fn config_log(
             LevelFilter::Trace,
         ];
         let level = level.to_uppercase();
-        for (i, name) in log_level_names.to_vec().into_iter().enumerate() {
-            if level.find(name).is_some() {
+        for (i, name) in log_level_names.iter().copied().enumerate() {
+            if level.contains(name) {
                 cfg_filter = log_levels[i]
             }
         }
@@ -207,9 +207,9 @@ async fn main() -> Result<(), APIError> {
             filenames: {
                 let path = path.clone().unwrap_or("".to_string());
                 if Path::new(&path).join(file).exists() {
-                    vec![Path::new(&path).join(file).into()]
+                    vec![Path::new(&path).join(file)]
                 } else {
-                    panic!("Model file not found {}", file);
+                    panic!("Model file not found {file}");
                 }
             },
         },
@@ -350,7 +350,7 @@ async fn main() -> Result<(), APIError> {
 
     #[cfg(not(feature = "nccl"))]
     let (pipelines, global_rank) = {
-        let log_file = format!("candle-vllm.log");
+        let log_file = "candle-vllm.log".to_string();
         let _ = config_log(logger, args.log, log_file);
         (
             loader
@@ -361,7 +361,7 @@ async fn main() -> Result<(), APIError> {
     };
 
     let (default_pipelines, pipeline_config) = match pipelines {
-        Err(e) => panic!("{:?}", e),
+        Err(e) => panic!("{e:?}"),
         Ok((p, c)) => (p, c),
     };
     let mut config: Option<Config> = None;
@@ -382,7 +382,7 @@ async fn main() -> Result<(), APIError> {
                 &cfg,
                 &cache_cfg,
                 cache_cfg.dtype,
-                &pipeline.device(),
+                pipeline.device(),
                 num_shards,
             )
             .unwrap();
@@ -458,7 +458,7 @@ async fn main() -> Result<(), APIError> {
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(Arc::new(server_data));
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port))
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
         .await
         .map_err(|e| APIError::new(e.to_string()))?;
     axum::serve(listener, app)
