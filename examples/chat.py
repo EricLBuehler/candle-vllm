@@ -71,7 +71,7 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
             try:
                 with Live(Spinner("dots", text="Connecting...", style="green"), transient=True, console=console):
                     response = openai.chat.completions.create(
-                        model="Anything you want!",
+                        model="",
                         messages=messages + [user_msg],
                         stream=True,
                         max_tokens = max_tokens,

@@ -183,8 +183,13 @@ pub fn qlinear(
 ) -> Result<Linear> {
     match quant_config {
         Some(cfg) => {
-            let marlin_compatible = (cfg.quant_method != "gptq" && cfg.quant_method != "awq")
-                || (cfg.bits != 4 && cfg.bits != 8);
+            let marlin_compatible = if (cfg.quant_method != "gptq" && cfg.quant_method != "awq")
+                || (cfg.bits != 4 && cfg.bits != 8)
+            {
+                false
+            } else {
+                true
+            };
             let marlin_format = cfg.checkpoint_format.is_some()
                 && cfg.checkpoint_format.as_ref().unwrap() == "marlin";
 
