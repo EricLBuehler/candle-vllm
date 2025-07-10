@@ -220,11 +220,7 @@ impl DefaultLoader {
     ) -> Result<(Vec<Box<DefaultPipeline>>, PipelineConfig), APIError> {
         let specific_args = self.config.clone();
         let reporter = Arc::new(RwLock::new(ProgressReporter::new(local_rank.unwrap_or(0))));
-        let num_subprogress = if local_world_size.is_none() {
-            0
-        } else {
-            local_world_size.unwrap() - 1
-        };
+        let num_subprogress = local_world_size.map_or(0, |n| n - 1);
 
         let (models, devices, config, sep_style) = if quant.is_some()
             && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf")
@@ -238,7 +234,7 @@ impl DefaultLoader {
             );
             let s_cfg = specific_args.clone();
             let nlayers = {
-                let mut file = try_api!(std::fs::File::open(&path.clone()));
+                let mut file = try_api!(std::fs::File::open(path.clone()));
                 let content = try_api!(
                     gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
                 );
@@ -253,13 +249,9 @@ impl DefaultLoader {
                 };
                 nlayers.unwrap()
             };
-            let handle = progress_worker(
-                Some(num_subprogress as usize),
-                nlayers,
-                Arc::clone(&reporter),
-            )
-            .await;
-            let mut file = try_api!(std::fs::File::open(&path.clone()));
+            let handle =
+                progress_worker(Some(num_subprogress), nlayers, Arc::clone(&reporter)).await;
+            let mut file = try_api!(std::fs::File::open(path.clone()));
             let content = try_api!(
                 gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
             );
@@ -405,7 +397,7 @@ impl DefaultLoader {
 
             info!("Loading {} model.", self.name);
             let handle = progress_worker(
-                Some(num_subprogress as usize),
+                Some(num_subprogress),
                 config.num_hidden_layers,
                 Arc::clone(&reporter),
             )
@@ -698,7 +690,7 @@ impl DefaultLoader {
                         let tokenizer_cfg: Option<String> =
                             std::fs::read_to_string(tokenizer_cfg_file).ok();
                         let cfg_tokenizer: TokenizerConfig =
-                            serde_json::from_str(&tokenizer_cfg.unwrap().as_str()).unwrap();
+                            serde_json::from_str(tokenizer_cfg.unwrap().as_str()).unwrap();
                         let bos = if cfg_tokenizer.bos_token.is_some() {
                             match cfg_tokenizer.bos_token.unwrap() {
                                 BosEosToken(Either::Left(Some(id))) => Some(id),
@@ -726,9 +718,8 @@ impl DefaultLoader {
                 } else if quant.is_some() && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf") {
                     use crate::backend::gguf::{get_gguf_info, Content, GGUFInfo};
                     let filename = paths.get_weight_filenames()[0].clone();
-                    let mut readers = Vec::new();
-                    readers.push(std::fs::File::open(filename).unwrap());
-                    let mut readers = readers.iter_mut().collect::<Vec<_>>();
+                    let mut reader = std::fs::File::open(filename).unwrap();
+                    let mut readers = vec![&mut reader];
                     let content = Content::from_readers(&mut readers).unwrap();
                     let GGUFInfo {
                         tokenizer,
@@ -789,22 +780,23 @@ impl DefaultLoader {
                     };
                 }
 
-                if chat_template.is_some() {
-                    if chat_template.as_ref().unwrap().find("<|eom_id|>").is_some() {
+                if let Some(template) = chat_template.as_ref() {
+                    if template.contains("<|eom_id|>") {
                         tracing::warn!("custom stop token <|eom_id|> in chat template");
-                        stop_token_ids.push(128008)
+                        stop_token_ids.push(128008);
                     }
-                    if chat_template.as_ref().unwrap().find("<|eot_id|>").is_some() {
+                    if template.contains("<|eot_id|>") {
                         tracing::warn!("custom stop token <|eot_id|> in chat template");
-                        stop_token_ids.push(128009)
+                        stop_token_ids.push(128009);
                     }
-                    if chat_template.as_ref().unwrap().find("<|end|>").is_some() {
+                    if template.contains("<|end|>") {
                         tracing::warn!("custom stop token <|end|> in chat template");
                         if let Some(token) = tokenizer.get_vocab(true).get("<|end|>").copied() {
-                            stop_token_ids.push(token)
-                        };
+                            stop_token_ids.push(token);
+                        }
                     }
                 }
+
                 if stop_token_ids.is_empty() {
                     //if no eos_token defined in the config, use default
                     if let Some(token) = tokenizer.get_vocab(true).get("<|endoftext|>").copied() {
@@ -868,49 +860,49 @@ impl DefaultPipeline {
 
         match &self.model {
             LLMModel::Llama(llama) => llama
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::Phi2(phi) => phi
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::Phi3(phi) => phi
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::Qwen(qwen) => qwen
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::Gemma(gemma) => gemma
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::Gemma3(gemma3) => gemma3
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::Mistral(mistral) => mistral
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::Yi(yi) => yi
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::StableLM(stablelm) => stablelm
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::GLM4(glm4) => glm4
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::DeepSeek(deepseek) => deepseek
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::Phi3GGUF(phi3) => phi3
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::LlamaGGUF(llama) => llama
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::QWenGGUF(qwen) => qwen
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
             LLMModel::GLM4GGUF(glm4) => glm4
-                .forward(&input_tokens, input_positions, kv_cache, &input_metadata)
+                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
                 .map_err(APIError::from),
         }
     }
@@ -982,13 +974,13 @@ impl DefaultPipeline {
 
         let logits = if panalties.iter().any(|&v| v != 1.0 && v != 0.) {
             self.logits_processor
-                .apply_batch_repeat_penalty(&logits, panalties, reference_tokens)
+                .apply_batch_repeat_penalty(logits, panalties, reference_tokens)
                 .unwrap()
         } else {
             logits.to_owned()
         };
 
-        let group_ids: Vec<usize> = groups.into_iter().map(|group| group.group_id).collect();
+        let group_ids: Vec<usize> = groups.iter().map(|group| group.group_id).collect();
         let param = &groups[0].sampling_params;
         let sampling_params =
             if param.temperature.is_some() && (param.top_k.is_some() || param.top_p.is_some()) {
@@ -1031,13 +1023,8 @@ impl DefaultPipeline {
                     }
                 }
 
-                let custom_stop_token_match = if custom_stop_tokens[i].len() > 0
-                    && custom_stop_tokens[i].contains(&text.trim().to_string())
-                {
-                    true
-                } else {
-                    false
-                };
+                let custom_stop_token_match = !custom_stop_tokens[i].is_empty()
+                    && custom_stop_tokens[i].contains(&text.trim().to_string());
 
                 if tokens_generated[i] < 0 {
                     Right("length".to_string())

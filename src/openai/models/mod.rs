@@ -242,9 +242,7 @@ pub fn get_attention_casual_mask(
             .unwrap()
             .to_dtype(dtype)
             .ok(),
-        _ => {
-            return None;
-        }
+        _ => None,
     }
 }
 
@@ -295,8 +293,8 @@ impl NaiveAttention {
         }
         let mut cache = self.kv_cache.borrow_mut();
         let (k, v) = match &mut *cache {
-            KvCache::Normal(c) => c.append(&k, &v)?,
-            KvCache::Rotating(c) => c.append(&k, &v)?,
+            KvCache::Normal(c) => c.append(k, v)?,
+            KvCache::Rotating(c) => c.append(k, v)?,
         };
 
         let k = candle_transformers::utils::repeat_kv(k, self.num_kv_groups)?.contiguous()?;

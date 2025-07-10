@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Sse};
 use derive_more::{Display, Error};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Display, Error, Serialize)]
-#[display(fmt = "Error: {}", data)]
+#[display(fmt = "Error: {data}")]
 pub struct APIError {
     data: String,
 }

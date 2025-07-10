@@ -78,7 +78,7 @@ impl GPTQMatMul {
             let qzeros_ = qzeros_.slice(qzeros_l.start_offset()..);
             *qzeros_.device_ptr() as *const c_void
         } else {
-            std::ptr::null() as *const c_void
+            std::ptr::null()
         };
 
         let g_idx_ptr = if self.g_idx.is_some() {
@@ -91,7 +91,7 @@ impl GPTQMatMul {
             let g_idx_ = g_idx_.slice(g_idx_l.start_offset()..);
             *g_idx_.device_ptr() as *const c_void
         } else {
-            std::ptr::null() as *const c_void
+            std::ptr::null()
         };
 
         unsafe {
@@ -123,7 +123,7 @@ impl GPTQMatMul {
                             size_k as i32,
                             size_n as i32,
                             workspace_ptr,
-                            self.group_size as i32,
+                            self.group_size,
                             *dev.cu_stream() as i64,
                         );
                     } else {
@@ -138,7 +138,7 @@ impl GPTQMatMul {
                             size_k as i32,                    //k
                             size_n as i32,                    //n
                             workspace_ptr,
-                            self.group_size as i32,
+                            self.group_size,
                             *dev.cu_stream() as i64,
                         );
                     }
@@ -155,7 +155,7 @@ impl GPTQMatMul {
                             size_k as i32,
                             size_n as i32,
                             workspace_ptr,
-                            self.group_size as i32,
+                            self.group_size,
                             *dev.cu_stream() as i64,
                         );
                     } else {
@@ -170,7 +170,7 @@ impl GPTQMatMul {
                             size_k as i32,                    //k
                             size_n as i32,                    //n
                             workspace_ptr,
-                            self.group_size as i32,
+                            self.group_size,
                             *dev.cu_stream() as i64,
                         );
                     }
@@ -282,14 +282,14 @@ impl MarlinRepack {
             //in_dim 4096, out_dim 1024 (/pack_factor)
             //ws shape [4096, 128]
             //out_shape [256, 2048]
-            out_shape[0] = (q_shape[0] / pack_factor / 2) as usize;
-            out_shape[1] = (q_shape[1] * pack_factor * 2) as usize;
+            out_shape[0] = q_shape[0] / pack_factor / 2;
+            out_shape[1] = q_shape[1] * pack_factor * 2;
         } else {
             //in_dim 4096 (/pack_factor), out_dim 1024
             //ws shape [512, 1024]
             //out_shape [256, 2048]
-            out_shape[0] = (q_shape[0] / 2) as usize;
-            out_shape[1] = (q_shape[1] * 2) as usize;
+            out_shape[0] = q_shape[0] / 2;
+            out_shape[1] = q_shape[1] * 2;
         }
 
         let oshape: Shape = out_shape.into();

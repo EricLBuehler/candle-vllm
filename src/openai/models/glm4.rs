@@ -169,7 +169,7 @@ impl RotaryEmbedding {
                 .unsqueeze(0)?
                 .contiguous()?;
             let xs_pass = xs.i((b, .., .., self.rotary_dim..))?.unsqueeze(0)?;
-            let xs_rot = candle_nn::rotary_emb::rope_i(&xs_rot, &cos, &sin).unwrap();
+            let xs_rot = candle_nn::rotary_emb::rope_i(&xs_rot, &cos, &sin)?;
             let embed = Tensor::cat(&[&xs_rot, &xs_pass], D::Minus1)?.contiguous()?;
             embeds.push(embed);
         }
@@ -417,7 +417,7 @@ impl DecoderLayer {
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let residual = xs;
-        let hidden_states = self.input_layernorm.forward(&xs)?;
+        let hidden_states = self.input_layernorm.forward(xs)?;
         let hidden_states = self.self_attn.forward(
             &hidden_states,
             attention_mask,

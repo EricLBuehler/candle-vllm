@@ -105,20 +105,17 @@ impl Gemma3Config {
         kv_cache_dtype: DType,
         scfg: &SpecificConfig,
     ) -> Config {
-        let bos_token_id = if self.text_config.bos_token_id.is_some() {
-            self.text_config.bos_token_id.unwrap()
-        } else if self.bos_token_id.is_some() {
-            self.bos_token_id.unwrap()
-        } else {
-            super::TokenID(Either::Left(Some(2)))
-        };
-        let eos_token_id = if self.text_config.eos_token_id.is_some() {
-            self.text_config.eos_token_id.unwrap()
-        } else if self.eos_token_id.is_some() {
-            self.eos_token_id.unwrap()
-        } else {
-            super::TokenID(Either::Left(Some(1)))
-        };
+        let bos_token_id = self
+            .text_config
+            .bos_token_id
+            .or(self.bos_token_id)
+            .unwrap_or(super::TokenID(Either::Left(Some(2))));
+
+        let eos_token_id = self
+            .text_config
+            .eos_token_id
+            .or(self.eos_token_id)
+            .unwrap_or(super::TokenID(Either::Left(Some(1))));
 
         let ropescaling = if self.text_config.rope_scaling.is_some() {
             let mut ropescaling = HashMap::<String, RopeScaling>::new();
@@ -194,11 +191,10 @@ impl RotaryEmbedding {
         cfg: &Config,
         dev: &Device,
     ) -> Result<(Tensor, Tensor)> {
-        let rope_freq = if local_sliding_window.is_some() && cfg.rope_local_base_freq.is_some() {
-            cfg.rope_local_base_freq.unwrap()
-        } else {
-            cfg.rope_theta
-        };
+        let rope_freq = local_sliding_window
+            .and(cfg.rope_local_base_freq)
+            .unwrap_or(cfg.rope_theta);
+
         let dim = cfg
             .head_dim
             .unwrap_or(cfg.hidden_size / cfg.num_attention_heads);
@@ -283,26 +279,23 @@ impl RotaryEmbedding {
 
             let x_q = q.narrow(0, b, 1)?;
             let x_k = k.narrow(0, b, 1)?;
-            let q_embed = candle_nn::rotary_emb::rope(&x_q, &cos, &sin).unwrap();
-            let k_embed = candle_nn::rotary_emb::rope(&x_k, &cos, &sin).unwrap();
+            let q_embed = candle_nn::rotary_emb::rope(&x_q, &cos, &sin)?;
+            let k_embed = candle_nn::rotary_emb::rope(&x_k, &cos, &sin)?;
             q_embeds.push(q_embed);
             k_embeds.push(k_embed);
         }
-        Ok((
-            Tensor::cat(&q_embeds, 0).unwrap(),
-            Tensor::cat(&k_embeds, 0).unwrap(),
-        ))
+        Ok((Tensor::cat(&q_embeds, 0)?, Tensor::cat(&k_embeds, 0)?))
     }
 }
 
-struct MLP {
+struct Mlp {
     gate_proj: TensorParallelColumnLinear,
     up_proj: TensorParallelColumnLinear,
     down_proj: TensorParallelRowLinear,
     act_fn: candle_nn::Activation,
 }
 
-impl MLP {
+impl Mlp {
     fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let intermediate_sz = cfg.intermediate_size;
@@ -342,7 +335,7 @@ impl MLP {
     }
 }
 
-impl Module for MLP {
+impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let lhs = self.act_fn.forward(&self.gate_proj.forward(xs)?)?;
         let rhs = self.up_proj.forward(xs)?;
@@ -506,7 +499,7 @@ impl Attention {
 
 struct DecoderLayer {
     self_attn: Attention,
-    mlp: MLP,
+    mlp: Mlp,
     input_layernorm: RmsNorm,
     post_feedforward_layernorm: RmsNorm,
     pre_feedforward_layernorm: RmsNorm,
@@ -529,7 +522,7 @@ impl DecoderLayer {
             rotary_emb.clone(),
             sliding_window,
         )?;
-        let mlp = MLP::new(cfg, vb.pp("mlp"), comm.clone())?;
+        let mlp = Mlp::new(cfg, vb.pp("mlp"), comm.clone())?;
         let input_layernorm =
             rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
 

@@ -68,10 +68,7 @@ impl LayerWeights {
             q_embeds.push(q_embed);
             k_embeds.push(k_embed);
         }
-        Ok((
-            Tensor::cat(&q_embeds, 0).unwrap(),
-            Tensor::cat(&k_embeds, 0).unwrap(),
-        ))
+        Ok((Tensor::cat(&q_embeds, 0)?, Tensor::cat(&k_embeds, 0)?))
     }
 
     fn forward_attn(
@@ -125,19 +122,23 @@ impl LayerWeights {
             (q.contiguous()?, k.contiguous()?, v.contiguous()?)
         };
 
-        let (q, k) = if self.q_norm.is_some() && self.k_norm.is_some() {
-            //Per‑head RMSNorm in qwen3
+        let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
+            // Per‑head RMSNorm in qwen3
             let q_flat = q.flatten(0, 2)?; // (B*H, L, D) -> (BHL, D) after transpose later
             let k_flat = k.flatten(0, 2)?;
-            //q_norm and k_norm weights stored in f32 format in qwen3 gguf
-            let q_flat = self.q_norm.as_ref().unwrap().forward(&q_flat)?;
-            let k_flat = self.k_norm.as_ref().unwrap().forward(&k_flat)?;
+
+            // q_norm and k_norm weights stored in f32 format in qwen3 gguf
+            let q_flat = q_norm.forward(&q_flat)?;
+            let k_flat = k_norm.forward(&k_flat)?;
+
             let q = q_flat.reshape((b_sz, self.n_head, seq_len, self.head_dim))?;
             let k = k_flat.reshape((b_sz, self.n_kv_head, seq_len, self.head_dim))?;
+
             (q, k)
         } else {
             (q, k)
         };
+
         let (q, k) = self.apply_rotary_emb(&q, &k, input_positions)?;
         let (q, k, v) = (
             q.to_dtype(self.dtype)?,
@@ -222,7 +223,7 @@ impl GGUFQWen {
             use_flash_attn: false,
             bos_token_id: super::TokenID(Either::Left(Some(151644))),
             eos_token_id: super::TokenID(Either::Left(Some(151645))),
-            max_seq_len: max_seq_len,
+            max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,
             hidden_act: None,
@@ -271,26 +272,25 @@ impl GGUFQWen {
 
         let version = if qwen3 { 3 } else { 2 };
         let head_count =
-            md_get(format!("qwen{}.attention.head_count", version).as_str())?.to_u32()? as usize;
+            md_get(format!("qwen{version}.attention.head_count").as_str())?.to_u32()? as usize;
         let head_count_kv =
-            md_get(format!("qwen{}.attention.head_count_kv", version).as_str())?.to_u32()? as usize;
+            md_get(format!("qwen{version}.attention.head_count_kv").as_str())?.to_u32()? as usize;
 
-        let head_dim = md_get(format!("qwen{}.attention.key_length", version).as_str());
+        let head_dim = md_get(format!("qwen{version}.attention.key_length").as_str());
         let head_dim = if head_dim.is_ok() {
             Some(head_dim.unwrap().to_u32()? as usize)
         } else {
             None
         };
         let embedding_length =
-            md_get(format!("qwen{}.embedding_length", version).as_str())?.to_u32()? as usize;
+            md_get(format!("qwen{version}.embedding_length").as_str())?.to_u32()? as usize;
         let context_length =
-            md_get(format!("qwen{}.context_length", version).as_str())?.to_u32()? as usize;
-        let block_count =
-            md_get(format!("qwen{}.block_count", version).as_str())?.to_u32()? as usize;
+            md_get(format!("qwen{version}.context_length").as_str())?.to_u32()? as usize;
+        let block_count = md_get(format!("qwen{version}.block_count").as_str())?.to_u32()? as usize;
         let rms_norm_eps =
-            md_get(format!("qwen{}.attention.layer_norm_rms_epsilon", version).as_str())?
-                .to_f32()? as f64;
-        let rope_freq_base = md_get(format!("qwen{}.rope.freq_base", version).as_str())
+            md_get(format!("qwen{version}.attention.layer_norm_rms_epsilon").as_str())?.to_f32()?
+                as f64;
+        let rope_freq_base = md_get(format!("qwen{version}.rope.freq_base").as_str())
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
 
@@ -406,10 +406,10 @@ impl GGUFQWen {
                 n_kv_head: head_count_kv,
                 head_dim,
                 attn: PagedAttention::new(
-                    head_count as usize,
+                    head_count,
                     head_dim,
                     1. / ((head_dim as f32).sqrt()),
-                    Some(head_count_kv as usize),
+                    Some(head_count_kv),
                     None,
                     device.clone(),
                     None,

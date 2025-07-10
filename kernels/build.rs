@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     builder.build_lib(build_dir.join("libpagedattention.a"));
 
     let kernel_dir = PathBuf::from("../kernels/");
-    let absolute_kernel_dir = std::fs::canonicalize(&kernel_dir).unwrap();
+    let absolute_kernel_dir = std::fs::canonicalize(&kernel_dir)?;
 
     println!(
         "cargo:rustc-link-search=native={}",

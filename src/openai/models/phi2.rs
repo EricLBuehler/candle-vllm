@@ -89,7 +89,7 @@ struct RotaryEmbedding {
 impl RotaryEmbedding {
     fn new(cfg: &Config, _dtype: DType, dev: &Device) -> Result<Self> {
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
-        let dim = (cfg.partial_rotary_factor.unwrap() * head_dim as f32) as usize;
+        let dim = (cfg.partial_rotary_factor.unwrap_or(1.0) * head_dim as f32) as usize;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
             .map(|i| (1f64 / cfg.rope_theta.powf(i as f64 / dim as f64)) as f32)
@@ -123,13 +123,13 @@ impl RotaryEmbedding {
     }
 }
 
-struct MLP {
+struct Mlp {
     fc1: TensorParallelColumnLinear,
     fc2: TensorParallelRowLinear,
     act: Activation,
 }
 
-impl MLP {
+impl Mlp {
     fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let fc1 = TensorParallelColumnLinear::load_with_hints(
             cfg.hidden_size,
@@ -159,7 +159,7 @@ impl MLP {
     }
 }
 
-impl Module for MLP {
+impl Module for Mlp {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         self.fc2.forward(&self.act.forward(&self.fc1.forward(xs)?)?)
     }
@@ -326,14 +326,14 @@ impl Attention {
 
 struct DecoderLayer {
     self_attn: Attention,
-    mlp: MLP,
+    mlp: Mlp,
     input_layernorm: LayerNorm,
 }
 
 impl DecoderLayer {
     fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let self_attn = Attention::new(cfg, vb.pp("self_attn"), comm.clone())?;
-        let mlp = MLP::new(cfg, vb.pp("mlp"), comm.clone())?;
+        let mlp = Mlp::new(cfg, vb.pp("mlp"), comm.clone())?;
         let input_layernorm = layer_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,

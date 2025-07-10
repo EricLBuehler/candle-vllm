@@ -54,13 +54,13 @@ impl Progress {
             let pb = m.add(ProgressBar::new(size as u64));
             pb.set_style(sty.clone());
             if n > 1 {
-                pb.set_message(format!("On Rank {} Device", i));
+                pb.set_message(format!("On Rank {i} Device"));
             }
             bars.push(pb);
         }
 
         if n > 1 {
-            m.println(format!("Loading model in {} ranks!", n)).unwrap();
+            m.println(format!("Loading model in {n} ranks!")).unwrap();
         }
         Self { m, bars, size }
     }
@@ -71,9 +71,9 @@ impl Progress {
             self.bars[idx].inc(progress as u64 - pos);
             if self.bars.len() > 1 {
                 if progress >= self.size {
-                    self.bars[idx].set_message(format!("On Rank {} Device Finished", idx));
+                    self.bars[idx].set_message(format!("On Rank {idx} Device Finished"));
                 } else {
-                    self.bars[idx].set_message(format!("On Rank {} Device", idx));
+                    self.bars[idx].set_message(format!("On Rank {idx} Device"));
                 }
             }
         }
@@ -84,7 +84,7 @@ impl Progress {
             let pos = self.bars[idx].position();
             self.bars[idx].inc(self.size as u64 - pos);
             if self.bars.len() > 1 {
-                self.bars[idx].set_message(format!("On Rank {} Device Finished", idx));
+                self.bars[idx].set_message(format!("On Rank {idx} Device Finished"));
             }
         }
         self.m.clear().unwrap();
@@ -134,7 +134,7 @@ pub async fn progress_worker(
         #[cfg(not(feature = "nccl"))]
         let progress_bar = Some(Progress::new(1, length));
 
-        let _ = thread::sleep(time::Duration::from_millis(1000 as u64));
+        let _ = thread::sleep(time::Duration::from_millis(1000_u64));
 
         loop {
             {
@@ -181,7 +181,7 @@ pub async fn progress_worker(
                 }
             }
 
-            let _ = thread::sleep(time::Duration::from_millis(500 as u64));
+            let _ = thread::sleep(time::Duration::from_millis(500_u64));
         }
     });
     handle

@@ -864,7 +864,7 @@ pub fn hub_load_local_safetensors(
 pub fn new_device(ordinal: usize) -> Result<Device> {
     if cuda_is_available() {
         use candle_core::CudaDevice;
-        let device = Device::Cuda(CudaDevice::new_with_stream(ordinal).unwrap());
+        let device = Device::Cuda(CudaDevice::new_with_stream(ordinal)?);
         Ok(device)
     } else if metal_is_available() {
         Ok(Device::new_metal(ordinal)?)
