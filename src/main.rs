@@ -35,7 +35,7 @@ struct Args {
     hf_token_path: Option<String>,
 
     /// Port to serve on (localhost:port)
-    #[arg(long)]
+    #[arg(long = "p")]
     port: u16,
 
     /// Set verbose mode (print all requests)
@@ -54,16 +54,16 @@ struct Args {
     block_size: usize,
 
     /// if weight_path is passed, it will ignore the model_id
-    #[arg(long)]
+    #[arg(long = "m")]
     model_id: Option<String>,
 
     /// The folder name that contains safetensor weights and json files
     /// (same structure as huggingface online), path must include last "/"
-    #[arg(long)]
+    #[arg(long = "w")]
     weight_path: Option<String>,
 
     /// The quantized weight file name (for gguf/ggml file)
-    #[arg(long)]
+    #[arg(long = "f")]
     weight_file: Option<String>,
 
     #[arg(long)]
@@ -73,7 +73,7 @@ struct Args {
     cpu: bool,
 
     /// Available GPU memory for kvcache (MB)
-    #[arg(long, default_value_t = 4096)]
+    #[arg(long = "mem", default_value_t = 4096)]
     kvcache_mem_gpu: usize,
 
     /// Available CPU memory for kvcache (MB)
@@ -84,7 +84,7 @@ struct Args {
     #[arg(long)]
     record_conversation: bool,
 
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long = "d", value_delimiter = ',')]
     device_ids: Option<Vec<usize>>,
 
     /// Maximum waiting time for processing parallel requests (in milliseconds).
@@ -436,7 +436,9 @@ async fn main() -> Result<(), APIError> {
     }
 
     if global_rank == 0 {
-        warn!("Maximum Model Length (affected by `--kvcache-mem-gpu` and the number of ranks):");
+        warn!(
+            "Maximum Model Length (affected by `--mem` (kvcache-mem-gpu) and the number of ranks):"
+        );
         for batch in [1, 8] {
             println!(
                 "-> Batch {}: {}",

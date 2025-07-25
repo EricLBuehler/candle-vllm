@@ -95,22 +95,22 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192] [--weight-path /home/weights/Qwen3-27B-GPTQ-4Bit] [qwen3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --p 2000 --d "0,1" --mem 8192] [--w /home/weights/Qwen3-27B-GPTQ-4Bit] [qwen3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl
 
-    `PROGRAM_PARAM`：--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192
+    `PROGRAM_PARAM`：--multi-process --log --dtype bf16 --p 2000 --d "0,1" --mem 8192
 
-    `MODEL_WEIGHT_PATH`: --weight-path /home/weights/Qwen3-27B-GPTQ-4Bit
+    `MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-27B-GPTQ-4Bit
 
     `MODEL_TYPE`: qwen3
 
     `MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking
 
-    其中，`kvcache-mem-gpu`参数控制KV Cache缓存，长文本或批量推理量请增大缓存；`MODEL_TYPE`可选值为：["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+    其中，`mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存；`MODEL_TYPE`可选值为：["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
   </details>
 
 ## 如何运行？
@@ -122,7 +122,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **本地路径**
 
     ```shell
-    target/release/candle-vllm --port 2000 --weight-path /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --temperature 0. --penalty 1.0
+    target/release/candle-vllm --p 2000 --w /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --temperature 0. --penalty 1.0
     ```
 
     **模型ID（从Huggingface下载）**
@@ -140,13 +140,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **本地路径（指定端口、数据类型、采样参数）**
 
     ```shell
-    target/release/candle-vllm --port 2000 --dtype bf16 --weight-file /home/data/DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0.7 --penalty 1.1
+    target/release/candle-vllm --p 2000 --dtype bf16 --f /home/data/DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0.7 --penalty 1.1
     ```
 
     **模型ID（从Huggingface下载）**
 
     ```shell
-    target/release/candle-vllm --model-id unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF --weight-file DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf
+    target/release/candle-vllm --model-id unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF --f DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf
     ```
 
   </details>
@@ -158,13 +158,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **本地路径（假设模型已下载到/home）**
 
     ```shell
-    cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-file /home/qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
+    cargo run --release --features metal -- --p 2000 --dtype bf16 --f /home/qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
     ```
 
     **模型ID（从Huggingface下载）**
 
     ```shell
-    cargo run --release --features metal -- --port 2000 --dtype bf16 --model-id Qwen/QwQ-32B-GGUF --weight-file qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
+    cargo run --release --features metal -- --p 2000 --dtype bf16 --model-id Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
     ```
 
   </details>
@@ -176,7 +176,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **只需在运行未量化模型时添加`quant`参数**
 
     ```shell
-    target/release/candle-vllm --port 2000 --weight-path /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --quant q4k --temperature 0. --penalty 1.0
+    target/release/candle-vllm --p 2000 --w /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --quant q4k --temperature 0. --penalty 1.0
     ```
 
     注：原位量化加载可能需要更长的加载时间，原位`quant`参数选项：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -189,7 +189,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **本地路径**
 
     ```shell
-    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
+    target/release/candle-vllm --dtype bf16 --p 2000 --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
     ```
 
     **模型ID（从Huggingface下载）**
@@ -201,7 +201,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **将未压缩模型转换为Marlin兼容格式**
     ```shell
     python3 examples/convert_marlin.py --src /home/DeepSeek-R1-Distill-Qwen-14B/ --dst /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
-    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
+    target/release/candle-vllm --dtype bf16 --p 2000 --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
     ```
 
   </details>
@@ -217,7 +217,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **运行转换后的AWQ模型**
     ```shell
-    target/release/candle-vllm --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
+    target/release/candle-vllm --multi-process --dtype f16 --p 2000 --d "0" --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
     ```
 
   </details>
@@ -227,7 +227,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     <summary>显示命令</summary>
 
     ```shell
-    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/ qwen2 --quant marlin --penalty 1.0 --temperature 0.
+    target/release/candle-vllm --dtype bf16 --p 2000 --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/ qwen2 --quant marlin --penalty 1.0 --temperature 0.
     ```
 
   </details>
@@ -238,7 +238,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **在两块GPU上运行QwQ-32B BF16模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
+    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --p 2000 --d "0,1" --w /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
     ```
 
     **在两块GPU上运行QwQ-32B 4位AWQ模型**
@@ -250,10 +250,10 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     2) 运行转换后的AWQ模型
     ```shell
-    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B-AWQ-Marlin/ qwen2 --quant awq --penalty 1.0 --temperature 0.
+    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --p 2000 --d "0,1" --w /home/QwQ-32B-AWQ-Marlin/ qwen2 --quant awq --penalty 1.0 --temperature 0.
     ```
 
-    **注意**：使用的GPU数量（`--device-ids`）必须为2的幂次方（例如2、4或8）。
+    **注意**：使用的GPU数量（`--d`）必须为2的幂次方（例如2、4或8）。
   </details>
 
 - 使用**多线程模式（多GPU，调试用途）**运行**大型模型**
@@ -264,7 +264,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **在两块GPU上运行QwQ-32B BF16模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
+    cargo run --release --features cuda,nccl -- --dtype bf16 --p 2000 --d "0,1" --w /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
     ```
 
     如果在多线程多GPU模式下遇到问题，可以尝试：
@@ -285,7 +285,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **2. 在8块A100（40GB）上运行DeepSeek-R1模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0 --num-experts-offload-per-rank 15
+    cargo run --release --features cuda,nccl -- --log --multi-process --dtype bf16 --p 2000 --d "0,1,2,3,4,5,6,7" --w /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0 --num-experts-offload-per-rank 15
     ```
 
     **注意**：此设置将每个rank的15个专家（总共256个专家中的120个）卸载到CPU（需要约150GB的额外主机内存）。在推理过程中，这些卸载的专家会根据需要交换回GPU内存。如果GPU内存更少，可以增加`--num-experts-offload-per-rank`参数（最大支持每个rank卸载32个专家）。
@@ -322,7 +322,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **4. 使用MPI运行器在两个节点上运行模型**
     ```shell
-    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0
+    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --multi-process --dtype bf16 --p 2000 --d "0,1,2,3,4,5,6,7" --w /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0
     ```
   </details>
 
@@ -341,13 +341,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     如果你想使用全部 GPU 进行推理，下面的 NUMA 绑定配置可以获得最佳性能：
 
     ```shell
-    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
+    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --p 2000 --d "0,1,2,3,4,5,6,7" --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
     ```
 
     如果你只使用 4 张 GPU，可以使用如下的 NUMA 绑定方式：
     
     ```shell
-    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
+    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --p 2000 --d "0,1,2,3" --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
     ```
 
     以上命令中 `numactl --cpunodebind=0 --membind=0`指定了master进程（master rank）绑定的NUMA node，其必须与 `MAP_NUMA_NODE`相匹配。
@@ -361,7 +361,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     1) 启动`Qwen3-Reranker`模型服务
     ```shell
-    target/release/candle-vllm --port 2000 --multi-process --weight-file /home/data/Qwen3-Reranker-4B-q4_k_m.gguf qwen3 --quant gguf
+    target/release/candle-vllm --p 2000 --multi-process --f /home/data/Qwen3-Reranker-4B-q4_k_m.gguf qwen3 --quant gguf
     ```
 
     2) 启动迷你聊天机器人并传入`system prompt`
@@ -579,7 +579,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **对于未量化模型：**
 
     ```
-    cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+    cargo run --release --features cuda -- --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
     ```
 
     `quant`参数选项：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -587,7 +587,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **对于4位GPTQ量化模型：**
 
     ```
-    cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
+    cargo run --release --features cuda -- --p 2000 --w /home/mistral_7b-int4/ mistral --quant marlin
     ```
 
     **关于Marlin的注意事项**：
@@ -604,7 +604,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
   <details>
     <summary>显示详情</summary>
-    对于KV缓存配置，设置`kvcache-mem-gpu`，默认为4GB GPU内存用于KV缓存，长文本或批量推理时请增大KV缓存。
+    对于KV缓存配置，设置`--mem` (kvcache-mem-gpu)，默认为4GB GPU内存用于KV缓存，长文本或批量推理时请增大KV缓存。
 
     对于聊天历史设置，将`record_conversation`设置为`true`以让candle-vllm记住聊天历史。默认情况下，candle-vllm`不会`记录聊天历史；相反，客户端将消息和上下文历史一起发送给candle-vllm。如果`record_conversation`设置为`true`，客户端仅发送新的聊天消息给candle-vllm，而candle-vllm负责记录之前的聊天消息。然而，这种方法需要每会话聊天记录，目前尚未实现，因此推荐使用默认方法`record_conversation=false`。
 
@@ -613,7 +613,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     你可以传递`penalty`和`temperature`参数给模型以**防止潜在的重复**，例如：
 
     ```
-    cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
+    cargo run --release --features cuda -- --p 2000 --w /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
     ```
 
     `--max-gen-tokens`参数用于控制每次聊天响应的最大输出令牌数。默认值将设置为`max_sequence_len`的1/5。
@@ -621,7 +621,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     对于`消费级GPU`，建议以GGML格式（或Marlin格式）运行模型，例如：
 
     ```
-    cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+    cargo run --release --features cuda -- --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
     ```
 
     其中`quant`可选值为：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"]。
@@ -634,13 +634,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     Candle-vllm现在支持GPTQ/AWQ（Marlin内核），如果你有`Marlin`格式的量化权重，可以传递`quant`（marlin）参数，例如：
 
     ```shell
-    cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
+    cargo run --release --features cuda -- --p 2000 --dtype f16 --w /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
     ```
 
     或者，将现有的AWQ 4位模型转换为Marlin兼容格式：
     ```shell
     python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-    cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
+    cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --p 2000 --d "0" --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
     ```
 
     你也可以使用`GPTQModel`通过脚本`examples/convert_marlin.py`将模型转换为Marlin兼容格式。

@@ -95,22 +95,22 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192] [--weight-path /home/weights/Qwen3-27B-GPTQ-4Bit] [qwen3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --p 2000 --d "0,1" --mem 8192] [--w /home/weights/Qwen3-27B-GPTQ-4Bit] [qwen3] [--quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl
 
-    `PROGRAM_PARAM`：--multi-process --log --dtype bf16 --port 2000 --device-ids "0,1" --kvcache-mem-gpu 8192
+    `PROGRAM_PARAM`：--multi-process --log --dtype bf16 --p 2000 --d "0,1" --mem 8192
 
-    `MODEL_WEIGHT_PATH`: --weight-path /home/weights/Qwen3-27B-GPTQ-4Bit
+    `MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-27B-GPTQ-4Bit
 
     `MODEL_TYPE`: qwen3
 
     `MODEL_PARAM`: --quant gptq --temperature 0.7 --penalty 1.0 --top-k 32 --top-p 0.95 --thinking
 
-    where, `--kvcache-mem-gpu` is the key parameter to control KV cache usage (increase this for large batch); `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+    where, `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); `MODEL_TYPE` in ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
   </details>
 
 
@@ -124,13 +124,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Local Path**
 
     ```shell
-    target/release/candle-vllm --port 2000 --weight-path /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --temperature 0. --penalty 1.0
+    target/release/candle-vllm --p 2000 --w /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --temperature 0. --penalty 1.0
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    target/release/candle-vllm --model-id deepseek-ai/DeepSeek-R1-0528-Qwen3-8B qwen3
+    target/release/candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B qwen3
     ```
 
   </details>
@@ -142,13 +142,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Local Path (with port, dtype, sampling parameter specified)**
 
     ```shell
-    target/release/candle-vllm --port 2000 --dtype bf16 --weight-file /home/data/DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0.7 --penalty 1.1
+    target/release/candle-vllm --p 2000 --dtype bf16 --f /home/data/DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf --temperature 0.7 --penalty 1.1
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    target/release/candle-vllm --model-id unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF --weight-file DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf
+    target/release/candle-vllm --m unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF --f DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf qwen3 --quant gguf
     ```
 
   </details>
@@ -160,13 +160,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Local Path (assume model downloaded in /home)**
 
     ```shell
-    cargo run --release --features metal -- --port 2000 --dtype bf16 --weight-file /home/qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
+    cargo run --release --features metal -- --p 2000 --dtype bf16 --f /home/qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    cargo run --release --features metal -- --port 2000 --dtype bf16 --model-id Qwen/QwQ-32B-GGUF --weight-file qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
+    cargo run --release --features metal -- --p 2000 --dtype bf16 --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf qwen2 --quant gguf --temperature 0. --penalty 1.0
     ```
 
   </details>
@@ -178,7 +178,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Simply add `quant` parameter when running unquantized models**
 
     ```shell
-    target/release/candle-vllm --port 2000 --weight-path /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --quant q4k --temperature 0. --penalty 1.0
+    target/release/candle-vllm --p 2000 --w /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --quant q4k --temperature 0. --penalty 1.0
     ```
 
     Options for in-site `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -192,19 +192,19 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Local Path**
 
     ```shell
-    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
+    target/release/candle-vllm --dtype bf16 --p 2000 --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    target/release/candle-vllm --model-id thesven/Llama-3-8B-GPTQ-4bit llama3 --quant gptq
+    target/release/candle-vllm --m thesven/Llama-3-8B-GPTQ-4bit llama3 --quant gptq
     ```
 
     **Convert Any uncompressed model to marlin-compatible format**
     ```shell
     python3 examples/convert_marlin.py --src /home/DeepSeek-R1-Distill-Qwen-14B/ --dst /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
-    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
+    target/release/candle-vllm --dtype bf16 --p 2000 --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g qwen2 --quant gptq --temperature 0. --penalty 1.0
     ```
 
   </details>
@@ -220,7 +220,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **Run the converted AWQ model**
     ```shell
-    target/release/candle-vllm --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
+    target/release/candle-vllm --multi-process --dtype f16 --p 2000 --d "0" --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
     ```
 
   </details>
@@ -230,7 +230,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     <summary>Show command</summary>
 
     ```shell
-    target/release/candle-vllm --dtype bf16 --port 2000 --weight-path /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/ qwen2 --quant marlin --penalty 1.0 --temperature 0.
+    target/release/candle-vllm --dtype bf16 --p 2000 --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/ qwen2 --quant marlin --penalty 1.0 --temperature 0.
     ```
 
   </details>
@@ -242,7 +242,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **QwQ-32B BF16 model on two GPUs**
     ```shell
-    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
+    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --p 2000 --d "0,1" --w /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
     ```
 
     **QwQ-32B 4-bit AWQ model on two GPUs**
@@ -254,10 +254,10 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     2) Run the converted AWQ model
     ```shell
-    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B-AWQ-Marlin/ qwen2 --quant awq --penalty 1.0 --temperature 0.
+    cargo run --release --features cuda,nccl -- --multi-process --dtype bf16 --p 2000 --d "0,1" --w /home/QwQ-32B-AWQ-Marlin/ qwen2 --quant awq --penalty 1.0 --temperature 0.
     ```
 
-    **Note:** number of GPUs (`--device-ids`) used must be aligned to 2^n (e.g., 2, 4, or 8).
+    **Note:** number of GPUs (`--d`) used must be aligned to 2^n (e.g., 2, 4, or 8).
   </details>
 
 - Run **Large models using multi-threaded mode (Multi-GPU, for debug purpose)**
@@ -268,7 +268,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **QwQ-32B BF16 model on two GPUs**
     ```shell
-    cargo run --release --features cuda,nccl -- --dtype bf16 --port 2000 --device-ids "0,1" --weight-path /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
+    cargo run --release --features cuda,nccl -- --dtype bf16 --p 2000 --d "0,1" --w /home/QwQ-32B/ qwen2 --penalty 1.0 --temperature 0.
     ```
 
     If you encountered problems under Multi-threaded Multi-GPU mode, you may:
@@ -289,7 +289,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **2. Run DeepSeek-R1 model on 8 x A100(40GB)**
     ```shell
-    cargo run --release --features cuda,nccl -- --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0 --num-experts-offload-per-rank 15
+    cargo run --release --features cuda,nccl -- --log --multi-process --dtype bf16 --p 2000 --d "0,1,2,3,4,5,6,7" --w /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0 --num-experts-offload-per-rank 15
     ```
 
     **Note:** This setup offloads 15 experts per rank (a total of 120 out of 256 experts) to the CPU (around 150GB additional host memory required). During inference, these offloaded experts are swapped back into GPU memory as needed. If you have even less GPU memory, consider increasing the `--num-experts-offload-per-rank` parameter (up to a maximum of 32 experts per rank in this case).
@@ -326,7 +326,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **4. Run the model on two nodes with MPI runner**
     ```shell
-    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0
+    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --multi-process --dtype bf16 --p 2000 --d "0,1,2,3,4,5,6,7" --w /data/DeepSeek-R1-AWQ-Marlin/ deep-seek --quant awq --temperature 0. --penalty 1.0
     ```
   </details>
 
@@ -344,13 +344,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     To achieve optimal performance during inference using all GPUs, use the following NUMA binding:
 
     ```shell
-    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3,4,5,6,7" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
+    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --multi-process --dtype bf16 --p 2000 --d "0,1,2,3,4,5,6,7" --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
     ```
 
     To use only 4 GPUs, you can apply this NUMA binding:
     
     ```shell
-    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --multi-process --dtype bf16 --port 2000 --device-ids "0,1,2,3" --weight-path /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
+    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --multi-process --dtype bf16 --p 2000 --d "0,1,2,3" --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin deep-seek --quant awq --temperature 0. --penalty 1.0
     ```
     *where* `numactl --cpunodebind=0 --membind=0` above indicates NUMA binding for the master rank (master process) which should be matched to `MAP_NUMA_NODE`.
 
@@ -363,7 +363,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     1) Start the backend service for `Qwen3-Reranker` model
     ```shell
-    target/release/candle-vllm --port 2000 --multi-process --weight-file /home/data/Qwen3-Reranker-4B-q4_k_m.gguf qwen3 --quant gguf
+    target/release/candle-vllm --p 2000 --multi-process --f /home/data/Qwen3-Reranker-4B-q4_k_m.gguf qwen3 --quant gguf
     ```
 
     2) Start the chatbot with `system prompt` for qwen3-reranker
@@ -578,7 +578,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     **For unquantized models:**
 
     ```
-    cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+    cargo run --release --features cuda -- --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
     ```
 
     Options for `quant` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -586,7 +586,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     **For quantized 4-bit GPTQ model:**
 
     ```
-    cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b-int4/ mistral --quant marlin
+    cargo run --release --features cuda -- --p 2000 --w /home/mistral_7b-int4/ mistral --quant marlin
     ```
 
     **Please note for marlin**:
@@ -602,7 +602,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
 - KV Cache config, sampling parameter, etc.
   <details>
     <summary>Show details</summary>
-    The `kvcache-mem-gpu` parameter is used to control kv cache, default 4GB GPU memory, increase this for large batch and long-context inference. 
+    The `--mem` (kvcache-mem-gpu) parameter is used to control kv cache, default 4GB GPU memory, increase this for large batch and long-context inference. 
 
     For chat history settings, set `record_conversation` to `true` to let candle-vllm remember chat history. By `default`, candle-vllm `does not` record chat history; instead, the client sends both the messages and the contextual history to candle-vllm. If record_conversation is set to `true`, the client sends only new chat messages to candle-vllm, and candle-vllm is responsible for recording the previous chat messages. However, this approach requires per-session chat recording, which is not yet implemented, so the default approach `record_conversation=false` is recommended.
 
@@ -611,7 +611,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     You may supply `penalty` and `temperature` to the model to **prevent potential repetitions**, for example:
 
     ```
-    cargo run --release --features cuda -- --port 2000 --weight-path /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
+    cargo run --release --features cuda -- --p 2000 --w /home/mistral_7b/ mistral --repeat-last-n 64 --penalty 1.1 --temperature 0.7
     ```
 
     `--max-gen-tokens` parameter is used to control the maximum output tokens per chat response. The value will be set to 1/5 of max_sequence_len by default.
@@ -619,7 +619,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     For `consumer GPUs`, it is suggested to run the models under GGML formats (or Marlin format), e.g.,
 
     ```
-    cargo run --release --features cuda -- --port 2000 --weight-path /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
+    cargo run --release --features cuda -- --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ llama3 --quant q4k
     ```
 
     where `quant` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"].
@@ -632,14 +632,14 @@ Chat frontend (any frontend compatible with openai API, simple options available
     Candle-vllm now supports GPTQ/AWQ Marlin kernel, you may supply the `quant` (marlin) parameter if you have `Marlin` format quantized weights, such as:
 
     ```shell
-    cargo run --release --features cuda -- --port 2000 --dtype f16 --weight-path /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
+    cargo run --release --features cuda -- --p 2000 --dtype f16 --w /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/ llama3 --quant marlin --temperature 0. --penalty 1.
     ```
 
     or, convert existing AWQ 4bit model to marlin compatible format
 
     ```shell
     python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-    cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --port 2000 --device-ids "0" --weight-path /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
+    cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --p 2000 --d "0" --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ llama3 --quant awq --temperature 0. --penalty 1.0
     ```
 
     You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 
