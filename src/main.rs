@@ -299,7 +299,7 @@ async fn main() -> Result<()> {
                     paths,
                     dtype,
                     gguf,
-                    args.isq.clonse(),
+                    args.isq.clone(),
                     device_ids,
                     None,
                     None,
