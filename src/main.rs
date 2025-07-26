@@ -223,7 +223,7 @@ async fn main() -> Result<()> {
                 .load_model(
                     paths,
                     dtype,
-                    &quant,
+                    gguf,
                     vec![device_ids[local_rank]],
                     Some(id),
                     Some(local_rank),
@@ -242,9 +242,7 @@ async fn main() -> Result<()> {
         let _ = config_log(logger, args.log, log_file);
         (
             loader
-                .load_model(
-                    paths, dtype, &quant, device_ids, None, None, None, None, None,
-                )
+                .load_model(paths, dtype, gguf, device_ids, None, None, None, None, None)
                 .await,
             0,
             None,

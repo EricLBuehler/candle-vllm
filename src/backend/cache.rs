@@ -7,7 +7,7 @@ use candle_core::{
 use candle_core::{
     cuda_backend::cudarc::driver::{CudaSlice, DevicePtr},
     cuda_backend::CudaStorageSlice,
-    Device, IndexOp, Storage, Tensor,
+    Device, IndexOp, Result, Storage, Tensor,
 };
 #[cfg(feature = "cuda")]
 use kernels::ffi::{copy_blocks_bf16, copy_blocks_f16, copy_blocks_f32};
@@ -28,18 +28,18 @@ pub unsafe fn copy_blocks(
         panic!("Expected the key caches to be on a CUDA device.")
     };
     if !cache_dev.same_device(value_caches.first().unwrap().device()) {
-        return candle_core::bail!(format!(
+        candle_core::bail!(
             "`key` and `value` caches have different devices, got {:?} and {:?} respectively.",
             cache_dev,
             value_caches.first().unwrap().device()
-        ));
+        )
     }
     if key_caches.first().unwrap().dtype() != value_caches.first().unwrap().dtype() {
-        return candle_core::bail!(format!(
+        candle_core::bail!(
             "Key and value caches have different types, got {:?} and {:?}.",
             key_caches.first().unwrap().dtype(),
             value_caches.first().unwrap().dtype()
-        ));
+        )
     }
     let num_layers: u32 = key_caches.len().try_into().unwrap();
     if num_layers == 0 {
@@ -97,7 +97,7 @@ pub unsafe fn copy_blocks(
                 (ptr_key, ptr_value)
             }
             _ => {
-                return candle_core::bail!("only f32, f16 and bf16 input data type supported!",);
+                candle_core::bail!("only f32, f16 and bf16 input data type supported!")
             }
         };
         key_cache_ptrs.push(key_ptr + key_offset);
@@ -178,7 +178,7 @@ pub fn swap_blocks(
     match (src.device(), dst.device()) {
         (Device::Cuda(src_dev), Device::Cuda(dst_dev)) => {
             if src_dev.ordinal() != dst_dev.ordinal() {
-                return candle_core::bail!(format!("Tensors must be on the same device to copy, got ordinals {} (src) and {} (dst).", src_dev.ordinal(), dst_dev.ordinal()))?;
+                candle_core::bail!("Tensors must be on the same device to copy, got ordinals {} (src) and {} (dst).", src_dev.ordinal(), dst_dev.ordinal())
             }
             let (src_storage, src_layout) = src.storage_and_layout();
             let (dst_storage, dst_layout) = dst.storage_and_layout();
@@ -207,9 +207,7 @@ pub fn swap_blocks(
                     (ptr_src, ptr_dst)
                 }
                 _ => {
-                    return candle_core::bail!(
-                        "only f32, f16 and bf16 input data type supported!"
-                    )?;
+                    candle_core::bail!("only f32, f16 and bf16 input data type supported!");
                 }
             };
             // let src_ptr = src_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(src_layout.start_offset()).unwrap();
@@ -226,7 +224,9 @@ pub fn swap_blocks(
                     dst_dev.upgrade_device_ptr(dst_ptr + dst_offset, block_size_in_bytes)
                 };
 
-                src_dev.dtod_copy(&src_slice, &mut dst_slice)?;
+                src_dev
+                    .dtod_copy(&src_slice, &mut dst_slice)
+                    .map_err(candle_core::Error::wrap)?;
             }
         }
         (Device::Cpu, Device::Cuda(dst_dev)) => {
@@ -252,14 +252,16 @@ pub fn swap_blocks(
                     dst_dev.upgrade_device_ptr(dst_ptr + dst_offset, block_size_in_bytes)
                 };
 
-                dst_dev.htod_sync_copy_into(
-                    &src_slice[src_offset..src_offset + block_size_in_bytes],
-                    &mut dst_slice,
-                )?;
+                dst_dev
+                    .htod_sync_copy_into(
+                        &src_slice[src_offset..src_offset + block_size_in_bytes],
+                        &mut dst_slice,
+                    )
+                    .map_err(candle_core::Error::wrap)?;
             }
         }
         (src, dst) => {
-            return candle_core::bail!(format!("Tensors must be on either the GPU or CPU to swap,, got {src:?} (src) and {dst:?} (dst)."))?;
+            candle_core::bail!("Tensors must be on either the GPU or CPU to swap,, got {src:?} (src) and {dst:?} (dst).")
         }
     }
 
