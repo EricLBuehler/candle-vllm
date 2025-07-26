@@ -231,6 +231,11 @@ impl Scheduler {
             free_blocks * self.block_engine.get_block_size()
         );
     }
+
+    pub fn get_available_kv_tokens(&self) -> usize {
+        let free_blocks = self.block_engine.get_num_free_blocks();
+        free_blocks * self.block_engine.get_block_size()
+    }
 }
 
 impl Scheduler {

@@ -1,7 +1,5 @@
-use super::responses::APIError;
 use crate::openai::sampling_params::Logprobs;
-use crate::try_api;
-use candle_core::{Device, Tensor, WithDType};
+use candle_core::{Device, Result, Tensor, WithDType};
 use dirs;
 use either::Either;
 use std::collections::HashMap;
@@ -18,7 +16,7 @@ fn _make_tensor_with_pad<D: WithDType>(
     max_len: usize,
     pad: D,
     device: &Device,
-) -> Result<Tensor, APIError> {
+) -> Result<Tensor> {
     let mut padded_x = Vec::new();
     for mut x_i in x {
         if x_i.len() < max_len {
@@ -31,29 +29,30 @@ fn _make_tensor_with_pad<D: WithDType>(
         .flat_map(|slice| slice.iter())
         .map(|&xx| xx)
         .collect();
-    Tensor::from_vec(flattened, (padded_x.len(), max_len), device).map_err(APIError::from)
+    Tensor::from_vec(flattened, (padded_x.len(), max_len), device)
 }
 
-pub(crate) fn get_token(
-    hf_token: Option<String>,
-    hf_token_path: Option<String>,
-) -> Result<String, APIError> {
+pub(crate) fn get_token(hf_token: Option<String>, hf_token_path: Option<String>) -> Result<String> {
     Ok(match (hf_token, hf_token_path) {
-        (Some(envvar), None) => try_api!(env::var(envvar)).trim().to_string(),
-        (None, Some(path)) => try_api!(fs::read_to_string(path)).trim().to_string(),
-        (None, None) => try_api!(fs::read_to_string(format!(
+        (Some(envvar), None) => env::var(envvar)
+            .map_err(candle_core::Error::wrap)?
+            .trim()
+            .to_string(),
+        (None, Some(path)) => fs::read_to_string(path)
+            .map_err(candle_core::Error::wrap)?
+            .trim()
+            .to_string(),
+        (None, None) => fs::read_to_string(format!(
             "{}/.cache/huggingface/token",
-            dirs::home_dir()
-                .ok_or(APIError::new_str("No home directory"))?
-                .display()
-        )))
+            dirs::home_dir().unwrap().display()
+        ))
+        .map_err(candle_core::Error::wrap)?
         .trim()
         .to_string(),
-        _ => {
-            return Err(APIError::new_str(
-                "Do not specify `hf_token` and `hf_token_path` at the same time.",
-            ))
-        }
+        (Some(_), Some(path)) => fs::read_to_string(path)
+            .map_err(candle_core::Error::wrap)?
+            .trim()
+            .to_string(),
     })
 }
 

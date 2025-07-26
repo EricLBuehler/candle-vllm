@@ -17,12 +17,12 @@ pub mod yi;
 use crate::openai::distributed::Comm;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::SpecificConfig;
 use candle_core::{DType, Device, Result, Tensor};
 use either::Either;
 use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 #[derive(Deserialize, Debug, Clone)]
 pub struct RopeScaling(#[serde(with = "either::serde_untagged")] pub Either<Vec<f64>, String>);
@@ -60,7 +60,7 @@ pub enum ScoringFunc {
     Sigmoid,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Deserialize, Debug, Clone)]
 pub struct MoEConfig {
     pub num_experts_per_tok: Option<usize>,
     pub n_routed_experts: usize,
@@ -117,42 +117,86 @@ pub enum DeepSeekRopeScaling {
     },
 }
 
-#[derive(Debug, Clone)]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! serde_default_cfg {
+    ($t:ty, $name:ident, $v:expr) => {
+        fn $name() -> $t {
+            $v
+        }
+    };
+}
+serde_default_cfg!(usize, max_seq_len, 8192);
+serde_default_cfg!(usize, original_max_position_embeddings, 8192);
+serde_default_cfg!(bool, tie_word_embeddings, false);
+serde_default_cfg!(f64, rope_theta, 10_000.0f64);
+serde_default_cfg!(bool, qk_layernorm, false);
+
+#[derive(Deserialize, Debug, Clone)]
 pub struct Config {
+    pub architectures: Option<Vec<String>>,
     pub hidden_size: usize,
     pub head_dim: Option<usize>,
     pub intermediate_size: usize,
     pub vocab_size: usize,
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
-    pub num_key_value_heads: usize,
-    pub use_flash_attn: bool,
+    pub num_key_value_heads: Option<usize>,
     pub rms_norm_eps: f64,
+    #[serde(default = "rope_theta")]
     pub rope_theta: f64,
     pub rope_local_base_freq: Option<f64>,
     pub bos_token_id: TokenID,
     pub eos_token_id: TokenID,
+    #[serde(default = "max_seq_len")]
     pub max_seq_len: usize,
+    #[serde(default = "original_max_position_embeddings")]
+    pub original_max_position_embeddings: usize,
     pub sliding_window: Option<usize>,
     pub sliding_window_pattern: Option<usize>,
     pub hidden_act: Option<candle_nn::Activation>,
+    pub hidden_activation: Option<candle_nn::Activation>,
+    #[serde(default = "tie_word_embeddings")]
     pub tie_word_embeddings: bool,
     pub rope_scaling: Option<HashMap<String, RopeScaling>>,
-    pub original_max_position_embeddings: Option<usize>,
-    pub attention_bias: bool,
+    pub max_position_embeddings: Option<usize>,
+    pub attention_bias: Option<bool>,
     pub partial_rotary_factor: Option<f32>,
-    pub qk_layer_rms_norm: Option<bool>,
-    pub kv_cache_dtype: DType,
+    #[serde(default = "qk_layernorm")]
+    pub qk_layernorm: bool,
     pub use_qkv_bias: Option<bool>,
     pub custom_stop_tokens: Option<Vec<String>>,
-    pub specific_config: SpecificConfig,
     pub attn_logit_softcapping: Option<f64>,
     pub final_logit_softcapping: Option<f64>,
     pub quantization_config: Option<QuantConfig>,
     pub moe_config: Option<MoEConfig>,
+    pub quant: Option<String>,
 }
 
 impl Config {
+    pub fn load_config(filename: PathBuf) -> Result<Config> {
+        match std::fs::read(filename) {
+            Ok(f) => {
+                let config: Config =
+                    serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
+                Ok(config)
+            }
+            Err(e) => panic!("Unable to load config file {:?}", e),
+        }
+    }
+
+    pub fn get_model_arch(filename: &PathBuf) -> Result<String> {
+        let config = Config::load_config(filename.clone())?;
+        if config.architectures.is_none() {
+            candle_core::bail!("Missing architectures in config file!");
+        }
+        let architectures = config.architectures.unwrap();
+        if architectures.is_empty() {
+            candle_core::bail!("No architectures defined in config file!");
+        }
+        Ok(architectures[0].clone())
+    }
+
     pub fn get_head_size(&self) -> usize {
         self.head_dim
             .unwrap_or(self.hidden_size / self.num_attention_heads)
@@ -261,7 +305,7 @@ pub struct NaiveAttention {
 impl NaiveAttention {
     pub fn new(cfg: &Config, sliding_window: Option<usize>) -> Self {
         let num_heads = cfg.num_attention_heads;
-        let num_kv_heads = cfg.num_key_value_heads;
+        let num_kv_heads = cfg.num_key_value_heads.unwrap();
         let num_kv_groups = num_heads / num_kv_heads;
         let scale = 1f64 / f64::sqrt(cfg.head_dim.unwrap() as f64);
 
@@ -345,7 +389,7 @@ impl AttentionSelect {
         } else {
             let head_dim = cfg.head_dim.unwrap();
             let attention_heads = cfg.num_attention_heads / comm.world_size();
-            let kv_heads = cfg.num_key_value_heads / comm.world_size();
+            let kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
             AttentionSelect::Paged(
                 PagedAttention::new(
                     attention_heads,

@@ -30,9 +30,9 @@ pub fn get_or_load_func(
         .map_err(APIError::from)
 }
 
+#[allow(unused_imports)]
 use crate::openai::responses::APIError;
 pub use cache::*;
-use candle_core::DType;
 #[cfg(feature = "cuda")]
 use candle_core::{cuda_backend::cudarc::driver::CudaFunction, CudaDevice};
 pub use gptq::*;

@@ -1,83 +1,47 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
-use super::{Config, QuantConfig, RopeScaling};
+use super::{Config, RopeScaling};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::RmsNorm;
 use either::Either;
-use std::collections::HashMap;
 use std::iter::zip;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct PhiConfig {
-    pub vocab_size: usize,
-    pub hidden_act: candle_nn::Activation,
-    pub hidden_size: usize,
-    pub intermediate_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: usize,
-    pub rms_norm_eps: f64,
-    pub rope_theta: f64,
-    pub bos_token_id: TokenID,
-    pub eos_token_id: TokenID,
-    pub rope_scaling: Option<HashMap<String, RopeScaling>>,
-    pub max_position_embeddings: usize,
-    pub original_max_position_embeddings: Option<usize>,
-    pub sliding_window: Option<usize>,
-    pub quantization_config: Option<QuantConfig>,
-}
 
-impl PhiConfig {
-    pub fn into_config(
-        self,
-        use_flash_attn: bool,
-        kv_cache_dtype: DType,
-        scfg: &SpecificConfig,
-    ) -> Config {
-        Config {
-            hidden_size: self.hidden_size,
-            head_dim: Some(self.hidden_size / self.num_attention_heads),
-            intermediate_size: self.intermediate_size,
-            vocab_size: self.vocab_size,
-            num_hidden_layers: self.num_hidden_layers,
-            num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: self.num_key_value_heads,
-            rms_norm_eps: self.rms_norm_eps,
-            rope_theta: self.rope_theta,
-            rope_local_base_freq: None,
-            use_flash_attn,
-            bos_token_id: self.bos_token_id,
-            eos_token_id: self.eos_token_id,
-            max_seq_len: self.max_position_embeddings,
-            sliding_window: self.sliding_window,
-            sliding_window_pattern: None,
-            hidden_act: Some(self.hidden_act),
-            tie_word_embeddings: false,
-            rope_scaling: self.rope_scaling,
-            original_max_position_embeddings: self.original_max_position_embeddings,
-            attention_bias: false,
-            partial_rotary_factor: None,
-            qk_layer_rms_norm: None,
-            kv_cache_dtype,
-            use_qkv_bias: None,
-            custom_stop_tokens: None,
-            specific_config: scfg.clone(),
-            attn_logit_softcapping: None,
-            final_logit_softcapping: None,
-            quantization_config: self.quantization_config,
-            moe_config: None,
+impl Phi {
+    pub fn load_config(filename: &PathBuf) -> Result<Config> {
+        let mut config = Config::load_config(filename.clone())?;
+        config.head_dim = Some(
+            config
+                .head_dim
+                .unwrap_or(config.hidden_size / config.num_attention_heads),
+        );
+        config.num_key_value_heads = Some(
+            config
+                .num_key_value_heads
+                .unwrap_or(config.num_attention_heads),
+        );
+        config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        if config.quantization_config.is_some() {
+            config.quant = Some(
+                config
+                    .quantization_config
+                    .as_ref()
+                    .unwrap()
+                    .quant_method
+                    .clone(),
+            );
         }
+        Ok(config)
     }
 }
 
@@ -94,9 +58,10 @@ impl RotaryEmbedding {
     fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
         let dim = cfg.hidden_size / cfg.num_attention_heads;
         let max_seq_len = cfg.max_seq_len;
+        let rope_theta = cfg.rope_theta;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
-            .map(|i| 1f32 / cfg.rope_theta.powf(i as f64 / dim as f64) as f32)
+            .map(|i| 1f32 / rope_theta.powf(i as f64 / dim as f64) as f32)
             .collect();
         let inv_freq_len = inv_freq.len();
         let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?.to_dtype(DType::F32)?;
@@ -116,15 +81,14 @@ impl RotaryEmbedding {
                     RopeScaling(Either::Left(long_factor)),
                     RopeScaling(Either::Right(tp)),
                 ) => {
-                    let scale = cfg.max_seq_len as f64
-                        / cfg.original_max_position_embeddings.unwrap() as f64;
+                    let scale =
+                        cfg.max_seq_len as f64 / cfg.original_max_position_embeddings as f64;
                     let scaling_factor = if scale <= 1.0 {
                         1.0
                     } else {
                         match tp.as_str() {
                             "su" | "longrope" => (1.0
-                                + scale.ln()
-                                    / (cfg.original_max_position_embeddings.unwrap() as f64).ln())
+                                + scale.ln() / (cfg.original_max_position_embeddings as f64).ln())
                             .sqrt(),
                             "yarn" => 0.1 * scale.ln() + 1.0,
                             _ => 1.0,
@@ -135,7 +99,7 @@ impl RotaryEmbedding {
                         .step_by(2)
                         .enumerate()
                         .map(|(k, i)| {
-                            (1f64 / (long_factor[k] * cfg.rope_theta.powf(i as f64 / dim as f64)))
+                            (1f64 / (long_factor[k] * rope_theta.powf(i as f64 / dim as f64)))
                                 as f32
                         })
                         .collect::<Vec<_>>();
@@ -143,7 +107,7 @@ impl RotaryEmbedding {
                         .step_by(2)
                         .enumerate()
                         .map(|(k, i)| {
-                            (1f64 / (short_factor[k] * cfg.rope_theta.powf(i as f64 / dim as f64)))
+                            (1f64 / (short_factor[k] * rope_theta.powf(i as f64 / dim as f64)))
                                 as f32
                         })
                         .collect::<Vec<_>>();
@@ -172,7 +136,9 @@ impl RotaryEmbedding {
                         cos: short_cos,
                         sin_long: Some(long_sin),
                         cos_long: Some(long_cos),
-                        original_max_position_embeddings: cfg.original_max_position_embeddings,
+                        original_max_position_embeddings: Some(
+                            cfg.original_max_position_embeddings,
+                        ),
                     });
                 }
                 _ => {
@@ -204,7 +170,6 @@ impl RotaryEmbedding {
         for (b, seqlen_offset) in zip(0..b_size, input_positions) {
             let (cos, sin) = if self.sin_long.as_ref().is_some()
                 && self.cos_long.as_ref().is_some()
-                && self.original_max_position_embeddings.is_some()
                 && seqlen_offset[0] > self.original_max_position_embeddings.unwrap()
             {
                 let cos = self
@@ -252,21 +217,21 @@ impl Attention {
         comm: Rc<Comm>,
     ) -> Result<Self> {
         let num_heads = cfg.num_attention_heads;
-        let num_kv_heads = cfg.num_key_value_heads;
+        let num_kv_heads = cfg.num_key_value_heads.unwrap();
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         let op_size = num_heads * head_dim + 2 * num_kv_heads * head_dim;
         let qkv_proj = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             op_size,
             vb.pp("qkv_proj"),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let o_proj = ReplicatedLinear::load_no_bias(
             num_heads * head_dim,
             cfg.hidden_size,
             vb.pp("o_proj"),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         //Fix the attention parallel
@@ -275,7 +240,7 @@ impl Attention {
             "Packed qkv_proj is not supported under multi-gpu setting!"
         );
         let attention_heads = cfg.num_attention_heads / comm.world_size();
-        let kv_heads = cfg.num_key_value_heads / comm.world_size();
+        let kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
         Ok(Self {
             qkv_proj,
             o_proj,
@@ -381,7 +346,7 @@ impl Mlp {
             false,
             vb.pp("gate_up_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let down_proj = TensorParallelRowLinear::load_with_hints(
@@ -390,7 +355,7 @@ impl Mlp {
             false,
             vb.pp("down_proj"),
             comm,
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         Ok(Self {

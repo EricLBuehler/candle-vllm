@@ -55,35 +55,35 @@ async fn get_gen_prompt(
         }
     }
 
-    Ok(conversation.get_prompt(
-        request
-            .thinking
-            .unwrap_or(data.pipeline_config.thinking.unwrap_or(false)),
-    ))
+    Ok(conversation.get_prompt(request.thinking.unwrap_or(false)))
 }
 
 async fn check_length(
     request: &ChatCompletionRequest,
     prompt: String,
     data: &OpenAIServerData,
-) -> Result<Encoding, APIError> {
-    let token_ids = {
+) -> Result<(Encoding, usize), APIError> {
+    let (token_ids, available_kv_tokens) = {
         let model = data.model.read();
+        let available_kv_tokens = model.get_available_kv_tokens();
         let pipeline = model
             .get_pipeline(0)
             .ok_or(APIError::new("Missing pipeline".to_string()))?;
-        pipeline
-            .0
-            .tokenizer()
-            .encode_fast(prompt, false)
-            .map_err(APIError::from)?
+        (
+            pipeline
+                .0
+                .tokenizer()
+                .encode_fast(prompt, false)
+                .map_err(APIError::from)?,
+            available_kv_tokens,
+        )
     };
 
     let max_gen_tokens = request
         .max_tokens
         .unwrap_or(data.pipeline_config.default_max_tokens);
 
-    if token_ids.len() > data.pipeline_config.max_model_len {
+    if token_ids.len() >= data.pipeline_config.max_model_len {
         Err(APIError::new(format!(
             "This model's maximum context length is {} tokens. \
             However, you requested {} tokens ({} in the messages, \
@@ -94,8 +94,23 @@ async fn check_length(
             token_ids.len(),
             max_gen_tokens
         )))
+    } else if token_ids.len() >= available_kv_tokens {
+        Err(APIError::new(format!(
+            "Requested prompt({} tokens) is  \
+            larger than available kvcache (maximum {} tokens).\n \
+            You can increate kvcache by setting `--mem` to a larger value!",
+            token_ids.len(),
+            available_kv_tokens
+        )))
     } else {
-        Ok(token_ids)
+        let max_valid_request_tokens = std::cmp::min(
+            available_kv_tokens,
+            data.pipeline_config.max_model_len - token_ids.len(),
+        ) - 10;
+        Ok((
+            token_ids,
+            std::cmp::min(max_gen_tokens, max_valid_request_tokens),
+        ))
     }
 }
 
@@ -132,39 +147,46 @@ pub async fn chat_completions(
         Err(e) => return ChatResponder::ValidationError(e),
     };
 
-    let token_ids: Encoding = match check_length(&request, prompt.clone(), &data).await {
-        Ok(ids) => ids,
-        Err(e) => return ChatResponder::ValidationError(e),
-    };
+    let (token_ids, available_tokens): (Encoding, usize) =
+        match check_length(&request, prompt.clone(), &data).await {
+            Ok(ids) => ids,
+            Err(e) => return ChatResponder::ValidationError(e),
+        };
 
     debug!("\n\n\nPrompt {:?}", prompt);
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
+
+    let mut max_request_tokens = request
+        .max_tokens
+        .unwrap_or(data.pipeline_config.default_max_tokens);
+
+    if max_request_tokens + token_ids.len() > available_tokens {
+        tracing::warn!("Requested max tokens {} larger than available tokens {}, max_tokens changed to {} ({} tokens reserved for prompt)!", max_request_tokens, available_tokens, available_tokens - token_ids.len(), token_ids.len());
+        max_request_tokens = available_tokens - token_ids.len();
+    }
 
     let sampling_params = match SamplingParams::new(
         request.n.unwrap_or(1),
         request.best_of,
         request.presence_penalty.unwrap_or(0.0),
         request.frequency_penalty.unwrap_or(0.0),
-        request
-            .repetition_penalty
-            .unwrap_or(data.pipeline_config.penalty),
-        request.temperature.or(data.pipeline_config.temperature),
-        request.top_p.or(data.pipeline_config.top_p),
-        request.top_k.or(data.pipeline_config.top_k),
+        request.repetition_penalty,
+        request.repeat_last_n,
+        request.temperature,
+        request.top_p,
+        request.top_k,
         request.use_beam_search.unwrap_or(false),
         1.0,
         EarlyStoppingCondition::UnlikelyBetterCandidates,
         request.stop.clone(),
         request.stop_token_ids.clone().unwrap_or_default(),
         request.ignore_eos.unwrap_or(false),
-        request
-            .max_tokens
-            .unwrap_or(data.pipeline_config.default_max_tokens),
+        max_request_tokens,
         None,
         None,
         request.skip_special_tokens.unwrap_or(true),
-        request.thinking.or(data.pipeline_config.thinking),
+        request.thinking,
     ) {
         Ok(params) => params,
         Err(e) => return ChatResponder::ValidationError(e),

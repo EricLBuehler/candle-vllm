@@ -1,90 +1,45 @@
-use super::{Config, QuantConfig};
+use super::Config;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::RmsNorm;
 use std::iter::zip;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct QwenConfig {
-    pub vocab_size: usize,
-    pub hidden_size: usize,
-    pub head_dim: Option<usize>,
-    pub intermediate_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: usize,
-    pub max_position_embeddings: usize,
-    pub sliding_window: Option<usize>,
-    pub max_window_layers: usize,
-    pub tie_word_embeddings: bool, //shared weights between input/output embeddings
-    pub attention_bias: Option<bool>,
-    pub rope_theta: f64,
-    pub rms_norm_eps: f64,
-    pub use_sliding_window: Option<bool>,
-    pub hidden_act: candle_nn::Activation,
-    pub bos_token_id: TokenID,
-    pub eos_token_id: TokenID,
-    pub quantization_config: Option<QuantConfig>,
-}
 
-impl QwenConfig {
-    pub fn into_config(
-        self,
-        use_flash_attn: bool,
-        kv_cache_dtype: DType,
-        scfg: &SpecificConfig,
-    ) -> Config {
-        let sliding_window = if self.use_sliding_window.unwrap_or(false) {
-            self.sliding_window
-        } else {
-            None
-        };
-        Config {
-            hidden_size: self.hidden_size,
-            head_dim: Some(
-                self.head_dim
-                    .unwrap_or(self.hidden_size / self.num_attention_heads),
-            ),
-            intermediate_size: self.intermediate_size,
-            vocab_size: self.vocab_size,
-            num_hidden_layers: self.num_hidden_layers,
-            num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: self.num_key_value_heads,
-            rms_norm_eps: self.rms_norm_eps,
-            rope_theta: self.rope_theta,
-            rope_local_base_freq: None,
-            use_flash_attn,
-            bos_token_id: self.bos_token_id,
-            eos_token_id: self.eos_token_id,
-            max_seq_len: self.max_position_embeddings,
-            sliding_window,
-            sliding_window_pattern: None,
-            hidden_act: Some(self.hidden_act),
-            tie_word_embeddings: self.tie_word_embeddings,
-            rope_scaling: None,
-            original_max_position_embeddings: None,
-            attention_bias: self.attention_bias.unwrap_or(true),
-            partial_rotary_factor: None,
-            qk_layer_rms_norm: None,
-            kv_cache_dtype,
-            use_qkv_bias: None,
-            custom_stop_tokens: None,
-            specific_config: scfg.clone(),
-            attn_logit_softcapping: None,
-            final_logit_softcapping: None,
-            quantization_config: self.quantization_config,
-            moe_config: None,
+impl Qwen {
+    pub fn load_config(filename: &PathBuf) -> Result<Config> {
+        let mut config = Config::load_config(filename.clone())?;
+        config.head_dim = Some(
+            config
+                .head_dim
+                .unwrap_or(config.hidden_size / config.num_attention_heads),
+        );
+        config.num_key_value_heads = Some(
+            config
+                .num_key_value_heads
+                .unwrap_or(config.num_attention_heads),
+        );
+        config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        config.attention_bias = Some(config.attention_bias.unwrap_or(true));
+        if config.quantization_config.is_some() {
+            config.quant = Some(
+                config
+                    .quantization_config
+                    .as_ref()
+                    .unwrap()
+                    .quant_method
+                    .clone(),
+            );
         }
+        Ok(config)
     }
 }
 
@@ -157,7 +112,7 @@ impl Mlp {
             false,
             vb.pp("gate_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let up_proj = TensorParallelColumnLinear::load_with_hints(
@@ -166,7 +121,7 @@ impl Mlp {
             false,
             vb.pp("up_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let down_proj = TensorParallelRowLinear::load_with_hints(
@@ -175,7 +130,7 @@ impl Mlp {
             false,
             vb.pp("down_proj"),
             comm,
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         Ok(Self {
@@ -219,34 +174,35 @@ impl Attention {
     ) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
-        let num_kv_heads = cfg.num_key_value_heads;
+        let num_kv_heads = cfg.num_key_value_heads.unwrap();
         let head_dim = cfg.head_dim.unwrap_or(hidden_sz / num_heads);
+        let attention_bias = cfg.attention_bias.unwrap_or(false);
 
         let q_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_heads * head_dim,
-            cfg.attention_bias,
+            attention_bias,
             vb.pp("q_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let k_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
-            cfg.attention_bias,
+            attention_bias,
             vb.pp("k_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let v_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
-            cfg.attention_bias,
+            attention_bias,
             vb.pp("v_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
@@ -256,7 +212,7 @@ impl Attention {
             false,
             vb.pp("o_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
@@ -272,7 +228,7 @@ impl Attention {
         };
 
         let attention_heads = cfg.num_attention_heads / comm.world_size();
-        let kv_heads = cfg.num_key_value_heads / comm.world_size();
+        let kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
         Ok(Self {
             q_proj,
             k_proj,

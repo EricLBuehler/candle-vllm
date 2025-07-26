@@ -1,7 +1,6 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 use super::{
-    Config, DeepSeekRopeScaling, MoEConfig, QuantConfig, ScoringFunc, SpecificConfig, TokenID,
-    TopkMethod,
+    Config, DeepSeekRopeScaling, MoEConfig, QuantConfig, ScoringFunc, TokenID, TopkMethod,
 };
 use crate::backend::custom_ops::moe::{masked_fill, NonZeroOp, SplitOp, TopKLastDimOp, TopKOutput};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
@@ -19,6 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::f32::consts::PI;
 use std::iter::{zip, FromIterator};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
@@ -39,7 +39,7 @@ serde_default_fn!(usize, first_k_dense_replace, 0);
 serde_default_fn!(bool, norm_topk_prob, false);
 serde_default_fn!(ScoringFunc, scoring_func, ScoringFunc::Softmax);
 serde_default_fn!(Activation, hidden_act, Activation::Silu);
-// serde_default_fn!(bool, tie_word_embeddings, false);
+serde_default_fn!(bool, tie_word_embeddings, false);
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct DeepSeekConfig {
@@ -70,8 +70,8 @@ pub struct DeepSeekConfig {
     pub(crate) hidden_act: Activation,
     pub(crate) max_position_embeddings: usize,
     pub(crate) rms_norm_eps: f64,
-    // #[serde(default = "tie_word_embeddings")]
-    // pub(crate) tie_word_embeddings: bool,
+    #[serde(default = "tie_word_embeddings")]
+    pub(crate) tie_word_embeddings: bool,
     pub(crate) rope_theta: f32,
     pub(crate) rope_scaling: Option<DeepSeekRopeScaling>,
     // pub(crate) attention_bias: bool,
@@ -94,68 +94,103 @@ pub struct DeepSeekV2RotaryEmbedding {
     cos: Tensor,
 }
 
-impl DeepSeekConfig {
-    pub fn into_config(
-        self,
-        use_flash_attn: bool,
-        kv_cache_dtype: DType,
-        scfg: &SpecificConfig,
-    ) -> Config {
-        let moe_config = MoEConfig {
-            num_experts_per_tok: self.num_experts_per_tok,
-            n_routed_experts: self.n_routed_experts.unwrap_or(0),
-            moe_intermediate_size: self.moe_intermediate_size,
-            scoring_func: self.scoring_func,
-            topk_method: self.topk_method,
-            norm_topk_prob: self.norm_topk_prob,
-            routed_scaling_factor: self.routed_scaling_factor,
-            n_shared_experts: self.n_shared_experts,
-            qk_nope_head_dim: self.qk_nope_head_dim,
-            qk_rope_head_dim: self.qk_rope_head_dim,
-            v_head_dim: self.v_head_dim,
-            kv_lora_rank: self.kv_lora_rank,
-            first_k_dense_replace: self.first_k_dense_replace,
-            moe_layer_freq: self.moe_layer_freq,
-            rope_scaling: self.rope_scaling,
-            q_lora_rank: self.q_lora_rank,
-            n_group: self.n_group,
-            topk_group: self.topk_group,
-            num_experts_offload_per_rank: scfg.num_experts_offload_per_rank,
+impl DeepSeek {
+    pub fn load_config(filename: &PathBuf) -> Result<Config> {
+        let config = match std::fs::read(filename.clone()) {
+            Ok(f) => {
+                let config: DeepSeekConfig =
+                    serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
+                config
+            }
+            Err(e) => panic!("Unable to load config file {:?}", e),
         };
 
-        Config {
-            hidden_size: self.hidden_size,
-            head_dim: Some(self.hidden_size / self.num_attention_heads),
-            intermediate_size: self.intermediate_size,
-            vocab_size: self.vocab_size,
-            num_hidden_layers: self.num_hidden_layers,
-            num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: self.num_key_value_heads.unwrap_or(self.num_attention_heads),
-            rms_norm_eps: self.rms_norm_eps,
-            rope_theta: f64::from(self.rope_theta),
+        let num_experts_offload_per_rank = if let Ok(num_experts_offload_per_rank) =
+            std::env::var("NUM_EXPERTS_OFFLOAD_PER_RANK")
+        {
+            let number: usize = num_experts_offload_per_rank
+                .trim()
+                .parse::<usize>()
+                .expect("Failed to parse num_experts_offload_per_rank to number");
+            Some(number)
+        } else {
+            None
+        };
+
+        let moe_config = MoEConfig {
+            num_experts_per_tok: config.num_experts_per_tok,
+            n_routed_experts: config.n_routed_experts.unwrap_or(0),
+            moe_intermediate_size: config.moe_intermediate_size,
+            scoring_func: config.scoring_func,
+            topk_method: config.topk_method,
+            norm_topk_prob: config.norm_topk_prob,
+            routed_scaling_factor: config.routed_scaling_factor,
+            n_shared_experts: config.n_shared_experts,
+            qk_nope_head_dim: config.qk_nope_head_dim,
+            qk_rope_head_dim: config.qk_rope_head_dim,
+            v_head_dim: config.v_head_dim,
+            kv_lora_rank: config.kv_lora_rank,
+            first_k_dense_replace: config.first_k_dense_replace,
+            moe_layer_freq: config.moe_layer_freq,
+            rope_scaling: config.rope_scaling,
+            q_lora_rank: config.q_lora_rank,
+            n_group: config.n_group,
+            topk_group: config.topk_group,
+            num_experts_offload_per_rank,
+        };
+
+        let quant = if config.quantization_config.is_some() {
+            Some(
+                config
+                    .quantization_config
+                    .as_ref()
+                    .unwrap()
+                    .quant_method
+                    .clone(),
+            )
+        } else {
+            None
+        };
+
+        let config = Config {
+            architectures: Some(vec!["DeepseekV3ForCausalLM".to_string()]),
+            hidden_size: config.hidden_size,
+            head_dim: Some(config.hidden_size / config.num_attention_heads),
+            intermediate_size: config.intermediate_size,
+            vocab_size: config.vocab_size,
+            num_hidden_layers: config.num_hidden_layers,
+            num_attention_heads: config.num_attention_heads,
+            num_key_value_heads: Some(
+                config
+                    .num_key_value_heads
+                    .unwrap_or(config.num_attention_heads),
+            ),
+            rms_norm_eps: config.rms_norm_eps,
+            rope_theta: f64::from(config.rope_theta),
             rope_local_base_freq: None,
-            use_flash_attn,
-            bos_token_id: self.bos_token_id,
-            eos_token_id: self.eos_token_id,
-            max_seq_len: self.max_position_embeddings,
-            sliding_window: self.sliding_window,
+            bos_token_id: config.bos_token_id,
+            eos_token_id: config.eos_token_id,
+            max_seq_len: config.max_position_embeddings,
+            sliding_window: config.sliding_window,
             sliding_window_pattern: None,
-            hidden_act: Some(self.hidden_act),
-            tie_word_embeddings: false,
+            hidden_act: Some(config.hidden_act),
+            hidden_activation: None,
+            tie_word_embeddings: config.tie_word_embeddings,
             rope_scaling: None,
-            original_max_position_embeddings: None,
-            attention_bias: false,
+            max_position_embeddings: Some(config.max_position_embeddings),
+            original_max_position_embeddings: config.max_position_embeddings,
+            attention_bias: Some(false),
             partial_rotary_factor: None,
-            qk_layer_rms_norm: None,
-            kv_cache_dtype,
+            qk_layernorm: false,
             use_qkv_bias: None,
             custom_stop_tokens: None,
-            specific_config: scfg.clone(),
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
-            quantization_config: self.quantization_config,
+            quantization_config: config.quantization_config.clone(),
             moe_config: Some(moe_config),
-        }
+            quant,
+        };
+        Ok(config)
     }
 }
 
@@ -391,14 +426,15 @@ impl Attention {
     ) -> Result<Self> {
         let q_head_dim = cfg.q_head_dim();
         let moe_cfg = cfg.moe_config.as_ref().unwrap();
+        let attention_bias = cfg.attention_bias.unwrap();
         let q = match moe_cfg.q_lora_rank {
             Some(lora_rank) => {
                 let a = ReplicatedLinear::load_b(
                     cfg.hidden_size,
                     lora_rank,
-                    cfg.attention_bias,
+                    attention_bias,
                     vb.pp("q_a_proj"),
-                    &cfg.specific_config.quant,
+                    &cfg.quant,
                     &cfg.quantization_config,
                 )?;
                 let norm = rms_norm(lora_rank, cfg.rms_norm_eps, vb.pp("q_a_layernorm"))?;
@@ -408,7 +444,7 @@ impl Attention {
                     false,
                     vb.pp("q_b_proj"),
                     comm.clone(),
-                    &cfg.specific_config.quant,
+                    &cfg.quant,
                     &cfg.quantization_config,
                 )?;
                 QProj::Lora { a, norm, b }
@@ -419,7 +455,7 @@ impl Attention {
                 false,
                 vb.pp("q_proj"),
                 comm.clone(),
-                &cfg.specific_config.quant,
+                &cfg.quant,
                 &cfg.quantization_config,
             )?),
         };
@@ -427,9 +463,9 @@ impl Attention {
         let kv_a_proj_with_mqa = ReplicatedLinear::load_b(
             cfg.hidden_size,
             moe_cfg.kv_lora_rank + moe_cfg.qk_rope_head_dim,
-            cfg.attention_bias,
+            attention_bias,
             vb.pp("kv_a_proj_with_mqa"),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let kv_a_layernorm = rms_norm(
@@ -443,22 +479,22 @@ impl Attention {
             false,
             vb.pp("kv_b_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
         let o_proj = TensorParallelRowLinear::load_with_hints(
             cfg.num_attention_heads * moe_cfg.v_head_dim,
             cfg.hidden_size,
-            cfg.attention_bias,
+            attention_bias,
             vb.pp("o_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
         let num_attention_heads = cfg.num_attention_heads / comm.world_size();
-        let num_kv_heads = cfg.num_key_value_heads / comm.world_size();
+        let num_kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
 
         Ok(Self {
             q,
@@ -588,7 +624,7 @@ impl Mlp {
             hidden_size,
             intermediate_size,
             vb.pp("gate_proj"),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
@@ -596,7 +632,7 @@ impl Mlp {
             hidden_size,
             intermediate_size,
             vb.pp("up_proj"),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
@@ -604,7 +640,7 @@ impl Mlp {
             intermediate_size,
             hidden_size,
             vb.pp("down_proj"),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 

@@ -7,13 +7,13 @@ use crate::openai::distributed::{
 use crate::openai::models::RopeScaling;
 use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
-use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Activation, RmsNorm};
 use either::Either;
 use std::collections::HashMap;
 use std::iter::zip;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
@@ -98,28 +98,32 @@ pub struct Gemma3Config {
     pub text_config: GemmaTextConfig,
 }
 
-impl Gemma3Config {
-    pub fn into_config(
-        self,
-        use_flash_attn: bool,
-        kv_cache_dtype: DType,
-        scfg: &SpecificConfig,
-    ) -> Config {
-        let bos_token_id = self
+impl Gemma3 {
+    pub fn load_config(filename: &PathBuf) -> Result<Config> {
+        let config = match std::fs::read(filename.clone()) {
+            Ok(f) => {
+                let config: Gemma3Config =
+                    serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
+                config
+            }
+            Err(e) => panic!("Unable to load config file {:?}", e),
+        };
+
+        let bos_token_id = config
             .text_config
             .bos_token_id
-            .or(self.bos_token_id)
+            .or(config.bos_token_id)
             .unwrap_or(super::TokenID(Either::Left(Some(2))));
 
-        let eos_token_id = self
+        let eos_token_id = config
             .text_config
             .eos_token_id
-            .or(self.eos_token_id)
+            .or(config.eos_token_id)
             .unwrap_or(super::TokenID(Either::Left(Some(1))));
 
-        let ropescaling = if self.text_config.rope_scaling.is_some() {
+        let ropescaling = if config.text_config.rope_scaling.is_some() {
             let mut ropescaling = HashMap::<String, RopeScaling>::new();
-            for (key, value) in self.text_config.rope_scaling.as_ref().unwrap() {
+            for (key, value) in config.text_config.rope_scaling.as_ref().unwrap() {
                 match value {
                     Gemma3RopeScaling(Either::Left(l)) => {
                         ropescaling.insert(key.to_string(), RopeScaling(Either::Left(vec![*l])));
@@ -135,39 +139,55 @@ impl Gemma3Config {
             None
         };
 
-        Config {
-            hidden_size: self.text_config.hidden_size,
-            head_dim: Some(self.text_config.head_dim),
-            intermediate_size: self.text_config.intermediate_size,
-            vocab_size: self.text_config.vocab_size,
-            num_hidden_layers: self.text_config.num_hidden_layers,
-            num_attention_heads: self.text_config.num_attention_heads,
-            num_key_value_heads: self.text_config.num_key_value_heads,
-            rms_norm_eps: self.text_config.rms_norm_eps,
-            rope_theta: self.text_config.rope_theta,
-            rope_local_base_freq: Some(self.text_config.rope_local_base_freq),
-            use_flash_attn,
+        let quant = if config.text_config.quantization_config.is_some() {
+            Some(
+                config
+                    .text_config
+                    .quantization_config
+                    .as_ref()
+                    .unwrap()
+                    .quant_method
+                    .clone(),
+            )
+        } else {
+            None
+        };
+
+        let config = Config {
+            architectures: Some(vec!["Gemma3ForConditionalGeneration".to_string()]),
+            hidden_size: config.text_config.hidden_size,
+            head_dim: Some(config.text_config.head_dim),
+            intermediate_size: config.text_config.intermediate_size,
+            vocab_size: config.text_config.vocab_size,
+            num_hidden_layers: config.text_config.num_hidden_layers,
+            num_attention_heads: config.text_config.num_attention_heads,
+            num_key_value_heads: Some(config.text_config.num_key_value_heads),
+            rms_norm_eps: config.text_config.rms_norm_eps,
+            rope_theta: config.text_config.rope_theta,
+            rope_local_base_freq: Some(config.text_config.rope_local_base_freq),
             bos_token_id,
             eos_token_id,
-            max_seq_len: self.text_config.max_position_embeddings,
-            sliding_window: self.text_config.sliding_window,
-            sliding_window_pattern: Some(self.text_config.sliding_window_pattern),
-            hidden_act: Some(self.text_config.hidden_activation),
-            tie_word_embeddings: self.text_config.tie_word_embeddings,
+            max_seq_len: config.text_config.max_position_embeddings,
+            sliding_window: config.text_config.sliding_window,
+            sliding_window_pattern: Some(config.text_config.sliding_window_pattern),
+            hidden_act: Some(config.text_config.hidden_activation),
+            hidden_activation: None,
+            tie_word_embeddings: config.text_config.tie_word_embeddings,
             rope_scaling: ropescaling,
-            original_max_position_embeddings: None,
-            attention_bias: self.text_config.attention_bias,
+            max_position_embeddings: Some(config.text_config.max_position_embeddings),
+            original_max_position_embeddings: config.text_config.max_position_embeddings,
+            attention_bias: Some(config.text_config.attention_bias),
             partial_rotary_factor: None,
-            qk_layer_rms_norm: None,
-            kv_cache_dtype,
+            qk_layernorm: false,
             use_qkv_bias: None,
             custom_stop_tokens: None,
-            specific_config: scfg.clone(),
-            attn_logit_softcapping: self.text_config.attn_logit_softcapping,
-            final_logit_softcapping: self.text_config.final_logit_softcapping,
-            quantization_config: self.text_config.quantization_config,
+            attn_logit_softcapping: config.text_config.attn_logit_softcapping,
+            final_logit_softcapping: config.text_config.final_logit_softcapping,
+            quantization_config: config.text_config.quantization_config.clone(),
             moe_config: None,
-        }
+            quant,
+        };
+        Ok(config)
     }
 }
 
@@ -305,7 +325,7 @@ impl Mlp {
             false,
             vb.pp("gate_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let up_proj = TensorParallelColumnLinear::load_with_hints(
@@ -314,7 +334,7 @@ impl Mlp {
             false,
             vb.pp("up_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let down_proj = TensorParallelRowLinear::load_with_hints(
@@ -323,7 +343,7 @@ impl Mlp {
             false,
             vb.pp("down_proj"),
             comm,
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         Ok(Self {
@@ -368,9 +388,9 @@ impl Attention {
     ) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
-        let num_kv_heads = cfg.num_key_value_heads;
+        let num_kv_heads = cfg.num_key_value_heads.unwrap();
         let head_dim = cfg.head_dim.unwrap();
-        let bias = cfg.attention_bias;
+        let bias = cfg.attention_bias.unwrap();
 
         let q_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
@@ -378,7 +398,7 @@ impl Attention {
             bias,
             vb.pp("q_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let k_proj = TensorParallelColumnLinear::load_with_hints(
@@ -387,7 +407,7 @@ impl Attention {
             bias,
             vb.pp("k_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let v_proj = TensorParallelColumnLinear::load_with_hints(
@@ -396,7 +416,7 @@ impl Attention {
             bias,
             vb.pp("v_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
@@ -406,7 +426,7 @@ impl Attention {
             bias,
             vb.pp("o_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
@@ -414,7 +434,7 @@ impl Attention {
         let k_norm = rms_norm(head_dim, cfg.rms_norm_eps, vb.pp("k_norm"))?;
 
         let attention_heads = cfg.num_attention_heads / comm.world_size();
-        let kv_heads = cfg.num_key_value_heads / comm.world_size();
+        let kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
         Ok(Self {
             q_proj,
             k_proj,

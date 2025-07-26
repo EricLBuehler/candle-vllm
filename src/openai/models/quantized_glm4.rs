@@ -3,7 +3,6 @@ use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::models::glm4::RotaryEmbedding;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::SpecificConfig;
 use candle_core::quantized::{gguf_file, QMatMul};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module};
@@ -152,44 +151,43 @@ impl GGUFGLM4 {
         block_count: usize,
         head_count: usize,
         head_count_kv: usize,
-        rope_theta: f32,
+        rope_theta: f64,
         rms_eps: f64,
         max_seq_len: usize,
-        kv_cache_dtype: DType,
-        s_cfg: SpecificConfig,
     ) -> Config {
         Config {
+            architectures: Some(vec!["glm4".to_string()]),
             hidden_size: embedding_length,
             head_dim: Some(head_dim),
             intermediate_size: i_size,
             vocab_size: 0,
             num_hidden_layers: block_count,
             num_attention_heads: head_count,
-            num_key_value_heads: head_count_kv,
+            num_key_value_heads: Some(head_count_kv),
             rms_norm_eps: rms_eps,
-            rope_theta: rope_theta as f64,
+            rope_theta,
             rope_local_base_freq: None,
-            use_flash_attn: false,
             bos_token_id: super::TokenID(Either::Left(None)),
             eos_token_id: super::TokenID(Either::Left(None)),
             max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,
             hidden_act: None,
+            hidden_activation: None,
             tie_word_embeddings: false,
             rope_scaling: None,
-            original_max_position_embeddings: Some(max_seq_len),
-            attention_bias: false,
+            max_position_embeddings: Some(max_seq_len),
+            original_max_position_embeddings: max_seq_len,
+            attention_bias: Some(false),
             partial_rotary_factor: Some(0.5),
-            qk_layer_rms_norm: None,
-            kv_cache_dtype,
+            qk_layernorm: false,
             use_qkv_bias: None,
             custom_stop_tokens: None,
-            specific_config: s_cfg,
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             quantization_config: None,
             moe_config: None,
+            quant: Some("gguf".to_string()),
         }
     }
 
@@ -206,7 +204,6 @@ impl GGUFGLM4 {
         reader: &mut R,
         device: &Device,
         dtype: DType,
-        s_cfg: SpecificConfig,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -254,11 +251,9 @@ impl GGUFGLM4 {
             block_count,
             head_count,
             head_count_kv,
-            rope_freq_base,
+            rope_freq_base as f64,
             rms_norm_eps,
             context_length,
-            dtype,
-            s_cfg,
         );
         let rotary_emb = Arc::new(RotaryEmbedding::new(&cfg, dtype, device)?);
 
