@@ -43,7 +43,7 @@ macro_rules! try_api {
         match $candle_result {
             Ok(v) => v,
             Err(e) => {
-                return Err(APIError::from(e));
+                return Err(crate::openai::responses::APIError::from(e));
             }
         }
     };

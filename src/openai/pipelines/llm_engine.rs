@@ -10,8 +10,8 @@ use crate::{
     openai::{
         models::Config,
         responses::{
-            APIError, ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionUsageResponse,
-            Choice, ChoiceData, WrapperLogprobs,
+            ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionUsageResponse, Choice,
+            ChoiceData, WrapperLogprobs,
         },
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
@@ -22,9 +22,8 @@ use crate::{
         sequence::{Sequence, SequenceGroup, _Sequence},
         SchedulerConfig, SchedulerOutput,
     },
-    try_api,
 };
-use candle_core::{Device, Tensor};
+use candle_core::{Device, Result, Tensor};
 use either::Either;
 use flume::Sender;
 use parking_lot::RwLock;
@@ -40,6 +39,7 @@ use std::{
 };
 use tokenizers::Encoding;
 use tokio::sync::Notify;
+#[allow(unused_imports)]
 use tracing::{debug, info, warn};
 #[allow(dead_code)]
 struct PreparedInputs {
@@ -50,6 +50,7 @@ struct PreparedInputs {
 
 const _PAD_SLOT_ID: i64 = -1;
 
+#[allow(unused)]
 pub struct LLMEngine {
     pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
     pub scheduler: Scheduler,
@@ -99,7 +100,7 @@ impl LLMEngine {
         num_shards: usize,
         multi_process: bool,
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
-    ) -> Result<Arc<RwLock<Self>>, APIError> {
+    ) -> Result<Arc<RwLock<Self>>> {
         let num_threads: usize = pipelines.len();
         let engine = Arc::new(RwLock::new(Self {
             pipelines,
@@ -209,6 +210,7 @@ impl LLMEngine {
         Ok(engine_clone)
     }
 
+    #[allow(unused_mut, unused_variables)]
     pub fn sync_waiting_task_to_group(&mut self) -> bool {
         let mut continue_loop = false;
         #[cfg(feature = "nccl")]
@@ -426,7 +428,7 @@ impl LLMEngine {
         engine: Arc<RwLock<Self>>,
         rank: usize,
         multi_process: bool,
-    ) -> Result<HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>, APIError> {
+    ) -> Result<HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>> {
         let mut responses =
             HashMap::<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>::new();
         let mut prompt_finish_times = HashMap::<usize, SystemTime>::new();
@@ -808,16 +810,16 @@ impl LLMEngine {
         &mut self,
         scheduler_output: &SchedulerOutput,
         rank: usize,
-    ) -> Result<(), APIError> {
+    ) -> Result<()> {
         let cache_engine = Box::new(&mut self.get_mut_pipeline(rank).unwrap().1);
         if !scheduler_output.blocks_to_swap_in.is_empty() {
-            try_api!(cache_engine.swap_in(scheduler_output.blocks_to_swap_in.clone()));
+            cache_engine.swap_in(scheduler_output.blocks_to_swap_in.clone())?;
         }
         if !scheduler_output.blocks_to_swap_out.is_empty() {
-            try_api!(cache_engine.swap_out(scheduler_output.blocks_to_swap_out.clone()));
+            cache_engine.swap_out(scheduler_output.blocks_to_swap_out.clone())?;
         }
         if !scheduler_output.blocks_to_copy.is_empty() {
-            try_api!(cache_engine.copy(scheduler_output.blocks_to_copy.clone()));
+            cache_engine.copy(scheduler_output.blocks_to_copy.clone())?;
         }
         Ok(())
     }
@@ -826,7 +828,7 @@ impl LLMEngine {
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
         device: &Device,
-    ) -> Result<PreparedInputs, APIError> {
+    ) -> Result<PreparedInputs> {
         let mut prompt_lens = Vec::new();
         let mut input_tokens = Vec::new();
         let mut input_positions = Vec::new();
@@ -914,7 +916,6 @@ impl LLMEngine {
                 context_lens: None,
                 block_tables: None,
                 is_prompt: true,
-                kv_cache_dtype: "auto".to_string(), // TODO(EricLBuehler): specialize for models
             },
         })
     }
@@ -923,7 +924,7 @@ impl LLMEngine {
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
         device: &Device,
-    ) -> Result<PreparedInputs, APIError> {
+    ) -> Result<PreparedInputs> {
         let mut input_tokens = Vec::new();
         let mut input_positions = Vec::new();
         let mut context_lens = Vec::new();
@@ -991,11 +992,11 @@ impl LLMEngine {
         let slot_mapping = _make_tensor_with_pad(slot_mappings, 1, _PAD_SLOT_ID, device)?;
 
         let max_context_len = context_lens.iter().max().unwrap();
-        let context_lens = try_api!(Tensor::from_vec(
+        let context_lens = Tensor::from_vec(
             context_lens.iter().map(|x| *x as u32).collect::<Vec<_>>(),
             (context_lens.len(),),
             device,
-        ));
+        )?;
 
         let max_block_table_len = block_tables.iter().map(|x| x.len()).max().unwrap();
         let block_tables = _make_tensor_with_pad(
@@ -1007,7 +1008,7 @@ impl LLMEngine {
             0,
             device,
         )?;
-        let block_tables = try_api!(block_tables.reshape(((), max_block_table_len)));
+        let block_tables = block_tables.reshape(((), max_block_table_len))?;
         Ok(PreparedInputs {
             tokens: input_tokens,
             positions: input_positions,
@@ -1018,7 +1019,6 @@ impl LLMEngine {
                 context_lens: Some(context_lens),
                 block_tables: Some(block_tables),
                 is_prompt: false,
-                kv_cache_dtype: "auto".to_string(), // TODO(EricLBuehler): specialize for models
             },
         })
     }
@@ -1102,5 +1102,9 @@ impl LLMEngine {
         waiting_tasks.push(task);
         self.seq_id += 1;
         self.group_id += 1;
+    }
+
+    pub fn get_available_kv_tokens(&self) -> usize {
+        self.scheduler.get_available_kv_tokens()
     }
 }
