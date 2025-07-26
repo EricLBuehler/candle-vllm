@@ -52,7 +52,8 @@ pub struct SamplingParams {
     pub frequency_penalty: f32,
     /// Penalize new tokens based upon whether their frequency in the generated text so far, >1 encourage new, <1 encourage repeat
     /// rec. default = 1
-    pub repetition_penalty: f32,
+    pub repetition_penalty: Option<f32>,
+    pub repeat_last_n: Option<usize>,
     /// Randomness of sampling.
     /// rec. default = 1
     pub temperature: Option<f32>,
@@ -101,7 +102,8 @@ impl SamplingParams {
         best_of: Option<usize>,
         presence_penalty: f32,
         frequency_penalty: f32,
-        repetition_penalty: f32,
+        repetition_penalty: Option<f32>,
+        repeat_last_n: Option<usize>,
         temperature: Option<f32>,
         top_p: Option<f32>,
         top_k: Option<isize>,
@@ -123,6 +125,7 @@ impl SamplingParams {
             presence_penalty,
             frequency_penalty,
             repetition_penalty,
+            repeat_last_n,
             temperature,
             top_p,
             top_k,
@@ -177,18 +180,22 @@ impl SamplingParams {
                 self.frequency_penalty
             )));
         }
-        if !(Range {
-            start: 0.0,
-            end: 2.0,
-        })
-        .contains(&self.repetition_penalty)
-            || self.repetition_penalty == 0.0
-        {
-            return Err(APIError::new(format!(
-                "repetition_penalty must be in (0, 2], got {}",
-                self.repetition_penalty
-            )));
+        if self.repetition_penalty.is_some() {
+            let repetition_penalty = self.repetition_penalty.unwrap();
+            if !(Range {
+                start: 0.0,
+                end: 2.0,
+            })
+            .contains(&repetition_penalty)
+                || repetition_penalty == 0.0
+            {
+                return Err(APIError::new(format!(
+                    "repetition_penalty must be in (0, 2], got {}",
+                    repetition_penalty
+                )));
+            }
         }
+
         if self.temperature.unwrap_or(0.0f32) < 0.0f32 {
             return Err(APIError::new(format!(
                 "temperature must be non-negative, got {}",

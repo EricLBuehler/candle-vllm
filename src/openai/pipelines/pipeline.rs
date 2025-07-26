@@ -1,4 +1,5 @@
 use super::{get_token, TokenOrFinishReason};
+use crate::backend::gguf;
 use crate::backend::progress::{progress_worker, ProgressReporter};
 use crate::openai::logits_processor::LogitsProcessor;
 use crate::openai::models::TokenID;
@@ -15,31 +16,17 @@ use crate::{
             Conversation,
         },
         models::{
-            deepseek::{DeepSeek, DeepSeekConfig},
-            gemma::{Gemma, GemmaConfig},
-            gemma3::{Gemma3, Gemma3Config},
-            glm4::{GLMConfig, GLM4},
-            llama::{Llama, LlamaConfig},
-            mistral::{Mistral, MistralConfig},
-            phi2::{Phi2, Phi2Config},
-            phi3::{Phi, PhiConfig},
-            quantized_glm4::GGUFGLM4,
-            quantized_llama::GGUFLLaMa,
-            quantized_phi3::GGUFPhi3,
-            quantized_qwen::GGUFQWen,
-            qwen::{Qwen, QwenConfig},
-            stable_lm::{StableLM, StableLMConfig},
-            yi::{Yi, YiConfig},
-            Config,
+            deepseek::DeepSeek, gemma::Gemma, gemma3::Gemma3, glm4::GLM4, llama::Llama,
+            mistral::Mistral, phi2::Phi2, phi3::Phi, quantized_glm4::GGUFGLM4,
+            quantized_llama::GGUFLLaMa, quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen,
+            qwen::Qwen, stable_lm::StableLM, yi::Yi, Config,
         },
-        responses::APIError,
         PipelineConfig,
     },
     paged_attention::input_metadata::InputMetadata,
-    try_api, SpecificConfig,
 };
 use candle_core::quantized::gguf_file;
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
 use either::Either;
 use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
@@ -76,7 +63,6 @@ enum LLMModel {
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
     model: LLMModel,
-    args: SpecificConfig,
     tokenizer: Tokenizer,
     logits_processor: LogitsProcessor,
     conversation: DefaultConversation,
@@ -89,8 +75,9 @@ pub struct DefaultPipeline {
 }
 
 pub struct DefaultLoader {
-    config: SpecificConfig,
-    name: String,
+    model_id: Option<String>,
+    weight_path: Option<String>,
+    weight_file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,43 +104,132 @@ impl DefaultModelPaths {
 }
 
 impl DefaultLoader {
-    pub fn new(config: SpecificConfig, name: String) -> Self {
-        Self { config, name }
+    pub fn new(
+        model_id: Option<String>,
+        weight_path: Option<String>,
+        weight_file: Option<String>,
+    ) -> Self {
+        Self {
+            model_id,
+            weight_path,
+            weight_file,
+        }
     }
 }
 
 impl DefaultLoader {
+    pub fn prepare_model_weights(
+        &self,
+        hf_token: Option<String>,
+        hf_token_path: Option<String>,
+    ) -> Result<(DefaultModelPaths, bool)> {
+        let (paths, gguf): (DefaultModelPaths, bool) = match (&self.weight_path, &self.weight_file)
+        {
+            //model in a folder (safetensor format, huggingface folder structure)
+            (Some(path), None) => (
+                DefaultModelPaths {
+                    tokenizer_filename: Path::new(path).join("tokenizer.json"),
+                    tokenizer_config_filename: Path::new(path).join("tokenizer_config.json"),
+                    config_filename: Path::new(path).join("config.json"),
+                    filenames: if Path::new(path)
+                        .join("model.safetensors.index.json")
+                        .exists()
+                    {
+                        crate::hub_load_local_safetensors(path, "model.safetensors.index.json")?
+                    } else {
+                        //a single weight file case
+                        let mut safetensors_files = Vec::<std::path::PathBuf>::new();
+                        safetensors_files.insert(0, Path::new(path).join("model.safetensors"));
+                        safetensors_files
+                    },
+                },
+                false,
+            ),
+            //model in a quantized file (gguf/ggml format)
+            (path, Some(file)) => (
+                DefaultModelPaths {
+                    tokenizer_filename: PathBuf::new(),
+                    tokenizer_config_filename: PathBuf::new(),
+                    config_filename: PathBuf::new(),
+                    filenames: {
+                        let path = path.clone().unwrap_or("".to_string());
+                        if Path::new(&path).join(file).exists() {
+                            vec![Path::new(&path).join(file)]
+                        } else {
+                            panic!("Model file not found {file}");
+                        }
+                    },
+                },
+                true,
+            ),
+            _ => {
+                if self.weight_file.is_some() {
+                    return Ok((self.download_gguf_model(None)?, true));
+                };
+                //try download model anonymously
+                let loaded = self.download_model(None, hf_token.clone(), hf_token_path.clone());
+                if loaded.is_ok() {
+                    (loaded.unwrap(), false)
+                } else {
+                    //if it's failed, try using huggingface token
+                    info!("Try request model using cached huggingface token...");
+                    if hf_token.is_none() && hf_token_path.is_none() {
+                        //no token provided
+                        let token_path = format!(
+                            "{}/.cache/huggingface/token",
+                            dirs::home_dir().unwrap().display()
+                        );
+                        if !Path::new(&token_path).exists() {
+                            //also no token cache
+                            use std::io::Write;
+                            let mut input_token = String::new();
+                            warn!("Unable to request model, please provide your huggingface token to download model:\n");
+                            std::io::stdin()
+                                .read_line(&mut input_token)
+                                .expect("Failed to read token!");
+                            std::fs::create_dir_all(Path::new(&token_path).parent().unwrap())
+                                .unwrap();
+                            let mut output = std::fs::File::create(token_path).unwrap();
+                            write!(output, "{}", input_token.trim())
+                                .expect("Failed to save token!");
+                        }
+                    }
+                    (
+                        self.download_model(None, hf_token.clone(), hf_token_path.clone())?,
+                        false,
+                    )
+                }
+            }
+        };
+
+        Ok((paths, gguf))
+    }
+
     pub fn download_model(
         &self,
-        model_id: String,
-        weight_file: Option<String>,
-        quant: Option<String>,
         revision: Option<String>,
         hf_token: Option<String>,
         hf_token_path: Option<String>,
-    ) -> Result<DefaultModelPaths, APIError> {
-        if quant.is_some() && quant.as_ref().unwrap() == "gguf" && weight_file.is_some() {
-            info!(
-                "Downloading GGUF file {} from repo {}",
-                weight_file.as_ref().unwrap(),
-                model_id,
-            );
-            return self.download_gguf_model(model_id, None, weight_file.clone().unwrap());
-        };
-        let api = try_api!(ApiBuilder::new()
+    ) -> Result<DefaultModelPaths> {
+        assert!(self.model_id.is_some(), "No model id provided!");
+
+        let api = ApiBuilder::new()
             .with_progress(true)
             .with_token(Some(get_token(hf_token, hf_token_path)?))
-            .build());
+            .build()
+            .map_err(candle_core::Error::wrap)?;
         let revision = revision.unwrap_or("main".to_string());
         let api = api.repo(Repo::with_revision(
-            model_id,
+            self.model_id.clone().unwrap(),
             RepoType::Model,
             revision.clone(),
         ));
 
-        let tokenizer_filename = try_api!(api.get("tokenizer.json"));
+        let tokenizer_filename = api
+            .get("tokenizer.json")
+            .map_err(candle_core::Error::wrap)?;
 
-        let config_filename = try_api!(api.get("config.json"));
+        let config_filename = api.get("config.json").map_err(candle_core::Error::wrap)?;
 
         let tokenizer_config_filename = match api.get("tokenizer_config.json") {
             Ok(f) => f,
@@ -161,13 +237,15 @@ impl DefaultLoader {
         };
 
         let mut filenames = vec![];
-        for rfilename in try_api!(api.info())
+        for rfilename in api
+            .info()
+            .map_err(candle_core::Error::wrap)?
             .siblings
             .iter()
             .map(|x| x.rfilename.clone())
             .filter(|x| x.ends_with(".safetensors"))
         {
-            let filename = try_api!(api.get(&rfilename));
+            let filename = api.get(&rfilename).map_err(candle_core::Error::wrap)?;
             filenames.push(filename);
         }
 
@@ -179,22 +257,25 @@ impl DefaultLoader {
         })
     }
 
-    pub fn download_gguf_model(
-        &self,
-        model_id: String,
-        revision: Option<String>,
-        filename: String,
-    ) -> Result<DefaultModelPaths, APIError> {
+    pub fn download_gguf_model(&self, revision: Option<String>) -> Result<DefaultModelPaths> {
+        assert!(self.model_id.is_some(), "No model id provided!");
+        info!(
+            "Downloading GGUF file {} from repo {}",
+            self.weight_file.as_ref().unwrap(),
+            self.model_id.as_ref().unwrap(),
+        );
+        let filename = self.weight_file.clone().unwrap();
         let api = hf_hub::api::sync::Api::new().unwrap();
         let revision = revision.unwrap_or("main".to_string());
         let mut filenames = vec![];
-        let filename = try_api!(api
+        let filename = api
             .repo(hf_hub::Repo::with_revision(
-                model_id,
+                self.model_id.clone().unwrap(),
                 hf_hub::RepoType::Model,
                 revision.to_string(),
             ))
-            .get(filename.as_str()));
+            .get(filename.as_str())
+            .map_err(candle_core::Error::wrap)?;
         filenames.push(filename);
 
         Ok(DefaultModelPaths {
@@ -206,114 +287,124 @@ impl DefaultLoader {
     }
 
     //support loading in both multithreaded and multiprocess mode
+    #[allow(unused_variables)]
     pub async fn load_model(
         &self,
         paths: DefaultModelPaths,
         dtype: DType,
-        quant: &Option<String>,
+        gguf: bool,
+        isq: Option<String>,
         device_ids: Vec<usize>, //pass only 1 device_id in multiprocess mode, otherwise, multiple device_ids in multithread mode
         #[cfg(feature = "nccl")] comm_id: Option<crate::openai::distributed::Id>, //must pass comm id in multiprocess mode
         local_rank: Option<usize>, //must pass current rank in multiprocess mode
         local_world_size: Option<usize>, //must pass the number of local devices used in multiprocess mode
         #[cfg(feature = "nccl")] global_rank: Option<usize>, //must pass current global rank in multi-node mode
         #[cfg(feature = "nccl")] global_world_size: Option<usize>, //must pass total number of devices used in multi-node mode
-    ) -> Result<(Vec<Box<DefaultPipeline>>, PipelineConfig), APIError> {
-        let specific_args = self.config.clone();
+    ) -> Result<(Vec<Box<DefaultPipeline>>, PipelineConfig)> {
         let reporter = Arc::new(RwLock::new(ProgressReporter::new(local_rank.unwrap_or(0))));
         let num_subprogress = local_world_size.map_or(0, |n| n - 1);
 
-        let (models, devices, config, sep_style) = if quant.is_some()
-            && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf")
-        {
+        let (models, devices, config, sep_style) = if gguf {
             let device = crate::new_device(device_ids[0]).unwrap();
             let path = paths.get_weight_filenames()[0].clone();
-            info!(
-                "Loading quantized {} model from file {}",
-                self.name,
-                path.display()
-            );
-            let s_cfg = specific_args.clone();
-            let nlayers = {
-                let mut file = try_api!(std::fs::File::open(path.clone()));
-                let content = try_api!(
-                    gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
-                );
-                let nlayers = match self.name.as_str() {
-                    "llama" | "llama3" => GGUFLLaMa::get_num_of_layers(content),
-                    "phi3" => GGUFPhi3::get_num_of_layers(content),
-                    "qwen2" | "qwen3" => {
-                        GGUFQWen::get_num_of_layers(self.name.as_str() == "qwen3", content)
+            info!("Loading quantized model from file {}", path.display());
+            let (arch, nlayers) = {
+                let mut file = match std::fs::File::open(path.clone())
+                    .map_err(candle_core::Error::wrap)
+                {
+                    Ok(file) => file,
+                    Err(e) => {
+                        tracing::error!("Failed to open gguf file {}: {}\n ***Tips: use `--w` to load safetensors models.", path.display(), e);
+                        return Err(e);
                     }
-                    "glm4" => GGUFGLM4::get_num_of_layers(content),
-                    _ => panic!("Model not supported!"),
                 };
-                nlayers.unwrap()
+                let content = match gguf_file::Content::read(&mut file)
+                    .map_err(|e| e.with_path(path.clone()))
+                    .map_err(candle_core::Error::wrap)
+                {
+                    Ok(content) => content,
+                    Err(e) => {
+                        tracing::error!("Failed to open gguf file {}: {}\n ***Tips: use `--w` to load safetensors models.", path.display(), e);
+                        return Err(e);
+                    }
+                };
+                let (arch, nlayers) =
+                    gguf::get_arch_and_num_of_layers(content).map_err(candle_core::Error::wrap)?;
+                if !matches!(
+                    arch.as_str(),
+                    "llama" | "llama3" | "phi3" | "qwen2" | "qwen3" | "glm4"
+                ) {
+                    panic!("Model arch {} not supported!", arch);
+                } else {
+                    info!("Quantized {} model has {} layers.", arch, nlayers,);
+                }
+                (arch, nlayers)
             };
             let handle =
                 progress_worker(Some(num_subprogress), nlayers, Arc::clone(&reporter)).await;
-            let mut file = try_api!(std::fs::File::open(path.clone()));
-            let content = try_api!(
-                gguf_file::Content::read(&mut file).map_err(|e| e.with_path(path.clone()))
-            );
-            let (model, config, sep_style) = match self.name.as_str() {
+            let mut file = std::fs::File::open(path.clone()).map_err(candle_core::Error::wrap)?;
+            let content = gguf_file::Content::read(&mut file)
+                .map_err(|e| e.with_path(path.clone()))
+                .map_err(candle_core::Error::wrap)?;
+            let (model, config, sep_style) = match arch.as_str() {
                 "llama" => {
-                    let model = try_api!(GGUFLLaMa::from_gguf(
+                    let model = GGUFLLaMa::from_gguf(
                         &content,
                         &mut file,
                         &device,
                         dtype,
-                        s_cfg,
                         Arc::clone(&reporter),
-                    ));
+                    )
+                    .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
                     (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama)
                 }
                 "llama3" => {
-                    let model = try_api!(GGUFLLaMa::from_gguf(
+                    let model = GGUFLLaMa::from_gguf(
                         &content,
                         &mut file,
                         &device,
                         dtype,
-                        s_cfg,
                         Arc::clone(&reporter),
-                    ));
+                    )
+                    .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
                     (LLMModel::LlamaGGUF(model), cfg, SeparatorStyle::Llama3)
                 }
                 "phi3" => {
-                    let model = try_api!(GGUFPhi3::from_gguf(
+                    let model = GGUFPhi3::from_gguf(
                         &content,
                         &mut file,
                         &device,
                         dtype,
-                        s_cfg,
                         Arc::clone(&reporter),
-                    ));
+                    )
+                    .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
                     (LLMModel::Phi3GGUF(model), cfg, SeparatorStyle::Phi)
                 }
                 "qwen2" | "qwen3" => {
-                    let model = try_api!(GGUFQWen::from_gguf(
-                        self.name.as_str() == "qwen3",
+                    let model = GGUFQWen::from_gguf(
+                        arch.as_str() == "qwen3",
                         &content,
                         &mut file,
                         &device,
                         dtype,
-                        s_cfg,
                         Arc::clone(&reporter),
-                    ));
+                    )
+                    .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
                     (LLMModel::QWenGGUF(model), cfg, SeparatorStyle::Qwen)
                 }
                 "glm4" => {
-                    let model = try_api!(GGUFGLM4::from_gguf(
+                    let model = GGUFGLM4::from_gguf(
                         &content,
                         &mut file,
                         &device,
                         dtype,
-                        s_cfg,
                         Arc::clone(&reporter),
-                    ));
+                    )
+                    .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
                     (LLMModel::GLM4GGUF(model), cfg, SeparatorStyle::GLM)
                 }
@@ -322,80 +413,29 @@ impl DefaultLoader {
             handle.join().unwrap();
             (vec![model], vec![device], config.to_owned(), sep_style)
         } else {
-            let config = match self.name.as_str() {
-                "llama" | "llama3" => {
-                    let config: LlamaConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "phi2" => {
-                    let config: Phi2Config = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    //Phi2 use F32 type for kvcache
-                    config.into_config(false, DType::F32, &specific_args)
-                }
-                "phi3" => {
-                    let config: PhiConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "qwen2" | "qwen3" => {
-                    let config: QwenConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "gemma" => {
-                    let config: GemmaConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "gemma3" => {
-                    let config: Gemma3Config = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "mistral" => {
-                    let config: MistralConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "yi" => {
-                    let config: YiConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "stablelm" => {
-                    let config: StableLMConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "glm4" => {
-                    let config: GLMConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
-                }
-                "deepseek" => {
-                    let config: DeepSeekConfig = try_api!(serde_json::from_slice(&try_api!(
-                        std::fs::read(paths.get_config_filename())
-                    ),));
-                    config.into_config(false, dtype, &specific_args)
+            let cfile = paths.get_config_filename();
+            let arch = Config::get_model_arch(&cfile)?;
+
+            let config = match arch.as_str() {
+                "LlamaForCausalLM" => Llama::load_config(&cfile, isq)?,
+                "PhiForCausalLM" => Phi2::load_config(&cfile, isq)?,
+                "Phi3ForCausalLM" => Phi::load_config(&cfile, isq)?,
+                "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => Qwen::load_config(&cfile, isq)?,
+                "Gemma2ForCausalLM" => Gemma::load_config(&cfile, isq)?,
+                "Gemma3ForConditionalGeneration" => Gemma3::load_config(&cfile, isq)?,
+                "MistralForCausalLM" => Mistral::load_config(&cfile, isq)?,
+                "yi" => Yi::load_config(&cfile, isq)?,
+                "StableLmForCausalLM" => StableLM::load_config(&cfile, isq)?,
+                "Glm4ForCausalLM" => GLM4::load_config(&cfile, isq)?,
+                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" => {
+                    DeepSeek::load_config(&cfile, isq)?
                 }
                 _ => panic!("Model not supported!"),
             };
 
             info!("Model {:?}", config);
 
-            info!("Loading {} model.", self.name);
+            info!("Loading {} model.", arch);
             let handle = progress_worker(
                 Some(num_subprogress),
                 config.num_hidden_layers,
@@ -468,22 +508,8 @@ impl DefaultLoader {
                         .unwrap()
                     };
 
-                    let (model, sep) = match self.name.as_str() {
-                        "llama" => (
-                            LLMModel::Llama(
-                                Llama::load(
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                )
-                                .unwrap(),
-                            ),
-                            SeparatorStyle::Llama,
-                        ),
-                        "llama3" => (
+                    let (model, sep) = match arch.as_str() {
+                        "LlamaForCausalLM" => (
                             LLMModel::Llama(
                                 Llama::load(
                                     vb,
@@ -497,24 +523,24 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Llama3,
                         ),
-                        "phi2" => (
+                        "PhiForCausalLM" => (
                             LLMModel::Phi2(
                                 Phi2::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
                                     .unwrap(),
                             ),
                             SeparatorStyle::Phi,
                         ),
-                        "phi3" => (
+                        "Phi3ForCausalLM" => (
                             LLMModel::Phi3(
                                 Phi::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
                                     .unwrap(),
                             ),
                             SeparatorStyle::Phi,
                         ),
-                        "qwen2" | "qwen3" => (
+                        "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => (
                             LLMModel::Qwen(
                                 Qwen::new(
-                                    self.name.as_str() == "qwen3",
+                                    matches!(arch.as_str(), "qwen3" | "Qwen3ForCausalLM"),
                                     vb,
                                     &config,
                                     dtype,
@@ -526,7 +552,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Qwen,
                         ),
-                        "gemma" => (
+                        "Gemma2ForCausalLM" => (
                             LLMModel::Gemma(
                                 Gemma::new(
                                     vb,
@@ -540,7 +566,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Gemma,
                         ),
-                        "gemma3" => (
+                        "Gemma3ForConditionalGeneration" => (
                             LLMModel::Gemma3(
                                 Gemma3::new(
                                     vb,
@@ -554,7 +580,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Gemma,
                         ),
-                        "mistral" => (
+                        "MistralForCausalLM" => (
                             LLMModel::Mistral(
                                 Mistral::new(
                                     vb,
@@ -575,7 +601,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Yi,
                         ),
-                        "stablelm" => (
+                        "StableLmForCausalLM" => (
                             LLMModel::StableLM(
                                 StableLM::new(
                                     vb,
@@ -589,14 +615,14 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::StableLM,
                         ),
-                        "glm4" => (
+                        "Glm4ForCausalLM" => (
                             LLMModel::GLM4(
                                 GLM4::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
                                     .unwrap(),
                             ),
                             SeparatorStyle::Llama,
                         ),
-                        "deepseek" => (
+                        "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" => (
                             LLMModel::DeepSeek(
                                 DeepSeek::load(
                                     vb,
@@ -641,20 +667,11 @@ impl DefaultLoader {
         warn!("Done loading.");
 
         //max and min number of tokens generated per request
-        let default_max_tokens = specific_args
-            .max_gen_tokens
-            .unwrap_or(config.max_seq_len / 2)
-            .clamp(MIN_GEN_TOKENS, MAX_GEN_TOKENS);
+        let default_max_tokens = (config.max_seq_len / 5).clamp(MIN_GEN_TOKENS, MAX_GEN_TOKENS);
 
         let pipeline_config = PipelineConfig {
             max_model_len: config.max_seq_len,
             default_max_tokens,
-            penalty: specific_args.penalty.unwrap_or(1.),
-            repeat_last_n: specific_args.repeat_last_n.unwrap_or(64),
-            temperature: specific_args.temperature,
-            top_k: specific_args.top_k,
-            top_p: specific_args.top_p,
-            thinking: Some(specific_args.thinking),
         };
 
         #[cfg(feature = "nccl")]
@@ -669,9 +686,9 @@ impl DefaultLoader {
                 let logits_processor = {
                     LogitsProcessor::new(
                         SAMPLING_SEED,
-                        pipeline_config.temperature,
-                        specific_args.top_k,
-                        specific_args.top_p,
+                        None,
+                        None,
+                        None,
                     )
                 };
                 let tokenizer_file = paths.get_tokenizer_filename();
@@ -682,8 +699,7 @@ impl DefaultLoader {
                     Option<String>,
                 ) = if tokenizer_file.display().to_string() != "" && Path::exists(&tokenizer_file) {
                     let tokenizer = Tokenizer::from_file(tokenizer_file.clone())
-                        .map_err(|x| APIError::new(x.to_string()))
-                        .unwrap();
+                        .map_err(candle_core::Error::wrap).unwrap();
 
                     let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
                     let (chat_template, bos, eos) = if Path::exists(&tokenizer_cfg_file) {
@@ -715,7 +731,7 @@ impl DefaultLoader {
                         (None, None, None)
                     };
                     (tokenizer, chat_template, bos, eos)
-                } else if quant.is_some() && matches!(quant.as_ref().unwrap().as_str(), "ggml" | "gguf") {
+                } else if gguf {
                     use crate::backend::gguf::{get_gguf_info, Content, GGUFInfo};
                     let filename = paths.get_weight_filenames()[0].clone();
                     let mut reader = std::fs::File::open(filename).unwrap();
@@ -746,7 +762,6 @@ impl DefaultLoader {
                         info!("Warning: Missing tokenizer_config.json \n Warning: Chat Template not found, use built-in template which may not correct!");
                     }
                     info!("{:?}", pipeline_config);
-                    info!("{:?}", specific_args);
                 }
 
                 let mut stop_token_ids = Vec::<u32>::new();
@@ -812,11 +827,10 @@ impl DefaultLoader {
                 tracing::warn!("stop_token_ids {:?}", stop_token_ids);
                 Box::new(DefaultPipeline {
                     model,
-                    args: specific_args.clone(),
                     tokenizer,
                     logits_processor,
                     conversation: DefaultConversation::new(
-                        self.name.to_string(),
+                        config.architectures.as_ref().unwrap()[0].clone(),
                         chat_template.clone(),
                         Vec::default(),
                         sep_style.clone(),
@@ -828,7 +842,7 @@ impl DefaultLoader {
                             sep2: Some(" </s></s>".to_string()),
                         },
                     ),
-                    name: self.name.clone(),
+                    name: config.architectures.as_ref().unwrap()[0].clone(),
                     dtype,
                     device: devices[rank].clone(),
                     stop_token_ids,
@@ -849,7 +863,7 @@ impl DefaultPipeline {
         input_positions: &[Vec<usize>],
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
-    ) -> Result<Tensor, APIError> {
+    ) -> Result<Tensor> {
         let input_tokens = if input_tokens.shape().dims().len() < 2 {
             input_tokens
                 .reshape((1, input_tokens.shape().dims()[0]))
@@ -859,51 +873,51 @@ impl DefaultPipeline {
         };
 
         match &self.model {
-            LLMModel::Llama(llama) => llama
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::Phi2(phi) => phi
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::Phi3(phi) => phi
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::Qwen(qwen) => qwen
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::Gemma(gemma) => gemma
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::Gemma3(gemma3) => gemma3
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::Mistral(mistral) => mistral
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::Yi(yi) => yi
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::StableLM(stablelm) => stablelm
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::GLM4(glm4) => glm4
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::DeepSeek(deepseek) => deepseek
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::Phi3GGUF(phi3) => phi3
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::LlamaGGUF(llama) => llama
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::QWenGGUF(qwen) => qwen
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
-            LLMModel::GLM4GGUF(glm4) => glm4
-                .forward(&input_tokens, input_positions, kv_cache, input_metadata)
-                .map_err(APIError::from),
+            LLMModel::Llama(llama) => {
+                llama.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Phi2(phi) => {
+                phi.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Phi3(phi) => {
+                phi.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Qwen(qwen) => {
+                qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Gemma(gemma) => {
+                gemma.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Gemma3(gemma3) => {
+                gemma3.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Mistral(mistral) => {
+                mistral.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Yi(yi) => {
+                yi.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::StableLM(stablelm) => {
+                stablelm.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::GLM4(glm4) => {
+                glm4.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::DeepSeek(deepseek) => {
+                deepseek.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Phi3GGUF(phi3) => {
+                phi3.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::LlamaGGUF(llama) => {
+                llama.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::QWenGGUF(qwen) => {
+                qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::GLM4GGUF(glm4) => {
+                glm4.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
         }
     }
 
@@ -911,7 +925,7 @@ impl DefaultPipeline {
         &mut self,
         logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
-    ) -> Result<Vec<TokenOrFinishReason>, APIError> {
+    ) -> Result<Vec<TokenOrFinishReason>> {
         let (tokens_generated, custom_stop_tokens, panalties, reference_tokens): (
             Vec<i32>,
             Vec<Vec<String>>,
@@ -938,12 +952,12 @@ impl DefaultPipeline {
                     _ => vec![],
                 };
 
-                let ref_tokens = if sampling_params.repetition_penalty != 1.
-                    && self.args.repeat_last_n.unwrap_or(64) < generated
+                let ref_tokens = if sampling_params.repetition_penalty.unwrap_or(1.) != 1.
+                    && sampling_params.repeat_last_n.unwrap_or(64) < generated
                 {
                     let start_at = tokens
                         .len()
-                        .saturating_sub(self.args.repeat_last_n.unwrap_or(64));
+                        .saturating_sub(sampling_params.repeat_last_n.unwrap_or(64));
                     tokens[start_at..].to_vec()
                 } else {
                     vec![]
@@ -955,7 +969,7 @@ impl DefaultPipeline {
                         generated as i32
                     },
                     custom_stop_token,
-                    sampling_params.repetition_penalty,
+                    sampling_params.repetition_penalty.unwrap_or(1.0),
                     ref_tokens,
                 )
             })

@@ -5,8 +5,6 @@ use candle::CudaStorage;
 use candle::MetalStorage;
 use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
-use half::{bf16, f16};
-use std::ffi::c_int;
 #[allow(dead_code)]
 struct PagedAttention {
     softmax_scale: f32,
@@ -30,6 +28,7 @@ impl PagedAttention {
     ) -> Result<(CudaStorage, Shape)> {
         use candle::cuda_backend::cudarc::driver::DevicePtr;
         use candle::cuda_backend::WrapErr;
+        use core::ffi::c_int;
         let dtype = q.dtype();
         let internal_type = match dtype {
             DType::F16 => 0,
@@ -480,8 +479,8 @@ impl candle::CustomOp1 for PagedAttention {
     fn cuda_fwd(&self, q: &CudaStorage, q_l: &Layout) -> Result<(CudaStorage, Shape)> {
         match q.dtype() {
             DType::F32 => self.cuda_fwd_t::<f32>(q, q_l),
-            DType::F16 => self.cuda_fwd_t::<f16>(q, q_l),
-            DType::BF16 => self.cuda_fwd_t::<bf16>(q, q_l),
+            DType::F16 => self.cuda_fwd_t::<half::f16>(q, q_l),
+            DType::BF16 => self.cuda_fwd_t::<half::bf16>(q, q_l),
             dt => candle::bail!("paged-attention is only supported for f32/f16/bf16 ({dt:?})"),
         }
     }
@@ -557,6 +556,7 @@ impl ReshapeCache {
         slot_mapping: &Tensor,
     ) -> Result<()> {
         use candle::cuda_backend::cudarc::driver::DevicePtr;
+        use core::ffi::c_int;
         let dtype = k.dtype();
         let dev = k.device();
         let internal_type = match dtype {
@@ -842,7 +842,7 @@ impl candle::InplaceOp1 for ReshapeCache {
                 &self.value_cache,
                 &self.slot_mapping,
             ),
-            DType::F16 => self.cuda_fwd_t::<f16>(
+            DType::F16 => self.cuda_fwd_t::<half::f16>(
                 k,
                 k_l,
                 &self.value,
@@ -850,7 +850,7 @@ impl candle::InplaceOp1 for ReshapeCache {
                 &self.value_cache,
                 &self.slot_mapping,
             ),
-            DType::BF16 => self.cuda_fwd_t::<bf16>(
+            DType::BF16 => self.cuda_fwd_t::<half::bf16>(
                 k,
                 k_l,
                 &self.value,

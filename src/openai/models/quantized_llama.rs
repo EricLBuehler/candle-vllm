@@ -2,7 +2,6 @@ use super::Config;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::SpecificConfig;
 use candle_core::quantized::{ggml_file, gguf_file, QMatMul};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module};
@@ -10,7 +9,6 @@ use candle_transformers::quantized_nn::RmsNorm;
 use either::Either;
 use std::iter::zip;
 use std::sync::{Arc, RwLock};
-pub const MAX_SEQ_LEN: usize = 4096;
 
 #[derive(Debug, Clone)]
 struct Mlp {
@@ -247,53 +245,46 @@ impl GGUFLLaMa {
         head_count_kv: usize,
         rms_eps: f64,
         max_seq_len: usize,
-        kv_cache_dtype: DType,
-        s_cfg: SpecificConfig,
     ) -> Config {
         Config {
+            architectures: Some(vec!["llama".to_string()]),
             hidden_size: embedding_length,
             head_dim: Some(head_dim),
             intermediate_size: i_size,
             vocab_size: 0,
             num_hidden_layers: block_count,
             num_attention_heads: head_count,
-            num_key_value_heads: head_count_kv,
+            num_key_value_heads: Some(head_count_kv),
             rms_norm_eps: rms_eps,
-            rope_theta: 0.,
+            rope_theta: 10_000.0f64,
             rope_local_base_freq: None,
-            use_flash_attn: false,
-            bos_token_id: super::TokenID(Either::Left(Some(128256))),
+            bos_token_id: Some(super::TokenID(Either::Left(Some(128256)))),
             eos_token_id: super::TokenID(Either::Left(Some(128257))),
             max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,
             hidden_act: None,
+            hidden_activation: None,
             tie_word_embeddings: false,
             rope_scaling: None,
-            original_max_position_embeddings: Some(max_seq_len),
-            attention_bias: false,
+            max_position_embeddings: Some(max_seq_len),
+            original_max_position_embeddings: max_seq_len,
+            attention_bias: Some(false),
             partial_rotary_factor: None,
-            qk_layer_rms_norm: None,
-            kv_cache_dtype,
+            qk_layernorm: false,
             use_qkv_bias: None,
             custom_stop_tokens: Some(vec!["<|end_of_text|>".to_string()]),
-            specific_config: s_cfg,
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             quantization_config: None,
             moe_config: None,
+            quant: Some("gguf".to_string()),
         }
     }
 
-    pub fn from_ggml(
-        mut ct: ggml_file::Content,
-        gqa: usize,
-        dtype: DType,
-        s_cfg: SpecificConfig,
-    ) -> Result<Self> {
+    pub fn from_ggml(mut ct: ggml_file::Content, gqa: usize, dtype: DType) -> Result<Self> {
         let head_dim = (ct.hparams.n_embd / ct.hparams.n_head) as usize;
-        let (cos, sin) =
-            precomput_freqs_cis(head_dim, 10000., MAX_SEQ_LEN, &ct.device, DType::F32)?;
+        let (cos, sin) = precomput_freqs_cis(head_dim, 10000., 8192, &ct.device, DType::F32)?;
         let tok_embeddings = ct.remove("tok_embeddings.weight")?;
         let tok_embeddings = tok_embeddings.dequantize(&ct.device)?;
         let norm = RmsNorm::from_qtensor(ct.remove("norm.weight")?, 1e-5)?;
@@ -356,8 +347,6 @@ impl GGUFLLaMa {
                 ct.hparams.n_head as usize / gqa,
                 1e-5,
                 0,
-                dtype,
-                s_cfg,
             ),
             dtype,
             device: ct.device.clone(),
@@ -377,7 +366,6 @@ impl GGUFLLaMa {
         reader: &mut R,
         device: &Device,
         dtype: DType,
-        s_cfg: SpecificConfig,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -399,7 +387,7 @@ impl GGUFLLaMa {
         let embedding_length = md_get("llama.embedding_length")?.to_u32()? as usize;
         // let rope_dim = md_get("llama.rope.dimension_count")?.to_u32()? as usize;
         let context_length = md_get("llama.context_length")?.to_u32();
-        let context_length = context_length.map_or(MAX_SEQ_LEN, |v| v as usize);
+        let context_length = context_length.map_or(8192, |v| v as usize);
 
         let head_dim = md_get("llama.attention.key_length");
         let head_dim = if head_dim.is_ok() {
@@ -513,8 +501,6 @@ impl GGUFLLaMa {
                 head_count_kv,
                 rms_norm_eps,
                 context_length,
-                dtype,
-                s_cfg,
             ),
             dtype,
             device: device.clone(),

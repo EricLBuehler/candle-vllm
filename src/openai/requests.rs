@@ -31,13 +31,14 @@ pub struct ChatCompletionRequest {
     pub stream: Option<bool>, //false
     #[serde(default)]
     pub presence_penalty: Option<f32>, //0.0
+    pub repeat_last_n: Option<usize>, //0.0
     #[serde(default)]
     pub frequency_penalty: Option<f32>, //0.0
     #[serde(default)]
     pub logit_bias: Option<HashMap<String, f32>>, //None
     #[serde(default)]
     pub user: Option<String>, //None
-    pub top_k: Option<isize>, //-1
+    pub top_k: Option<isize>,         //-1
     #[serde(default)]
     pub best_of: Option<usize>, //None
     #[serde(default)]
@@ -51,5 +52,5 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub logprobs: Option<bool>, //false
     pub repetition_penalty: Option<f32>, //1.1
-    pub thinking: Option<bool>, //false
+    pub thinking: Option<bool>,       //false
 }

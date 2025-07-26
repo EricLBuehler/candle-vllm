@@ -618,3 +618,15 @@ impl TryFrom<Normalizer<'_>> for NormalizerWrapper {
         Ok(value)
     }
 }
+
+pub fn get_arch_and_num_of_layers(ct: gguf_file::Content) -> Result<(String, usize)> {
+    let md_get = |s: &str| match ct.metadata.get(s) {
+        None => candle_core::bail!("cannot find {s} in metadata"),
+        Some(v) => Ok(v),
+    };
+    let architecture = md_get("general.architecture")?.to_string()?;
+
+    let nlayers =
+        md_get(format!("{}.block_count", architecture.as_str()).as_str())?.to_u32()? as usize;
+    Ok((architecture.clone(), nlayers))
+}

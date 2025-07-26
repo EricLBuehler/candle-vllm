@@ -2,7 +2,6 @@ use super::Config;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::SpecificConfig;
 use candle_core::quantized::{gguf_file, QMatMul};
 use candle_core::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module};
@@ -206,41 +205,40 @@ impl GGUFQWen {
         head_count_kv: usize,
         rms_eps: f64,
         max_seq_len: usize,
-        kv_cache_dtype: DType,
-        s_cfg: SpecificConfig,
     ) -> Config {
         Config {
+            architectures: Some(vec!["qwen".to_string()]),
             hidden_size: embedding_length,
             head_dim: Some(head_dim),
             intermediate_size: i_size,
             vocab_size: 0,
             num_hidden_layers: block_count,
             num_attention_heads: head_count,
-            num_key_value_heads: head_count_kv,
+            num_key_value_heads: Some(head_count_kv),
             rms_norm_eps: rms_eps,
-            rope_theta: 0.,
+            rope_theta: 10_000.0f64,
             rope_local_base_freq: None,
-            use_flash_attn: false,
-            bos_token_id: super::TokenID(Either::Left(Some(151644))),
+            bos_token_id: Some(super::TokenID(Either::Left(Some(151644)))),
             eos_token_id: super::TokenID(Either::Left(Some(151645))),
             max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,
             hidden_act: None,
+            hidden_activation: None,
             tie_word_embeddings: false,
             rope_scaling: None,
-            original_max_position_embeddings: Some(max_seq_len),
-            attention_bias: false,
+            max_position_embeddings: Some(max_seq_len),
+            original_max_position_embeddings: max_seq_len,
+            attention_bias: Some(false),
             partial_rotary_factor: None,
-            qk_layer_rms_norm: None,
-            kv_cache_dtype,
+            qk_layernorm: false,
             use_qkv_bias: None,
             custom_stop_tokens: None,
-            specific_config: s_cfg,
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             quantization_config: None,
             moe_config: None,
+            quant: Some("gguf".to_string()),
         }
     }
 
@@ -261,7 +259,6 @@ impl GGUFQWen {
         reader: &mut R,
         device: &Device,
         dtype: DType,
-        s_cfg: SpecificConfig,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -433,8 +430,6 @@ impl GGUFQWen {
                 head_count_kv,
                 rms_norm_eps,
                 context_length,
-                dtype,
-                s_cfg,
             ),
             dtype,
             device: device.clone(),

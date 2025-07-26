@@ -1,15 +1,17 @@
+#[allow(unused_imports)]
 use candle::backend::BackendStorage;
 #[cfg(feature = "cuda")]
 use candle::CudaStorage;
+#[allow(unused_imports)]
 use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
-use half::{bf16, f16};
 #[cfg(feature = "cuda")]
 use kernels::ffi::{
     awq_repack, gemm_half_q_half_alt, gptq_repack, marlin_4bit_bf16, marlin_4bit_f16,
     marlin_awq_4bit_bf16, marlin_awq_4bit_f16,
 };
 
+#[allow(unused)]
 struct GPTQMatMul {
     qzeros: Option<Tensor>,
     g_idx: Option<Tensor>,
@@ -228,8 +230,10 @@ impl candle::CustomOp3 for GPTQMatMul {
         scale_l: &Layout,
     ) -> Result<(CudaStorage, Shape)> {
         match x.dtype() {
-            DType::F16 => self.cuda_fwd_t::<f16>(x, x_l, qweight, qweight_l, scale, scale_l),
-            DType::BF16 => self.cuda_fwd_t::<bf16>(x, x_l, qweight, qweight_l, scale, scale_l),
+            DType::F16 => self.cuda_fwd_t::<half::f16>(x, x_l, qweight, qweight_l, scale, scale_l),
+            DType::BF16 => {
+                self.cuda_fwd_t::<half::bf16>(x, x_l, qweight, qweight_l, scale, scale_l)
+            }
             dt => candle::bail!("GPTQMatMul is only supported for f16 and bf16 ({dt:?})"),
         }
     }

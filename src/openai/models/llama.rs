@@ -1,82 +1,46 @@
-use super::{Config, QuantConfig};
+use super::Config;
+use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use crate::SpecificConfig;
 use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Embedding, Module, RmsNorm};
-pub const MAX_SEQ_LEN: usize = 4096;
-use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::models::TokenID;
 use std::iter::zip;
+use std::path::PathBuf;
 pub use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct LlamaConfig {
-    pub hidden_size: usize,
-    pub intermediate_size: usize,
-    pub vocab_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: Option<usize>,
-    pub rms_norm_eps: f64,
-    #[serde(default = "default_rope")]
-    pub rope_theta: f32,
-    pub bos_token_id: TokenID,
-    pub eos_token_id: TokenID,
-    pub sliding_window: Option<usize>,
-    pub max_position_embeddings: Option<usize>,
-    pub quantization_config: Option<QuantConfig>,
-}
 
-fn default_rope() -> f32 {
-    10_000.0
-}
-
-impl LlamaConfig {
-    pub fn into_config(
-        self,
-        use_flash_attn: bool,
-        kv_cache_dtype: DType,
-        scfg: &SpecificConfig,
-    ) -> Config {
-        Config {
-            hidden_size: self.hidden_size,
-            head_dim: Some(self.hidden_size / self.num_attention_heads),
-            intermediate_size: self.intermediate_size,
-            vocab_size: self.vocab_size,
-            num_hidden_layers: self.num_hidden_layers,
-            num_attention_heads: self.num_attention_heads,
-            num_key_value_heads: self.num_key_value_heads.unwrap_or(self.num_attention_heads),
-            rms_norm_eps: self.rms_norm_eps,
-            rope_theta: f64::from(self.rope_theta),
-            rope_local_base_freq: None,
-            use_flash_attn,
-            bos_token_id: self.bos_token_id,
-            eos_token_id: self.eos_token_id,
-            max_seq_len: self.max_position_embeddings.unwrap_or(MAX_SEQ_LEN),
-            sliding_window: self.sliding_window,
-            sliding_window_pattern: None,
-            hidden_act: None,
-            tie_word_embeddings: false,
-            rope_scaling: None,
-            original_max_position_embeddings: None,
-            attention_bias: false,
-            partial_rotary_factor: None,
-            qk_layer_rms_norm: None,
-            kv_cache_dtype,
-            use_qkv_bias: None,
-            custom_stop_tokens: None,
-            specific_config: scfg.clone(),
-            attn_logit_softcapping: None,
-            final_logit_softcapping: None,
-            quantization_config: self.quantization_config,
-            moe_config: None,
+impl Llama {
+    pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
+        let mut config = Config::load_config(filename.clone())?;
+        config.head_dim = Some(
+            config
+                .head_dim
+                .unwrap_or(config.hidden_size / config.num_attention_heads),
+        );
+        config.num_key_value_heads = Some(
+            config
+                .num_key_value_heads
+                .unwrap_or(config.num_attention_heads),
+        );
+        config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        if config.quantization_config.is_some() {
+            config.quant = Some(
+                config
+                    .quantization_config
+                    .as_ref()
+                    .unwrap()
+                    .quant_method
+                    .clone(),
+            );
+        } else if isq.is_some() {
+            config.quant = Some(isq.unwrap().to_string());
         }
+        Ok(config)
     }
 }
 
@@ -202,14 +166,15 @@ impl CausalSelfAttention {
     ) -> Result<Self> {
         let size_in = cfg.hidden_size;
         let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
-        let size_kv = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads;
+        let size_kv =
+            (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads.unwrap();
         let q_proj = TensorParallelColumnLinear::load_with_hints(
             size_in,
             size_q,
             false,
             vb.pp("q_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let k_proj = TensorParallelColumnLinear::load_with_hints(
@@ -218,7 +183,7 @@ impl CausalSelfAttention {
             false,
             vb.pp("k_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let v_proj = TensorParallelColumnLinear::load_with_hints(
@@ -227,7 +192,7 @@ impl CausalSelfAttention {
             false,
             vb.pp("v_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
 
@@ -237,12 +202,12 @@ impl CausalSelfAttention {
             false,
             vb.pp("o_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let head_dim = cfg.hidden_size / cfg.num_attention_heads;
         let attention_heads = cfg.num_attention_heads / comm.world_size();
-        let kv_heads = cfg.num_key_value_heads / comm.world_size();
+        let kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
         Ok(Self {
             q_proj,
             k_proj,
@@ -286,7 +251,7 @@ impl Mlp {
             false,
             vb.pp("gate_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let c_fc2 = TensorParallelColumnLinear::load_with_hints(
@@ -295,7 +260,7 @@ impl Mlp {
             false,
             vb.pp("up_proj"),
             comm.clone(),
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         let c_proj = TensorParallelRowLinear::load_with_hints(
@@ -304,7 +269,7 @@ impl Mlp {
             false,
             vb.pp("down_proj"),
             comm,
-            &cfg.specific_config.quant,
+            &cfg.quant,
             &cfg.quantization_config,
         )?;
         Ok(Self {
