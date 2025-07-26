@@ -95,14 +95,14 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --p 2000 --d "0,1" --mem 8192] [--w /home/weights/Qwen3-27B-GPTQ-4Bit]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 8192] [--w /home/weights/Qwen3-27B-GPTQ-4Bit]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl
 
-    `PROGRAM_PARAM`：--multi-process --log --dtype bf16 --p 2000 --d "0,1" --mem 8192
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 8192
 
     `MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-27B-GPTQ-4Bit
 
@@ -213,7 +213,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **运行转换后的AWQ模型**
     ```shell
-    target/release/candle-vllm --multi-process --d "0" --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
+    target/release/candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
     ```
 
   </details>
@@ -234,7 +234,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **在两块GPU上运行QwQ-32B BF16模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --multi-process --d "0,1" --w /home/QwQ-32B/
+    cargo run --release --features cuda,nccl -- --d 0,1 --w /home/QwQ-32B/
     ```
 
     **在两块GPU上运行QwQ-32B 4位AWQ模型**
@@ -246,7 +246,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     2) 运行转换后的AWQ模型
     ```shell
-    cargo run --release --features cuda,nccl -- --multi-process --d "0,1" --w /home/QwQ-32B-AWQ-Marlin/
+    cargo run --release --features cuda,nccl -- --d 0,1 --w /home/QwQ-32B-AWQ-Marlin/
     ```
 
     **注意**：使用的GPU数量（`--d`）必须为2的幂次方（例如2、4或8）。
@@ -256,11 +256,11 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
   <details>
     <summary>显示命令</summary>
 
-    只需移除`--multi-process`参数。
+    只需添加`--multithread`参数。
 
     **在两块GPU上运行QwQ-32B BF16模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --d "0,1" --w /home/QwQ-32B/
+    cargo run --release --features cuda,nccl -- --multithread --d 0,1 --w /home/QwQ-32B/
     ```
 
     如果在多线程多GPU模式下遇到问题，可以尝试：
@@ -281,7 +281,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **2. 在8块A100（40GB）上运行DeepSeek-R1模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --log --multi-process --d "0,1,2,3,4,5,6,7" --w /data/DeepSeek-R1-AWQ-Marlin/ --num-experts-offload-per-rank 15
+    cargo run --release --features cuda,nccl -- --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ --num-experts-offload-per-rank 15
     ```
 
     **注意**：此设置将每个rank的15个专家（总共256个专家中的120个）卸载到CPU（需要约150GB的额外主机内存）。在推理过程中，这些卸载的专家会根据需要交换回GPU内存。如果GPU内存更少，可以增加`--num-experts-offload-per-rank`参数（最大支持每个rank卸载32个专家）。
@@ -318,7 +318,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     **4. 使用MPI运行器在两个节点上运行模型**
     ```shell
-    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --multi-process --d "0,1,2,3,4,5,6,7" --w /data/DeepSeek-R1-AWQ-Marlin/
+    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/
     ```
   </details>
 
@@ -337,13 +337,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     如果你想使用全部 GPU 进行推理，下面的 NUMA 绑定配置可以获得最佳性能：
 
     ```shell
-    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --multi-process --d "0,1,2,3,4,5,6,7" --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
+    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --d 0,1,2,3,4,5,6,7 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
     ```
 
     如果你只使用 4 张 GPU，可以使用如下的 NUMA 绑定方式：
     
     ```shell
-    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --multi-process --d "0,1,2,3" --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
+    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --d 0,1,2,3 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
     ```
 
     以上命令中 `numactl --cpunodebind=0 --membind=0`指定了master进程（master rank）绑定的NUMA node，其必须与 `MAP_NUMA_NODE`相匹配。
@@ -357,7 +357,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     1) 启动`Qwen3-Reranker`模型服务
     ```shell
-    target/release/candle-vllm --multi-process --f /home/data/Qwen3-Reranker-4B-q4_k_m.gguf
+    target/release/candle-vllm --f /home/data/Qwen3-Reranker-4B-q4_k_m.gguf
     ```
 
     2) 启动迷你聊天机器人并传入`system prompt`
@@ -636,7 +636,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     或者，将现有的AWQ 4位模型转换为Marlin兼容格式：
     ```shell
     python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-    cargo run --release --features cuda,nccl -- --multi-process --d "0" --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
+    cargo run --release --features cuda,nccl -- --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
     ```
 
     你也可以使用`GPTQModel`通过脚本`examples/convert_marlin.py`将模型转换为Marlin兼容格式。

@@ -211,7 +211,7 @@ impl GGUFPhi3 {
             rms_norm_eps: rms_eps,
             rope_theta: 10_000.0f64,
             rope_local_base_freq: None,
-            bos_token_id: super::TokenID(Either::Left(Some(1))),
+            bos_token_id: Some(super::TokenID(Either::Left(Some(1)))),
             eos_token_id: super::TokenID(Either::Left(Some(2))),
             max_seq_len,
             sliding_window: None,

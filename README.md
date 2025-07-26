@@ -95,14 +95,14 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--multi-process --log --dtype bf16 --p 2000 --d "0,1" --mem 8192] [--w /home/weights/Qwen3-27B-GPTQ-4Bit]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 8192] [--w /home/weights/Qwen3-27B-GPTQ-4Bit]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl
 
-    `PROGRAM_PARAM`：--multi-process --log --dtype bf16 --p 2000 --d "0,1" --mem 8192
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 8192
 
     `MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-27B-GPTQ-4Bit (or `--m` specify model-id)
 
@@ -216,7 +216,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **Run the converted AWQ model**
     ```shell
-    target/release/candle-vllm --multi-process --d "0" --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
+    target/release/candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
     ```
 
   </details>
@@ -238,7 +238,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **QwQ-32B BF16 model on two GPUs**
     ```shell
-    cargo run --release --features cuda,nccl -- --multi-process --d "0,1" --w /home/QwQ-32B/
+    cargo run --release --features cuda,nccl -- --d 0,1 --w /home/QwQ-32B/
     ```
 
     **QwQ-32B 4-bit AWQ model on two GPUs**
@@ -250,7 +250,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     2) Run the converted AWQ model
     ```shell
-    cargo run --release --features cuda,nccl -- --multi-process --d "0,1" --w /home/QwQ-32B-AWQ-Marlin/
+    cargo run --release --features cuda,nccl -- --d 0,1 --w /home/QwQ-32B-AWQ-Marlin/
     ```
 
     **Note:** number of GPUs (`--d`) used must be aligned to 2^n (e.g., 2, 4, or 8).
@@ -260,11 +260,11 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
   <details>
     <summary>Show command</summary>
 
-    Simply remove the `--multi-process` parameter
+    Simply add the `--multithread` parameter
 
     **QwQ-32B BF16 model on two GPUs**
     ```shell
-    cargo run --release --features cuda,nccl -- --d "0,1" --w /home/QwQ-32B/
+    cargo run --release --features cuda,nccl -- --multithread --d 0,1 --w /home/QwQ-32B/
     ```
 
     If you encountered problems under Multi-threaded Multi-GPU mode, you may:
@@ -285,7 +285,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **2. Run DeepSeek-R1 model on 8 x A100(40GB)**
     ```shell
-    cargo run --release --features cuda,nccl -- --log --multi-process --d "0,1,2,3,4,5,6,7" --w /data/DeepSeek-R1-AWQ-Marlin/--num-experts-offload-per-rank 15
+    cargo run --release --features cuda,nccl -- --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/--num-experts-offload-per-rank 15
     ```
 
     **Note:** This setup offloads 15 experts per rank (a total of 120 out of 256 experts) to the CPU (around 150GB additional host memory required). During inference, these offloaded experts are swapped back into GPU memory as needed. If you have even less GPU memory, consider increasing the `--num-experts-offload-per-rank` parameter (up to a maximum of 32 experts per rank in this case).
@@ -322,7 +322,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **4. Run the model on two nodes with MPI runner**
     ```shell
-    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --multi-process --d "0,1,2,3,4,5,6,7" --w /data/DeepSeek-R1-AWQ-Marlin/ deep-seek
+    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ deep-seek
     ```
   </details>
 
@@ -340,13 +340,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     To achieve optimal performance during inference using all GPUs, use the following NUMA binding:
 
     ```shell
-    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --multi-process --d "0,1,2,3,4,5,6,7" --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
+    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --d 0,1,2,3,4,5,6,7 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
     ```
 
     To use only 4 GPUs, you can apply this NUMA binding:
     
     ```shell
-    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --multi-process --d "0,1,2,3" --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
+    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 target/release/candle-vllm --d 0,1,2,3 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
     ```
     *where* `numactl --cpunodebind=0 --membind=0` above indicates NUMA binding for the master rank (master process) which should be matched to `MAP_NUMA_NODE`.
 
@@ -359,7 +359,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     1) Start the backend service for `Qwen3-Reranker` model
     ```shell
-    target/release/candle-vllm --p 2000 --multi-process --f /home/data/Qwen3-Reranker-4B-q4_k_m.gguf
+    target/release/candle-vllm --p 2000 --f /home/data/Qwen3-Reranker-4B-q4_k_m.gguf
     ```
 
     2) Start the chatbot with `system prompt` for qwen3-reranker
@@ -633,7 +633,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
 
     ```shell
     python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-    cargo run --release --features cuda,nccl -- --multi-process --dtype f16 --d "0" --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
+    cargo run --release --features cuda,nccl -- --dtype f16 --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
     ```
 
     You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 

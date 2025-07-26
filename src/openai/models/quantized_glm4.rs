@@ -167,7 +167,7 @@ impl GGUFGLM4 {
             rms_norm_eps: rms_eps,
             rope_theta,
             rope_local_base_freq: None,
-            bos_token_id: super::TokenID(Either::Left(None)),
+            bos_token_id: None,
             eos_token_id: super::TokenID(Either::Left(None)),
             max_seq_len,
             sliding_window: None,

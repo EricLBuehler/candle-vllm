@@ -29,6 +29,11 @@ impl GLM4 {
         config.num_hidden_layers = config.num_hidden_layers;
         config.max_seq_len = config.max_position_embeddings.unwrap_or(32768);
         config.attention_bias = Some(config.attention_bias.unwrap_or(false));
+        config.bos_token_id = Some(
+            config
+                .bos_token_id
+                .unwrap_or(super::TokenID(either::Either::Left(Some(128256)))),
+        );
         if config.quantization_config.is_some() {
             config.quant = Some(
                 config

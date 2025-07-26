@@ -86,9 +86,9 @@ struct Args {
     #[arg(long, default_value_t = 500)]
     holding_time: usize,
 
-    //Whether the program running in multiprocess or multithread model for parallel inference
+    //Whether the program is forced running in multithread model for parallel inference (for debug)
     #[arg(long, default_value_t = false)]
-    multi_process: bool,
+    multithread: bool,
 
     #[arg(long, default_value_t = false)]
     log: bool,
@@ -201,10 +201,21 @@ async fn main() -> Result<()> {
         panic!("Multiple device-ids detected: ggml/gguf model is not supported for multi-rank inference!");
     }
 
-    let logger = ftail::Ftail::new();
+    let multi_process = if num_shards > 1 {
+        if args.multithread {
+            tracing::warn!("The program is forced running under multithread mode (for debug purpose), which may not stable!");
+            false
+        } else {
+            tracing::warn!("Multi-process mode is automatically enabled for multi-rank inference!");
+            true
+        }
+    } else {
+        !args.multithread
+    };
+    let logger: ftail::Ftail = ftail::Ftail::new();
     let mut port = args.port;
     #[cfg(feature = "nccl")]
-    let (pipelines, global_rank, daemon_manager) = if args.multi_process {
+    let (pipelines, global_rank, daemon_manager) = if multi_process {
         use candle_vllm::openai::communicator::init_subprocess;
         let (id, local_rank, global_rank, global_world_size, daemon_manager) =
             init_subprocess(device_ids.clone()).unwrap();
@@ -252,7 +263,7 @@ async fn main() -> Result<()> {
     #[cfg(feature = "nccl")]
     info!(
         "parallel model: {}!",
-        if args.multi_process {
+        if multi_process {
             "multiprocess"
         } else {
             "multithread"
@@ -327,7 +338,7 @@ async fn main() -> Result<()> {
         Arc::new(Notify::new()),
         args.holding_time,
         num_shards,
-        args.multi_process,
+        multi_process,
         #[cfg(feature = "nccl")]
         daemon_manager,
     )?;
@@ -346,7 +357,7 @@ async fn main() -> Result<()> {
     }
 
     #[cfg(feature = "nccl")]
-    if args.multi_process {
+    if multi_process {
         let e = server_data.model.read();
         let mut daemon_manager = e.daemon_manager.write();
         daemon_manager.as_mut().unwrap().mpi_sync();

@@ -168,7 +168,7 @@ impl DeepSeek {
             rms_norm_eps: config.rms_norm_eps,
             rope_theta: f64::from(config.rope_theta),
             rope_local_base_freq: None,
-            bos_token_id: config.bos_token_id,
+            bos_token_id: Some(config.bos_token_id),
             eos_token_id: config.eos_token_id,
             max_seq_len: config.max_position_embeddings,
             sliding_window: config.sliding_window,

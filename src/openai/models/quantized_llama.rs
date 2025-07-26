@@ -258,7 +258,7 @@ impl GGUFLLaMa {
             rms_norm_eps: rms_eps,
             rope_theta: 10_000.0f64,
             rope_local_base_freq: None,
-            bos_token_id: super::TokenID(Either::Left(Some(128256))),
+            bos_token_id: Some(super::TokenID(Either::Left(Some(128256)))),
             eos_token_id: super::TokenID(Either::Left(Some(128257))),
             max_seq_len,
             sliding_window: None,

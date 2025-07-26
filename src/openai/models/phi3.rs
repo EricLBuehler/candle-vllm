@@ -1,6 +1,6 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
-use super::{Config, RopeScaling};
+use super::{Config, RopeScaling, ScalingValue};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
@@ -77,8 +77,8 @@ impl RotaryEmbedding {
                 &rope_scaling["type"],
             ) {
                 (
-                    RopeScaling(Either::Left(short_factor)),
-                    RopeScaling(Either::Left(long_factor)),
+                    RopeScaling(Either::Left(ScalingValue(Either::Right(short_factor)))),
+                    RopeScaling(Either::Left(ScalingValue(Either::Right(long_factor)))),
                     RopeScaling(Either::Right(tp)),
                 ) => {
                     let scale =

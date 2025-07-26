@@ -308,11 +308,25 @@ impl DefaultLoader {
             let path = paths.get_weight_filenames()[0].clone();
             info!("Loading quantized model from file {}", path.display());
             let (arch, nlayers) = {
-                let mut file =
-                    std::fs::File::open(path.clone()).map_err(candle_core::Error::wrap)?;
-                let content = gguf_file::Content::read(&mut file)
+                let mut file = match std::fs::File::open(path.clone())
+                    .map_err(candle_core::Error::wrap)
+                {
+                    Ok(file) => file,
+                    Err(e) => {
+                        tracing::error!("Failed to open gguf file {}: {}\n ***Tips: use `--w` to load safetensors models.", path.display(), e);
+                        return Err(e);
+                    }
+                };
+                let content = match gguf_file::Content::read(&mut file)
                     .map_err(|e| e.with_path(path.clone()))
-                    .map_err(candle_core::Error::wrap)?;
+                    .map_err(candle_core::Error::wrap)
+                {
+                    Ok(content) => content,
+                    Err(e) => {
+                        tracing::error!("Failed to open gguf file {}: {}\n ***Tips: use `--w` to load safetensors models.", path.display(), e);
+                        return Err(e);
+                    }
+                };
                 let (arch, nlayers) =
                     gguf::get_arch_and_num_of_layers(content).map_err(candle_core::Error::wrap)?;
                 if !matches!(
@@ -402,19 +416,17 @@ impl DefaultLoader {
             let arch = Config::get_model_arch(&cfile)?;
 
             let config = match arch.as_str() {
-                "llama" | "llama3" | "LlamaForCausalLM" => Llama::load_config(&cfile)?,
-                "phi2" | "PhiForCausalLM" => Phi2::load_config(&cfile)?,
-                "phi3" | "Phi3ForCausalLM" => Phi::load_config(&cfile)?,
-                "qwen2" | "qwen3" | "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => {
-                    Qwen::load_config(&cfile)?
-                }
-                "gemma" | "Gemma2ForCausalLM" => Gemma::load_config(&cfile)?,
-                "gemma3" | "Gemma3ForConditionalGeneration" => Gemma3::load_config(&cfile)?,
-                "mistral" | "MistralForCausalLM" => Mistral::load_config(&cfile)?,
+                "LlamaForCausalLM" => Llama::load_config(&cfile)?,
+                "PhiForCausalLM" => Phi2::load_config(&cfile)?,
+                "Phi3ForCausalLM" => Phi::load_config(&cfile)?,
+                "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => Qwen::load_config(&cfile)?,
+                "Gemma2ForCausalLM" => Gemma::load_config(&cfile)?,
+                "Gemma3ForConditionalGeneration" => Gemma3::load_config(&cfile)?,
+                "MistralForCausalLM" => Mistral::load_config(&cfile)?,
                 "yi" => Yi::load_config(&cfile)?,
-                "stablelm" | "StableLmForCausalLM" => StableLM::load_config(&cfile)?,
-                "glm4" | "Glm4ForCausalLM" => GLM4::load_config(&cfile)?,
-                "deepseek" | "DeepseekV3ForCausalLM" => DeepSeek::load_config(&cfile)?,
+                "StableLmForCausalLM" => StableLM::load_config(&cfile)?,
+                "Glm4ForCausalLM" => GLM4::load_config(&cfile)?,
+                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" => DeepSeek::load_config(&cfile)?,
                 _ => panic!("Model not supported!"),
             };
 
@@ -494,7 +506,7 @@ impl DefaultLoader {
                     };
 
                     let (model, sep) = match arch.as_str() {
-                        "llama" | "llama3" | "LlamaForCausalLM" => (
+                        "LlamaForCausalLM" => (
                             LLMModel::Llama(
                                 Llama::load(
                                     vb,
@@ -508,21 +520,21 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Llama3,
                         ),
-                        "phi2" | "PhiForCausalLM" => (
+                        "PhiForCausalLM" => (
                             LLMModel::Phi2(
                                 Phi2::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
                                     .unwrap(),
                             ),
                             SeparatorStyle::Phi,
                         ),
-                        "phi3" | "Phi3ForCausalLM" => (
+                        "Phi3ForCausalLM" => (
                             LLMModel::Phi3(
                                 Phi::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
                                     .unwrap(),
                             ),
                             SeparatorStyle::Phi,
                         ),
-                        "qwen2" | "qwen3" | "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => (
+                        "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => (
                             LLMModel::Qwen(
                                 Qwen::new(
                                     matches!(arch.as_str(), "qwen3" | "Qwen3ForCausalLM"),
@@ -537,7 +549,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Qwen,
                         ),
-                        "gemma" | "Gemma2ForCausalLM" => (
+                        "Gemma2ForCausalLM" => (
                             LLMModel::Gemma(
                                 Gemma::new(
                                     vb,
@@ -551,7 +563,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Gemma,
                         ),
-                        "gemma3" | "Gemma3ForConditionalGeneration" => (
+                        "Gemma3ForConditionalGeneration" => (
                             LLMModel::Gemma3(
                                 Gemma3::new(
                                     vb,
@@ -565,7 +577,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Gemma,
                         ),
-                        "mistral" | "MistralForCausalLM" => (
+                        "MistralForCausalLM" => (
                             LLMModel::Mistral(
                                 Mistral::new(
                                     vb,
@@ -586,7 +598,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Yi,
                         ),
-                        "stablelm" | "StableLmForCausalLM" => (
+                        "StableLmForCausalLM" => (
                             LLMModel::StableLM(
                                 StableLM::new(
                                     vb,
@@ -600,14 +612,14 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::StableLM,
                         ),
-                        "glm4" | "Glm4ForCausalLM" => (
+                        "Glm4ForCausalLM" => (
                             LLMModel::GLM4(
                                 GLM4::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
                                     .unwrap(),
                             ),
                             SeparatorStyle::Llama,
                         ),
-                        "deepseek" | "DeepseekV3ForCausalLM" => (
+                        "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" => (
                             LLMModel::DeepSeek(
                                 DeepSeek::load(
                                     vb,

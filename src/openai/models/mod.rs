@@ -25,7 +25,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 #[derive(Deserialize, Debug, Clone)]
-pub struct RopeScaling(#[serde(with = "either::serde_untagged")] pub Either<Vec<f64>, String>);
+pub struct ScalingValue(#[serde(with = "either::serde_untagged")] pub Either<f64, Vec<f64>>);
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct RopeScaling(#[serde(with = "either::serde_untagged")] pub Either<ScalingValue, String>);
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct TokenID(
@@ -146,7 +149,7 @@ pub struct Config {
     #[serde(default = "rope_theta")]
     pub rope_theta: f64,
     pub rope_local_base_freq: Option<f64>,
-    pub bos_token_id: TokenID,
+    pub bos_token_id: Option<TokenID>,
     pub eos_token_id: TokenID,
     #[serde(default = "max_seq_len")]
     pub max_seq_len: usize,
@@ -181,7 +184,10 @@ impl Config {
                     serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
                 Ok(config)
             }
-            Err(e) => panic!("Unable to load config file {:?}", e),
+            Err(e) => panic!(
+                "Unable to load config file {:?}\n ***Tips: use `--f` to specify GGUF file path!",
+                e
+            ),
         }
     }
 

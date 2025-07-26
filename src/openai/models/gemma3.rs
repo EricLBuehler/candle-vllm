@@ -4,8 +4,8 @@ use crate::openai::distributed::{
     embedding, Comm, ReplicatedLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
     VarBuilder,
 };
-use crate::openai::models::RopeScaling;
 use crate::openai::models::TokenID;
+use crate::openai::models::{RopeScaling, ScalingValue};
 use crate::paged_attention::input_metadata::InputMetadata;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
@@ -126,7 +126,10 @@ impl Gemma3 {
             for (key, value) in config.text_config.rope_scaling.as_ref().unwrap() {
                 match value {
                     Gemma3RopeScaling(Either::Left(l)) => {
-                        ropescaling.insert(key.to_string(), RopeScaling(Either::Left(vec![*l])));
+                        ropescaling.insert(
+                            key.to_string(),
+                            RopeScaling(Either::Left(ScalingValue(Either::Left(*l)))),
+                        );
                     }
                     Gemma3RopeScaling(Either::Right(r)) => {
                         ropescaling
@@ -165,7 +168,7 @@ impl Gemma3 {
             rms_norm_eps: config.text_config.rms_norm_eps,
             rope_theta: config.text_config.rope_theta,
             rope_local_base_freq: Some(config.text_config.rope_local_base_freq),
-            bos_token_id,
+            bos_token_id: Some(bos_token_id),
             eos_token_id,
             max_seq_len: config.text_config.max_position_embeddings,
             sliding_window: config.text_config.sliding_window,
