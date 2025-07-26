@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
 impl Phi2 {
-    pub fn load_config(filename: &PathBuf) -> Result<Config> {
+    pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
         let mut config = Config::load_config(filename.clone())?;
         config.head_dim = Some(
             config
@@ -36,6 +36,8 @@ impl Phi2 {
                     .quant_method
                     .clone(),
             );
+        } else if isq.is_some() {
+            config.quant = Some(isq.unwrap().to_string());
         }
         Ok(config)
     }

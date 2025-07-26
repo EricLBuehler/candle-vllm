@@ -99,7 +99,7 @@ pub struct Gemma3Config {
 }
 
 impl Gemma3 {
-    pub fn load_config(filename: &PathBuf) -> Result<Config> {
+    pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
         let config = match std::fs::read(filename.clone()) {
             Ok(f) => {
                 let config: Gemma3Config =
@@ -152,6 +152,8 @@ impl Gemma3 {
                     .quant_method
                     .clone(),
             )
+        } else if isq.is_some() {
+            Some(isq.unwrap().to_string())
         } else {
             None
         };

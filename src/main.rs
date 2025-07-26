@@ -63,6 +63,9 @@ struct Args {
     #[arg(long)]
     dtype: Option<String>,
 
+    #[arg(long)]
+    isq: Option<String>,
+
     #[arg(long, default_value_t = false)]
     cpu: bool,
 
@@ -175,7 +178,7 @@ async fn main() -> Result<()> {
         args.weight_file,
     ));
 
-    let (paths, gguf) = loader.load_model_weights(args.hf_token, args.hf_token_path)?;
+    let (paths, gguf) = loader.prepare_model_weights(args.hf_token, args.hf_token_path)?;
 
     let dtype = match args.dtype.as_deref() {
         Some("f16") => DType::F16,
@@ -199,6 +202,10 @@ async fn main() -> Result<()> {
 
     if gguf && num_shards > 1 {
         panic!("Multiple device-ids detected: ggml/gguf model is not supported for multi-rank inference!");
+    }
+
+    if gguf && args.isq.is_some() {
+        panic!("Quantized gguf/ggml model does not support isq option!");
     }
 
     let multi_process = if num_shards > 1 {
@@ -235,6 +242,7 @@ async fn main() -> Result<()> {
                     paths,
                     dtype,
                     gguf,
+                    args.isq.clone(),
                     vec![device_ids[local_rank]],
                     Some(id),
                     Some(local_rank),
@@ -253,7 +261,18 @@ async fn main() -> Result<()> {
         let _ = config_log(logger, args.log, log_file);
         (
             loader
-                .load_model(paths, dtype, gguf, device_ids, None, None, None, None, None)
+                .load_model(
+                    paths,
+                    dtype,
+                    gguf,
+                    args.isq.clone(),
+                    device_ids,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
                 .await,
             0,
             None,
@@ -276,7 +295,15 @@ async fn main() -> Result<()> {
         let _ = config_log(logger, args.log, log_file);
         (
             loader
-                .load_model(paths, dtype, gguf, device_ids, None, None)
+                .load_model(
+                    paths,
+                    dtype,
+                    gguf,
+                    args.isq.clonse(),
+                    device_ids,
+                    None,
+                    None,
+                )
                 .await,
             0,
         )

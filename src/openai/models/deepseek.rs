@@ -95,7 +95,7 @@ pub struct DeepSeekV2RotaryEmbedding {
 }
 
 impl DeepSeek {
-    pub fn load_config(filename: &PathBuf) -> Result<Config> {
+    pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
         let config = match std::fs::read(filename.clone()) {
             Ok(f) => {
                 let config: DeepSeekConfig =
@@ -148,6 +148,8 @@ impl DeepSeek {
                     .quant_method
                     .clone(),
             )
+        } else if isq.is_some() {
+            panic!("DeepSeek does not support isq quantization yet!");
         } else {
             None
         };

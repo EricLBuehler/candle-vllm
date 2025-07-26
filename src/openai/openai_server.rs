@@ -98,7 +98,7 @@ async fn check_length(
         Err(APIError::new(format!(
             "Requested prompt({} tokens) is  \
             larger than available kvcache (maximum {} tokens).\n \
-            You can increate kvcache by setting `--mem` to a larger value!",
+            You can increase kvcache by setting `--mem` to a larger value!",
             token_ids.len(),
             available_kv_tokens
         )))
@@ -163,7 +163,17 @@ pub async fn chat_completions(
 
     if max_request_tokens + token_ids.len() > available_tokens {
         tracing::warn!("Requested max tokens {} larger than available tokens {}, max_tokens changed to {} ({} tokens reserved for prompt)!", max_request_tokens, available_tokens, available_tokens - token_ids.len(), token_ids.len());
-        max_request_tokens = available_tokens - token_ids.len();
+        max_request_tokens = if available_tokens > token_ids.len() {
+            available_tokens - token_ids.len()
+        } else {
+            return ChatResponder::ValidationError(APIError::new(format!(
+                "Requested prompt({} tokens) is  \
+                larger than available kvcache (maximum {} tokens).\n \
+                You can increase kvcache by setting `--mem` to a larger value!",
+                token_ids.len(),
+                available_tokens
+            )));
+        }
     }
 
     let sampling_params = match SamplingParams::new(

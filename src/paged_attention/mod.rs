@@ -58,6 +58,7 @@ impl PagedAttention {
     /// value_cache: shape = [num_blocks, num_kv_heads, head_size,
     ///     block_size]
     /// input_metadata: metadata for paged attention.
+    #[allow(dead_code)]
     pub fn forward(
         &self,
         query: &Tensor,

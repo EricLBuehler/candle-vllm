@@ -118,7 +118,7 @@ impl DefaultLoader {
 }
 
 impl DefaultLoader {
-    pub fn load_model_weights(
+    pub fn prepare_model_weights(
         &self,
         hf_token: Option<String>,
         hf_token_path: Option<String>,
@@ -293,6 +293,7 @@ impl DefaultLoader {
         paths: DefaultModelPaths,
         dtype: DType,
         gguf: bool,
+        isq: Option<String>,
         device_ids: Vec<usize>, //pass only 1 device_id in multiprocess mode, otherwise, multiple device_ids in multithread mode
         #[cfg(feature = "nccl")] comm_id: Option<crate::openai::distributed::Id>, //must pass comm id in multiprocess mode
         local_rank: Option<usize>, //must pass current rank in multiprocess mode
@@ -416,17 +417,19 @@ impl DefaultLoader {
             let arch = Config::get_model_arch(&cfile)?;
 
             let config = match arch.as_str() {
-                "LlamaForCausalLM" => Llama::load_config(&cfile)?,
-                "PhiForCausalLM" => Phi2::load_config(&cfile)?,
-                "Phi3ForCausalLM" => Phi::load_config(&cfile)?,
-                "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => Qwen::load_config(&cfile)?,
-                "Gemma2ForCausalLM" => Gemma::load_config(&cfile)?,
-                "Gemma3ForConditionalGeneration" => Gemma3::load_config(&cfile)?,
-                "MistralForCausalLM" => Mistral::load_config(&cfile)?,
-                "yi" => Yi::load_config(&cfile)?,
-                "StableLmForCausalLM" => StableLM::load_config(&cfile)?,
-                "Glm4ForCausalLM" => GLM4::load_config(&cfile)?,
-                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" => DeepSeek::load_config(&cfile)?,
+                "LlamaForCausalLM" => Llama::load_config(&cfile, isq)?,
+                "PhiForCausalLM" => Phi2::load_config(&cfile, isq)?,
+                "Phi3ForCausalLM" => Phi::load_config(&cfile, isq)?,
+                "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => Qwen::load_config(&cfile, isq)?,
+                "Gemma2ForCausalLM" => Gemma::load_config(&cfile, isq)?,
+                "Gemma3ForConditionalGeneration" => Gemma3::load_config(&cfile, isq)?,
+                "MistralForCausalLM" => Mistral::load_config(&cfile, isq)?,
+                "yi" => Yi::load_config(&cfile, isq)?,
+                "StableLmForCausalLM" => StableLM::load_config(&cfile, isq)?,
+                "Glm4ForCausalLM" => GLM4::load_config(&cfile, isq)?,
+                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" => {
+                    DeepSeek::load_config(&cfile, isq)?
+                }
                 _ => panic!("Model not supported!"),
             };
 
