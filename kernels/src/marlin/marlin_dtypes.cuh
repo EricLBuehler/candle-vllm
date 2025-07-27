@@ -71,6 +71,26 @@ class ScalarType<nv_bfloat16> {
   static __host__ __device__ nv_bfloat16 inline float2num(const float x) {
     return __float2bfloat16(x);
   }
+
+#else
+
+  static __device__ float inline num2float(const nv_bfloat16 x) {
+    return 0.0f;
+  }
+
+  static __device__ nv_bfloat162 inline num2num2(const nv_bfloat16 x) {
+    return nv_bfloat162();
+  }
+
+  static __device__ nv_bfloat162 inline nums2num2(const nv_bfloat16 x1,
+                                                  const nv_bfloat16 x2) {
+    return nv_bfloat162();
+  }
+
+  static __host__ __device__ nv_bfloat16 inline float2num(const float x) {
+    return nv_bfloat16();
+  }
+
 #endif
 };
 
