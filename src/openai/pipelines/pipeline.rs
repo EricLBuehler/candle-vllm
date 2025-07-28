@@ -123,10 +123,13 @@ impl DefaultLoader {
         hf_token: Option<String>,
         hf_token_path: Option<String>,
     ) -> Result<(DefaultModelPaths, bool)> {
-        let (paths, gguf): (DefaultModelPaths, bool) = match (&self.weight_path, &self.weight_file)
-        {
+        let (paths, gguf): (DefaultModelPaths, bool) = match (
+            &self.model_id,
+            &self.weight_path,
+            &self.weight_file,
+        ) {
             //model in a folder (safetensor format, huggingface folder structure)
-            (Some(path), None) => (
+            (None, Some(path), None) => (
                 DefaultModelPaths {
                     tokenizer_filename: Path::new(path).join("tokenizer.json"),
                     tokenizer_config_filename: Path::new(path).join("tokenizer_config.json"),
@@ -146,7 +149,7 @@ impl DefaultLoader {
                 false,
             ),
             //model in a quantized file (gguf/ggml format)
-            (path, Some(file)) => (
+            (None, path, Some(file)) => (
                 DefaultModelPaths {
                     tokenizer_filename: PathBuf::new(),
                     tokenizer_config_filename: PathBuf::new(),
@@ -162,10 +165,8 @@ impl DefaultLoader {
                 },
                 true,
             ),
-            _ => {
-                if self.weight_file.is_some() {
-                    return Ok((self.download_gguf_model(None)?, true));
-                };
+            (Some(_), None, Some(_)) => (self.download_gguf_model(None)?, true),
+            (Some(_), None, None) => {
                 //try download model anonymously
                 let loaded = self.download_model(None, hf_token.clone(), hf_token_path.clone());
                 if loaded.is_ok() {
@@ -199,6 +200,12 @@ impl DefaultLoader {
                         false,
                     )
                 }
+            }
+            _ => {
+                candle_core::bail!("No model id or weight_path/weight_file provided!\n***Tips***: \n \t For local model weights, \
+                    `--w <path/to/folder>` for safetensors models or `--f <path/to/gguf/file>` for gguf models.\n \
+                    \t For remote safetensor models, `--m <model_id>` to download from HuggingFace hub. \
+                    \n \t For remote gguf models, `--m <model_id> --f <weight_file>` to download from HuggingFace hub.");
             }
         };
 
