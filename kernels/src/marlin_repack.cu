@@ -1,4 +1,5 @@
 
+#ifndef NO_MARLIN_KERNEL
 #include <cuda.h>
 #include <cuda_fp16.h>
 #include <assert.h>
@@ -315,3 +316,15 @@ extern "C" void awq_repack(void* in, void* out, int k,
     CHECK(false, "Unsupported repack config: num_bits = ", num_bits);
   }
 }
+#else
+extern "C" void gptq_repack(
+  void* in,
+  void* out,
+  int m,
+  int n,
+  int64_t stream_
+) {}
+extern "C" void awq_repack(void* in, void* out, int k,
+                                int n, int num_bits, int64_t stream_) {}
+
+#endif

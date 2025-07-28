@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::path::PathBuf;
-
+use std::process::Command;
 fn main() -> Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/pagedattention.cu");
@@ -13,7 +13,44 @@ fn main() -> Result<()> {
     let build_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap_or("".to_string()));
     let mut builder = bindgen_cuda::Builder::default()
         .arg("--expt-relaxed-constexpr")
-        .arg("-g");
+        .arg("-std=c++17")
+        .arg("-O3")
+        .arg("--use_fast_math");
+
+    let compute_cap = {
+        if let Ok(var) = std::env::var("CUDA_COMPUTE_CAP") {
+            var.parse::<usize>().unwrap() * 10
+        } else {
+            let mut cmd = Command::new("nvidia-smi");
+            match cmd
+                .args(["--query-gpu=compute_cap", "--format=csv"])
+                .output()
+            {
+                Ok(out) => {
+                    let output =
+                        String::from_utf8(out.stdout).expect("Output of nvidia-smi was not utf8.");
+                    (output
+                        .split('\n')
+                        .nth(1)
+                        .unwrap()
+                        .trim()
+                        .parse::<f32>()
+                        .unwrap()
+                        * 100.) as usize
+                }
+                Err(_) => {
+                    panic!(
+                        "`CUDA_COMPUTE_CAP` env var not specified and `nvidia-smi` was not found."
+                    );
+                }
+            }
+        }
+    };
+
+    if compute_cap < 800 {
+        builder = builder.arg("-DNO_MARLIN_KERNEL");
+    }
+
     let mut is_target_msvc = false;
     if let Ok(target) = std::env::var("TARGET") {
         if target.contains("msvc") {
