@@ -279,7 +279,7 @@ impl MergedParallelColumnLinear {
         let rank = comm.rank();
         let size = comm.world_size();
         let dtype = vb.dtype();
-        if quant.is_some() || quant_config.is_some() {
+        if quant_config.is_some() {
             candle_core::bail!("Merged quantized weight is not supported at the moment!");
         }
         let mut vec_linear = Vec::<TensorParallelColumnLinear>::new();
