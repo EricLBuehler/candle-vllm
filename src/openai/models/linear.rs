@@ -396,6 +396,7 @@ pub struct QLinear {
     bits: i32,
     dtype: DType,
     is_awq: bool,
+    transposed_weight: bool,
 }
 
 impl QLinear {
@@ -420,6 +421,7 @@ impl QLinear {
             bits: 0,
             dtype: DType::F32,
             is_awq: false,
+            transposed_weight: false,
         })
     }
 
@@ -435,6 +437,7 @@ impl QLinear {
             bits,
             dtype: linear.weight().dtype(),
             is_awq,
+            transposed_weight: false,
         }
     }
 
@@ -451,6 +454,7 @@ impl QLinear {
             bits: 0,
             dtype,
             is_awq: false,
+            transposed_weight: false,
         }
     }
 
@@ -469,10 +473,11 @@ impl QLinear {
             bits: 0,
             dtype: DType::F32,
             is_awq: false,
+            transposed_weight: false,
         }
     }
 
-    pub fn from_qparts_x(w: QTensor, b: Option<Tensor>, dtype: DType) -> Self {
+    pub fn from_qparts_x(w: QTensor, b: Option<Tensor>, dtype: DType, tranposed: bool) -> Self {
         let bx = match b {
             Some(b_) => {
                 if b_.dtype() != DType::F32 {
@@ -495,6 +500,7 @@ impl QLinear {
             bits: 0,
             dtype,
             is_awq: false,
+            transposed_weight: tranposed,
         }
     }
 
@@ -536,8 +542,15 @@ impl QLinear {
                 let weight = linear.weight();
                 let qbias = linear.bias().cloned();
                 let dtype = weight.dtype();
-                let qtensor = QTensor::quantize(weight, ggml_dtype).unwrap();
-                QLinear::from_qparts_x(qtensor, qbias, dtype)
+                let dims = weight.dims();
+                let (w, tranposed) = if dims[dims.len() - 1] % ggml_dtype.block_size() != 0 {
+                    (weight.t().unwrap().contiguous().unwrap(), true)
+                } else {
+                    (weight.to_owned(), false)
+                };
+
+                let qtensor = QTensor::quantize(&w, ggml_dtype).unwrap();
+                QLinear::from_qparts_x(qtensor, qbias, dtype, tranposed)
             }
         }
     }
@@ -554,6 +567,7 @@ impl QLinear {
             bits: 0,
             dtype: old.dtype,
             is_awq: false,
+            transposed_weight: false,
         }
     }
 
@@ -646,9 +660,9 @@ impl QLinear {
         }
     }
 
-    pub fn forward_via_dequant(&self, x: &Tensor, w: &Tensor) -> Result<Tensor> {
-        // let in_dtype = x.dtype();
-        // let w = self.inner.dequantize_f16()?;
+    pub fn forward_via_dequant(&self, x: &Tensor) -> Result<Tensor> {
+        let in_dtype = x.dtype();
+        let w = self.inner.dequantize_f16()?.to_dtype(in_dtype)?;
         let x = match *x.dims() {
             [bsize, seq_len, dim1, dim2] => {
                 if seq_len > 1 {
@@ -657,7 +671,7 @@ impl QLinear {
                 } else {
                     let wdim = w.dims()[w.dims().len() - 1];
                     x.reshape((bsize * seq_len, dim1, dim2))?
-                        .matmul(w)?
+                        .matmul(&w)?
                         .reshape((bsize, seq_len, dim1, wdim))?
                 }
             }
@@ -668,11 +682,11 @@ impl QLinear {
                 } else {
                     let wdim = w.dims()[w.dims().len() - 1];
                     x.reshape((bsize * seq_len, dim))?
-                        .matmul(w)?
+                        .matmul(&w)?
                         .reshape((bsize, seq_len, wdim))?
                 }
             }
-            _ => x.matmul(w)?,
+            _ => x.matmul(&w)?,
         };
         // let x = x.to_dtype(DType::F16)?;
         if let Some(bias) = &self.bias {
@@ -745,7 +759,13 @@ impl Module for QLinear {
                     Ok(x)
                 }
             }
-            _ => self.forward_no_dequant(x),
+            _ => {
+                if self.transposed_weight {
+                    self.forward_via_dequant(x)
+                } else {
+                    self.forward_no_dequant(x)
+                }
+            }
         }
     }
 }
@@ -828,7 +848,8 @@ pub fn linear_no_bias_x(
     dtype: DType,
     merged_chunks: Option<(usize, usize)>, //(chunk_idx, num_of_chunks)
 ) -> Result<LinearX> {
-    if let Some(quantized_type) = quant {
+    if quant.is_some() && matches!(quant.as_ref().unwrap().as_str(), "gptq" | "awq" | "marlin") {
+        let quantized_type = quant.as_ref().unwrap().clone();
         //quantized weight in k x n (shift dim in original shards)
         let ln = qlinear(
             in_dim,
@@ -869,8 +890,18 @@ pub fn linear_no_bias_x(
         } else {
             vb.get_with_hints((out_dim, in_dim), "weight", shards)?
         };
+
         let ln = Linear::new(ws, None);
-        Ok(LinearX(Either::Left(ln)))
+        if quant.is_some() {
+            let quantized_type = quant.as_ref().unwrap().clone();
+            Ok(LinearX(Either::Right(QLinear::from_linear_x(
+                ln,
+                quantized_type,
+                quant_config,
+            ))))
+        } else {
+            Ok(LinearX(Either::Left(ln)))
+        }
     }
 }
 
