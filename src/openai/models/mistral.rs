@@ -4,14 +4,45 @@ use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
+use crate::openai::models::QuantConfig;
+use crate::openai::models::TokenID;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_nn::{Activation, RmsNorm};
+use either::Either;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct MistralTextConfig {
+    pub(crate) vocab_size: usize,
+    pub(crate) hidden_size: usize,
+    pub(crate) intermediate_size: usize,
+    pub(crate) num_hidden_layers: usize,
+    pub(crate) num_attention_heads: usize,
+    pub(crate) num_key_value_heads: usize,
+    pub(crate) head_dim: usize,
+    pub(crate) max_position_embeddings: usize,
+    pub(crate) rms_norm_eps: f64,
+    #[serde(default)]
+    pub(crate) tie_word_embeddings: bool,
+    pub(crate) rope_theta: f64,
+    #[serde(default)]
+    pub(crate) attention_bias: bool,
+    pub(crate) hidden_act: Option<Activation>,
+    pub(crate) sliding_window: Option<usize>,
+    pub(crate) quantization_config: Option<QuantConfig>,
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct Mistral3Config {
+    pub architectures: Option<Vec<String>>,
+    pub bos_token_id: Option<TokenID>,
+    pub eos_token_id: Option<TokenID>,
+    pub text_config: MistralTextConfig,
+}
 
 impl Mistral {
     pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
@@ -39,6 +70,77 @@ impl Mistral {
         } else if isq.is_some() {
             config.quant = Some(isq.unwrap().to_string());
         }
+        Ok(config)
+    }
+
+    pub fn load_text_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
+        let config = match std::fs::read(filename.clone()) {
+            Ok(f) => {
+                let config: Mistral3Config =
+                    serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
+                config
+            }
+            Err(e) => panic!("Unable to load config file {:?}", e),
+        };
+
+        let bos_token_id = config
+            .bos_token_id
+            .unwrap_or(super::TokenID(Either::Left(Some(1))));
+
+        let eos_token_id = config
+            .eos_token_id
+            .unwrap_or(super::TokenID(Either::Left(Some(2))));
+
+        let quant = if config.text_config.quantization_config.is_some() {
+            Some(
+                config
+                    .text_config
+                    .quantization_config
+                    .as_ref()
+                    .unwrap()
+                    .quant_method
+                    .clone(),
+            )
+        } else if isq.is_some() {
+            Some(isq.unwrap().to_string())
+        } else {
+            None
+        };
+
+        let config = Config {
+            architectures: config.architectures,
+            hidden_size: config.text_config.hidden_size,
+            head_dim: Some(config.text_config.head_dim),
+            intermediate_size: config.text_config.intermediate_size,
+            vocab_size: config.text_config.vocab_size,
+            num_hidden_layers: config.text_config.num_hidden_layers,
+            num_attention_heads: config.text_config.num_attention_heads,
+            num_key_value_heads: Some(config.text_config.num_key_value_heads),
+            rms_norm_eps: config.text_config.rms_norm_eps,
+            rope_theta: config.text_config.rope_theta,
+            rope_local_base_freq: None,
+            bos_token_id: Some(bos_token_id),
+            eos_token_id,
+            max_seq_len: config.text_config.max_position_embeddings,
+            sliding_window: config.text_config.sliding_window,
+            sliding_window_pattern: None,
+            hidden_act: Some(config.text_config.hidden_act.unwrap_or(Activation::Silu)),
+            hidden_activation: None,
+            tie_word_embeddings: config.text_config.tie_word_embeddings,
+            rope_scaling: None,
+            max_position_embeddings: Some(config.text_config.max_position_embeddings),
+            original_max_position_embeddings: config.text_config.max_position_embeddings,
+            attention_bias: Some(config.text_config.attention_bias),
+            partial_rotary_factor: None,
+            qk_layernorm: false,
+            use_qkv_bias: None,
+            custom_stop_tokens: None,
+            attn_logit_softcapping: None,
+            final_logit_softcapping: None,
+            quantization_config: config.text_config.quantization_config.clone(),
+            moe_config: None,
+            quant,
+        };
         Ok(config)
     }
 }
