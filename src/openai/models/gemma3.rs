@@ -93,6 +93,7 @@ serde_default!(Activation, hidden_activation, Activation::Silu);
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct Gemma3Config {
+    pub architectures: Option<Vec<String>>,
     pub bos_token_id: Option<TokenID>,
     pub eos_token_id: Option<TokenID>,
     pub text_config: GemmaTextConfig,
@@ -119,7 +120,7 @@ impl Gemma3 {
             .text_config
             .eos_token_id
             .or(config.eos_token_id)
-            .unwrap_or(super::TokenID(Either::Left(Some(1))));
+            .unwrap_or(super::TokenID(Either::Right(Some(vec![1, 106]))));
 
         let ropescaling = if config.text_config.rope_scaling.is_some() {
             let mut ropescaling = HashMap::<String, RopeScaling>::new();
@@ -159,7 +160,7 @@ impl Gemma3 {
         };
 
         let config = Config {
-            architectures: Some(vec!["Gemma3ForConditionalGeneration".to_string()]),
+            architectures: config.architectures,
             hidden_size: config.text_config.hidden_size,
             head_dim: Some(config.text_config.head_dim),
             intermediate_size: config.text_config.intermediate_size,

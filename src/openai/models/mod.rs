@@ -120,6 +120,16 @@ pub enum DeepSeekRopeScaling {
     },
 }
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct ModelArch(
+    #[serde(with = "either::serde_untagged")] pub Either<Option<String>, Option<Vec<String>>>,
+);
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ModelArchConfig {
+    pub architectures: Option<ModelArch>,
+}
+
 #[doc(hidden)]
 #[macro_export]
 macro_rules! serde_default_cfg {
@@ -192,15 +202,33 @@ impl Config {
     }
 
     pub fn get_model_arch(filename: &PathBuf) -> Result<String> {
-        let config = Config::load_config(filename.clone())?;
-        if config.architectures.is_none() {
-            candle_core::bail!("Missing architectures in config file!");
+        match std::fs::read(filename) {
+            Ok(f) => {
+                let arch_config: ModelArchConfig =
+                    serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
+                match arch_config.architectures {
+                    Some(ModelArch(Either::Left(Some(arch)))) => Ok(arch),
+                    Some(ModelArch(Either::Right(Some(archs)))) => {
+                        if archs.len() > 1 {
+                            candle_core::bail!("Multiple architectures found in config file {:?}, which is not supported!", archs);
+                        } else if archs.is_empty() {
+                            candle_core::bail!("No architectures found in config file {:?}!", filename);
+                        }
+                        Ok(archs[0].clone())
+                    }
+                    _=> {
+                        candle_core::bail!(
+                            "No architectures found in config file {:?}!",
+                            filename
+                        );
+                    }
+                }
+            }
+            Err(e) => panic!(
+                "Unable to get model arch from config file {:?}\n ***Tips: use `--f` to specify GGUF file path!",
+                e
+            ),
         }
-        let architectures = config.architectures.unwrap();
-        if architectures.is_empty() {
-            candle_core::bail!("No architectures defined in config file!");
-        }
-        Ok(architectures[0].clone())
     }
 
     pub fn get_head_size(&self) -> usize {

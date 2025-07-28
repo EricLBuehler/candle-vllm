@@ -431,6 +431,7 @@ impl DefaultLoader {
                 "Gemma2ForCausalLM" => Gemma::load_config(&cfile, isq)?,
                 "Gemma3ForConditionalGeneration" => Gemma3::load_config(&cfile, isq)?,
                 "MistralForCausalLM" => Mistral::load_config(&cfile, isq)?,
+                "Mistral3ForConditionalGeneration" => Mistral::load_text_config(&cfile, isq)?,
                 "yi" => Yi::load_config(&cfile, isq)?,
                 "StableLmForCausalLM" => StableLM::load_config(&cfile, isq)?,
                 "Glm4ForCausalLM" => GLM4::load_config(&cfile, isq)?,
@@ -587,7 +588,7 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Gemma,
                         ),
-                        "MistralForCausalLM" => (
+                        "MistralForCausalLM" | "Mistral3ForConditionalGeneration" => (
                             LLMModel::Mistral(
                                 Mistral::new(
                                     vb,
