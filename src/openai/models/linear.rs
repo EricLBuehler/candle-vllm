@@ -477,7 +477,7 @@ impl QLinear {
         }
     }
 
-    pub fn from_qparts_x(w: QTensor, b: Option<Tensor>, dtype: DType, tranposed: bool) -> Self {
+    pub fn from_qparts_x(w: QTensor, b: Option<Tensor>, dtype: DType, transposed: bool) -> Self {
         let bx = match b {
             Some(b_) => {
                 if b_.dtype() != DType::F32 {
@@ -500,7 +500,7 @@ impl QLinear {
             bits: 0,
             dtype,
             is_awq: false,
-            transposed_weight: tranposed,
+            transposed_weight: transposed,
         }
     }
 
@@ -543,14 +543,14 @@ impl QLinear {
                 let qbias = linear.bias().cloned();
                 let dtype = weight.dtype();
                 let dims = weight.dims();
-                let (w, tranposed) = if dims[dims.len() - 1] % ggml_dtype.block_size() != 0 {
+                let (w, transposed) = if dims[dims.len() - 1] % ggml_dtype.block_size() != 0 {
                     (weight.t().unwrap().contiguous().unwrap(), true)
                 } else {
                     (weight.to_owned(), false)
                 };
 
                 let qtensor = QTensor::quantize(&w, ggml_dtype).unwrap();
-                QLinear::from_qparts_x(qtensor, qbias, dtype, tranposed)
+                QLinear::from_qparts_x(qtensor, qbias, dtype, transposed)
             }
         }
     }
