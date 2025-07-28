@@ -103,14 +103,9 @@ async fn check_length(
             available_kv_tokens
         )))
     } else {
-        let max_valid_request_tokens = std::cmp::min(
-            available_kv_tokens,
-            data.pipeline_config.max_model_len - token_ids.len(),
-        ) - 10;
-        Ok((
-            token_ids,
-            std::cmp::min(max_gen_tokens, max_valid_request_tokens),
-        ))
+        let max_valid_request_tokens =
+            std::cmp::min(available_kv_tokens, data.pipeline_config.max_model_len) - 10;
+        Ok((token_ids, max_valid_request_tokens))
     }
 }
 
@@ -162,7 +157,14 @@ pub async fn chat_completions(
         .unwrap_or(data.pipeline_config.default_max_tokens);
 
     if max_request_tokens + token_ids.len() > available_tokens {
-        tracing::warn!("Requested max tokens {} larger than available tokens {}, max_tokens changed to {} ({} tokens reserved for prompt)!", max_request_tokens, available_tokens, available_tokens - token_ids.len(), token_ids.len());
+        tracing::warn!(
+            "Requested max tokens + prompt length {} larger than available tokens {}, \
+        max_tokens changed to {} ({} tokens reserved for prompt)!",
+            max_request_tokens + token_ids.len(),
+            available_tokens,
+            available_tokens - token_ids.len(),
+            token_ids.len()
+        );
         max_request_tokens = if available_tokens > token_ids.len() {
             available_tokens - token_ids.len()
         } else {
