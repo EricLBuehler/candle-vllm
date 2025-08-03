@@ -4,7 +4,7 @@ use crate::backend::progress::{progress_worker, ProgressReporter};
 use crate::openai::logits_processor::LogitsProcessor;
 use crate::openai::models::TokenID;
 use crate::openai::requests::StopTokens;
-use crate::openai::sampling_params::{Logprobs, TopLogprob};
+use crate::openai::sampling_params::{GenerationConfig, Logprobs, TopLogprob};
 use crate::openai::{BosEosToken, TokenizerConfig};
 use crate::scheduler::sequence::SequenceGroup;
 use crate::{
@@ -85,6 +85,7 @@ pub struct DefaultModelPaths {
     pub tokenizer_filename: PathBuf,
     pub tokenizer_config_filename: PathBuf,
     pub config_filename: PathBuf,
+    pub generation_config_filename: PathBuf,
     pub filenames: Vec<PathBuf>,
 }
 
@@ -100,6 +101,9 @@ impl DefaultModelPaths {
     }
     fn get_weight_filenames(&self) -> Vec<PathBuf> {
         self.filenames.clone()
+    }
+    fn get_generation_config_filename(&self) -> PathBuf {
+        self.generation_config_filename.clone()
     }
 }
 
@@ -145,6 +149,14 @@ impl DefaultLoader {
                         safetensors_files.insert(0, Path::new(path).join("model.safetensors"));
                         safetensors_files
                     },
+                    generation_config_filename: if Path::new(path)
+                        .join("generation_config.json")
+                        .exists()
+                    {
+                        Path::new(path).join("generation_config.json")
+                    } else {
+                        "".into()
+                    },
                 },
                 false,
             ),
@@ -162,6 +174,7 @@ impl DefaultLoader {
                             panic!("Model file not found {file}");
                         }
                     },
+                    generation_config_filename: "".into(),
                 },
                 true,
             ),
@@ -243,6 +256,11 @@ impl DefaultLoader {
             _ => "".into(),
         };
 
+        let generation_config_filename = match api.get("generation_config.json") {
+            Ok(f) => f,
+            _ => "".into(),
+        };
+
         let mut filenames = vec![];
         for rfilename in api
             .info()
@@ -261,6 +279,7 @@ impl DefaultLoader {
             tokenizer_config_filename,
             config_filename,
             filenames,
+            generation_config_filename,
         })
     }
 
@@ -290,6 +309,7 @@ impl DefaultLoader {
             tokenizer_config_filename: "".into(),
             config_filename: "".into(),
             filenames,
+            generation_config_filename: "".into(),
         })
     }
 
@@ -677,9 +697,19 @@ impl DefaultLoader {
         //max and min number of tokens generated per request
         let default_max_tokens = (config.max_seq_len / 5).clamp(MIN_GEN_TOKENS, MAX_GEN_TOKENS);
 
+        let cfg_file = paths.get_generation_config_filename();
+        let generation_cfg = if cfg_file.display().to_string() != "" && Path::exists(&cfg_file) {
+            let str_cfg: Option<String> = std::fs::read_to_string(cfg_file).ok();
+            let cfg: GenerationConfig = serde_json::from_str(str_cfg.unwrap().as_str()).unwrap();
+            Some(cfg)
+        } else {
+            None
+        };
+
         let pipeline_config = PipelineConfig {
             max_model_len: config.max_seq_len,
             default_max_tokens,
+            generation_cfg,
         };
 
         #[cfg(feature = "nccl")]

@@ -178,16 +178,17 @@ pub async fn chat_completions(
         }
     }
 
+    let generation_cfg = data.pipeline_config.generation_cfg.as_ref().unwrap();
     let sampling_params = match SamplingParams::new(
         request.n.unwrap_or(1),
         request.best_of,
         request.presence_penalty.unwrap_or(0.0),
         request.frequency_penalty.unwrap_or(0.0),
-        request.repetition_penalty,
+        request.repetition_penalty.or(generation_cfg.penalty),
         request.repeat_last_n,
-        request.temperature,
-        request.top_p,
-        request.top_k,
+        request.temperature.or(generation_cfg.temperature),
+        request.top_p.or(generation_cfg.top_p),
+        request.top_k.or(generation_cfg.top_k),
         request.use_beam_search.unwrap_or(false),
         1.0,
         EarlyStoppingCondition::UnlikelyBetterCandidates,

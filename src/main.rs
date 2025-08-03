@@ -9,6 +9,7 @@ use candle_vllm::backend::heartbeat;
 use candle_vllm::openai::openai_server::chat_completions;
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::pipelines::pipeline::DefaultLoader;
+use candle_vllm::openai::sampling_params::GenerationConfig;
 use candle_vllm::openai::OpenAIServerData;
 use candle_vllm::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm::scheduler::SchedulerConfig;
@@ -95,6 +96,18 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     log: bool,
+
+    #[arg(long)]
+    temperature: Option<f32>,
+
+    #[arg(long)]
+    top_p: Option<f32>,
+
+    #[arg(long)]
+    top_k: Option<isize>,
+
+    #[arg(long)]
+    penalty: Option<f32>,
 }
 
 fn get_cache_config(
@@ -343,7 +356,7 @@ async fn main() -> Result<()> {
         )
     };
 
-    let (default_pipelines, pipeline_config) = match pipelines {
+    let (default_pipelines, mut pipeline_config) = match pipelines {
         Err(e) => panic!("{e:?}"),
         Ok((p, c)) => (p, c),
     };
@@ -403,6 +416,17 @@ async fn main() -> Result<()> {
         #[cfg(feature = "nccl")]
         daemon_manager,
     )?;
+
+    if (args.top_k.is_some() && args.top_p.is_some()) || pipeline_config.generation_cfg.is_none() {
+        pipeline_config.generation_cfg = Some(GenerationConfig {
+            temperature: args.temperature,
+            top_k: args.top_k,
+            top_p: args.top_p,
+            penalty: args.penalty,
+        })
+    } else {
+        pipeline_config.generation_cfg.as_mut().unwrap().penalty = args.penalty;
+    }
 
     let max_model_len = pipeline_config.max_model_len;
     let kvcached_tokens = cache_config.num_gpu_blocks.unwrap() * cache_config.block_size;
