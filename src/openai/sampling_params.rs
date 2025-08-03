@@ -271,3 +271,18 @@ impl SamplingParams {
         Ok(())
     }
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GenerationConfig {
+    /// Randomness of sampling.
+    /// rec. default = 1
+    pub temperature: Option<f32>,
+    /// Cumulative prob of the top tokens to consider, must be in (0, 1]. Set 1 to consider all toks.  
+    /// rec. default = 1    
+    pub top_p: Option<f32>,
+    /// Control the number of top tokens to consider, set -1 to consider all.
+    /// rec. default = -1
+    pub top_k: Option<isize>,
+
+    pub penalty: Option<f32>,
+}
