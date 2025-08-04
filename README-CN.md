@@ -89,24 +89,24 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 ### 构建/运行参数
 
 - [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`]
-  <details>
+  <details open>
     <summary>显示详情</summary>
 
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 8192] [--w /home/weights/Qwen3-27B-GPTQ-4Bit]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 8192
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096
 
-    `MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-27B-GPTQ-4Bit
+    `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507
 
-    其中，`mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存；支持的模型架构有：["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存；支持的模型架构有：["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
   </details>
 
 ## 如何运行？
@@ -154,7 +154,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **本地路径（假设模型已下载到/home）**
 
     ```shell
-    cargo run --release --features metal -- --f /home/qwq-32b-q4_k_m.gguf qwen2
+    cargo run --release --features metal -- --f /home/qwq-32b-q4_k_m.gguf
     ```
 
     **模型ID（从Huggingface下载）**
@@ -172,7 +172,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **只需在运行未量化模型时添加`isq`参数**
 
     ```shell
-    target/release/candle-vllm --w /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --isq q4k
+    target/release/candle-vllm --w /home/DeepSeek-R1-Distill-Llama-8B/ --isq q4k
     ```
 
     注：原位量化加载可能需要更长的加载时间，原位`isq`参数选项：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -191,7 +191,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **模型ID（从Huggingface下载）**
 
     ```shell
-    target/release/candle-vllm --m thesven/Llama-3-8B-GPTQ-4bit llama3
+    target/release/candle-vllm --m thesven/Llama-3-8B-GPTQ-4bit
     ```
 
     **将未压缩模型转换为Marlin兼容格式**
@@ -575,7 +575,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **对于未量化模型：**
 
     ```
-    cargo run --release --features cuda -- --w /home/Meta-Llama-3.1-8B-Instruct/ llama3 --isq q4k
+    cargo run --release --features cuda -- --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
     ```
 
     `quant`参数选项：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -583,7 +583,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **对于4位GPTQ量化模型：**
 
     ```
-    cargo run --release --features cuda -- --w /home/mistral_7b-int4/ mistral --isq marlin
+    cargo run --release --features cuda -- --w /home/mistral_7b-int4/ --isq marlin
     ```
 
     **关于Marlin的注意事项**：
@@ -617,7 +617,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     对于`消费级GPU`，建议以GGML格式（或Marlin格式）运行模型，例如：
 
     ```
-    cargo run --release --features cuda -- --w /home/Meta-Llama-3.1-8B-Instruct/ llama3 --isq q4k
+    cargo run --release --features cuda -- --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
     ```
 
     其中`isq`可选值为：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"]。
