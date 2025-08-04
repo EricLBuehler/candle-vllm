@@ -191,6 +191,7 @@ impl Gemma3 {
             final_logit_softcapping: config.text_config.final_logit_softcapping,
             quantization_config: config.text_config.quantization_config.clone(),
             moe_config: None,
+            qwen_moe_config: None,
             quant,
         };
         Ok(config)

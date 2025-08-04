@@ -88,25 +88,25 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
 ### Build/Run Parameters
 
-- [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`MODEL_TYPE`] [`MODEL_PARAM`]  
-  <details>
+- [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`]
+  <details open>
     <summary>Show details</summary>
 
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 8192] [--w /home/weights/Qwen3-27B-GPTQ-4Bit]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 8192
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096
 
-    `MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-27B-GPTQ-4Bit (or `--m` specify model-id)
+    `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507 (or `--m` specify model-id)
 
-    where, `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); supported model archs include ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); supported model archs include ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "qwen3_moe", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
   </details>
 
 
@@ -174,7 +174,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Simply add `isq` parameter when running unquantized models**
 
     ```shell
-    target/release/candle-vllm --p 2000 --w /home/DeepSeek-R1-Distill-Llama-8B/ llama3 --isq q4k
+    target/release/candle-vllm --p 2000 --w /home/DeepSeek-R1-Distill-Llama-8B/ --isq q4k
     ```
 
     Options for in-site `isq` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -322,7 +322,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     **4. Run the model on two nodes with MPI runner**
     ```shell
-    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ deep-seek
+    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/
     ```
   </details>
 
@@ -574,7 +574,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     **For unquantized models:**
 
     ```
-    cargo run --release --features cuda -- --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ llama3 --isq q4k
+    cargo run --release --features cuda -- --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
     ```
 
     Options for `isq` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -613,7 +613,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     For `consumer GPUs`, it is suggested to run the models under GGML formats (or Marlin format), e.g.,
 
     ```
-    cargo run --release --features cuda -- --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ llama3 --isq q4k
+    cargo run --release --features cuda -- --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
     ```
 
     where `isq` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"].

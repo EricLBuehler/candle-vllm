@@ -12,6 +12,7 @@ pub mod quantized_llama;
 pub mod quantized_phi3;
 pub mod quantized_qwen;
 pub mod qwen;
+pub mod qwen3_moe;
 pub mod stable_lm;
 pub mod yi;
 use crate::openai::distributed::Comm;
@@ -84,6 +85,16 @@ pub struct MoEConfig {
     pub n_group: usize,
     pub topk_group: usize,
     pub num_experts_offload_per_rank: Option<usize>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct QwenMoEConfig {
+    pub moe_intermediate_size: usize,
+    pub num_experts: Option<usize>,
+    pub mlp_only_layers: Option<Vec<usize>>,
+    pub decoder_sparse_step: Option<usize>,
+    pub norm_topk_prob: bool,
+    pub num_experts_per_tok: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -181,8 +192,9 @@ pub struct Config {
     pub custom_stop_tokens: Option<Vec<String>>,
     pub attn_logit_softcapping: Option<f64>,
     pub final_logit_softcapping: Option<f64>,
-    pub quantization_config: Option<QuantConfig>,
     pub moe_config: Option<MoEConfig>,
+    pub qwen_moe_config: Option<QwenMoEConfig>,
+    pub quantization_config: Option<QuantConfig>,
     pub quant: Option<String>,
 }
 

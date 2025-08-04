@@ -4,47 +4,20 @@ use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::openai::models::QuantConfig;
-use crate::openai::models::TokenID;
+use crate::openai::models::linear::{linear_no_bias_x as linear_no_bias, LinearX as Linear};
+use crate::openai::models::QwenMoEConfig;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
-use candle_core::{DType, Device, IndexOp, Module, Result, Tensor};
-use candle_nn::{Activation, RmsNorm};
-use either::Either;
+use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
+use candle_core as candle;
+use candle_nn::var_builder::Shard;
+use candle_nn::RmsNorm;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
-#[derive(serde::Deserialize, Debug, Clone)]
-pub struct MistralTextConfig {
-    pub(crate) vocab_size: usize,
-    pub(crate) hidden_size: usize,
-    pub(crate) intermediate_size: usize,
-    pub(crate) num_hidden_layers: usize,
-    pub(crate) num_attention_heads: usize,
-    pub(crate) num_key_value_heads: usize,
-    pub(crate) head_dim: usize,
-    pub(crate) max_position_embeddings: usize,
-    pub(crate) rms_norm_eps: f64,
-    #[serde(default)]
-    pub(crate) tie_word_embeddings: bool,
-    pub(crate) rope_theta: f64,
-    #[serde(default)]
-    pub(crate) attention_bias: bool,
-    pub(crate) hidden_act: Option<Activation>,
-    pub(crate) sliding_window: Option<usize>,
-    pub(crate) quantization_config: Option<QuantConfig>,
-}
 
-#[derive(serde::Deserialize, Debug, Clone)]
-pub struct Mistral3Config {
-    pub architectures: Option<Vec<String>>,
-    pub bos_token_id: Option<TokenID>,
-    pub eos_token_id: Option<TokenID>,
-    pub text_config: MistralTextConfig,
-}
-
-impl Mistral {
+impl Qwen3MoE {
     pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
         let mut config = Config::load_config(filename.clone())?;
         config.head_dim = Some(
@@ -58,6 +31,7 @@ impl Mistral {
                 .unwrap_or(config.num_attention_heads),
         );
         config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        config.attention_bias = Some(config.attention_bias.unwrap_or(true));
         if config.quantization_config.is_some() {
             config.quant = Some(
                 config
@@ -70,78 +44,15 @@ impl Mistral {
         } else if isq.is_some() {
             config.quant = Some(isq.unwrap().to_string());
         }
-        Ok(config)
-    }
 
-    pub fn load_text_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
-        let config = match std::fs::read(filename.clone()) {
+        match std::fs::read(filename) {
             Ok(f) => {
-                let config: Mistral3Config =
+                let cfg: QwenMoEConfig =
                     serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
-                config
+                config.qwen_moe_config = Some(cfg);
             }
-            Err(e) => panic!("Unable to load config file {:?}", e),
-        };
-
-        let bos_token_id = config
-            .bos_token_id
-            .unwrap_or(super::TokenID(Either::Left(Some(1))));
-
-        let eos_token_id = config
-            .eos_token_id
-            .unwrap_or(super::TokenID(Either::Left(Some(2))));
-
-        let quant = if config.text_config.quantization_config.is_some() {
-            Some(
-                config
-                    .text_config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            )
-        } else if isq.is_some() {
-            Some(isq.unwrap().to_string())
-        } else {
-            None
-        };
-
-        let config = Config {
-            architectures: config.architectures,
-            hidden_size: config.text_config.hidden_size,
-            head_dim: Some(config.text_config.head_dim),
-            intermediate_size: config.text_config.intermediate_size,
-            vocab_size: config.text_config.vocab_size,
-            num_hidden_layers: config.text_config.num_hidden_layers,
-            num_attention_heads: config.text_config.num_attention_heads,
-            num_key_value_heads: Some(config.text_config.num_key_value_heads),
-            rms_norm_eps: config.text_config.rms_norm_eps,
-            rope_theta: config.text_config.rope_theta,
-            rope_local_base_freq: None,
-            bos_token_id: Some(bos_token_id),
-            eos_token_id,
-            max_seq_len: config.text_config.max_position_embeddings,
-            sliding_window: config.text_config.sliding_window,
-            sliding_window_pattern: None,
-            hidden_act: Some(config.text_config.hidden_act.unwrap_or(Activation::Silu)),
-            hidden_activation: None,
-            tie_word_embeddings: config.text_config.tie_word_embeddings,
-            rope_scaling: None,
-            max_position_embeddings: Some(config.text_config.max_position_embeddings),
-            original_max_position_embeddings: config.text_config.max_position_embeddings,
-            attention_bias: Some(config.text_config.attention_bias),
-            partial_rotary_factor: None,
-            qk_layernorm: false,
-            use_qkv_bias: None,
-            custom_stop_tokens: None,
-            attn_logit_softcapping: None,
-            final_logit_softcapping: None,
-            quantization_config: config.text_config.quantization_config.clone(),
-            moe_config: None,
-            qwen_moe_config: None,
-            quant,
-        };
+            Err(e) => panic!("Unable to load MoE config from file {:?}!", e),
+        }
         Ok(config)
     }
 }
@@ -154,12 +65,13 @@ struct RotaryEmbedding {
 
 impl RotaryEmbedding {
     fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
-        let rope_theta = cfg.rope_theta as f32;
-        let dim = cfg.hidden_size / cfg.num_attention_heads;
+        let dim = cfg
+            .head_dim
+            .unwrap_or(cfg.hidden_size / cfg.num_attention_heads);
         let max_seq_len = cfg.max_seq_len;
         let inv_freq: Vec<_> = (0..dim)
             .step_by(2)
-            .map(|i| 1f32 / rope_theta.powf(i as f32 / dim as f32))
+            .map(|i| 1f32 / cfg.rope_theta.powf(i as f64 / dim as f64) as f32)
             .collect();
         let inv_freq_len = inv_freq.len();
         let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?.to_dtype(DType::F32)?;
@@ -167,7 +79,6 @@ impl RotaryEmbedding {
             .to_dtype(DType::F32)?
             .reshape((max_seq_len, 1))?;
         let freqs = t.matmul(&inv_freq)?;
-
         Ok(Self {
             sin: freqs.sin()?,
             cos: freqs.cos()?,
@@ -201,16 +112,17 @@ struct Mlp {
     gate_proj: TensorParallelColumnLinear,
     up_proj: TensorParallelColumnLinear,
     down_proj: TensorParallelRowLinear,
-    act_fn: Activation,
+    act_fn: candle_nn::Activation,
 }
 
 impl Mlp {
-    fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
+    fn new(cfg: &Config, intermediate_size: usize, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
-        let intermediate_sz = cfg.intermediate_size;
+        // let intermediate_sz = cfg.intermediate_size;
+
         let gate_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
-            intermediate_sz,
+            intermediate_size,
             false,
             vb.pp("gate_proj"),
             comm.clone(),
@@ -219,7 +131,7 @@ impl Mlp {
         )?;
         let up_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
-            intermediate_sz,
+            intermediate_size,
             false,
             vb.pp("up_proj"),
             comm.clone(),
@@ -227,7 +139,7 @@ impl Mlp {
             &cfg.quantization_config,
         )?;
         let down_proj = TensorParallelRowLinear::load_with_hints(
-            intermediate_sz,
+            intermediate_size,
             hidden_sz,
             false,
             vb.pp("down_proj"),
@@ -239,7 +151,7 @@ impl Mlp {
             gate_proj,
             up_proj,
             down_proj,
-            act_fn: cfg.hidden_act.unwrap_or(Activation::Silu),
+            act_fn: cfg.hidden_act.unwrap(),
         })
     }
 }
@@ -252,11 +164,123 @@ impl Module for Mlp {
     }
 }
 
+struct Moe {
+    gate: Linear,
+    experts: Vec<Mlp>,
+    norm_topk_prob: bool,
+    num_experts_per_tok: usize,
+}
+
+impl Moe {
+    fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>, dtype: DType) -> Result<Self> {
+        let moe_cfg = cfg
+            .qwen_moe_config
+            .as_ref()
+            .expect("MoE config is not available!");
+        let num_experts = moe_cfg.num_experts.unwrap();
+        let gate = linear_no_bias(
+            cfg.hidden_size,
+            num_experts,
+            vb.pp("gate"),
+            Shard::default(),
+            &cfg.quant,
+            &cfg.quantization_config,
+            dtype,
+            None,
+        )?;
+
+        let experts_vb = vb.pp("experts");
+        let mut experts = Vec::with_capacity(num_experts);
+        for i in 0..num_experts {
+            experts.push(Mlp::new(
+                cfg,
+                moe_cfg.moe_intermediate_size,
+                experts_vb.pp(format!("{}", i).as_str()).clone(),
+                comm.clone(),
+            )?);
+        }
+
+        Ok(Self {
+            gate,
+            experts,
+            norm_topk_prob: moe_cfg.norm_topk_prob,
+            num_experts_per_tok: moe_cfg.num_experts_per_tok,
+        })
+    }
+
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        let (batch, seq_len, hidden_dim) = xs.dims3()?;
+        let xs = xs.reshape(((), hidden_dim))?;
+        let router_logits = xs.apply(&self.gate)?;
+        let routing_weights = candle_nn::ops::softmax_last_dim(&router_logits)?;
+
+        let experts_per_tok = routing_weights
+            .arg_sort_last_dim(false)?
+            .narrow(D::Minus1, 0, self.num_experts_per_tok)?
+            .contiguous()?;
+        let routing_weights = routing_weights.gather(&experts_per_tok, D::Minus1)?;
+
+        let routing_weights = routing_weights.to_dtype(DType::F32)?.to_vec2::<f32>()?;
+        let experts_per_tok = experts_per_tok.to_vec2::<u32>()?;
+        let mut top_x = vec![vec![]; self.experts.len()];
+        let mut selected_experts = vec![vec![]; self.experts.len()];
+        for (row_idx, (rw, expert_idxs)) in routing_weights
+            .iter()
+            .zip(experts_per_tok.iter())
+            .enumerate()
+        {
+            let sum_rw = rw.iter().sum::<f32>();
+            for (&rw, &expert_idx) in rw.iter().zip(expert_idxs.iter()) {
+                top_x[expert_idx as usize].push(row_idx as u32);
+                let rw = if self.norm_topk_prob { rw / sum_rw } else { rw };
+                selected_experts[expert_idx as usize].push(rw)
+            }
+        }
+
+        let mut ys = xs.zeros_like()?;
+        for (expert_idx, expert_layer) in self.experts.iter().enumerate() {
+            let top_x = &top_x[expert_idx];
+            if top_x.is_empty() {
+                continue;
+            }
+            let top_x = Tensor::new(top_x.as_slice(), xs.device())?;
+            let selected_experts =
+                Tensor::new(selected_experts[expert_idx].as_slice(), xs.device())?
+                    .reshape(((), 1))?
+                    .to_dtype(xs.dtype())?;
+            let current_state = xs.index_select(&top_x, 0)?.reshape(((), hidden_dim))?;
+            let current_hidden_states = expert_layer
+                .forward(&current_state.unsqueeze(0)?)?
+                .squeeze(0)?;
+            let current_hidden_states = current_hidden_states.broadcast_mul(&selected_experts)?;
+            ys = ys.index_add(&top_x, &current_hidden_states, 0)?;
+        }
+        ys = ys.reshape((batch, seq_len, hidden_dim))?;
+        Ok(ys)
+    }
+}
+
+enum MoeOrMlp {
+    Moe(Moe),
+    Mlp(Mlp),
+}
+
+impl MoeOrMlp {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Mlp(m) => m.forward(xs),
+            Self::Moe(m) => m.forward(xs),
+        }
+    }
+}
+
 struct Attention {
     q_proj: TensorParallelColumnLinear,
     k_proj: TensorParallelColumnLinear,
     v_proj: TensorParallelColumnLinear,
     o_proj: TensorParallelRowLinear,
+    q_norm: Option<RmsNorm>,
+    k_norm: Option<RmsNorm>,
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
@@ -266,6 +290,7 @@ struct Attention {
 
 impl Attention {
     fn new(
+        qwen3: bool,
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
@@ -274,11 +299,13 @@ impl Attention {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads.unwrap();
-        let head_dim = hidden_sz / num_heads;
+        let head_dim = cfg.head_dim.unwrap_or(hidden_sz / num_heads);
+        let attention_bias = cfg.attention_bias.unwrap_or(false);
+
         let q_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_heads * head_dim,
-            false,
+            attention_bias,
             vb.pp("q_proj"),
             comm.clone(),
             &cfg.quant,
@@ -287,7 +314,7 @@ impl Attention {
         let k_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
-            false,
+            attention_bias,
             vb.pp("k_proj"),
             comm.clone(),
             &cfg.quant,
@@ -296,7 +323,7 @@ impl Attention {
         let v_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
-            false,
+            attention_bias,
             vb.pp("v_proj"),
             comm.clone(),
             &cfg.quant,
@@ -312,6 +339,18 @@ impl Attention {
             &cfg.quant,
             &cfg.quantization_config,
         )?;
+
+        let q_norm = if qwen3 {
+            Some(rms_norm(head_dim, cfg.rms_norm_eps, vb.pp("q_norm"))?)
+        } else {
+            None
+        };
+        let k_norm = if qwen3 {
+            Some(rms_norm(head_dim, cfg.rms_norm_eps, vb.pp("k_norm"))?)
+        } else {
+            None
+        };
+
         let attention_heads = cfg.num_attention_heads / comm.world_size();
         let kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
         Ok(Self {
@@ -319,6 +358,8 @@ impl Attention {
             k_proj,
             v_proj,
             o_proj,
+            q_norm,
+            k_norm,
             num_heads: attention_heads,
             num_kv_heads: kv_heads,
             head_dim,
@@ -368,12 +409,24 @@ impl Attention {
             (q, k, v.contiguous()?)
         };
 
+        let (q, k) = if self.q_norm.is_some() && self.k_norm.is_some() {
+            //Per‑head RMSNorm in qwen3
+            let q_flat = q.flatten(0, 2)?; // (B*H, L, D) -> (BHL, D) after transpose later
+            let k_flat = k.flatten(0, 2)?;
+            let q_flat = self.q_norm.as_ref().unwrap().forward(&q_flat)?;
+            let k_flat = self.k_norm.as_ref().unwrap().forward(&k_flat)?;
+            let q = q_flat.reshape((b_sz, self.num_heads, seq_len, self.head_dim))?;
+            let k = k_flat.reshape((b_sz, self.num_kv_heads, seq_len, self.head_dim))?;
+            (q, k)
+        } else {
+            (q, k)
+        };
+
         let (q, k) = self.rotary_emb.apply_rotary_emb_qkv(
             &q.to_dtype(DType::F32)?,
             &k.to_dtype(DType::F32)?,
             input_positions,
         )?;
-
         let q = q.to_dtype(v.dtype())?;
         let k = k.to_dtype(v.dtype())?;
 
@@ -398,20 +451,48 @@ impl Attention {
 
 struct DecoderLayer {
     self_attn: Attention,
-    mlp: Mlp,
+    mlp: MoeOrMlp,
     input_layernorm: RmsNorm,
     post_attention_layernorm: RmsNorm,
 }
 
 impl DecoderLayer {
     fn new(
+        qwen3: bool,
         rotary_emb: Arc<RotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
         comm: Rc<Comm>,
+        dtype: DType,
+        layer_idx: usize,
     ) -> Result<Self> {
-        let self_attn = Attention::new(rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
-        let mlp = Mlp::new(cfg, vb.pp("mlp"), comm.clone())?;
+        let self_attn = Attention::new(qwen3, rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
+
+        let moe_cfg = cfg
+            .qwen_moe_config
+            .as_ref()
+            .expect("MoE config is not available!");
+
+        let mlp = if !moe_cfg
+            .mlp_only_layers
+            .as_ref()
+            .unwrap()
+            .contains(&layer_idx)
+            && (moe_cfg.num_experts.unwrap() > 0
+                && (layer_idx + 1) % moe_cfg.decoder_sparse_step.unwrap() == 0)
+        {
+            MoeOrMlp::Moe(Moe::new(cfg, vb.pp("mlp").clone(), comm.clone(), dtype)?)
+        } else {
+            let mlp = Mlp::new(
+                cfg,
+                cfg.intermediate_size,
+                vb.pp("mlp").clone(),
+                comm.clone(),
+            )?;
+
+            MoeOrMlp::Mlp(mlp)
+        };
+
         let input_layernorm =
             rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         let post_attention_layernorm = rms_norm(
@@ -442,12 +523,13 @@ impl DecoderLayer {
                 .forward(&xs, attention_mask, input_positions, cache, input_metadata)?;
         let xs = (xs + residual)?;
         let residual = &xs;
-        let xs = xs.apply(&self.post_attention_layernorm)?.apply(&self.mlp)?;
-        residual + xs
+        let xs = xs.apply(&self.post_attention_layernorm)?;
+        let mlp_output = self.mlp.forward(&xs)?;
+        residual + mlp_output
     }
 }
 
-pub struct Mistral {
+pub struct Qwen3MoE {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
@@ -457,8 +539,9 @@ pub struct Mistral {
     cfg: Config,
 }
 
-impl Mistral {
+impl Qwen3MoE {
     pub fn new(
+        qwen3: bool,
         vb: VarBuilder,
         cfg: &Config,
         dtype: DType,
@@ -473,8 +556,15 @@ impl Mistral {
         let vb_l = vb_m.pp("layers");
         let reporter = progress_reporter.clone();
         for layer_idx in 0..cfg.num_hidden_layers {
-            let layer =
-                DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), comm.clone())?;
+            let layer = DecoderLayer::new(
+                qwen3,
+                rotary_emb.clone(),
+                cfg,
+                vb_l.pp(layer_idx),
+                comm.clone(),
+                dtype,
+                layer_idx,
+            )?;
             layers.push(layer);
             reporter.write().unwrap().set_progress(layer_idx + 1);
         }
@@ -482,11 +572,14 @@ impl Mistral {
         let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
-            vb.pp("lm_head"),
+            if cfg.tie_word_embeddings {
+                vb_m.pp("embed_tokens")
+            } else {
+                vb.pp("lm_head")
+            },
             &None,
             &None,
         )?;
-
         Ok(Self {
             embed_tokens,
             layers,
@@ -519,6 +612,7 @@ impl Mistral {
             )
         };
         let mut xs = self.embed_tokens.forward(input_ids)?;
+
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
                 xs = layer.forward(
@@ -540,8 +634,12 @@ impl Mistral {
                 )?
             }
         }
-        let logits = xs.i((.., seq_len - 1, ..))?.apply(&self.norm)?;
-        self.lm_head.forward(&logits)?.to_dtype(DType::F32)
+
+        let xs = xs
+            .i((.., seq_len - 1, ..))?
+            .contiguous()?
+            .apply(&self.norm)?;
+        self.lm_head.forward(&xs)?.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {

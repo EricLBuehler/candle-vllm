@@ -190,6 +190,7 @@ impl DeepSeek {
             final_logit_softcapping: None,
             quantization_config: config.quantization_config.clone(),
             moe_config: Some(moe_config),
+            qwen_moe_config: None,
             quant,
         };
         Ok(config)
