@@ -635,7 +635,7 @@ impl QLinear {
             }
             _ => x.to_dtype(DType::F32)?,
         };
-        let xs = match *x.dims() {
+        let xs = match *xs.dims() {
             [bsize, seq_len, dim1, _] => {
                 if seq_len > 1 {
                     QMatMul::forward(&self.inner, &xs)?
