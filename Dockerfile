@@ -1,6 +1,11 @@
 # syntax=docker/dockerfile:1
 FROM docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
 
+ARG CUDA_COMPUTE_CAP=70
+ARG RAYON_NUM_THREADS=64
+ARG RUST_NUM_THREADS=64
+ARG RUSTFLAGS="-Z threads=${RUST_NUM_THREADS}"
+ARG WITH_FEATURES="cuda,cudnn,nccl,mkl,mpi"
 ARG DEBIAN_FRONTEND=noninteractive
 RUN <<HEREDOC
     apt-get update && \
@@ -22,7 +27,7 @@ RUN rustup update nightly
 RUN rustup default nightly
 
 # MKL build dependencies
-RUN curl -s https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+RUN echo "$WITH_FEATURES" | grep -q  "mkl" || exit 0 && curl -s https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
     | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null \
     && echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | \
     tee /etc/apt/sources.list.d/oneAPI.list \
@@ -35,11 +40,6 @@ COPY . .
 
 # Rayon threads are limited to minimize memory requirements in CI, avoiding OOM
 # Rust threads are increased with a nightly feature for faster compilation (single-threaded by default)
-ARG CUDA_COMPUTE_CAP=70
-ARG RAYON_NUM_THREADS=64
-ARG RUST_NUM_THREADS=64
-ARG RUSTFLAGS="-Z threads=${RUST_NUM_THREADS}"
-ARG WITH_FEATURES="cuda,cudnn,nccl,mkl,mpi"
 RUN cargo build --release --workspace --features "${WITH_FEATURES}"
 
 FROM docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 AS base
@@ -61,8 +61,9 @@ RUN <<HEREDOC
     rm -rf /var/lib/apt/lists/*
 HEREDOC
 
+ARG WITH_FEATURES="cuda,cudnn,nccl,mkl,mpi"
 # MKL run dependencies
-RUN curl -s https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+RUN echo "$WITH_FEATURES" | grep -q "mkl" || exit 0 && curl -s https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
     | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null \
     && echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | \
     tee /etc/apt/sources.list.d/oneAPI.list \
