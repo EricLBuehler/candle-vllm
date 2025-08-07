@@ -1,4 +1,6 @@
 use super::Config;
+#[cfg(feature = "cuda")]
+use crate::backend::custom_ops::sort::ArgSortOp; //Use our custom sort kernel
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
@@ -214,10 +216,19 @@ impl Moe {
         let router_logits = xs.apply(&self.gate)?;
         let routing_weights = candle_nn::ops::softmax_last_dim(&router_logits)?;
 
+        #[cfg(feature = "cuda")]
         let experts_per_tok = routing_weights
-            .arg_sort_last_dim(false)?
+            .arg_sort(false)?
             .narrow(D::Minus1, 0, self.num_experts_per_tok)?
             .contiguous()?;
+
+        #[cfg(not(feature = "cuda"))]
+        let experts_per_tok = routing_weights
+            .to_device(&candle_core::Device::Cpu)?
+            .arg_sort_last_dim(false)?
+            .narrow(D::Minus1, 0, self.num_experts_per_tok)?
+            .contiguous()?
+            .to_device(&xs.device())?;
         let routing_weights = routing_weights.gather(&experts_per_tok, D::Minus1)?;
 
         let routing_weights = routing_weights.to_dtype(DType::F32)?.to_vec2::<f32>()?;
