@@ -466,7 +466,14 @@ impl Mistral {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
-        let vb_m = vb.pp("model");
+        let vb_m = if cfg.architectures.is_some()
+            && cfg.architectures.as_ref().unwrap()[0] == "Mistral3ForConditionalGeneration"
+        {
+            //text model in multimodal weights
+            vb.pp("language_model.model")
+        } else {
+            vb.pp("model")
+        };
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(RotaryEmbedding::new(dtype, cfg, device)?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
@@ -482,7 +489,13 @@ impl Mistral {
         let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
-            vb.pp("lm_head"),
+            if cfg.architectures.is_some()
+                && cfg.architectures.as_ref().unwrap()[0] == "Mistral3ForConditionalGeneration"
+            {
+                vb.pp("language_model.lm_head")
+            } else {
+                vb.pp("lm_head")
+            },
             &None,
             &None,
         )?;
