@@ -114,13 +114,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 ## How to run?
 
 - Run **Uncompressed** models 
-  <details>
+  <details open>
     <summary>Show command</summary>
 
-    **Local Path**
+    **Local Path (with port and device specified)**
 
     ```shell
-    target/release/candle-vllm --p 2000 --w /home/DeepSeek-R1-Distill-Llama-8B/
+    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
     ```
 
     **Model-ID (download from Huggingface)**
@@ -132,19 +132,19 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
   </details>
 
 - Run **GGUF** models 
-  <details>
+  <details open>
     <summary>Show command</summary>
 
-    **Local Path (with port, dtype, sampling parameter specified)**
+    **Local Path**
 
     ```shell
-    target/release/candle-vllm --f /home/data/DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf
+    target/release/candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    target/release/candle-vllm --m unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF --f DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf
+    target/release/candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
     ```
 
   </details>
