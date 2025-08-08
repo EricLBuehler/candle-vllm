@@ -112,13 +112,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 ## 如何运行？
 
 - 运行**未压缩**模型 
-  <details>
+  <details open>
     <summary>显示命令</summary>
 
-    **本地路径**
+    **本地路径（指定端口与设备）**
 
     ```shell
-    target/release/candle-vllm --w /home/DeepSeek-R1-Distill-Llama-8B/
+    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
     ```
 
     **模型ID（从Huggingface下载）**
@@ -130,19 +130,19 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
   </details>
 
 - 运行**GGUF**模型 
-  <details>
+  <details open>
     <summary>显示命令</summary>
 
-    **本地路径（指定端口、数据类型、采样参数）**
+    **本地路径**
 
     ```shell
-    target/release/candle-vllm --f /home/data/DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf
+    target/release/candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
     ```
 
     **模型ID（从Huggingface下载）**
 
     ```shell
-    target/release/candle-vllm --m unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF --f DeepSeek-R1-0528-Qwen3-8B-Q2_K.gguf
+    target/release/candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
     ```
 
   </details>
