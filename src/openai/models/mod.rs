@@ -11,6 +11,7 @@ pub mod quantized_glm4;
 pub mod quantized_llama;
 pub mod quantized_phi3;
 pub mod quantized_qwen;
+pub mod quantized_qwen3_moe;
 pub mod qwen;
 pub mod qwen3_moe;
 pub mod stable_lm;

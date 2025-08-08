@@ -1,6 +1,4 @@
 use super::Config;
-#[cfg(feature = "cuda")]
-use crate::backend::custom_ops::sort::ArgSortOp; //Use our custom sort kernel
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
@@ -218,7 +216,7 @@ impl Moe {
 
         #[cfg(feature = "cuda")]
         let experts_per_tok = routing_weights
-            .arg_sort(false)?
+            .arg_sort_last_dim(false)?
             .narrow(D::Minus1, 0, self.num_experts_per_tok)?
             .contiguous()?;
 
