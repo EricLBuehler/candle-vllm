@@ -95,18 +95,18 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507 (or `--m` specify model-id)
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); supported model archs include ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "qwen3_moe", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); supported model archs include ["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "qwen3_moe", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
   </details>
 
 
@@ -117,10 +117,10 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
   <details open>
     <summary>Show command</summary>
 
-    **Local Path (with port and device specified)**
+    **Local Path (with port, device and isq specified)**
 
     ```shell
-    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
+    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k
     ```
 
     **Model-ID (download from Huggingface)**
