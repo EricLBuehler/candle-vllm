@@ -15,17 +15,17 @@ anyhow = "1.0.75"
 rand = "0.9.0"
 rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "17aa718" }
-candle-examples = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "17aa718" }
+candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "1f5c662" }
+candle-examples = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "1f5c662" }
 #candle-lora = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 #candle-lora-macro = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 #candle-lora-transformers = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "17aa718" }
+candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "1f5c662" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
 tokenizers = "0.21.2"
 uuid = { version = "1.5.0", features = ["v4"] }
-candle-transformers = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "17aa718" }
+candle-transformers = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "1f5c662" }
 hf-hub = "0.4.1"
 serde_json = "1.0.108"
 derive_more = "0.99.17"
@@ -34,7 +34,7 @@ intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"], option
 #cudarc = {version = "0.13.9", features = ["f16", "cuda-version-from-build-system"], optional = true }
 cudarc = {git = "https://github.com/guoqingbao/cudarc.git", version = "0.13.9", features = ["f16", "cuda-version-from-build-system"], optional = true, rev="cc13092" }
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
-candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "17aa718" }
+candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "1f5c662" }
 clap = { version = "4.4.7", features = ["derive"] }
 #candle-sampling = { git = "https://github.com/EricLBuehler/candle-sampling.git", version = "0.2.0" }
 futures = "0.3.29"

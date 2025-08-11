@@ -95,18 +95,18 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507
 
-    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存；支持的模型架构有：["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
+    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存；支持的模型架构有：["llama", "llama3", "mistral", "phi2", "phi3", "qwen2", "qwen3", "qwen3moe", "glm4", "gemma", "gemma3", "yi", "stable-lm", "deep-seek"]
   </details>
 
 ## 如何运行？
@@ -115,10 +115,10 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
   <details open>
     <summary>显示命令</summary>
 
-    **本地路径（指定端口与设备）**
+    **本地路径（指定端口、设备及ISQ量化）**
 
     ```shell
-    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
+    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k
     ```
 
     **模型ID（从Huggingface下载）**
