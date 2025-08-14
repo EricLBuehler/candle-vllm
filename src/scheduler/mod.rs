@@ -89,22 +89,25 @@ impl Scheduler {
                 }
 
                 // If we cannot allocate either now or in the future, either do not continue or remove the sequence.
-                let can_allocate = self.block_engine.can_allocate(&seq_group);
-                match can_allocate {
-                    AllocStatus::Later => break, //If we can only allocate later, do not bother iterating over the rest.
-                    AllocStatus::Impossible => {
-                        warn!(
-                            "Input prompt with length of {} tokens is too long and exceeds capacity of block engine.",
-                            seq_group.get_prompt_len()
-                        );
-                        seq_group.set_status(SequenceStatus::FinishedIgnored);
-                        ignored_seq_groups.push_back(self.waiting.pop_front().unwrap());
+                if seq_group.get_status() != SequenceStatus::Pending {
+                    let can_allocate = self.block_engine.can_allocate(&seq_group);
+                    match can_allocate {
+                        AllocStatus::Later => break, //If we can only allocate later, do not bother iterating over the rest.
+                        AllocStatus::Impossible => {
+                            warn!(
+                                "Input prompt with length of {} tokens is too long and exceeds capacity of block engine.",
+                                seq_group.get_prompt_len()
+                            );
+                            seq_group.set_status(SequenceStatus::FinishedIgnored);
+                            ignored_seq_groups.push_back(self.waiting.pop_front().unwrap());
+                        }
+                        _ => {}
                     }
-                    _ => {}
+
+                    self._allocate(&seq_group);
                 }
 
                 seq_group.set_status(SequenceStatus::Running);
-                self._allocate(&seq_group);
 
                 let seq_group = self.waiting.pop_front().unwrap();
                 self.running.push_back(seq_group.clone());
@@ -235,6 +238,47 @@ impl Scheduler {
     pub fn get_available_kv_tokens(&self) -> usize {
         let free_blocks = self.block_engine.get_num_free_blocks();
         free_blocks * self.block_engine.get_block_size()
+    }
+
+    pub fn filter_prefill_finished(
+        &mut self,
+        scheduled: &VecDeque<Arc<SequenceGroup>>,
+    ) -> (Vec<u32>, VecDeque<Arc<SequenceGroup>>) {
+        let mut finished_indices = Vec::new();
+        let mut remove_ids = Vec::new();
+        const CHUNK_SIZE: usize = 8192;
+        for (i, group) in scheduled.iter().enumerate() {
+            let seq = group.get_seqs().values().nth(0).unwrap();
+            let prompt_len = seq.deref().get_prompt_len();
+            let num_cached_tokens = seq.deref().get_num_cached_tokens();
+            if prompt_len < CHUNK_SIZE || num_cached_tokens + CHUNK_SIZE >= prompt_len {
+                finished_indices.push(i as u32);
+            } else {
+                remove_ids.push(seq.deref().get_id());
+                //unfinished due to chunked_prefill, push back to waiting list
+                let group = group.clone();
+                let seq = group.get_seqs().values().nth(0).unwrap();
+                seq.deref_mut()
+                    .set_num_cached_tokens(num_cached_tokens + CHUNK_SIZE); //current prefilled CHUNK_SIZE
+                group.set_status(SequenceStatus::Pending);
+                tracing::info!(
+                    "Seq {} chunk prefilled {}/{} tokens",
+                    seq.deref().get_id(),
+                    seq.deref().get_num_cached_tokens(),
+                    prompt_len
+                );
+                self.waiting.push_back(group);
+            }
+        }
+        self.running.retain(|s| {
+            !remove_ids.contains(&s.get_seqs().values().nth(0).unwrap().deref().get_id())
+        });
+
+        let finished_groups: VecDeque<Arc<SequenceGroup>> = finished_indices
+            .iter()
+            .map(|&i| Arc::clone(&scheduled[i as usize]))
+            .collect();
+        (finished_indices, finished_groups)
     }
 }
 

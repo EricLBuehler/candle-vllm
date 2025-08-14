@@ -22,6 +22,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support `Mac/Metal` devices
 - Support `Multi-GPU` inference (both `multi-process` and  `multi-threaded` mode)
 - Support `Multi-node` inference with MPI runner
+- Support Chunked Prefilling (default chunk size 8K)
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.

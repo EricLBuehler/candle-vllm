@@ -388,7 +388,7 @@ impl GGUFLLaMa {
         let embedding_length = md_get("llama.embedding_length")?.to_u32()? as usize;
         // let rope_dim = md_get("llama.rope.dimension_count")?.to_u32()? as usize;
         let context_length = md_get("llama.context_length")?.to_u32();
-        let context_length = context_length.map_or(8192, |v| v as usize);
+        let context_length = context_length.unwrap_or(8192) as usize;
 
         let head_dim = md_get("llama.attention.key_length");
         let head_dim = if head_dim.is_ok() {
