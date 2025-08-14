@@ -8,12 +8,13 @@ use crate::openai::sampling_params::{Logprobs, SamplingParams};
 use crate::openai::streaming::ChatResponse;
 use flume::Sender;
 use std::time::SystemTime;
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum SequenceStatus {
     FinishedIgnored,
     Waiting,
     Running,
     Swapped,
+    Pending,
     FinishedAborted,
     Finished(String),
 }
@@ -23,6 +24,7 @@ pub struct SequenceData {
     output_token_ids: Vec<Logprobs>,
     cumulative_logprob: f32,
     status: SequenceStatus,
+    num_cached_tokens: usize, //used for chunked prefill and context cache
 }
 
 impl SequenceData {
@@ -32,6 +34,7 @@ impl SequenceData {
             output_token_ids: Vec::new(),
             cumulative_logprob: 0.,
             status: SequenceStatus::Waiting,
+            num_cached_tokens: 0,
         }
     }
 
@@ -135,6 +138,10 @@ impl _Sequence {
         )
     }
 
+    pub fn get_status(&self) -> SequenceStatus {
+        self.deref().status.clone()
+    }
+
     pub fn get_cumulative_logprob(&self) -> f32 {
         self.deref().get_cumulative_logprob()
     }
@@ -186,6 +193,14 @@ impl _Sequence {
             self.logical_token_blocks
                 .push(LogicalTokenBlock::new(self.block_size));
         }
+    }
+
+    pub fn get_num_cached_tokens(&self) -> usize {
+        self.deref().num_cached_tokens
+    }
+
+    pub fn set_num_cached_tokens(&mut self, num_cached_tokens: usize) {
+        self.deref_mut().num_cached_tokens = num_cached_tokens;
     }
 }
 
@@ -279,6 +294,10 @@ impl SequenceGroup {
                 seq_guard.deref_mut().set_status(status.clone());
             }
         }
+    }
+
+    pub fn get_status(&self) -> SequenceStatus {
+        self.seqs.values().nth(0).unwrap().deref().get_status()
     }
 
     /// Blocks to add one new token to each sequence
