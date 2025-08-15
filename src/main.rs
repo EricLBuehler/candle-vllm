@@ -108,6 +108,9 @@ struct Args {
 
     #[arg(long)]
     penalty: Option<f32>,
+
+    #[arg(long)]
+    prefill_chunk_size: Option<usize>,
 }
 
 fn get_cache_config(
@@ -263,6 +266,11 @@ async fn main() -> Result<()> {
         panic!("Quantized gguf/ggml model does not support isq option!");
     }
 
+    assert!(
+        args.prefill_chunk_size.is_none() || args.prefill_chunk_size.unwrap() % 1024 == 0,
+        "Error: prefill_chunk_size must be divisible by 1024!"
+    );
+
     let multi_process = if num_shards > 1 {
         if args.multithread {
             tracing::warn!("The program is forced running under multithread mode (for debug purpose), which may not stable!");
@@ -415,6 +423,7 @@ async fn main() -> Result<()> {
         multi_process,
         #[cfg(feature = "nccl")]
         daemon_manager,
+        args.prefill_chunk_size,
     )?;
 
     if (args.top_k.is_some() && args.top_p.is_some()) || pipeline_config.generation_cfg.is_none() {
@@ -427,6 +436,8 @@ async fn main() -> Result<()> {
     } else {
         pipeline_config.generation_cfg.as_mut().unwrap().penalty = args.penalty;
     }
+
+    info!("Pipeline config {:?}", pipeline_config);
 
     let max_model_len = pipeline_config.max_model_len;
     let kvcached_tokens = cache_config.num_gpu_blocks.unwrap() * cache_config.block_size;

@@ -49,6 +49,7 @@ struct PreparedInputs {
 }
 
 const _PAD_SLOT_ID: i64 = -1;
+const PREFILL_CHUNK_SIZE: usize = 8192;
 
 #[allow(unused)]
 pub struct LLMEngine {
@@ -68,6 +69,7 @@ pub struct LLMEngine {
     waiting_tasks: RwLock<Vec<TaskData>>,
     #[cfg(feature = "nccl")]
     pub daemon_manager: RwLock<Option<DaemonManager>>,
+    prefill_chunk_size: Option<usize>,
 }
 
 impl LLMEngine {
@@ -100,6 +102,7 @@ impl LLMEngine {
         num_shards: usize,
         multi_process: bool,
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
+        prefill_chunk_size: Option<usize>,
     ) -> Result<Arc<RwLock<Self>>> {
         let num_threads: usize = pipelines.len();
         let engine = Arc::new(RwLock::new(Self {
@@ -119,6 +122,7 @@ impl LLMEngine {
             daemon_manager: RwLock::new(daemon_manager),
             sync_notifies: HashMap::new(),
             senders: HashMap::new(),
+            prefill_chunk_size,
         }));
         let engine_clone = engine.clone();
 
@@ -503,8 +507,9 @@ impl LLMEngine {
 
             if is_prompt {
                 let mut e = engine.write();
+                let chunk_size = e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
                 let (finished_indices, finished_groups) =
-                    e.scheduler.filter_prefill_finished(&scheduled);
+                    e.scheduler.filter_prefill_finished(&scheduled, chunk_size);
 
                 if finished_indices.is_empty() {
                     continue;
