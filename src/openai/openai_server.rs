@@ -184,10 +184,7 @@ pub async fn chat_completions(
         request.best_of,
         request.presence_penalty.unwrap_or(0.0),
         request.frequency_penalty.unwrap_or(0.0),
-        request
-            .repetition_penalty
-            .or(generation_cfg.penalty)
-            .or(Some(1.1)),
+        request.repetition_penalty.or(generation_cfg.penalty),
         request.repeat_last_n,
         request.temperature.or(generation_cfg.temperature),
         request.top_p.or(generation_cfg.top_p),

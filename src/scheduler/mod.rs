@@ -243,15 +243,24 @@ impl Scheduler {
     pub fn filter_prefill_finished(
         &mut self,
         scheduled: &VecDeque<Arc<SequenceGroup>>,
+        chunk_size: usize,
     ) -> (Vec<u32>, VecDeque<Arc<SequenceGroup>>) {
         let mut finished_indices = Vec::new();
         let mut remove_ids = Vec::new();
-        const CHUNK_SIZE: usize = 8192;
         for (i, group) in scheduled.iter().enumerate() {
             let seq = group.get_seqs().values().nth(0).unwrap();
             let prompt_len = seq.deref().get_prompt_len();
             let num_cached_tokens = seq.deref().get_num_cached_tokens();
-            if prompt_len < CHUNK_SIZE || num_cached_tokens + CHUNK_SIZE >= prompt_len {
+            if chunk_size > 0
+                && (prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len)
+            {
+                if prompt_len > chunk_size {
+                    tracing::info!(
+                        "Seq {} chunk prefill finished ({} tokens)",
+                        seq.deref().get_id(),
+                        prompt_len
+                    );
+                }
                 finished_indices.push(i as u32);
             } else {
                 remove_ids.push(seq.deref().get_id());
@@ -259,7 +268,7 @@ impl Scheduler {
                 let group = group.clone();
                 let seq = group.get_seqs().values().nth(0).unwrap();
                 seq.deref_mut()
-                    .set_num_cached_tokens(num_cached_tokens + CHUNK_SIZE); //current prefilled CHUNK_SIZE
+                    .set_num_cached_tokens(num_cached_tokens + chunk_size); //current prefilled CHUNK_SIZE
                 group.set_status(SequenceStatus::Pending);
                 tracing::info!(
                     "Seq {} chunk prefilled {}/{} tokens",
