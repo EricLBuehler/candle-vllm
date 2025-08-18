@@ -75,7 +75,7 @@ export PATH=$PATH:/usr/local/cuda/bin/
 #CUDA平台：单节点（单机单卡或单机多卡）编译命令
 cargo build --release --features cuda,nccl
 
-#CUDA平台：单节点（使用flash attention kernel，适用于长上下文推理）编译命令
+#CUDA平台：单节点（使用flash attention kernel，适用于长上下文推理，需要CUDA_ARCH >= 800）编译命令
 cargo build --release --features cuda,nccl,flash-attn
 
 #CUDA平台：多节点（多机推理）编译命令
@@ -107,7 +107,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507
 
-    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K），`--penalty` 重复输出惩罚项 (1.0 : 无惩罚 至 2.0 : 最大惩罚)，`--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存。
+    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--penalty` 重复输出惩罚项 (1.0 : 无惩罚 至 2.0 : 最大惩罚)，`--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存。
   </details>
 
 ## 如何运行？

@@ -75,7 +75,7 @@ export PATH=$PATH:/usr/local/cuda/bin/
 #CUDA: single-node compilation (single gpu, or multi-gpus on single machine)
 cargo build --release --features cuda,nccl
 
-#CUDA: single-node compilation with flash attention (takes few minutes for the first build, faster inference for long-context)
+#CUDA: single-node compilation with flash attention (takes few minutes for the first build, faster inference for long-context, requires CUDA_ARCH >= 800)
 cargo build --release --features cuda,nccl,flash-attn
 
 #CUDA: multinode compilation with MPI (multi-gpus, multiple machines)
@@ -107,7 +107,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507 (or `--m` specify model-id)
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K); `--penalty` repetition penalty (1.0 : no penalty to 2.0 : maximum penalty); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch).
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--penalty` repetition penalty (1.0 : no penalty to 2.0 : maximum penalty); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch).
   </details>
 
 

@@ -431,7 +431,8 @@ impl FusedMoe {
         let qtensor = QTensor::quantize(&up_experts, quant_type).unwrap();
         let up_experts = QMatMul::QTensor(Arc::new(qtensor));
 
-        let qtensor = QTensor::quantize(&down_experts, quant_type).unwrap();
+        //down_experts requires higher precision
+        let qtensor = QTensor::quantize(&down_experts, GgmlDType::Q8_0).unwrap();
         let down_experts = QMatMul::QTensor(Arc::new(qtensor));
         let world_size = comm.world_size();
 
@@ -551,13 +552,24 @@ impl Attention {
             &cfg.quant,
             &cfg.quantization_config,
         )?;
+        //v_proj requires higher precision
+        let q8_0_quant = Some("q8_0".to_string());
         let v_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
             attention_bias,
             vb.pp("v_proj"),
             comm.clone(),
-            &cfg.quant,
+            if cfg.quant.is_some()
+                && !matches!(
+                    cfg.quant.as_ref().unwrap().as_str(),
+                    "gptq" | "awq" | "marlin"
+                )
+            {
+                &q8_0_quant
+            } else {
+                &cfg.quant
+            },
             &cfg.quantization_config,
         )?;
 
