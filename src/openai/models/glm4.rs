@@ -53,16 +53,8 @@ impl GLM4 {
 pub struct RotaryEmbedding {
     cos: Tensor,
     sin: Tensor,
-    // inv_freq: Tensor,
     rotary_dim: usize,
 }
-
-// fn repeat_interleave(xs: &Tensor, repeats: usize, dim: usize) -> Result<Tensor> {
-//     let xs = xs.unsqueeze(dim + 1)?;
-//     let mut dims = xs.dims().to_vec();
-//     dims[dim + 1] = repeats;
-//     xs.broadcast_as(dims)?.flatten(dim, dim + 1)
-// }
 
 impl RotaryEmbedding {
     pub fn new(cfg: &Config, _dtype: DType, dev: &Device) -> Result<Self> {
@@ -89,45 +81,11 @@ impl RotaryEmbedding {
             sin: freqs.sin()?,
             cos: freqs.cos()?,
             rotary_dim,
-            // inv_freq: inv_freq.reshape((1, (), 1))?,
         })
     }
 
-    //TODO(guoqingbao): dynamic rope
-    // pub fn update(
-    //     &self,
-    //     seq_len: usize,
-    //     input_positions: &[Vec<usize>],
-    //     device: &Device,
-    // ) -> Result<(Tensor, Tensor)> {
-    //     let mut position_ids = Vec::<Tensor>::new();
-    //     let b_size = input_positions.len();
-    //     for (b, seqlen_offset) in zip(0..b_size, input_positions) {
-    //         let t = Tensor::arange(
-    //             seqlen_offset[0] as u32,
-    //             seqlen_offset[0] as u32 + seq_len as u32,
-    //             device,
-    //         )?
-    //         .to_dtype(DType::F32)?; //optimize: make a full tensor and chunk from it
-    //         position_ids.push(t);
-    //     }
-    //     let position_ids = Tensor::cat(&position_ids, 0)?.reshape((b_size, (), 1))?;
-    //     let inv_freq_expanded =
-    //         self.inv_freq
-    //             .expand((position_ids.dim(0)?, self.inv_freq.dim(1)?, 1))?;
-    //     let freqs = inv_freq_expanded
-    //         .matmul(&position_ids.t()?)?
-    //         .transpose(1, 2)?
-    //         .contiguous()?;
-    //     let emb = repeat_interleave(&freqs, 2, 2)?;
-    //     let cos = emb.cos()?;
-    //     let sin = emb.sin()?;
-    //     Ok((cos, sin))
-    // }
-
     pub fn apply_rotary_emb(&self, xs: &Tensor, input_positions: &[Vec<usize>]) -> Result<Tensor> {
         let (b_size, _num_heads, seq_len, _headdim) = xs.dims4()?;
-        // let (cos, sin) = self.update(seq_len, &position_ids, &xs.device())?;
         let mut embeds = Vec::new();
         for (b, seqlen_offset) in zip(0..b_size, input_positions) {
             let (s, e) = (seqlen_offset[0], seqlen_offset[0] + seq_len);

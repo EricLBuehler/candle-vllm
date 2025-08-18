@@ -14,6 +14,7 @@ pub mod quantized_qwen;
 pub mod quantized_qwen3_moe;
 pub mod qwen;
 pub mod qwen3_moe;
+pub mod rotary_emb;
 pub mod stable_lm;
 pub mod yi;
 use crate::openai::distributed::Comm;
