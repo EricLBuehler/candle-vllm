@@ -1,4 +1,4 @@
-use super::Config;
+use super::{rotary_emb::DefaultRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::candle::quantized::QTensor;
 use crate::openai::distributed::shard;
@@ -59,57 +59,6 @@ impl Qwen3MoE {
             Err(e) => panic!("Unable to load MoE config from file {:?}!", e),
         }
         Ok(config)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct RotaryEmbedding {
-    sin: Tensor,
-    cos: Tensor,
-}
-
-impl RotaryEmbedding {
-    fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
-        let dim = cfg
-            .head_dim
-            .unwrap_or(cfg.hidden_size / cfg.num_attention_heads);
-        let max_seq_len = cfg.max_seq_len;
-        let inv_freq: Vec<_> = (0..dim)
-            .step_by(2)
-            .map(|i| 1f32 / cfg.rope_theta.powf(i as f64 / dim as f64) as f32)
-            .collect();
-        let inv_freq_len = inv_freq.len();
-        let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?.to_dtype(DType::F32)?;
-        let t = Tensor::arange(0u32, max_seq_len as u32, dev)?
-            .to_dtype(DType::F32)?
-            .reshape((max_seq_len, 1))?;
-        let freqs = t.matmul(&inv_freq)?;
-        Ok(Self {
-            sin: freqs.sin()?,
-            cos: freqs.cos()?,
-        })
-    }
-
-    fn apply_rotary_emb_qkv(
-        &self,
-        q: &Tensor,
-        k: &Tensor,
-        input_positions: &[Vec<usize>],
-    ) -> Result<(Tensor, Tensor)> {
-        let (b_sz, _h, seq_len, _n_embd) = q.dims4()?;
-        let mut q_embeds = Vec::new();
-        let mut k_embeds = Vec::new();
-        for (b, seqlen_offset) in zip(0..b_sz, input_positions) {
-            let cos = self.cos.narrow(0, seqlen_offset[0], seq_len)?;
-            let sin = self.sin.narrow(0, seqlen_offset[0], seq_len)?;
-            let x_q = q.narrow(0, b, 1)?;
-            let x_k = k.narrow(0, b, 1)?;
-            let q_embed = candle_nn::rotary_emb::rope(&x_q, &cos, &sin)?;
-            let k_embed = candle_nn::rotary_emb::rope(&x_k, &cos, &sin)?;
-            q_embeds.push(q_embed);
-            k_embeds.push(k_embed);
-        }
-        Ok((Tensor::cat(&q_embeds, 0)?, Tensor::cat(&k_embeds, 0)?))
     }
 }
 
@@ -516,14 +465,14 @@ struct Attention {
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
-    rotary_emb: Arc<RotaryEmbedding>,
+    rotary_emb: Arc<DefaultRotaryEmbedding>,
     attn: PagedAttention,
 }
 
 impl Attention {
     fn new(
         qwen3: bool,
-        rotary_emb: Arc<RotaryEmbedding>,
+        rotary_emb: Arc<DefaultRotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
         comm: Rc<Comm>,
@@ -665,7 +614,7 @@ impl Attention {
             (q, k)
         };
 
-        let (q, k) = self.rotary_emb.apply_rotary_emb_qkv(
+        let (q, k) = self.rotary_emb.apply_rotary_emb(
             &q.to_dtype(DType::F32)?,
             &k.to_dtype(DType::F32)?,
             input_positions,
@@ -702,7 +651,7 @@ struct DecoderLayer {
 impl DecoderLayer {
     fn new(
         qwen3: bool,
-        rotary_emb: Arc<RotaryEmbedding>,
+        rotary_emb: Arc<DefaultRotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
         comm: Rc<Comm>,
@@ -803,7 +752,7 @@ impl Qwen3MoE {
     ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let rotary_emb = Arc::new(RotaryEmbedding::new(dtype, cfg, device)?);
+        let rotary_emb = Arc::new(DefaultRotaryEmbedding::new(DType::F32, cfg, device, true)?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         let reporter = progress_reporter.clone();

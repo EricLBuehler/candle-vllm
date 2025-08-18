@@ -233,21 +233,6 @@ impl RotaryEmbedding {
         let inv_freq_len = inv_freq.len();
         let inv_freq = Tensor::from_vec(inv_freq, (1, inv_freq_len), dev)?.to_dtype(DType::F32)?;
         let factor = 1.0f64;
-        //TODO: scaling does not work for gemma3 models (vLLM also drops the usage of scaling)
-        // if local_sliding_window.is_some() && cfg.rope_scaling.is_some() {
-        //     match &cfg.rope_scaling.as_ref().unwrap()["rope_type"] {
-        //         RopeScaling(Either::Right(tp)) => {
-        //             assert!(tp == "linear");
-        //         }
-        //         _ => {}
-        //     }
-        //     match &cfg.rope_scaling.as_ref().unwrap()["factor"] {
-        //         RopeScaling(Either::Left(factors)) => {
-        //             factor= factors[0] as f64;
-        //         }
-        //         _ => panic!("scaling factor not found for gemma3 model!"),
-        //     }
-        // }
         let t_len = (max_seq_len as f64 * factor) as u32;
         let t = Tensor::arange(0u32, t_len, dev)?
             .to_dtype(DType::F32)?
