@@ -247,13 +247,12 @@ impl Scheduler {
     ) -> (Vec<u32>, VecDeque<Arc<SequenceGroup>>) {
         let mut finished_indices = Vec::new();
         let mut remove_ids = Vec::new();
+        assert!(chunk_size > 0, "Invalid prefill chunk size!");
         for (i, group) in scheduled.iter().enumerate() {
             let seq = group.get_seqs().values().nth(0).unwrap();
             let prompt_len = seq.deref().get_prompt_len();
             let num_cached_tokens = seq.deref().get_num_cached_tokens();
-            if chunk_size > 0
-                && (prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len)
-            {
+            if prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len {
                 if prompt_len > chunk_size {
                     tracing::info!(
                         "Seq {} chunk prefill finished ({} tokens)",

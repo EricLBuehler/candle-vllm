@@ -507,19 +507,22 @@ impl LLMEngine {
 
             if is_prompt {
                 let mut e = engine.write();
-                let chunk_size = e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
-                let (finished_indices, finished_groups) =
-                    e.scheduler.filter_prefill_finished(&scheduled, chunk_size);
+                let prefill_chunk_size = e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
+                if prefill_chunk_size > 0 {
+                    let (finished_indices, finished_groups) = e
+                        .scheduler
+                        .filter_prefill_finished(&scheduled, prefill_chunk_size);
 
-                if finished_indices.is_empty() {
-                    continue;
+                    if finished_indices.is_empty() {
+                        continue;
+                    }
+                    scheduled = finished_groups;
+                    let batch = finished_indices.len();
+                    logits = logits.index_select(
+                        &Tensor::from_vec(finished_indices, (batch,), logits.device())?,
+                        0,
+                    )?;
                 }
-                scheduled = finished_groups;
-                let batch = finished_indices.len();
-                logits = logits.index_select(
-                    &Tensor::from_vec(finished_indices, (batch,), logits.device())?,
-                    0,
-                )?;
             }
 
             #[cfg(feature = "nccl")]
@@ -854,13 +857,17 @@ impl LLMEngine {
         let mut input_tokens = Vec::new();
         let mut input_positions = Vec::new();
         let mut slot_mappings = Vec::new();
-        const CHUNK_SIZE: usize = 8192;
         for group in groups {
             for seq in group.get_seqs().values() {
                 let prompt_ids = seq.deref_mut().get_token_ids();
                 let prompt_len = prompt_ids.len();
                 let num_cached_tokens = seq.deref().get_num_cached_tokens();
-                let num_tokens = std::cmp::min(CHUNK_SIZE, prompt_len - num_cached_tokens);
+                let chunk_size = self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
+                let num_tokens = if chunk_size > 0 {
+                    std::cmp::min(chunk_size, prompt_len - num_cached_tokens)
+                } else {
+                    prompt_len - num_cached_tokens
+                };
 
                 prompt_lens.push(num_tokens);
 

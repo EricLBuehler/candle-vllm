@@ -186,13 +186,24 @@ impl CausalSelfAttention {
             &cfg.quant,
             &cfg.quantization_config,
         )?;
+
+        let q8_0_quant = Some("q8_0".to_string());
         let v_proj = TensorParallelColumnLinear::load_with_hints(
             size_in,
             size_kv,
             false,
             vb.pp("v_proj"),
             comm.clone(),
-            &cfg.quant,
+            if cfg.quant.is_some()
+                && !matches!(
+                    cfg.quant.as_ref().unwrap().as_str(),
+                    "gptq" | "awq" | "marlin"
+                )
+            {
+                &q8_0_quant
+            } else {
+                &cfg.quant
+            },
             &cfg.quantization_config,
         )?;
 
