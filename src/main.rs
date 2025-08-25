@@ -259,7 +259,7 @@ async fn main() -> Result<()> {
     );
 
     if gguf && num_shards > 1 {
-        panic!("Multiple device-ids detected: ggml/gguf model is not supported for multi-rank inference!");
+        panic!("Multiple device-ids detected: ggml/gguf model is not supported for multi-rank inference! \n\t*** Tips: use unquantized safetensors models (`--w`) with ISQ (e.g., `--isq q4k`) for multi-gpu inference!");
     }
 
     if gguf && args.isq.is_some() {

@@ -1,4 +1,4 @@
-use super::{rotary_emb::DefaultRotaryEmbedding, Config};
+use super::{rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
@@ -107,13 +107,13 @@ struct Attention {
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
-    rotary_emb: Arc<DefaultRotaryEmbedding>,
+    rotary_emb: Arc<ScalingRotaryEmbedding>,
     attn: PagedAttention,
 }
 
 impl Attention {
     fn new(
-        rotary_emb: Arc<DefaultRotaryEmbedding>,
+        rotary_emb: Arc<ScalingRotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
         comm: Rc<Comm>,
@@ -253,7 +253,7 @@ struct DecoderLayer {
 
 impl DecoderLayer {
     fn new(
-        rotary_emb: Arc<DefaultRotaryEmbedding>,
+        rotary_emb: Arc<ScalingRotaryEmbedding>,
         cfg: &Config,
         vb: VarBuilder,
         comm: Rc<Comm>,
@@ -315,7 +315,7 @@ impl Yi {
     ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let rotary_emb = Arc::new(DefaultRotaryEmbedding::new(
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
             DType::F32,
             cfg,
             vb_m.device(),

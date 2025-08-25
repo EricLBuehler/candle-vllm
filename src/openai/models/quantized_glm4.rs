@@ -1,6 +1,6 @@
+use super::rotary_emb::ScalingRotaryEmbedding;
 use super::Config;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::models::glm4::RotaryEmbedding;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use candle_core::quantized::{gguf_file, QMatMul};
@@ -40,7 +40,7 @@ struct LayerWeights {
     attention_norm: RmsNorm,
     post_ffw_norm: RmsNorm,
     post_attention_norm: RmsNorm,
-    rotary_emb: Arc<RotaryEmbedding>,
+    rotary_emb: Arc<ScalingRotaryEmbedding>,
     mlp: Mlp,
     ffn_norm: RmsNorm,
     n_head: usize,
@@ -102,12 +102,11 @@ impl LayerWeights {
             (q.contiguous()?, k.contiguous()?, v.contiguous()?)
         };
 
-        let q = self
-            .rotary_emb
-            .apply_rotary_emb(&q.to_dtype(DType::F32)?, input_positions)?;
-        let k = self
-            .rotary_emb
-            .apply_rotary_emb(&k.to_dtype(DType::F32)?, input_positions)?;
+        let (q, k) = self.rotary_emb.apply_rotary_emb(
+            &q.to_dtype(DType::F32)?,
+            &k.to_dtype(DType::F32)?,
+            input_positions,
+        )?;
         let (q, k, v) = (
             q.to_dtype(self.dtype)?,
             k.to_dtype(self.dtype)?,
@@ -256,7 +255,12 @@ impl GGUFGLM4 {
             rms_norm_eps,
             context_length,
         );
-        let rotary_emb = Arc::new(RotaryEmbedding::new(&cfg, dtype, device)?);
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
+            DType::F32,
+            &cfg,
+            device,
+            false,
+        )?);
 
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {

@@ -617,6 +617,8 @@ impl LLMEngine {
                     Either::Left(logprobs) => {
                         let seq = group.get_seqs().values().nth(0).unwrap();
                         if seq.deref().is_prompt() {
+                            let e = engine.read();
+                            e.scheduler.print_free_blocks();
                             prompt_finish_times.insert(*group.get_id(), SystemTime::now());
                         }
                         if let Some(sender) = &group.sender {
@@ -636,6 +638,9 @@ impl LLMEngine {
                                     seq.deref().get_id()
                                 );
                                 seq.deref_mut().set_finish_reason("abort".to_string());
+                            }
+                            if seq.deref_mut().get_len() % 1000 == 0 {
+                                e.scheduler.print_free_blocks();
                             }
                         };
                         seq.deref_mut().add_token(logprobs);

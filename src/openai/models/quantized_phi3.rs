@@ -1,3 +1,4 @@
+use super::rotary_emb::ScalingRotaryEmbedding;
 use super::Config;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::paged_attention::input_metadata::InputMetadata;
@@ -9,6 +10,7 @@ use candle_nn::{Embedding, RmsNorm};
 use either::Either;
 use std::iter::zip;
 use std::sync::{Arc, RwLock};
+
 #[derive(Debug, Clone)]
 struct QLinear {
     inner: candle_core::quantized::QMatMul,
@@ -65,35 +67,12 @@ struct LayerWeights {
     n_head: usize,
     n_kv_head: usize,
     head_dim: usize,
-    cos: Tensor,
-    sin: Tensor,
     attn: PagedAttention,
+    rotary_emb: Arc<ScalingRotaryEmbedding>,
     dtype: DType,
 }
 
 impl LayerWeights {
-    fn apply_rotary_emb(
-        &self,
-        q: &Tensor,
-        k: &Tensor,
-        input_positions: &[Vec<usize>],
-    ) -> Result<(Tensor, Tensor)> {
-        let (b_size, _h, seq_len, _n_embd) = q.dims4()?;
-        let mut q_embeds = Vec::new();
-        let mut k_embeds = Vec::new();
-        for (b, seqlen_offset) in zip(0..b_size, input_positions) {
-            let cos = self.cos.narrow(0, seqlen_offset[0], seq_len)?;
-            let sin = self.sin.narrow(0, seqlen_offset[0], seq_len)?;
-            let x_q = q.narrow(0, b, 1)?;
-            let x_k = k.narrow(0, b, 1)?;
-            let q_embed = candle_nn::rotary_emb::rope(&x_q, &cos, &sin)?;
-            let k_embed = candle_nn::rotary_emb::rope(&x_k, &cos, &sin)?;
-            q_embeds.push(q_embed);
-            k_embeds.push(k_embed);
-        }
-        Ok((Tensor::cat(&q_embeds, 0)?, Tensor::cat(&k_embeds, 0)?))
-    }
-
     fn forward_attn(
         &self,
         x: &Tensor,
@@ -106,10 +85,10 @@ impl LayerWeights {
         let qkv = self.attn_qkv.forward(x)?;
 
         let query_pos = self.n_head * self.head_dim;
-        let q = qkv.narrow(D::Minus1, 0, query_pos)?.to_dtype(self.dtype)?;
+        let q = qkv.narrow(D::Minus1, 0, query_pos)?.to_dtype(DType::F32)?;
         let k = qkv
             .narrow(D::Minus1, query_pos, self.n_kv_head * self.head_dim)?
-            .to_dtype(self.dtype)?;
+            .to_dtype(DType::F32)?;
         let v = qkv
             .narrow(
                 D::Minus1,
@@ -137,8 +116,8 @@ impl LayerWeights {
             (q.contiguous()?, k.contiguous()?, v.contiguous()?)
         };
 
-        let (q, k) = self.apply_rotary_emb(&q, &k, input_positions)?;
-
+        let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
+        let (q, k) = (q.to_dtype(self.dtype)?, k.to_dtype(self.dtype)?);
         let y = self
             .attn
             .forward(
@@ -168,27 +147,6 @@ pub struct GGUFPhi3 {
     device: Device,
 }
 
-fn precomput_freqs_cis(
-    head_dim: usize,
-    max_seq_len: usize,
-    freq_base: f32,
-    device: &Device,
-    dtype: DType,
-) -> Result<(Tensor, Tensor)> {
-    let theta: Vec<_> = (0..head_dim)
-        .step_by(2)
-        .map(|i| 1f32 / freq_base.powf(i as f32 / head_dim as f32))
-        .collect();
-    let theta = Tensor::new(theta.as_slice(), device)?;
-    let idx_theta = Tensor::arange(0, max_seq_len as u32, device)?
-        .to_dtype(DType::F32)?
-        .reshape((max_seq_len, 1))?
-        .matmul(&theta.reshape((1, theta.elem_count()))?)?;
-    let cos = idx_theta.cos()?.to_dtype(dtype)?;
-    let sin = idx_theta.sin()?.to_dtype(dtype)?;
-    Ok((cos, sin))
-}
-
 impl GGUFPhi3 {
     pub fn into_config(
         embedding_length: usize,
@@ -197,6 +155,7 @@ impl GGUFPhi3 {
         head_count: usize,
         head_count_kv: usize,
         rms_eps: f64,
+        rope_theta: f64,
         max_seq_len: usize,
     ) -> Config {
         Config {
@@ -209,7 +168,7 @@ impl GGUFPhi3 {
             num_attention_heads: head_count,
             num_key_value_heads: Some(head_count_kv),
             rms_norm_eps: rms_eps,
-            rope_theta: 10_000.0f64,
+            rope_theta,
             rope_local_base_freq: None,
             bos_token_id: Some(super::TokenID(Either::Left(Some(1)))),
             eos_token_id: super::TokenID(Either::Left(Some(2))),
@@ -265,14 +224,26 @@ impl GGUFPhi3 {
         let max_seq_len = md_get("phi3.context_length")?.to_u32()? as usize;
         let head_dim = embedding_length / head_count;
         let i_size = md_get("phi3.feed_forward_length")?.to_u32()? as usize;
-        let rope_dim = md_get("phi3.rope.dimension_count")?.to_u32()? as usize;
+        let _rope_dim = md_get("phi3.rope.dimension_count")?.to_u32()? as usize;
         let rms_eps = md_get("phi3.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
-        let (cos, sin) = precomput_freqs_cis(rope_dim, max_seq_len, 10_000., device, dtype)?;
-
+        let rope_freq_base = md_get("llama.rope.freq_base")
+            .and_then(|m| m.to_f32())
+            .unwrap_or(10000f32);
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;
         let output_norm = rms_norm(ct.tensor(reader, "output_norm.weight", device)?, rms_eps)?;
         let output = QLinear::new(ct, reader, "output", device)?;
+        let cfg = GGUFPhi3::into_config(
+            embedding_length,
+            i_size,
+            block_count,
+            head_count,
+            head_count_kv,
+            rms_eps,
+            rope_freq_base as f64,
+            max_seq_len,
+        );
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {
@@ -301,8 +272,6 @@ impl GGUFPhi3 {
                 n_head: head_count,
                 n_kv_head: head_count_kv,
                 head_dim,
-                cos: cos.clone(),
-                sin: sin.clone(),
                 attn: PagedAttention::new(
                     head_count,
                     head_dim,
@@ -312,6 +281,7 @@ impl GGUFPhi3 {
                     device.clone(),
                     None,
                 )?,
+                rotary_emb: rotary_emb.clone(),
                 dtype,
             });
             reporter.write().unwrap().set_progress(layer_idx + 1);
@@ -321,15 +291,7 @@ impl GGUFPhi3 {
             layers,
             output_norm,
             output,
-            cfg: GGUFPhi3::into_config(
-                embedding_length,
-                i_size,
-                block_count,
-                head_count,
-                head_count_kv,
-                rms_eps,
-                max_seq_len,
-            ),
+            cfg,
             dtype,
             device: device.clone(),
         })
