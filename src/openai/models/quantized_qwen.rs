@@ -1,3 +1,4 @@
+use super::rotary_emb::ScalingRotaryEmbedding;
 use super::Config;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::paged_attention::input_metadata::InputMetadata;
@@ -9,6 +10,7 @@ use candle_transformers::quantized_nn::RmsNorm;
 use either::Either;
 use std::iter::zip;
 use std::sync::{Arc, RwLock};
+
 #[derive(Debug, Clone)]
 struct Mlp {
     feed_forward_w1: QMatMul,
@@ -41,35 +43,12 @@ struct LayerWeights {
     n_head: usize,
     n_kv_head: usize,
     head_dim: usize,
-    cos: Tensor,
-    sin: Tensor,
     attn: PagedAttention,
+    rotary_emb: Arc<ScalingRotaryEmbedding>,
     dtype: DType,
 }
 
 impl LayerWeights {
-    fn apply_rotary_emb(
-        &self,
-        q: &Tensor,
-        k: &Tensor,
-        input_positions: &[Vec<usize>],
-    ) -> Result<(Tensor, Tensor)> {
-        let (b_size, _h, seq_len, _n_embd) = q.dims4()?;
-        let mut q_embeds = Vec::new();
-        let mut k_embeds = Vec::new();
-        for (b, seqlen_offset) in zip(0..b_size, input_positions) {
-            let cos = self.cos.narrow(0, seqlen_offset[0], seq_len)?;
-            let sin = self.sin.narrow(0, seqlen_offset[0], seq_len)?;
-            let x_q = q.narrow(0, b, 1)?;
-            let x_k = k.narrow(0, b, 1)?;
-            let q_embed = candle_nn::rotary_emb::rope(&x_q, &cos, &sin)?;
-            let k_embed = candle_nn::rotary_emb::rope(&x_k, &cos, &sin)?;
-            q_embeds.push(q_embed);
-            k_embeds.push(k_embed);
-        }
-        Ok((Tensor::cat(&q_embeds, 0)?, Tensor::cat(&k_embeds, 0)?))
-    }
-
     fn forward_attn(
         &self,
         x: &Tensor,
@@ -138,7 +117,7 @@ impl LayerWeights {
             (q, k)
         };
 
-        let (q, k) = self.apply_rotary_emb(&q, &k, input_positions)?;
+        let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
         let (q, k, v) = (
             q.to_dtype(self.dtype)?,
             k.to_dtype(self.dtype)?,
@@ -174,27 +153,6 @@ pub struct GGUFQWen {
     device: Device,
 }
 
-fn precomput_freqs_cis(
-    head_dim: usize,
-    freq_base: f32,
-    context_length: usize,
-    device: &Device,
-    _dtype: DType,
-) -> Result<(Tensor, Tensor)> {
-    let theta: Vec<_> = (0..head_dim)
-        .step_by(2)
-        .map(|i| 1f32 / freq_base.powf(i as f32 / head_dim as f32))
-        .collect();
-    let theta = Tensor::new(theta.as_slice(), device)?;
-    let idx_theta = Tensor::arange(0, context_length as u32, device)?
-        .to_dtype(DType::F32)?
-        .reshape((context_length, 1))?
-        .matmul(&theta.reshape((1, theta.elem_count()))?)?;
-    let cos = idx_theta.cos()?;
-    let sin = idx_theta.sin()?;
-    Ok((cos, sin))
-}
-
 impl GGUFQWen {
     pub fn into_config(
         embedding_length: usize,
@@ -203,6 +161,7 @@ impl GGUFQWen {
         block_count: usize,
         head_count: usize,
         head_count_kv: usize,
+        rope_theta: f64,
         rms_eps: f64,
         max_seq_len: usize,
     ) -> Config {
@@ -216,7 +175,7 @@ impl GGUFQWen {
             num_attention_heads: head_count,
             num_key_value_heads: Some(head_count_kv),
             rms_norm_eps: rms_eps,
-            rope_theta: 10_000.0f64,
+            rope_theta,
             rope_local_base_freq: None,
             bos_token_id: Some(super::TokenID(Either::Left(Some(151644)))),
             eos_token_id: super::TokenID(Either::Left(Some(151645))),
@@ -307,8 +266,18 @@ impl GGUFQWen {
             }
         };
 
-        let (cos, sin) =
-            precomput_freqs_cis(head_dim, rope_freq_base, context_length, device, dtype)?;
+        let cfg = GGUFQWen::into_config(
+            embedding_length,
+            head_dim,
+            0,
+            block_count,
+            head_count,
+            head_count_kv,
+            rope_freq_base as f64,
+            rms_norm_eps,
+            context_length,
+        );
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 
         let mut layers = Vec::with_capacity(block_count);
 
@@ -396,8 +365,6 @@ impl GGUFQWen {
                 attention_norm: RmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
                 q_norm,
                 k_norm,
-                cos: cos.clone(),
-                sin: sin.clone(),
                 mlp,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
                 n_head: head_count,
@@ -412,6 +379,7 @@ impl GGUFQWen {
                     device.clone(),
                     None,
                 )?,
+                rotary_emb: rotary_emb.clone(),
                 dtype,
             });
             reporter.write().unwrap().set_progress(layer_idx + 1);
@@ -422,16 +390,7 @@ impl GGUFQWen {
             layers,
             norm,
             output,
-            cfg: GGUFQWen::into_config(
-                embedding_length,
-                head_dim,
-                0,
-                block_count,
-                head_count,
-                head_count_kv,
-                rms_norm_eps,
-                context_length,
-            ),
+            cfg,
             dtype,
             device: device.clone(),
         })

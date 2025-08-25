@@ -12,6 +12,7 @@ from rich.spinner import Spinner
 from rich.rule import Rule 
 from rich.panel import Panel
 from typing import Optional
+import uuid
 openai.api_key = "EMPTY"  # no key needed since we use local candle-vllm service
 openai.base_url = "http://localhost:2000/v1/"
 
@@ -42,8 +43,10 @@ def clear_console():
             help="Sampling top-k")
 @click.option("--thinking", type=bool, default=None,
               help="Enable thinking for reasoning models.")
+@click.option("--context_cache", type=bool, default=None,
+              help="Cache the the previous chat histories.")
 def chatloop(system_prompt: Optional[str], stream: bool, live: bool, 
-    max_tokens: int, frequency: int, port: int, temperature: Optional[float], top_k: Optional[int], top_p: Optional[float], thinking: Optional[bool]):
+    max_tokens: int, frequency: int, port: int, temperature: Optional[float], top_k: Optional[int], top_p: Optional[float], thinking: Optional[bool], context_cache: Optional[bool]):
     """
     A command-line chatbot interface using OpenAI API and candle-vllm as backend.
     """
@@ -56,6 +59,7 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
 
+    session_id = str(uuid.uuid4())
     # Main loop
     while True:
         try:
@@ -66,7 +70,8 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                 user_input = sys.stdin.read()
                 console.print()
             user_msg = {"role": "user", "content": user_input}
-            extra_body = {"top_k": top_k, "thinking": thinking}
+            # context cache for vLLM.rs
+            extra_body = {"top_k": top_k, "thinking": thinking, "session_id": session_id if context_cache else None }
             # Model response
             try:
                 with Live(Spinner("dots", text="Connecting...", style="green"), transient=True, console=console):
@@ -148,6 +153,7 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                 messages.append({"role": "system", "content": system_prompt})
             console.clear()
             console.log("A new chat is started. Press Ctrl+C again to exit.", style="yellow")
+            session_id = str(uuid.uuid4())
             continue
  
 
