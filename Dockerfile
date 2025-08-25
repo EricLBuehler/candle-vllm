@@ -4,7 +4,7 @@ FROM docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN <<HEREDOC
-    apt-get update
+    apt-get update && \
     apt-get install -y --no-install-recommends \
         curl \
         libssl-dev \
@@ -12,7 +12,7 @@ RUN <<HEREDOC
         clang \
         libclang-dev \
         libopenmpi-dev \
-        openmpi-bin
+        openmpi-bin && \
 
     rm -rf /var/lib/apt/lists/*
 HEREDOC
@@ -23,9 +23,7 @@ RUN rustup update nightly
 RUN rustup default nightly
 
 # MKL build dependencies
-RUN curl -s https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-    | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null \
-    && echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | \
+RUN echo "deb [trusted=yes] https://apt.repos.intel.com/oneapi all main" | \
     tee /etc/apt/sources.list.d/oneAPI.list \
     && apt-get update \
     && apt-get install -y libomp-dev intel-oneapi-mkl-devel
@@ -49,23 +47,19 @@ ENV HUGGINGFACE_HUB_CACHE=/data \
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-RUN curl -s https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
-    | gpg --dearmor | tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null \
-    && echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | \
+RUN echo "deb [trusted=yes] https://apt.repos.intel.com/oneapi all main" | \
     tee /etc/apt/sources.list.d/oneAPI.list
 
 RUN <<HEREDOC
-    apt-get update
+    apt-get update && \
     apt-get install -y --no-install-recommends \
         libomp-dev \
         ca-certificates \
         libssl-dev \
         curl \
         pkg-config \
-        # Provided for convenience when using the NCCL crate feature:
         openmpi-bin \
-        # Provided for MKL feature runtime:
-        intel-oneapi-hpc-toolkit
+        intel-oneapi-hpc-toolkit && \
 
     rm -rf /var/lib/apt/lists/*
 HEREDOC
