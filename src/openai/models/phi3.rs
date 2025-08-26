@@ -73,24 +73,39 @@ impl RotaryEmbedding {
         let freqs = t.matmul(&inv_freq)?;
 
         if let Some(rope_scaling) = &cfg.rope_scaling {
+            let mut rope_scaling = rope_scaling.clone();
+            if !rope_scaling.contains_key("original_max_position_embeddings") {
+                //insert cfg.original_max_position_embeddings
+                rope_scaling.insert(
+                    "original_max_position_embeddings".to_string(),
+                    RopeScaling(Either::Left(ScalingValue(Either::Left(
+                        cfg.original_max_position_embeddings
+                            .unwrap_or(cfg.max_position_embeddings.unwrap_or(8192))
+                            as f64,
+                    )))),
+                );
+            }
             match (
                 &rope_scaling["short_factor"],
                 &rope_scaling["long_factor"],
                 &rope_scaling["type"],
+                &rope_scaling["original_max_position_embeddings"],
             ) {
                 (
                     RopeScaling(Either::Left(ScalingValue(Either::Right(short_factor)))),
                     RopeScaling(Either::Left(ScalingValue(Either::Right(long_factor)))),
                     RopeScaling(Either::Right(tp)),
+                    RopeScaling(Either::Left(ScalingValue(Either::Left(
+                        original_max_position_embeddings,
+                    )))),
                 ) => {
-                    let scale =
-                        cfg.max_seq_len as f64 / cfg.original_max_position_embeddings as f64;
+                    let scale = cfg.max_seq_len as f64 / *original_max_position_embeddings;
                     let scaling_factor = if scale <= 1.0 {
                         1.0
                     } else {
                         match tp.as_str() {
                             "su" | "longrope" => (1.0
-                                + scale.ln() / (cfg.original_max_position_embeddings as f64).ln())
+                                + scale.ln() / (*original_max_position_embeddings as f64).ln())
                             .sqrt(),
                             "yarn" => 0.1 * scale.ln() + 1.0,
                             _ => 1.0,
@@ -139,7 +154,7 @@ impl RotaryEmbedding {
                         sin_long: Some(long_sin),
                         cos_long: Some(long_cos),
                         original_max_position_embeddings: Some(
-                            cfg.original_max_position_embeddings,
+                            *original_max_position_embeddings as usize,
                         ),
                     });
                 }

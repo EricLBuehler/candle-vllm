@@ -226,6 +226,8 @@ impl GGUFQWenMoE {
         rms_eps: f64,
         rope_theta: f64,
         max_seq_len: usize,
+        original_max_position_embeddings: Option<usize>,
+        partial_rotary_factor: Option<f32>,
         moe_cfg: &QwenMoEConfig,
     ) -> Config {
         Config {
@@ -250,9 +252,9 @@ impl GGUFQWenMoE {
             tie_word_embeddings: false,
             rope_scaling: None,
             max_position_embeddings: Some(max_seq_len),
-            original_max_position_embeddings: max_seq_len,
+            original_max_position_embeddings,
             attention_bias: Some(false),
-            partial_rotary_factor: None,
+            partial_rotary_factor,
             qk_layernorm: false,
             use_qkv_bias: None,
             custom_stop_tokens: None,
@@ -263,17 +265,6 @@ impl GGUFQWenMoE {
             qwen_moe_config: Some(moe_cfg.clone()),
             quant: Some("gguf".to_string()),
         }
-    }
-
-    pub fn get_num_of_layers(qwen3: bool, ct: gguf_file::Content) -> Result<usize> {
-        let md_get = |s: &str| match ct.metadata.get(s) {
-            None => candle_core::bail!("cannot find {s} in metadata"),
-            Some(v) => Ok(v),
-        };
-        Ok(
-            md_get(format!("qwen{}.block_count", if qwen3 { 3 } else { 2 }).as_str())?.to_u32()?
-                as usize,
-        )
     }
 
     pub fn from_gguf<R: std::io::Seek + std::io::Read>(
@@ -296,13 +287,13 @@ impl GGUFQWenMoE {
             md_get(format!("{arch}.attention.head_count_kv").as_str())?.to_u32()? as usize;
 
         let head_dim = md_get(format!("{arch}.attention.key_length").as_str());
-        let head_dim = if head_dim.is_ok() {
-            Some(head_dim.unwrap().to_u32()? as usize)
-        } else {
-            None
-        };
         let embedding_length =
             md_get(format!("{arch}.embedding_length").as_str())?.to_u32()? as usize;
+        let head_dim = if head_dim.is_ok() {
+            head_dim.unwrap().to_u32()? as usize
+        } else {
+            embedding_length / head_count
+        };
         let context_length = md_get(format!("{arch}.context_length").as_str())?.to_u32()? as usize;
         let block_count = md_get(format!("{arch}.block_count").as_str())?.to_u32()? as usize;
         let rms_norm_eps =
@@ -312,17 +303,16 @@ impl GGUFQWenMoE {
             .unwrap_or(10000f32);
 
         let moe_cfg = QwenMoEConfig {
-            moe_intermediate_size: md_get(format!("{}.expert_feed_forward_length", arch).as_str())?
+            moe_intermediate_size: md_get(format!("{arch}.expert_feed_forward_length").as_str())?
                 .to_u32()? as usize,
-            num_experts: Some(md_get(format!("{}.expert_count", arch).as_str())?.to_u32()? as usize),
+            num_experts: Some(md_get(format!("{arch}.expert_count").as_str())?.to_u32()? as usize),
             mlp_only_layers: Some(vec![]),
             decoder_sparse_step: Some(1),
             norm_topk_prob: true,
-            num_experts_per_tok: md_get(format!("{}.expert_used_count", arch).as_str())?.to_u32()?
+            num_experts_per_tok: md_get(format!("{arch}.expert_used_count").as_str())?.to_u32()?
                 as usize,
         };
 
-        let head_dim = head_dim.unwrap_or(embedding_length / head_count);
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;
         let norm = RmsNorm::from_qtensor(
@@ -336,6 +326,26 @@ impl GGUFQWenMoE {
                 QMatMul::from_qtensor(ct.tensor(reader, "token_embd.weight", device)?)?
             }
         };
+
+        let original_max_position_embeddings =
+            md_get(format!("{arch}.rope.scaling.original_context_length").as_str());
+        let original_max_position_embeddings = if original_max_position_embeddings.is_ok() {
+            Some(original_max_position_embeddings.unwrap().to_u32()? as usize)
+        } else {
+            None
+        };
+
+        let rope_dim = md_get(format!("{arch}.rope.dimension_count").as_str());
+        let partial_rotary_factor = if rope_dim.is_ok() {
+            let rope_dim = rope_dim.unwrap().to_u32()? as usize;
+            if rope_dim != head_dim {
+                Some(rope_dim as f32 / head_dim as f32)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let cfg = GGUFQWenMoE::into_config(
             arch.clone(),
             embedding_length,
@@ -347,6 +357,8 @@ impl GGUFQWenMoE {
             rms_norm_eps,
             rope_freq_base as f64,
             context_length,
+            original_max_position_embeddings,
+            partial_rotary_factor,
             &moe_cfg,
         );
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
