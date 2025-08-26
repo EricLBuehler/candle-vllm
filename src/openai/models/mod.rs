@@ -153,7 +153,6 @@ macro_rules! serde_default_cfg {
     };
 }
 serde_default_cfg!(usize, max_seq_len, 8192);
-serde_default_cfg!(usize, original_max_position_embeddings, 8192);
 serde_default_cfg!(bool, tie_word_embeddings, false);
 serde_default_cfg!(f64, rope_theta, 10_000.0f64);
 serde_default_cfg!(bool, qk_layernorm, false);
@@ -176,8 +175,7 @@ pub struct Config {
     pub eos_token_id: TokenID,
     #[serde(default = "max_seq_len")]
     pub max_seq_len: usize,
-    #[serde(default = "original_max_position_embeddings")]
-    pub original_max_position_embeddings: usize,
+    pub original_max_position_embeddings: Option<usize>,
     pub sliding_window: Option<usize>,
     pub sliding_window_pattern: Option<usize>,
     pub hidden_act: Option<candle_nn::Activation>,

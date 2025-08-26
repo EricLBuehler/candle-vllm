@@ -26,6 +26,7 @@ pub struct MistralTextConfig {
     pub(crate) num_key_value_heads: usize,
     pub(crate) head_dim: usize,
     pub(crate) max_position_embeddings: usize,
+    pub(crate) original_max_position_embeddings: Option<usize>,
     pub(crate) rms_norm_eps: f64,
     #[serde(default)]
     pub(crate) tie_word_embeddings: bool,
@@ -130,7 +131,7 @@ impl Mistral {
             tie_word_embeddings: config.text_config.tie_word_embeddings,
             rope_scaling: None,
             max_position_embeddings: Some(config.text_config.max_position_embeddings),
-            original_max_position_embeddings: config.text_config.max_position_embeddings,
+            original_max_position_embeddings: config.text_config.original_max_position_embeddings,
             attention_bias: Some(config.text_config.attention_bias),
             partial_rotary_factor: None,
             qk_layernorm: false,

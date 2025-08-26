@@ -51,6 +51,7 @@ pub struct GemmaTextConfig {
     pub(crate) hidden_activation: Activation,
     #[serde(default = "max_position_embeddings")]
     pub(crate) max_position_embeddings: usize,
+    pub(crate) original_max_position_embeddings: Option<usize>,
     #[serde(default = "rms_norm_eps")]
     pub(crate) rms_norm_eps: f64,
     pub(crate) eos_token_id: Option<TokenID>,
@@ -181,7 +182,7 @@ impl Gemma3 {
             tie_word_embeddings: config.text_config.tie_word_embeddings,
             rope_scaling: ropescaling,
             max_position_embeddings: Some(config.text_config.max_position_embeddings),
-            original_max_position_embeddings: config.text_config.max_position_embeddings,
+            original_max_position_embeddings: config.text_config.original_max_position_embeddings,
             attention_bias: Some(config.text_config.attention_bias),
             partial_rotary_factor: None,
             qk_layernorm: false,

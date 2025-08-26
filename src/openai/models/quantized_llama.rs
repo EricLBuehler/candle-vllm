@@ -207,6 +207,8 @@ impl GGUFLLaMa {
         rms_eps: f64,
         rope_theta: f64,
         max_seq_len: usize,
+        original_max_position_embeddings: Option<usize>,
+        partial_rotary_factor: Option<f32>,
     ) -> Config {
         Config {
             architectures: Some(vec!["llama".to_string()]),
@@ -230,9 +232,9 @@ impl GGUFLLaMa {
             tie_word_embeddings: false,
             rope_scaling: None,
             max_position_embeddings: Some(max_seq_len),
-            original_max_position_embeddings: max_seq_len,
+            original_max_position_embeddings,
             attention_bias: Some(false),
-            partial_rotary_factor: None,
+            partial_rotary_factor,
             qk_layernorm: false,
             use_qkv_bias: None,
             custom_stop_tokens: Some(vec!["<|end_of_text|>".to_string()]),
@@ -243,14 +245,6 @@ impl GGUFLLaMa {
             qwen_moe_config: None,
             quant: Some("gguf".to_string()),
         }
-    }
-
-    pub fn get_num_of_layers(ct: gguf_file::Content) -> Result<usize> {
-        let md_get = |s: &str| match ct.metadata.get(s) {
-            None => candle_core::bail!("cannot find {s} in metadata"),
-            Some(v) => Ok(v),
-        };
-        Ok(md_get("llama.block_count")?.to_u32()? as usize)
     }
 
     pub fn from_gguf<R: std::io::Seek + std::io::Read>(
@@ -265,23 +259,26 @@ impl GGUFLLaMa {
             Some(v) => Ok(v),
         };
         let reporter = progress_reporter.clone();
+        let arch = md_get("general.architecture")?.to_string()?;
 
         // Parameter extraction from metadata.
-        let n_expert = md_get("llama.expert_count")
+        let n_expert = md_get(format!("{arch}.expert_count").as_str())
             .and_then(|v| v.to_u32())
             .unwrap_or(0) as usize;
-        let n_expert_used = md_get("llama.expert_used_count")
+        let n_expert_used = md_get(format!("{arch}.expert_used_count").as_str())
             .and_then(|v| v.to_u32())
             .unwrap_or(0) as usize;
-        let head_count = md_get("llama.attention.head_count")?.to_u32()? as usize;
-        let head_count_kv = md_get("llama.attention.head_count_kv")?.to_u32()? as usize;
-        let block_count = md_get("llama.block_count")?.to_u32()? as usize;
-        let embedding_length = md_get("llama.embedding_length")?.to_u32()? as usize;
-        // let rope_dim = md_get("llama.rope.dimension_count")?.to_u32()? as usize;
-        let context_length = md_get("llama.context_length")?.to_u32();
+        let head_count =
+            md_get(format!("{arch}.attention.head_count").as_str())?.to_u32()? as usize;
+        let head_count_kv =
+            md_get(format!("{arch}.attention.head_count_kv").as_str())?.to_u32()? as usize;
+        let block_count = md_get(format!("{arch}.block_count").as_str())?.to_u32()? as usize;
+        let embedding_length =
+            md_get(format!("{arch}.embedding_length").as_str())?.to_u32()? as usize;
+        let context_length = md_get(format!("{arch}.context_length").as_str())?.to_u32();
         let context_length = context_length.unwrap_or(8192) as usize;
 
-        let head_dim = md_get("llama.attention.key_length");
+        let head_dim = md_get(format!("{arch}.attention.key_length").as_str());
         let head_dim = if head_dim.is_ok() {
             head_dim.unwrap().to_u32()? as usize
         } else {
@@ -289,9 +286,10 @@ impl GGUFLLaMa {
         };
 
         // Strangely this value is generally 1e-6 in GGUF file but used to be 1e-5 by default.
-        let rms_norm_eps = md_get("llama.attention.layer_norm_rms_epsilon")?.to_f32()? as f64;
+        let rms_norm_eps =
+            md_get(format!("{arch}.attention.layer_norm_rms_epsilon").as_str())?.to_f32()? as f64;
 
-        let rope_freq_base = md_get("llama.rope.freq_base")
+        let rope_freq_base = md_get(format!("{arch}.rope.freq_base").as_str())
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
 
@@ -305,7 +303,25 @@ impl GGUFLLaMa {
             Ok(tensor) => tensor,
             Err(_) => tok_embeddings_q,
         };
+        let original_max_position_embeddings =
+            md_get(format!("{arch}.rope.scaling.original_context_length").as_str());
+        let original_max_position_embeddings = if original_max_position_embeddings.is_ok() {
+            Some(original_max_position_embeddings.unwrap().to_u32()? as usize)
+        } else {
+            None
+        };
 
+        let rope_dim = md_get(format!("{arch}.rope.dimension_count").as_str());
+        let partial_rotary_factor = if rope_dim.is_ok() {
+            let rope_dim = rope_dim.unwrap().to_u32()? as usize;
+            if rope_dim != head_dim {
+                Some(rope_dim as f32 / head_dim as f32)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let cfg = GGUFLLaMa::into_config(
             embedding_length,
             head_dim,
@@ -316,6 +332,8 @@ impl GGUFLLaMa {
             rms_norm_eps,
             rope_freq_base as f64,
             context_length,
+            original_max_position_embeddings,
+            partial_rotary_factor,
         );
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
             DType::F32,

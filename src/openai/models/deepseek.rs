@@ -180,7 +180,7 @@ impl DeepSeek {
             tie_word_embeddings: config.tie_word_embeddings,
             rope_scaling: None,
             max_position_embeddings: Some(config.max_position_embeddings),
-            original_max_position_embeddings: config.max_position_embeddings,
+            original_max_position_embeddings: None,
             attention_bias: Some(false),
             partial_rotary_factor: None,
             qk_layernorm: false,
