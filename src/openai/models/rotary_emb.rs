@@ -310,13 +310,13 @@ impl ScalingRotaryEmbedding {
                     if !ropescaling.contains_key("beta_fast") {
                         ropescaling.insert(
                             "beta_fast".to_string(),
-                            RopeScaling(Either::Left(ScalingValue(Either::Left(1.0)))),
+                            RopeScaling(Either::Left(ScalingValue(Either::Left(32.0)))),
                         );
                     }
                     if !ropescaling.contains_key("beta_slow") {
                         ropescaling.insert(
                             "beta_slow".to_string(),
-                            RopeScaling(Either::Left(ScalingValue(Either::Left(128.0)))),
+                            RopeScaling(Either::Left(ScalingValue(Either::Left(1.0)))),
                         );
                     }
 
