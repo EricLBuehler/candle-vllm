@@ -34,7 +34,7 @@ COPY . .
 
 # Rayon threads are limited to minimize memory requirements in CI, avoiding OOM
 # Rust threads are increased with a nightly feature for faster compilation (single-threaded by default)
-ARG CUDA_COMPUTE_CAP=70
+ARG CUDA_COMPUTE_CAP=80
 ARG RAYON_NUM_THREADS=4
 ARG RUST_NUM_THREADS=4
 ARG RUSTFLAGS="-Z threads=${RUST_NUM_THREADS}"
