@@ -187,7 +187,6 @@ impl GGUFGLM4 {
             final_logit_softcapping: None,
             quantization_config: None,
             moe_config: None,
-            qwen_moe_config: None,
             quant: Some("gguf".to_string()),
         }
     }

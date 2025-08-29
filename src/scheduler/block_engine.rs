@@ -9,7 +9,7 @@ use std::{
 use super::sequence::{Sequence, SequenceGroup};
 
 pub struct LogicalTokenBlock {
-    tokens: Vec<usize>,
+    tokens: Vec<u32>,
     block_size: usize,
     num_tokens: usize,
 }
@@ -31,13 +31,13 @@ impl LogicalTokenBlock {
         self.num_tokens == 0
     }
 
-    pub fn append_token_id(&mut self, token: usize) {
+    pub fn append_token_id(&mut self, token: u32) {
         assert!(!self.is_full());
         self.tokens[self.num_tokens] = token;
         self.num_tokens += 1;
     }
 
-    pub fn append_tokens(&mut self, tokens: &[usize]) {
+    pub fn append_tokens(&mut self, tokens: &[u32]) {
         for token in tokens {
             self.append_token_id(*token);
         }

@@ -1,5 +1,5 @@
 use super::rotary_emb::ScalingRotaryEmbedding;
-use super::{Config, QwenMoEConfig};
+use super::{Config, MoEConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
@@ -43,7 +43,8 @@ impl FusedMoe {
         let xs = xs.reshape(((), hidden_dim))?;
         let original_dtype = xs.dtype();
         let (num_tokens, hidden_dim) = xs.dims2()?;
-        let router_logits = self.gate.forward(&xs.to_dtype(DType::F32)?)?;
+        let xs = xs.to_dtype(DType::F32)?;
+        let router_logits = self.gate.forward(&xs)?;
         let routing_weights = candle_nn::ops::softmax_last_dim(&router_logits)?;
 
         //last dim size 128
@@ -261,8 +262,7 @@ impl GGUFQWenMoE {
             attn_logit_softcapping: None,
             final_logit_softcapping: None,
             quantization_config: None,
-            moe_config: None,
-            qwen_moe_config: Some(moe_cfg.clone()),
+            moe_config: Some(MoEConfig::QwenMoE(moe_cfg.clone())),
             quant: Some("gguf".to_string()),
         }
     }

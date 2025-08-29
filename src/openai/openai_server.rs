@@ -13,7 +13,6 @@ use flume;
 use std::env;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokenizers::Encoding;
 use tokio::sync::Notify;
 use tokio::time::Duration;
 use tracing::debug;
@@ -62,7 +61,7 @@ async fn check_length(
     request: &ChatCompletionRequest,
     prompt: String,
     data: &OpenAIServerData,
-) -> Result<(Encoding, usize), APIError> {
+) -> Result<(Vec<u32>, usize), APIError> {
     let (token_ids, available_kv_tokens) = {
         let model = data.model.read();
         let available_kv_tokens = model.get_available_kv_tokens();
@@ -74,7 +73,9 @@ async fn check_length(
                 .0
                 .tokenizer()
                 .encode_fast(prompt, false)
-                .map_err(APIError::from)?,
+                .map_err(APIError::from)?
+                .get_ids()
+                .to_vec(),
             available_kv_tokens,
         )
     };
@@ -142,7 +143,7 @@ pub async fn chat_completions(
         Err(e) => return ChatResponder::ValidationError(e),
     };
 
-    let (token_ids, available_tokens): (Encoding, usize) =
+    let (token_ids, available_tokens): (Vec<u32>, usize) =
         match check_length(&request, prompt.clone(), &data).await {
             Ok(ids) => ids,
             Err(e) => return ChatResponder::ValidationError(e),

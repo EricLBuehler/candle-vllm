@@ -141,7 +141,6 @@ impl Mistral {
             final_logit_softcapping: None,
             quantization_config: config.text_config.quantization_config.clone(),
             moe_config: None,
-            qwen_moe_config: None,
             quant,
         };
         Ok(config)

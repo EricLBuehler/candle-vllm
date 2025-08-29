@@ -1,6 +1,6 @@
 // This implementation is based on:
 // https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/modeling_phi3.py
-use super::{Config, RopeScaling, ScalingValue};
+use super::{Config, ScalingValue};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
@@ -11,7 +11,6 @@ use crate::paged_attention::PagedAttention;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::RmsNorm;
-use either::Either;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -78,11 +77,11 @@ impl RotaryEmbedding {
                 //insert cfg.original_max_position_embeddings
                 rope_scaling.insert(
                     "original_max_position_embeddings".to_string(),
-                    RopeScaling(Either::Left(ScalingValue(Either::Left(
+                    ScalingValue::Single(
                         cfg.original_max_position_embeddings
                             .unwrap_or(cfg.max_position_embeddings.unwrap_or(8192))
                             as f64,
-                    )))),
+                    ),
                 );
             }
             match (
@@ -92,12 +91,10 @@ impl RotaryEmbedding {
                 &rope_scaling["original_max_position_embeddings"],
             ) {
                 (
-                    RopeScaling(Either::Left(ScalingValue(Either::Right(short_factor)))),
-                    RopeScaling(Either::Left(ScalingValue(Either::Right(long_factor)))),
-                    RopeScaling(Either::Right(tp)),
-                    RopeScaling(Either::Left(ScalingValue(Either::Left(
-                        original_max_position_embeddings,
-                    )))),
+                    ScalingValue::Vec(short_factor),
+                    ScalingValue::Vec(long_factor),
+                    ScalingValue::String(tp),
+                    ScalingValue::Single(original_max_position_embeddings),
                 ) => {
                     let scale = cfg.max_seq_len as f64 / *original_max_position_embeddings;
                     let scaling_factor = if scale <= 1.0 {

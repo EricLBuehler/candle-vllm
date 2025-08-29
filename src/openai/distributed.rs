@@ -1,6 +1,6 @@
 use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
-use candle_core::CustomOp1;
 use candle_core::{CpuStorage, Layout, Module, Result, Shape, Tensor};
+use candle_core::{CustomOp1, DType};
 use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use candle_nn::{Embedding, LayerNorm, RmsNorm};
@@ -339,6 +339,11 @@ impl TensorParallelRowLinear {
 
 pub fn rms_norm(size: usize, eps: f64, vb: VarBuilder) -> Result<RmsNorm> {
     let weight = vb.get_with_hints(size, "weight", shard(0, 0, 1))?;
+    Ok(RmsNorm::new(weight, eps))
+}
+
+pub fn rms_norm_with_dtype(size: usize, eps: f64, vb: VarBuilder, dtype: DType) -> Result<RmsNorm> {
+    let weight = vb.get_with_hints_dtype(size, "weight", shard(0, 0, 1), dtype)?;
     Ok(RmsNorm::new(weight, eps))
 }
 

@@ -27,11 +27,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-#[derive(Deserialize, Debug, Clone)]
-pub struct ScalingValue(#[serde(with = "either::serde_untagged")] pub Either<f64, Vec<f64>>);
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct RopeScaling(#[serde(with = "either::serde_untagged")] pub Either<ScalingValue, String>);
+#[serde(untagged)]
+pub enum ScalingValue {
+    Single(f64),
+    Vec(Vec<f64>),
+    String(String),
+    Bool(bool),
+}
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct TokenID(
@@ -41,7 +45,9 @@ pub struct TokenID(
 #[derive(Deserialize, PartialEq, Debug, Clone)]
 pub struct QuantConfig {
     pub quant_method: String,
+    #[serde(default)]
     pub bits: usize,
+    #[serde(default)]
     pub group_size: i32,
     pub sym: Option<bool>,
     pub desc_act: Option<bool>,
@@ -67,7 +73,7 @@ pub enum ScoringFunc {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-pub struct MoEConfig {
+pub struct DeepSeekMoEConfig {
     pub num_experts_per_tok: Option<usize>,
     pub n_routed_experts: usize,
     pub moe_intermediate_size: usize,
@@ -97,6 +103,12 @@ pub struct QwenMoEConfig {
     pub decoder_sparse_step: Option<usize>,
     pub norm_topk_prob: bool,
     pub num_experts_per_tok: usize,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub enum MoEConfig {
+    DeepSeekMoE(DeepSeekMoEConfig),
+    QwenMoE(QwenMoEConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -182,7 +194,7 @@ pub struct Config {
     pub hidden_activation: Option<candle_nn::Activation>,
     #[serde(default = "tie_word_embeddings")]
     pub tie_word_embeddings: bool,
-    pub rope_scaling: Option<HashMap<String, RopeScaling>>,
+    pub rope_scaling: Option<HashMap<String, ScalingValue>>,
     pub max_position_embeddings: Option<usize>,
     pub attention_bias: Option<bool>,
     pub partial_rotary_factor: Option<f32>,
@@ -193,7 +205,6 @@ pub struct Config {
     pub attn_logit_softcapping: Option<f64>,
     pub final_logit_softcapping: Option<f64>,
     pub moe_config: Option<MoEConfig>,
-    pub qwen_moe_config: Option<QwenMoEConfig>,
     pub quantization_config: Option<QuantConfig>,
     pub quant: Option<String>,
 }
@@ -250,14 +261,14 @@ impl Config {
 
     pub fn q_head_dim(&self) -> usize {
         match &self.moe_config {
-            Some(cfg) => cfg.qk_rope_head_dim + cfg.qk_nope_head_dim,
+            Some(MoEConfig::DeepSeekMoE(cfg)) => cfg.qk_rope_head_dim + cfg.qk_nope_head_dim,
             _ => self.get_head_size(),
         }
     }
 
     pub fn k_head_dim(&self) -> usize {
         match &self.moe_config {
-            Some(cfg) => {
+            Some(MoEConfig::DeepSeekMoE(cfg)) => {
                 //q_head_dim
                 cfg.qk_rope_head_dim + cfg.qk_nope_head_dim
             }
@@ -267,7 +278,7 @@ impl Config {
 
     pub fn v_head_dim(&self) -> usize {
         match &self.moe_config {
-            Some(cfg) => {
+            Some(MoEConfig::DeepSeekMoE(cfg)) => {
                 //q_head_dim
                 cfg.qk_rope_head_dim + cfg.qk_nope_head_dim
             }

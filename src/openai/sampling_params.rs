@@ -7,14 +7,14 @@ const SAMPLING_EPS: f32 = 1e-5;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 // Top-n logprobs element
 pub struct TopLogprob {
-    pub token: usize,
+    pub token: u32,
     pub logprob: f32,
     pub bytes: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Logprobs {
-    pub token: usize,
+    pub token: u32,
     pub logprob: f32,
     pub bytes: String,
     pub top_logprobs: Vec<TopLogprob>,
