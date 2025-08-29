@@ -4,8 +4,8 @@ use crate::openai::distributed::{
     embedding, Comm, ReplicatedLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
     VarBuilder,
 };
+use crate::openai::models::ScalingValue;
 use crate::openai::models::TokenID;
-use crate::openai::models::{RopeScaling, ScalingValue};
 use crate::paged_attention::input_metadata::InputMetadata;
 use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_core as candle;
@@ -124,18 +124,15 @@ impl Gemma3 {
             .unwrap_or(super::TokenID(Either::Right(Some(vec![1, 106]))));
 
         let ropescaling = if config.text_config.rope_scaling.is_some() {
-            let mut ropescaling = HashMap::<String, RopeScaling>::new();
+            //convert gemma3 rope scaling into standard scaling
+            let mut ropescaling = HashMap::<String, ScalingValue>::new();
             for (key, value) in config.text_config.rope_scaling.as_ref().unwrap() {
                 match value {
                     Gemma3RopeScaling(Either::Left(l)) => {
-                        ropescaling.insert(
-                            key.to_string(),
-                            RopeScaling(Either::Left(ScalingValue(Either::Left(*l)))),
-                        );
+                        ropescaling.insert(key.to_string(), ScalingValue::Single(*l));
                     }
                     Gemma3RopeScaling(Either::Right(r)) => {
-                        ropescaling
-                            .insert(key.to_string(), RopeScaling(Either::Right(r.to_string())));
+                        ropescaling.insert(key.to_string(), ScalingValue::String(r.to_string()));
                     }
                 }
             }
@@ -192,7 +189,6 @@ impl Gemma3 {
             final_logit_softcapping: config.text_config.final_logit_softcapping,
             quantization_config: config.text_config.quantization_config.clone(),
             moe_config: None,
-            qwen_moe_config: None,
             quant,
         };
         Ok(config)

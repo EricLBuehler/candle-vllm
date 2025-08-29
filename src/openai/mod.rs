@@ -82,7 +82,7 @@ pub struct OpenAIServerData {
 pub struct TaskData {
     pub seq_id: usize,
     pub group_id: usize,
-    pub prompt: Encoding,
+    pub prompt: Vec<u32>,
     pub request_id: String,
     pub created: SystemTime,
     pub sampling_params: SamplingParams,

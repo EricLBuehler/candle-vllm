@@ -37,7 +37,6 @@ use std::{
     iter::zip,
     sync::Arc,
 };
-use tokenizers::Encoding;
 use tokio::sync::Notify;
 #[allow(unused_imports)]
 use tracing::{debug, info, warn};
@@ -1065,7 +1064,7 @@ impl LLMEngine {
         &mut self,
         seq_id: usize,
         group_id: usize,
-        prompt: &Encoding,
+        prompt: &Vec<u32>,
         request_id: &str,
         created: SystemTime,
         sampling_params: &SamplingParams,
@@ -1073,12 +1072,7 @@ impl LLMEngine {
         sender: Option<Sender<ChatResponse>>,
     ) -> SequenceGroup {
         let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
-            prompt
-                .get_ids()
-                .to_vec()
-                .iter()
-                .map(|x| *x as usize)
-                .collect::<Vec<_>>(),
+            prompt,
             seq_id,
             self.cache_config.block_size,
         ))));
@@ -1096,7 +1090,7 @@ impl LLMEngine {
 
     pub fn add_request(
         &mut self,
-        prompt: Encoding,
+        prompt: Vec<u32>,
         request_id: String,
         created: SystemTime,
         sampling_params: SamplingParams,

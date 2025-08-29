@@ -1123,7 +1123,7 @@ impl DefaultPipeline {
                     Right("stop".to_string())
                 } else {
                     Left(Logprobs {
-                        token: next_token as usize,
+                        token: next_token,
                         logprob: 0.0,
                         top_logprobs: Vec::<TopLogprob>::new(),
                         bytes: text,

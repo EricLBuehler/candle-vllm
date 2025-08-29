@@ -1,7 +1,6 @@
-use super::{Config, RopeScaling, ScalingValue};
+use super::{Config, ScalingValue};
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_core as candle;
-use either::Either;
 use std::iter::zip;
 pub use std::rc::Rc;
 #[derive(Debug, Clone)]
@@ -120,30 +119,25 @@ impl ScalingRotaryEmbedding {
                 let value = rope_scaling.remove("type").unwrap();
                 rope_scaling.insert("rope_type".to_string(), value);
             }
-            let original_max_position_embeddings = if let Some(RopeScaling(Either::Left(
-                ScalingValue(Either::Left(original_max_position_embeddings)),
-            ))) =
-                rope_scaling.get("original_max_position_embeddings")
-            {
-                *original_max_position_embeddings
-            } else if cfg.original_max_position_embeddings.as_ref().is_some() {
-                *cfg.original_max_position_embeddings.as_ref().unwrap() as f64
-            } else if let Some(RopeScaling(Either::Left(ScalingValue(Either::Left(factor))))) =
-                rope_scaling.get("factor")
-            {
-                //for missing original_max_position_embeddings, we assume the original was max_position_embeddings / factor
-                *cfg.max_position_embeddings.as_ref().unwrap() as f64 / *factor
-            } else {
-                candle_core::bail!(
-                    "original_max_position_embeddings must be set in rope_scaling or cfg"
-                );
-            };
+            let original_max_position_embeddings =
+                if let Some(ScalingValue::Single(original_max_position_embeddings)) =
+                    rope_scaling.get("original_max_position_embeddings")
+                {
+                    *original_max_position_embeddings
+                } else if cfg.original_max_position_embeddings.as_ref().is_some() {
+                    *cfg.original_max_position_embeddings.as_ref().unwrap() as f64
+                } else if let Some(ScalingValue::Single(factor)) = rope_scaling.get("factor") {
+                    //for missing original_max_position_embeddings, we assume the original was max_position_embeddings / factor
+                    *cfg.max_position_embeddings.as_ref().unwrap() as f64 / *factor
+                } else {
+                    candle_core::bail!(
+                        "original_max_position_embeddings must be set in rope_scaling or cfg"
+                    );
+                };
 
-            if let Some(RopeScaling(Either::Right(rope_type))) = rope_scaling.get("rope_type") {
+            if let Some(ScalingValue::String(rope_type)) = rope_scaling.get("rope_type") {
                 let rope_result = if rope_type == "linear" {
-                    if let Some(RopeScaling(Either::Left(ScalingValue(Either::Left(factor))))) =
-                        rope_scaling.get("factor")
-                    {
+                    if let Some(ScalingValue::Single(factor)) = rope_scaling.get("factor") {
                         let inv_freq: Vec<_> =
                             calculate_default_inv_freq(cfg.rope_theta, rotary_dim);
                         let inv_freq = Tensor::new(inv_freq.as_slice(), dev)?;
@@ -180,13 +174,9 @@ impl ScalingRotaryEmbedding {
                         rope_scaling.get("high_freq_factor"),
                     ) {
                         (
-                            Some(RopeScaling(Either::Left(ScalingValue(Either::Left(factor))))),
-                            Some(RopeScaling(Either::Left(ScalingValue(Either::Left(
-                                low_freq_factor,
-                            ))))),
-                            Some(RopeScaling(Either::Left(ScalingValue(Either::Left(
-                                high_freq_factor,
-                            ))))),
+                            Some(ScalingValue::Single(factor)),
+                            Some(ScalingValue::Single(low_freq_factor)),
+                            Some(ScalingValue::Single(high_freq_factor)),
                         ) => {
                             let low_freq_wavelen =
                                 (original_max_position_embeddings / low_freq_factor) as f32;
@@ -236,15 +226,11 @@ impl ScalingRotaryEmbedding {
                 } else if rope_type == "default" {
                     Self(DefaultRotaryEmbedding::new(dtype, cfg, dev, is_gpt_neox)?)
                 } else if rope_type == "dynamic" {
-                    let scaling_factor = if let Some(RopeScaling(Either::Left(ScalingValue(
-                        Either::Left(factor),
-                    )))) = rope_scaling.get("alpha")
+                    let scaling_factor = if let Some(ScalingValue::Single(factor)) =
+                        rope_scaling.get("alpha")
                     {
                         *factor as f64
-                    } else if let Some(RopeScaling(Either::Left(ScalingValue(Either::Left(
-                        factor,
-                    ))))) = rope_scaling.get("factor")
-                    {
+                    } else if let Some(ScalingValue::Single(factor)) = rope_scaling.get("factor") {
                         *factor as f64
                     } else {
                         candle_core::bail!(
@@ -292,8 +278,8 @@ impl ScalingRotaryEmbedding {
                         },
                     })
                 } else if rope_type == "yarn" {
-                    let default_one = RopeScaling(Either::Left(ScalingValue(Either::Left(1.0))));
-                    let default_fast = RopeScaling(Either::Left(ScalingValue(Either::Left(32.0))));
+                    let default_one = ScalingValue::Single(1.0);
+                    let default_fast = ScalingValue::Single(32.0);
                     match (
                         rope_scaling
                             .get("extrapolation_factor")
@@ -304,13 +290,11 @@ impl ScalingRotaryEmbedding {
                         rope_scaling.get("factor"),
                     ) {
                         (
-                            RopeScaling(Either::Left(ScalingValue(Either::Left(
-                                extrapolation_factor,
-                            )))),
-                            RopeScaling(Either::Left(ScalingValue(Either::Left(attn_factor)))),
-                            RopeScaling(Either::Left(ScalingValue(Either::Left(beta_fast)))),
-                            RopeScaling(Either::Left(ScalingValue(Either::Left(beta_slow)))),
-                            Some(RopeScaling(Either::Left(ScalingValue(Either::Left(factor))))),
+                            ScalingValue::Single(extrapolation_factor),
+                            ScalingValue::Single(attn_factor),
+                            ScalingValue::Single(beta_fast),
+                            ScalingValue::Single(beta_slow),
+                            Some(ScalingValue::Single(factor)),
                         ) => {
                             let embed = YarnRotaryEmbedding::new_yarn(
                                 dtype,
