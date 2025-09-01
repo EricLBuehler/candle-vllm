@@ -362,7 +362,14 @@ impl DefaultLoader {
                     gguf::get_arch_and_num_of_layers(content).map_err(candle_core::Error::wrap)?;
                 if !matches!(
                     arch.as_str(),
-                    "llama" | "llama3" | "phi3" | "qwen2" | "qwen3" | "qwen3moe" | "glm4"
+                    "llama"
+                        | "llama3"
+                        | "phi3"
+                        | "qwen2"
+                        | "qwen3"
+                        | "qwen2moe"
+                        | "qwen3moe"
+                        | "glm4"
                 ) {
                     panic!("Model arch {} not supported!", arch);
                 } else {
@@ -426,7 +433,7 @@ impl DefaultLoader {
                     let cfg = model.get_config().clone();
                     (LLMModel::QWenGGUF(model), cfg, SeparatorStyle::Qwen)
                 }
-                "qwen3moe" => {
+                "qwen2moe" | "qwen3moe" => {
                     let model = GGUFQWenMoE::from_gguf(
                         &content,
                         &mut file,
@@ -463,7 +470,9 @@ impl DefaultLoader {
                 "PhiForCausalLM" => Phi2::load_config(&cfile, isq)?,
                 "Phi3ForCausalLM" => Phi::load_config(&cfile, isq)?,
                 "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => Qwen::load_config(&cfile, isq)?,
-                "Qwen3MoeForCausalLM" => Qwen3MoE::load_config(&cfile, isq)?,
+                "Qwen2MoeForCausalLM" | "Qwen3MoeForCausalLM" => {
+                    Qwen3MoE::load_config(&cfile, isq)?
+                }
                 "Gemma2ForCausalLM" => Gemma::load_config(&cfile, isq)?,
                 "Gemma3ForConditionalGeneration" => Gemma3::load_config(&cfile, isq)?,
                 "MistralForCausalLM" => Mistral::load_config(&cfile, isq)?,
@@ -596,10 +605,16 @@ impl DefaultLoader {
                             ),
                             SeparatorStyle::Qwen,
                         ),
-                        "Qwen3MoeForCausalLM" => (
+                        "Qwen2MoeForCausalLM" | "Qwen3MoeForCausalLM" => (
                             LLMModel::Qwen3MoE(
                                 Qwen3MoE::new(
-                                    matches!(arch.as_str(), "qwen3moe" | "Qwen3MoeForCausalLM"),
+                                    matches!(
+                                        arch.as_str(),
+                                        "qwen2moe"
+                                            | "Qwen2MoeForCausalLM"
+                                            | "qwen3moe"
+                                            | "Qwen3MoeForCausalLM"
+                                    ),
                                     vb,
                                     &config,
                                     dtype,
