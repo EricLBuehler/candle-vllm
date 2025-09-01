@@ -98,9 +98,11 @@ pub struct DeepSeekMoEConfig {
 #[derive(Deserialize, Debug, Clone)]
 pub struct QwenMoEConfig {
     pub moe_intermediate_size: usize,
+    pub shared_expert_intermediate_size: Option<usize>,
     pub num_experts: Option<usize>,
     pub mlp_only_layers: Option<Vec<usize>>,
     pub decoder_sparse_step: Option<usize>,
+    #[serde(default)]
     pub norm_topk_prob: bool,
     pub num_experts_per_tok: usize,
 }

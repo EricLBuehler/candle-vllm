@@ -1,6 +1,7 @@
 use super::rotary_emb::ScalingRotaryEmbedding;
 use super::{Config, MoEConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
+use crate::openai::models::linear::Linear;
 use crate::paged_attention::input_metadata::InputMetadata;
 use crate::paged_attention::PagedAttention;
 use candle_core::quantized::{gguf_file, QMatMul};
@@ -101,6 +102,8 @@ struct LayerWeights {
     q_norm: Option<RmsNorm>,
     k_norm: Option<RmsNorm>,
     mlp: MoeOrMlp,
+    shared_gate: Option<Linear>,
+    shared_expert: Option<Mlp>,
     ffn_norm: RmsNorm,
     n_head: usize,
     n_kv_head: usize,
@@ -301,14 +304,21 @@ impl GGUFQWenMoE {
         let rope_freq_base = md_get(format!("{arch}.rope.freq_base").as_str())
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
+        let expert_shared_feed_forward_length =
+            md_get(format!("{arch}.expert_shared_feed_forward_length").as_str());
+        let shared_expert_intermediate_size = match expert_shared_feed_forward_length {
+            Ok(length) => Some(length.to_u32()? as usize),
+            _ => None,
+        };
 
         let moe_cfg = QwenMoEConfig {
             moe_intermediate_size: md_get(format!("{arch}.expert_feed_forward_length").as_str())?
                 .to_u32()? as usize,
+            shared_expert_intermediate_size,
             num_experts: Some(md_get(format!("{arch}.expert_count").as_str())?.to_u32()? as usize),
             mlp_only_layers: Some(vec![]),
             decoder_sparse_step: Some(1),
-            norm_topk_prob: true,
+            norm_topk_prob: shared_expert_intermediate_size.is_none(),
             num_experts_per_tok: md_get(format!("{arch}.expert_used_count").as_str())?.to_u32()?
                 as usize,
         };
@@ -457,12 +467,51 @@ impl GGUFQWenMoE {
                 ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?;
             let ffn_norm = ct.tensor(reader, &format!("{prefix}.ffn_norm.weight"), device)?;
             let (q_norm, k_norm) = {
-                let q_norm = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), device)?;
-                let k_norm = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), device)?;
-                let q_norm = RmsNorm::from_qtensor(q_norm, rms_norm_eps)?;
-                let k_norm = RmsNorm::from_qtensor(k_norm, rms_norm_eps)?;
-                (Some(q_norm), Some(k_norm))
+                let q_norm = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), device);
+                let k_norm = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), device);
+                let (q_norm, k_norm) = match (q_norm, k_norm) {
+                    (Ok(q_norm), Ok(k_norm)) => {
+                        let q_norm = RmsNorm::from_qtensor(q_norm, rms_norm_eps)?;
+                        let k_norm = RmsNorm::from_qtensor(k_norm, rms_norm_eps)?;
+                        (Some(q_norm), Some(k_norm))
+                    }
+                    _ => (None, None),
+                };
+                (q_norm, k_norm)
             };
+
+            //shared experts weights in Qwen2 MoE models
+            let (shared_gate, shared_expert) =
+                if let Some(_) = moe_cfg.shared_expert_intermediate_size {
+                    let ws = ct
+                        .tensor(
+                            reader,
+                            &format!("{prefix}.ffn_gate_inp_shexp.weight"),
+                            device,
+                        )?
+                        .dequantize(device)?
+                        .reshape((1, cfg.hidden_size))?; //weight must be 2d+
+
+                    let shared_gate = Linear::new(ws, None);
+
+                    let mlp = {
+                        let feed_forward_w1 =
+                            ct.tensor(reader, &format!("{prefix}.ffn_gate_shexp.weight"), device)?;
+                        let feed_forward_w2 =
+                            ct.tensor(reader, &format!("{prefix}.ffn_down_shexp.weight"), device)?;
+                        let feed_forward_w3 =
+                            ct.tensor(reader, &format!("{prefix}.ffn_up_shexp.weight"), device)?;
+                        Mlp {
+                            feed_forward_w1: QMatMul::from_qtensor(feed_forward_w1)?,
+                            feed_forward_w2: QMatMul::from_qtensor(feed_forward_w2)?,
+                            feed_forward_w3: QMatMul::from_qtensor(feed_forward_w3)?,
+                        }
+                    };
+
+                    (Some(shared_gate), Some(mlp))
+                } else {
+                    (None, None)
+                };
 
             layers.push(LayerWeights {
                 attention_wq: QMatMul::from_qtensor(attention_wq)?,
@@ -476,6 +525,8 @@ impl GGUFQWenMoE {
                 q_norm,
                 k_norm,
                 mlp,
+                shared_gate,
+                shared_expert,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
                 n_head: head_count,
                 n_kv_head: head_count_kv,
@@ -548,8 +599,22 @@ impl GGUFQWenMoE {
                 // MLP
                 let residual = &x;
                 let x = layer.ffn_norm.forward(&x)?;
+
+                //shared experts for Qwen2 MoE models
+                let shared_output = match (&layer.shared_gate, &layer.shared_expert) {
+                    (Some(shared_gate), Some(shared_expert)) => {
+                        let gate = candle_nn::ops::sigmoid(&shared_gate.forward(&x)?)?;
+                        let shared_output = shared_expert.forward(&x)?;
+                        Some(gate.broadcast_mul(&shared_output)?)
+                    }
+                    _ => None,
+                };
                 let x = layer.mlp.forward(&x)?;
-                let x = (x + residual)?;
+                let x = if let Some(shared_output) = shared_output {
+                    (residual + (x + shared_output)?)?
+                } else {
+                    (x + residual)?
+                };
                 layer_in = x
             }
         } else {
@@ -564,8 +629,21 @@ impl GGUFQWenMoE {
                 // MLP
                 let residual = &x;
                 let x = layer.ffn_norm.forward(&x)?;
+                //shared experts for Qwen2 MoE models
+                let shared_output = match (&layer.shared_gate, &layer.shared_expert) {
+                    (Some(shared_gate), Some(shared_expert)) => {
+                        let gate = candle_nn::ops::sigmoid(&shared_gate.forward(&x)?)?;
+                        let shared_output = shared_expert.forward(&x)?;
+                        Some(gate.broadcast_mul(&shared_output)?)
+                    }
+                    _ => None,
+                };
                 let x = layer.mlp.forward(&x)?;
-                let x = (x + residual)?;
+                let x = if let Some(shared_output) = shared_output {
+                    (residual + (x + shared_output)?)?
+                } else {
+                    (x + residual)?
+                };
                 layer_in = x
             }
         }

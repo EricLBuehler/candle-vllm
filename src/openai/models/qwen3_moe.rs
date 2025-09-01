@@ -663,6 +663,8 @@ impl Attention {
 struct DecoderLayer {
     self_attn: Attention,
     mlp: MoeOrMlp,
+    shared_gate: Option<Linear>,
+    shared_expert: Option<Mlp>,
     input_layernorm: RmsNorm,
     post_attention_layernorm: RmsNorm,
 }
@@ -674,7 +676,7 @@ impl DecoderLayer {
         cfg: &Config,
         vb: VarBuilder,
         comm: Rc<Comm>,
-        _dtype: DType,
+        dtype: DType,
         layer_idx: usize,
     ) -> Result<Self> {
         let self_attn = Attention::new(qwen3, rotary_emb, cfg, vb.pp("self_attn"), comm.clone())?;
@@ -716,9 +718,32 @@ impl DecoderLayer {
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
         )?;
+
+        //shared experts weights in Qwen2 MoE models
+        let (shared_gate, shared_expert) =
+            if let Some(intermediate_size) = moe_cfg.shared_expert_intermediate_size {
+                let ws = vb
+                    .pp("mlp.shared_expert_gate")
+                    .get_with_hints_dtype((cfg.hidden_size,), "weight", Default::default(), dtype)?
+                    .reshape((1, cfg.hidden_size))?; //weight must be 2d+
+
+                let shared_gate = Linear::new(ws, None, &None, &None);
+
+                let mlp = Mlp::new(
+                    cfg,
+                    intermediate_size,
+                    vb.pp("mlp.shared_expert").clone(),
+                    comm.clone(),
+                )?;
+                (Some(shared_gate), Some(mlp))
+            } else {
+                (None, None)
+            };
         Ok(Self {
             self_attn,
             mlp,
+            shared_gate,
+            shared_expert,
             input_layernorm,
             post_attention_layernorm,
         })
@@ -740,8 +765,21 @@ impl DecoderLayer {
         let xs = (xs + residual)?;
         let residual = &xs;
         let xs = xs.apply(&self.post_attention_layernorm)?;
+        //shared experts for Qwen2 MoE models
+        let shared_output = match (&self.shared_gate, &self.shared_expert) {
+            (Some(shared_gate), Some(shared_expert)) => {
+                let gate = candle_nn::ops::sigmoid(&shared_gate.forward(&xs)?)?;
+                let shared_output = shared_expert.forward(&xs)?;
+                Some(gate.broadcast_mul(&shared_output)?)
+            }
+            _ => None,
+        };
         let mlp_output = self.mlp.forward(&xs)?;
-        residual + mlp_output
+        if let Some(shared_output) = shared_output {
+            residual + (mlp_output + shared_output)?
+        } else {
+            residual + mlp_output
+        }
     }
 }
 
