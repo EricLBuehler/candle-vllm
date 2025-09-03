@@ -307,7 +307,13 @@ impl GGUFQWenMoE {
         let expert_shared_feed_forward_length =
             md_get(format!("{arch}.expert_shared_feed_forward_length").as_str());
         let shared_expert_intermediate_size = match expert_shared_feed_forward_length {
-            Ok(length) => Some(length.to_u32()? as usize),
+            Ok(length) => {
+                if length.to_u32()? > 0 {
+                    Some(length.to_u32()? as usize)
+                } else {
+                    None
+                }
+            }
             _ => None,
         };
 
