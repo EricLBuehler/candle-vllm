@@ -608,13 +608,6 @@ impl DefaultLoader {
                         "Qwen2MoeForCausalLM" | "Qwen3MoeForCausalLM" => (
                             LLMModel::Qwen3MoE(
                                 Qwen3MoE::new(
-                                    matches!(
-                                        arch.as_str(),
-                                        "qwen2moe"
-                                            | "Qwen2MoeForCausalLM"
-                                            | "qwen3moe"
-                                            | "Qwen3MoeForCausalLM"
-                                    ),
                                     vb,
                                     &config,
                                     dtype,

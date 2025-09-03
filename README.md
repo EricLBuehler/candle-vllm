@@ -44,7 +44,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     | #10 | **QwQ-32B** |✅|30 tks/s **(32B, tp=2)**|TBD |36 tks/s **(32B, Q4K, GGUF)**|TBD|
     | #11 | **GLM4** |✅|55 tks/s **(9B)**|TBD |92 tks/s **(9B, Q4K, GGUF)**|TBD|
     | #12 | **QWen2 MoE** |✅|TBD|TBD |65 tks/s (14B, Q4K)|TBD|
-    | #13 | **QWen3 MoE** |✅|TBD|TBD |71 tks/s **(32B, Q4K)** |TBD|
+    | #13 | **QWen3 MoE** |✅|TBD|TBD |76 tks/s **(32B, Q4K)** |TBD|
   </details>
 
 ### Demo Video
