@@ -429,10 +429,10 @@ impl GGUFQWenMoE {
             let mlp = if !moe_cfg
                 .mlp_only_layers
                 .as_ref()
-                .unwrap()
+                .unwrap_or(&Vec::<usize>::new())
                 .contains(&layer_idx)
-                && (moe_cfg.num_experts.unwrap() > 0
-                    && (layer_idx + 1) % moe_cfg.decoder_sparse_step.unwrap() == 0)
+                && (moe_cfg.num_experts.unwrap_or(0) > 0
+                    && (layer_idx + 1) % moe_cfg.decoder_sparse_step.unwrap_or(1) == 0)
             {
                 let gate = ct.tensor(reader, &format!("{prefix}.ffn_gate_inp.weight"), device)?;
                 let gate_experts =
