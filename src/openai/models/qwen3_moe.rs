@@ -715,7 +715,10 @@ impl DecoderLayer {
                 }
             } else {
                 (None, None)
-            };
+            }
+        } else {
+            (None, None)
+        };
         Ok(Self {
             self_attn,
             mlp,
