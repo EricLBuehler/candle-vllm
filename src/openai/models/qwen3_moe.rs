@@ -691,30 +691,31 @@ impl DecoderLayer {
         )?;
 
         //shared experts weights in Qwen2 MoE models
-        let (shared_gate, shared_expert) = if let Some(intermediate_size) =
-            moe_cfg.shared_expert_intermediate_size
-        {
-            if intermediate_size > 0 {
-                let ws = vb
-                    .pp("mlp.shared_expert_gate")
-                    .get_with_hints_dtype((cfg.hidden_size,), "weight", Default::default(), dtype)?
-                    .reshape((1, cfg.hidden_size))?; //weight must be 2d+
+        let (shared_gate, shared_expert) =
+            if let Some(intermediate_size) = moe_cfg.shared_expert_intermediate_size {
+                if intermediate_size > 0 {
+                    let ws = vb.pp("mlp.shared_expert_gate").get_with_hints_dtype(
+                        (1, cfg.hidden_size),
+                        "weight",
+                        Default::default(),
+                        dtype,
+                    )?;
 
-                let shared_gate = Linear::new(ws, None, &None, &None);
+                    let shared_gate = Linear::new(ws, None, &None, &None);
 
-                let mlp = Mlp::new(
-                    cfg,
-                    intermediate_size,
-                    vb.pp("mlp.shared_expert").clone(),
-                    comm.clone(),
-                )?;
-                (Some(shared_gate), Some(mlp))
+                    let mlp = Mlp::new(
+                        cfg,
+                        intermediate_size,
+                        vb.pp("mlp.shared_expert").clone(),
+                        comm.clone(),
+                    )?;
+                    (Some(shared_gate), Some(mlp))
+                } else {
+                    (None, None)
+                }
             } else {
                 (None, None)
-            }
-        } else {
-            (None, None)
-        };
+            };
         Ok(Self {
             self_attn,
             mlp,
