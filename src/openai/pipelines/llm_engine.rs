@@ -294,11 +294,13 @@ impl LLMEngine {
             if self.multi_process {
                 let mut daemon_manager = self.daemon_manager.write();
                 if num_send_tasks > 0 {
-                    warn!(
-                        "Sending {} tasks to {} subprocesses",
-                        num_send_tasks,
-                        self.num_shards - 1
-                    );
+                    if self.num_shards > 1 {
+                        warn!(
+                            "Sending {} tasks to {} subprocesses",
+                            num_send_tasks,
+                            self.num_shards - 1
+                        );
+                    }
                     let _ = daemon_manager
                         .as_mut()
                         .unwrap()

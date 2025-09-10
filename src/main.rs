@@ -104,10 +104,16 @@ struct Args {
     top_p: Option<f32>,
 
     #[arg(long)]
+    min_p: Option<f32>,
+
+    #[arg(long)]
     top_k: Option<isize>,
 
     #[arg(long)]
-    penalty: Option<f32>,
+    frequency_penalty: Option<f32>,
+
+    #[arg(long)]
+    presence_penalty: Option<f32>,
 
     #[arg(long)]
     prefill_chunk_size: Option<usize>,
@@ -431,10 +437,22 @@ async fn main() -> Result<()> {
             temperature: args.temperature,
             top_k: args.top_k,
             top_p: args.top_p,
-            penalty: args.penalty,
+            min_p: args.min_p,
+            frequency_penalty: args.frequency_penalty,
+            presence_penalty: args.presence_penalty,
         })
     } else {
-        pipeline_config.generation_cfg.as_mut().unwrap().penalty = args.penalty;
+        pipeline_config
+            .generation_cfg
+            .as_mut()
+            .unwrap()
+            .frequency_penalty = args.frequency_penalty;
+        pipeline_config
+            .generation_cfg
+            .as_mut()
+            .unwrap()
+            .presence_penalty = args.presence_penalty;
+        pipeline_config.generation_cfg.as_mut().unwrap().min_p = args.min_p;
     }
 
     info!("Pipeline config {:?}", pipeline_config);
