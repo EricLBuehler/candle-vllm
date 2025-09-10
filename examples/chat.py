@@ -43,12 +43,9 @@ def clear_console():
             help="Sampling top-k")
 @click.option("--min_p", type=float, default=None,
             help="Sampling min-p")
-@click.option("--frequency_penalty", type=float, default=None,
-            help="Penalty paremter")
-@click.option("--presence_penalty", type=float, default=None,
-            help="Penalty paremter")
-@click.option("--repeat_last_n", type=int, default=None,
-            help="Penalty paremter")
+@click.option("--frequency_penalty", type=float, default=None)
+@click.option("--presence_penalty", type=float, default=None)
+@click.option("--repeat_last_n", type=int, default=None)
 @click.option("--thinking", type=bool, default=None,
               help="Enable thinking for reasoning models.")
 @click.option("--context_cache", type=bool, default=None,
