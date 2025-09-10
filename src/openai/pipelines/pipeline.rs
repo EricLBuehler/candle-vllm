@@ -766,6 +766,7 @@ impl DefaultLoader {
                         None,
                         None,
                         None,
+                        None,
                     )
                 };
                 let tokenizer_file = paths.get_tokenizer_filename();
@@ -1009,9 +1010,16 @@ impl DefaultPipeline {
         logits: &Tensor,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<Vec<TokenOrFinishReason>> {
-        let (tokens_generated, custom_stop_tokens, panalties, reference_tokens): (
+        let (
+            tokens_generated,
+            custom_stop_tokens,
+            frequency_panalties,
+            presence_panalties,
+            reference_tokens,
+        ): (
             Vec<i32>,
             Vec<Vec<String>>,
+            Vec<f32>,
             Vec<f32>,
             Vec<Vec<u32>>,
         ) = groups
@@ -1035,7 +1043,8 @@ impl DefaultPipeline {
                     _ => vec![],
                 };
 
-                let ref_tokens = if sampling_params.repetition_penalty.unwrap_or(1.) != 1.
+                let ref_tokens = if (sampling_params.frequency_penalty != 0.
+                    || sampling_params.presence_penalty != 0.)
                     && sampling_params.repeat_last_n.unwrap_or(64) < generated
                 {
                     let start_at = tokens
@@ -1052,27 +1061,34 @@ impl DefaultPipeline {
                         generated as i32
                     },
                     custom_stop_token,
-                    sampling_params.repetition_penalty.unwrap_or(1.0),
+                    sampling_params.frequency_penalty,
+                    sampling_params.presence_penalty,
                     ref_tokens,
                 )
             })
-            .collect::<Vec<(i32, Vec<String>, f32, Vec<u32>)>>()
+            .collect::<Vec<(i32, Vec<String>, f32, f32, Vec<u32>)>>()
             .into_iter()
             .fold(
-                (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
-                |mut acc, (gen, stop, penalty, ref_t)| {
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()),
+                |mut acc, (gen, stop, penalty1, penalty2, ref_t)| {
                     acc.0.push(gen);
                     acc.1.push(stop);
-                    acc.2.push(penalty);
-                    acc.3.push(ref_t);
+                    acc.2.push(penalty1);
+                    acc.3.push(penalty2);
+                    acc.4.push(ref_t);
                     acc
                 },
             );
 
-        let logits = if panalties.iter().any(|&v| v != 1.0 && v != 0.) {
-            self.logits_processor
-                .apply_batch_repeat_penalty(logits, panalties, reference_tokens)
-                .unwrap()
+        let logits = if frequency_panalties.iter().any(|&v| v != 1.0 && v != 0.)
+            || presence_panalties.iter().any(|&v| v != 1.0 && v != 0.)
+        {
+            self.logits_processor.apply_batch_repeat_penalty(
+                logits,
+                frequency_panalties,
+                presence_panalties,
+                reference_tokens,
+            )?
         } else {
             logits.to_owned()
         };
@@ -1086,10 +1102,7 @@ impl DefaultPipeline {
                 None
             };
 
-        let next_tokens = self
-            .logits_processor
-            .sample(&logits, &sampling_params)
-            .unwrap();
+        let next_tokens = self.logits_processor.sample(&logits, &sampling_params)?;
         let result: Vec<TokenOrFinishReason> = next_tokens
             .into_par_iter()
             .enumerate()

@@ -41,12 +41,21 @@ def clear_console():
             help="Sampling top-p")
 @click.option("--top_k", type=int, default=None,
             help="Sampling top-k")
+@click.option("--min_p", type=float, default=None,
+            help="Sampling min-p")
+@click.option("--frequency_penalty", type=float, default=None)
+@click.option("--presence_penalty", type=float, default=None)
+@click.option("--repeat_last_n", type=int, default=None)
 @click.option("--thinking", type=bool, default=None,
               help="Enable thinking for reasoning models.")
 @click.option("--context_cache", type=bool, default=None,
               help="Cache the the previous chat histories.")
 def chatloop(system_prompt: Optional[str], stream: bool, live: bool, 
-    max_tokens: int, frequency: int, port: int, temperature: Optional[float], top_k: Optional[int], top_p: Optional[float], thinking: Optional[bool], context_cache: Optional[bool]):
+    max_tokens: int, frequency: int, port: int, temperature: Optional[float], 
+    top_k: Optional[int], top_p: Optional[float], min_p: Optional[float], 
+    frequency_penalty: Optional[float], presence_penalty: Optional[float], repeat_last_n: Optional[int],
+    thinking: Optional[bool], 
+    context_cache: Optional[bool]):
     """
     A command-line chatbot interface using OpenAI API and candle-vllm as backend.
     """
@@ -71,7 +80,9 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                 console.print()
             user_msg = {"role": "user", "content": user_input}
             # context cache for vLLM.rs
-            extra_body = {"top_k": top_k, "thinking": thinking, "session_id": session_id if context_cache else None }
+            extra_body = {"top_k": top_k, "min_p": min_p, "frequency_penalty":frequency_penalty, 
+                          "presence_penalty":presence_penalty, "thinking": thinking, "repeat_last_n":repeat_last_n,
+                          "session_id": session_id if context_cache else None }
             # Model response
             try:
                 with Live(Spinner("dots", text="Connecting...", style="green"), transient=True, console=console):

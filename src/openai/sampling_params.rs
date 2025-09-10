@@ -1,6 +1,5 @@
 use super::{requests::StopTokens, responses::APIError};
 use serde::{Deserialize, Serialize};
-use std::ops::Range;
 
 const SAMPLING_EPS: f32 = 1e-5;
 
@@ -50,9 +49,6 @@ pub struct SamplingParams {
     /// Penalize new tokens based upon whether their frequency in the generated text so far, >0 encourage new, <0 encourage repeat.
     /// rec. default = 0
     pub frequency_penalty: f32,
-    /// Penalize new tokens based upon whether their frequency in the generated text so far, >1 encourage new, <1 encourage repeat
-    /// rec. default = 1
-    pub repetition_penalty: Option<f32>,
     pub repeat_last_n: Option<usize>,
     /// Randomness of sampling.
     /// rec. default = 1
@@ -60,6 +56,9 @@ pub struct SamplingParams {
     /// Cumulative prob of the top tokens to consider, must be in (0, 1]. Set 1 to consider all toks.  
     /// rec. default = 1    
     pub top_p: Option<f32>,
+    /// Minimum probability for a token to be considered, relative to the probability of the most likely token.
+    /// must be in [0, 1]
+    pub min_p: Option<f32>,
     /// Control the number of top tokens to consider, set -1 to consider all.
     /// rec. default = -1
     pub top_k: Option<isize>,
@@ -102,10 +101,10 @@ impl SamplingParams {
         best_of: Option<usize>,
         presence_penalty: f32,
         frequency_penalty: f32,
-        repetition_penalty: Option<f32>,
         repeat_last_n: Option<usize>,
         temperature: Option<f32>,
         top_p: Option<f32>,
+        min_p: Option<f32>,
         top_k: Option<isize>,
         use_beam_search: bool,
         length_penalty: f32,
@@ -124,10 +123,10 @@ impl SamplingParams {
             best_of: best_of.unwrap_or(n),
             presence_penalty,
             frequency_penalty,
-            repetition_penalty,
             repeat_last_n,
             temperature,
             top_p,
+            min_p,
             top_k,
             use_beam_search,
             length_penalty,
@@ -179,21 +178,6 @@ impl SamplingParams {
                 "frequency_penalty must be in [-2, 2], got {}",
                 self.frequency_penalty
             )));
-        }
-        if self.repetition_penalty.is_some() {
-            let repetition_penalty = self.repetition_penalty.unwrap();
-            if !(Range {
-                start: 0.0,
-                end: 2.0,
-            })
-            .contains(&repetition_penalty)
-                || repetition_penalty == 0.0
-            {
-                return Err(APIError::new(format!(
-                    "repetition_penalty must be in (0, 2], got {}",
-                    repetition_penalty
-                )));
-            }
         }
 
         if self.temperature.unwrap_or(0.0f32) < 0.0f32 {
@@ -284,5 +268,7 @@ pub struct GenerationConfig {
     /// rec. default = -1
     pub top_k: Option<isize>,
 
-    pub penalty: Option<f32>,
+    pub min_p: Option<f32>,
+    pub frequency_penalty: Option<f32>,
+    pub presence_penalty: Option<f32>,
 }
