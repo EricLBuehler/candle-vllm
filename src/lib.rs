@@ -6,8 +6,9 @@ use std::path::Path;
 use tracing::warn;
 pub mod backend;
 pub mod openai;
-pub mod paged_attention;
+// pub mod paged_attention;
 pub mod scheduler;
+pub use attention_rs::{InputMetadata, PagedAttention};
 
 pub fn hub_load_local_safetensors(
     path: &String,

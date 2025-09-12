@@ -1,8 +1,8 @@
-#[cfg(feature = "cuda")]
-use crate::backend::custom_ops::sort::ArgSortOp; //Use our custom sort kernel, fix kernel crash on A100
 use crate::candle::D;
 use crate::candle::{DType, Error, Result, Tensor};
 use crate::openai::sampling_params::SamplingParams;
+#[cfg(feature = "cuda")]
+use attention_rs::sort::ArgSortOp; //Use our custom sort kernel, fix kernel crash on A100
 use rand::{distr::Distribution, SeedableRng};
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::ParallelIterator;

@@ -1,9 +1,7 @@
 [package]
 name = "candle-vllm"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 axum = { version = "0.7.4", features = ["tokio"] }
@@ -17,26 +15,21 @@ rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
 candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
 candle-examples = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
-#candle-lora = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
-#candle-lora-macro = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
-#candle-lora-transformers = { git = "https://github.com/EricLBuehler/candle-lora.git", version = "0.2.0" }
 candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
+candle-transformers = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
+candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "42c9b42" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
 tokenizers = "0.21.2"
 uuid = { version = "1.5.0", features = ["v4"] }
-candle-transformers = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
 hf-hub = "0.4.1"
 serde_json = "1.0.108"
 derive_more = "0.99.17"
 accelerate-src = { version = "0.3.2", optional = true }
 intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"], optional = true }
-#cudarc = {version = "0.13.9", features = ["f16", "cuda-version-from-build-system"], optional = true }
 cudarc = {git = "https://github.com/guoqingbao/cudarc.git", version = "0.13.9", features = ["f16", "cuda-version-from-build-system"], optional = true, rev="cc13092" }
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
-candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "42c9b42" }
 clap = { version = "4.4.7", features = ["derive"] }
-#candle-sampling = { git = "https://github.com/EricLBuehler/candle-sampling.git", version = "0.2.0" }
 futures = "0.3.29"
 tokio = { version = "1.38.0", features = ["sync"] }
 env_logger = "0.10.1"
@@ -47,9 +40,10 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
+attention-rs = {git = "https://github.com/guoqingbao/attention.rs", version="0.1.1", rev = "3058c20" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
-kernels = {path = "./kernels", version="0.1.0", optional = true}
-metal-kernels = {path = "./metal-kernels", version="0.1.0", optional = true}
+#kernels = {path = "./kernels", version="0.1.0", optional = true}
+#metal-kernels = {path = "./metal-kernels", version="0.1.0", optional = true}
 lazy_static = {version = "1.4.0"}
 interprocess = "2.2.2"
 serde-big-array = "0.5.1"
@@ -67,10 +61,10 @@ ahash = "0.8.11"
 
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "dep:kernels"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "dep:metal-kernels", "dep:metal"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "attention-rs/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "dep:metal", "attention-rs/metal"]
 cudnn = ["candle-core/cudnn"]
-flash-attn = ["cuda", "candle-transformers/flash-attn", "dep:candle-flash-attn"]
+flash-attn = ["cuda", "candle-transformers/flash-attn", "dep:candle-flash-attn", "attention-rs/flash-attn"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
 nccl = ["cuda", "cudarc/nccl"]
 mpi = ["cuda", "cudarc/nccl", "dep:mpi"]

@@ -1,13 +1,9 @@
-use super::rotary_emb::ScalingRotaryEmbedding;
-use super::Config;
+use super::{attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{
-    embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
-    TensorParallelRowLinear, VarBuilder,
-};
-use crate::paged_attention::input_metadata::InputMetadata;
-use crate::paged_attention::PagedAttention;
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use crate::openai::distributed::{embedding, rms_norm, Comm, ReplicatedLinear, VarBuilder};
+use crate::openai::models::mask::get_attention_casual_mask;
+use crate::InputMetadata;
+use candle::{DType, Device, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Embedding, Module, RmsNorm};
 use std::iter::zip;
@@ -45,210 +41,9 @@ impl Llama {
     }
 }
 
-struct CausalSelfAttention {
-    q_proj: TensorParallelColumnLinear,
-    k_proj: TensorParallelColumnLinear,
-    v_proj: TensorParallelColumnLinear,
-    o_proj: TensorParallelRowLinear,
-    num_attention_heads: usize,
-    num_key_value_heads: usize,
-    head_dim: usize,
-    attn: PagedAttention,
-    rotay_emb: Arc<ScalingRotaryEmbedding>,
-}
-
-impl CausalSelfAttention {
-    fn forward(
-        &self,
-        x: &Tensor,
-        attention_mask: Option<&Tensor>,
-        input_positions: &[Vec<usize>],
-        cache: Option<(&Tensor, &Tensor)>,
-        input_metadata: &InputMetadata,
-    ) -> Result<Tensor> {
-        let (b_sz, seq_len, _) = x.dims3()?;
-        let q = self.q_proj.forward(x)?;
-        let k = self.k_proj.forward(x)?;
-        let v = self.v_proj.forward(x)?;
-
-        let (q, k, v) = if seq_len == 1 {
-            //no need transpose for seq_len == 1, change reshape dim
-            let q = q.reshape((b_sz, self.num_attention_heads, seq_len, self.head_dim))?;
-            let k = k.reshape((b_sz, self.num_key_value_heads, seq_len, self.head_dim))?;
-            let v = v.reshape((b_sz, self.num_key_value_heads, seq_len, self.head_dim))?;
-            (q, k, v)
-        } else {
-            let q = q
-                .reshape((b_sz, seq_len, self.num_attention_heads, self.head_dim))?
-                .transpose(1, 2)?
-                .contiguous()?;
-            let k = k
-                .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
-                .transpose(1, 2)?
-                .contiguous()?;
-            let v = v
-                .reshape((b_sz, seq_len, self.num_key_value_heads, self.head_dim))?
-                .transpose(1, 2)?
-                .contiguous()?;
-            (q, k, v)
-        };
-
-        let (q, k) = self.rotay_emb.apply_rotary_emb(&q, &k, input_positions)?;
-
-        let y = self
-            .attn
-            .forward(
-                &q,
-                &k,
-                &v,
-                attention_mask,
-                cache.map(|(k_, _)| k_.clone()),
-                cache.map(|(_, v_)| v_.clone()),
-                input_metadata,
-                None,
-            )?
-            .reshape((b_sz, seq_len, ()))?;
-
-        let y = self.o_proj.forward(&y)?;
-        Ok(y)
-    }
-
-    fn load(
-        vb: VarBuilder,
-        cfg: &Config,
-        comm: Rc<Comm>,
-        rotay_emb: Arc<ScalingRotaryEmbedding>,
-    ) -> Result<Self> {
-        let size_in = cfg.hidden_size;
-        let size_q = (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_attention_heads;
-        let size_kv =
-            (cfg.hidden_size / cfg.num_attention_heads) * cfg.num_key_value_heads.unwrap();
-        let q_proj = TensorParallelColumnLinear::load_with_hints(
-            size_in,
-            size_q,
-            false,
-            vb.pp("q_proj"),
-            comm.clone(),
-            &cfg.quant,
-            &cfg.quantization_config,
-        )?;
-        let k_proj = TensorParallelColumnLinear::load_with_hints(
-            size_in,
-            size_kv,
-            false,
-            vb.pp("k_proj"),
-            comm.clone(),
-            &cfg.quant,
-            &cfg.quantization_config,
-        )?;
-
-        let q8_0_quant = Some("q8_0".to_string());
-        let v_proj = TensorParallelColumnLinear::load_with_hints(
-            size_in,
-            size_kv,
-            false,
-            vb.pp("v_proj"),
-            comm.clone(),
-            if cfg.quant.is_some()
-                && !matches!(
-                    cfg.quant.as_ref().unwrap().as_str(),
-                    "gptq" | "awq" | "marlin"
-                )
-            {
-                &q8_0_quant
-            } else {
-                &cfg.quant
-            },
-            &cfg.quantization_config,
-        )?;
-
-        let o_proj = TensorParallelRowLinear::load_with_hints(
-            size_q,
-            size_in,
-            false,
-            vb.pp("o_proj"),
-            comm.clone(),
-            &cfg.quant,
-            &cfg.quantization_config,
-        )?;
-        let head_dim = cfg.hidden_size / cfg.num_attention_heads;
-        let attention_heads = cfg.num_attention_heads / comm.world_size();
-        let kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
-        Ok(Self {
-            q_proj,
-            k_proj,
-            v_proj,
-            o_proj,
-            num_attention_heads: attention_heads,
-            num_key_value_heads: kv_heads,
-            head_dim,
-            attn: PagedAttention::new(
-                attention_heads,
-                head_dim,
-                1. / ((head_dim as f32).sqrt()),
-                Some(kv_heads),
-                cfg.sliding_window,
-                vb.device().clone(),
-                None,
-            )?,
-            rotay_emb: rotay_emb.clone(),
-        })
-    }
-}
-
-struct Mlp {
-    c_fc1: TensorParallelColumnLinear,
-    c_fc2: TensorParallelColumnLinear,
-    c_proj: TensorParallelRowLinear,
-}
-
-impl Mlp {
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let x = (candle_nn::ops::silu(&self.c_fc1.forward(x)?)? * self.c_fc2.forward(x)?)?;
-        self.c_proj.forward(&x)
-    }
-
-    fn load(vb: VarBuilder, cfg: &Config, comm: Rc<Comm>) -> Result<Self> {
-        let h_size = cfg.hidden_size;
-        let i_size = cfg.intermediate_size;
-        let c_fc1 = TensorParallelColumnLinear::load_with_hints(
-            h_size,
-            i_size,
-            false,
-            vb.pp("gate_proj"),
-            comm.clone(),
-            &cfg.quant,
-            &cfg.quantization_config,
-        )?;
-        let c_fc2 = TensorParallelColumnLinear::load_with_hints(
-            h_size,
-            i_size,
-            false,
-            vb.pp("up_proj"),
-            comm.clone(),
-            &cfg.quant,
-            &cfg.quantization_config,
-        )?;
-        let c_proj = TensorParallelRowLinear::load_with_hints(
-            i_size,
-            h_size,
-            false,
-            vb.pp("down_proj"),
-            comm,
-            &cfg.quant,
-            &cfg.quantization_config,
-        )?;
-        Ok(Self {
-            c_fc1,
-            c_fc2,
-            c_proj,
-        })
-    }
-}
-
 struct Block {
     rms_1: RmsNorm,
-    attn: CausalSelfAttention,
+    attn: Attention,
     rms_2: RmsNorm,
     mlp: Mlp,
 }
@@ -257,8 +52,8 @@ impl Block {
     fn forward(
         &self,
         x: &Tensor,
-        attention_mask: Option<&Tensor>,
-        input_positions: &[Vec<usize>],
+        attention_mask: Option<&Vec<Tensor>>,
+        input_positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
@@ -279,8 +74,14 @@ impl Block {
         comm: Rc<Comm>,
         rotay_emb: Arc<ScalingRotaryEmbedding>,
     ) -> Result<Self> {
-        let attn = CausalSelfAttention::load(vb.pp("self_attn"), cfg, comm.clone(), rotay_emb)?;
-        let mlp = Mlp::load(vb.pp("mlp"), cfg, comm.clone())?;
+        let attn = Attention::new(
+            rotay_emb.clone(),
+            cfg,
+            vb.pp("self_attn"),
+            comm.clone(),
+            cfg.sliding_window,
+        )?;
+        let mlp = Mlp::new(cfg, vb.pp("mlp"), comm.clone())?;
         let rms_1 = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
         let rms_2 = rms_norm(
             cfg.hidden_size,
@@ -299,7 +100,7 @@ impl Block {
 pub struct Llama {
     wte: Embedding,
     blocks: Vec<Block>,
-    ln_f: RmsNorm,
+    norm: RmsNorm,
     lm_head: ReplicatedLinear,
     cfg: Config,
     dtype: DType,
@@ -310,28 +111,33 @@ impl Llama {
     pub fn forward(
         &self,
         x: &Tensor,
-        input_positions: &[Vec<usize>],
+        input_positions: &Tensor,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_size, seq_len) = x.dims2()?;
-        let attention_mask = if seq_len <= 1 {
-            None
+        let seqlens = if input_metadata.cu_seqlens_q.is_some() {
+            input_metadata
+                .cu_seqlens_q
+                .as_ref()
+                .unwrap()
+                .to_vec1::<u32>()?[1..]
+                .into()
         } else {
-            super::get_attention_casual_mask(
-                &self.device,
-                self.dtype,
-                b_size,
-                seq_len,
-                input_positions,
-                self.cfg.sliding_window,
-            )
+            Vec::new()
         };
-        let mut x = self.wte.forward(x)?;
+        let attention_mask = get_attention_casual_mask(
+            &self.device,
+            self.dtype,
+            input_positions,
+            &seqlens,
+            self.cfg.sliding_window,
+            input_metadata.is_prefill,
+        );
+        let mut xs = self.wte.forward(x)?;
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), block) in zip(kv_caches.iter(), &self.blocks) {
-                x = block.forward(
-                    &x,
+                xs = block.forward(
+                    &xs,
                     attention_mask.as_ref(),
                     input_positions,
                     Some((k_cache, v_cache)),
@@ -340,8 +146,8 @@ impl Llama {
             }
         } else {
             for block in &self.blocks {
-                x = block.forward(
-                    &x,
+                xs = block.forward(
+                    &xs,
                     attention_mask.as_ref(),
                     input_positions,
                     None,
@@ -349,10 +155,13 @@ impl Llama {
                 )?;
             }
         }
-        let x = self.ln_f.forward(&x)?;
-        let x = x.i((.., seq_len - 1, ..))?.contiguous()?;
-        let logits = self.lm_head.forward(&x)?;
-        logits.to_dtype(DType::F32)
+        if !seqlens.is_empty() {
+            let indices: Vec<_> = seqlens.iter().map(|x| x - 1 as u32).collect();
+            let batch = indices.len();
+            xs = xs.index_select(&Tensor::from_vec(indices, (batch,), xs.device())?, 0)?;
+        }
+        let xs = self.norm.forward(&xs)?;
+        self.lm_head.forward(&xs)?.to_dtype(DType::F32)
     }
 
     pub fn load(
@@ -372,8 +181,8 @@ impl Llama {
             &None,
         )?;
 
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(dtype, cfg, device, true)?);
-        let ln_f = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, true)?);
+        let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
         let reporter = progress_reporter.clone();
         let blocks: Vec<_> = (0..cfg.num_hidden_layers)
             .map(|i| {
@@ -392,7 +201,7 @@ impl Llama {
         Ok(Self {
             wte,
             blocks,
-            ln_f,
+            norm,
             lm_head,
             cfg: cfg.clone(),
             dtype,

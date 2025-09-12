@@ -1,3 +1,8 @@
+#[cfg(feature = "cuda")]
+use attention_rs::kernels::ffi::{
+    awq_repack, gemm_half_q_half_alt, gptq_repack, marlin_4bit_bf16, marlin_4bit_f16,
+    marlin_awq_4bit_bf16, marlin_awq_4bit_f16,
+};
 #[allow(unused_imports)]
 use candle::backend::BackendStorage;
 #[cfg(feature = "cuda")]
@@ -5,11 +10,6 @@ use candle::CudaStorage;
 #[allow(unused_imports)]
 use candle::{CpuStorage, DType, Layout, Result, Shape, Storage, Tensor};
 use candle_core as candle;
-#[cfg(feature = "cuda")]
-use kernels::ffi::{
-    awq_repack, gemm_half_q_half_alt, gptq_repack, marlin_4bit_bf16, marlin_4bit_f16,
-    marlin_awq_4bit_bf16, marlin_awq_4bit_f16,
-};
 
 #[allow(unused)]
 struct GPTQMatMul {

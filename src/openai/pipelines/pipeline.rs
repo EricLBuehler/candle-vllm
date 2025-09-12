@@ -24,7 +24,7 @@ use crate::{
         },
         PipelineConfig,
     },
-    paged_attention::input_metadata::InputMetadata,
+    InputMetadata,
 };
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, Result, Tensor};
@@ -422,7 +422,6 @@ impl DefaultLoader {
                 }
                 "qwen2" | "qwen3" => {
                     let model = GGUFQWen::from_gguf(
-                        arch.as_str() == "qwen3",
                         &content,
                         &mut file,
                         &device,
@@ -592,16 +591,8 @@ impl DefaultLoader {
                         ),
                         "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => (
                             LLMModel::Qwen(
-                                Qwen::new(
-                                    matches!(arch.as_str(), "qwen3" | "Qwen3ForCausalLM"),
-                                    vb,
-                                    &config,
-                                    dtype,
-                                    &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                )
-                                .unwrap(),
+                                Qwen::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
+                                    .unwrap(),
                             ),
                             SeparatorStyle::Qwen,
                         ),
@@ -938,18 +929,10 @@ impl DefaultPipeline {
     pub fn forward(
         &self,
         input_tokens: Tensor,
-        input_positions: &[Vec<usize>],
+        input_positions: &Tensor,
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let input_tokens = if input_tokens.shape().dims().len() < 2 {
-            input_tokens
-                .reshape((1, input_tokens.shape().dims()[0]))
-                .unwrap()
-        } else {
-            input_tokens
-        };
-
         match &self.model {
             LLMModel::Llama(llama) => {
                 llama.forward(&input_tokens, input_positions, kv_cache, input_metadata)
@@ -1045,11 +1028,11 @@ impl DefaultPipeline {
 
                 let ref_tokens = if (sampling_params.frequency_penalty != 0.
                     || sampling_params.presence_penalty != 0.)
-                    && sampling_params.repeat_last_n.unwrap_or(64) < generated
+                    && sampling_params.repeat_last_n.unwrap_or(128) < generated
                 {
                     let start_at = tokens
                         .len()
-                        .saturating_sub(sampling_params.repeat_last_n.unwrap_or(64));
+                        .saturating_sub(sampling_params.repeat_last_n.unwrap_or(128));
                     tokens[start_at..].to_vec()
                 } else {
                     vec![]
