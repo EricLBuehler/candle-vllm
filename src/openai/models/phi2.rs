@@ -5,9 +5,9 @@ use crate::openai::distributed::{
     embedding, layer_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::paged_attention::input_metadata::InputMetadata;
-use crate::paged_attention::PagedAttention;
-use candle_core::{DType, Device, IndexOp, Module, Result, Tensor};
+use crate::openai::models::mask::get_attention_casual_mask;
+use crate::{InputMetadata, PagedAttention};
+use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::{Activation, Embedding, LayerNorm};
 use std::iter::zip;
 use std::path::PathBuf;
@@ -183,12 +183,12 @@ impl Attention {
     fn forward(
         &self,
         xs: &Tensor,
-        attention_mask: Option<&Tensor>,
-        input_positions: &[Vec<usize>],
+        attention_mask: Option<&Vec<Tensor>>,
+        input_positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_size, seq_len, _n_embd) = xs.dims3()?;
+        let (seq_len, _n_embd) = xs.dims2()?;
         let query_states = self.q_proj.forward(xs)?;
         let key_states = self.k_proj.forward(xs)?;
         let value_states = self.v_proj.forward(xs)?;
@@ -201,32 +201,27 @@ impl Attention {
             None => key_states,
             Some(ln) => key_states.apply(ln)?,
         };
-        let dtype = value_states.dtype();
-        let (q, k, v) = if seq_len == 1 {
-            //no need transpose for seq_len == 1, change reshape dim
-            let q = query_states.reshape((b_size, self.num_heads, seq_len, self.head_dim))?;
-            let k = key_states.reshape((b_size, self.num_kv_heads, seq_len, self.head_dim))?;
-            let v = value_states.reshape((b_size, self.num_kv_heads, seq_len, self.head_dim))?;
-            (q, k, v)
-        } else {
-            let q = query_states
-                .reshape((b_size, seq_len, self.num_heads, self.head_dim))?
-                .transpose(1, 2)?;
-            let k = key_states
-                .reshape((b_size, seq_len, self.num_kv_heads, self.head_dim))?
-                .transpose(1, 2)?;
-            let v = value_states
-                .reshape((b_size, seq_len, self.num_kv_heads, self.head_dim))?
-                .transpose(1, 2)?;
-            (q, k, v)
-        };
+
+        let q = query_states
+            .reshape((1, seq_len, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = key_states
+            .reshape((1, seq_len, self.num_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = value_states
+            .reshape((1, seq_len, self.num_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
 
         let (q, k) = self.rotary_emb.apply_rotary_emb(
             &q.to_dtype(DType::F32)?,
             &k.to_dtype(DType::F32)?,
             input_positions,
         )?;
-        let v = v.to_dtype(DType::F32)?;
+        let q = q.to_dtype(v.dtype())?;
+        let k = k.to_dtype(v.dtype())?;
 
         let y = self
             .attn
@@ -240,9 +235,8 @@ impl Attention {
                 input_metadata,
                 None,
             )?
-            .reshape((b_size, seq_len, ()))?;
+            .reshape((seq_len, ()))?;
 
-        let y = y.to_dtype(dtype)?;
         self.dense.forward(&y)
     }
 }
@@ -278,8 +272,8 @@ impl DecoderLayer {
     fn forward(
         &self,
         xs: &Tensor,
-        mask: Option<&Tensor>,
-        input_positions: &[Vec<usize>],
+        mask: Option<&Vec<Tensor>>,
+        input_positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
@@ -300,13 +294,14 @@ pub struct Phi2 {
     lm_head: ReplicatedLinear,
     cfg: Config,
     device: Device,
+    dtype: DType,
 }
 
 impl Phi2 {
     pub fn new(
         vb: VarBuilder,
         cfg: &Config,
-        _dtype: DType,
+        dtype: DType,
         device: &Device,
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
@@ -345,30 +340,37 @@ impl Phi2 {
             lm_head,
             cfg: cfg.clone(),
             device: device.clone(),
+            dtype,
         })
     }
 
     pub fn forward(
         &self,
         xs: &Tensor,
-        input_positions: &[Vec<usize>],
+        input_positions: &Tensor,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_size, seq_len) = xs.dims2()?;
-        let mut xs = xs.apply(&self.embed_tokens)?;
-        let attention_mask = if seq_len <= 1 {
-            None
+        let seqlens = if input_metadata.cu_seqlens_q.is_some() {
+            input_metadata
+                .cu_seqlens_q
+                .as_ref()
+                .unwrap()
+                .to_vec1::<u32>()?[1..]
+                .into()
         } else {
-            super::get_attention_casual_mask(
-                &self.device,
-                DType::F32,
-                b_size,
-                seq_len,
-                input_positions,
-                self.cfg.sliding_window,
-            )
+            Vec::new()
         };
+        let attention_mask = get_attention_casual_mask(
+            &self.device,
+            self.dtype,
+            input_positions,
+            &seqlens,
+            self.cfg.sliding_window,
+            input_metadata.is_prefill,
+        );
+        let mut xs = xs.apply(&self.embed_tokens)?;
+
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
                 xs = layer.forward(
@@ -390,12 +392,13 @@ impl Phi2 {
                 )?
             }
         }
-        let xs = xs
-            .apply(&self.final_layernorm)?
-            .i((.., seq_len - 1, ..))?
-            .contiguous()?;
-
-        self.lm_head.forward(&xs)
+        if !seqlens.is_empty() {
+            let indices: Vec<_> = seqlens.iter().map(|x| x - 1 as u32).collect();
+            let batch = indices.len();
+            xs = xs.index_select(&Tensor::from_vec(indices, (batch,), xs.device())?, 0)?;
+        }
+        let xs = self.final_layernorm.forward(&xs)?;
+        self.lm_head.forward(&xs)?.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {

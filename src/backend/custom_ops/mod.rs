@@ -1,3 +1,3 @@
 pub mod moe;
-#[cfg(feature = "cuda")]
-pub mod sort;
+// #[cfg(feature = "cuda")]
+// pub mod sort;

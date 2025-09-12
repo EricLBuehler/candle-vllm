@@ -1,3 +1,5 @@
+#[cfg(feature = "cuda")]
+use attention_rs::kernels::ffi::{copy_blocks_bf16, copy_blocks_f16, copy_blocks_f32};
 #[cfg(feature = "metal")]
 use candle_core::{
     backend::BackendStorage, CpuStorage, Device, IndexOp, Layout, MetalDevice, MetalStorage,
@@ -9,8 +11,6 @@ use candle_core::{
     cuda_backend::CudaStorageSlice,
     Device, IndexOp, Result, Storage, Tensor,
 };
-#[cfg(feature = "cuda")]
-use kernels::ffi::{copy_blocks_bf16, copy_blocks_f16, copy_blocks_f32};
 use std::{collections::HashMap, iter::zip};
 
 /// # Safety
@@ -332,10 +332,10 @@ pub fn copy_blocks(
         let command_buffer = dev.command_buffer()?;
         command_buffer.set_label("copy-blocks");
 
-        metal_kernels::call_copy_blocks(
+        attention_rs::metal_kernels::call_copy_blocks(
             dev.device(),
             &command_buffer,
-            metal_kernels::Kernels::default(),
+            attention_rs::metal_kernels::Kernels::default(),
             key_cache.dtype(),
             key_storage.buffer(),
             key_offset * key_storage.dtype().size_in_bytes(),

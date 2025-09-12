@@ -1,10 +1,9 @@
-use super::rotary_emb::ScalingRotaryEmbedding;
-use super::Config;
+use super::{attention::QuantizedAttention, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::paged_attention::input_metadata::InputMetadata;
-use crate::paged_attention::PagedAttention;
+use crate::openai::models::mask::get_attention_casual_mask;
+use crate::InputMetadata;
 use candle_core::quantized::{gguf_file, QMatMul};
-use candle_core::{DType, Device, IndexOp, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Embedding, Module};
 use candle_transformers::quantized_nn::RmsNorm;
 use either::Either;
@@ -30,105 +29,25 @@ impl Module for Mlp {
 }
 
 struct LayerWeights {
-    attention_wq: QMatMul,
-    attention_wk: QMatMul,
-    attention_wv: QMatMul,
-    attention_bq: Option<Tensor>,
-    attention_bk: Option<Tensor>,
-    attention_bv: Option<Tensor>,
-    attention_wo: QMatMul,
+    self_attn: QuantizedAttention,
     attention_norm: RmsNorm,
     post_ffw_norm: RmsNorm,
     post_attention_norm: RmsNorm,
-    rotary_emb: Arc<ScalingRotaryEmbedding>,
     mlp: Mlp,
     ffn_norm: RmsNorm,
-    n_head: usize,
-    n_kv_head: usize,
-    head_dim: usize,
-    attn: PagedAttention,
-    dtype: DType,
 }
 
 impl LayerWeights {
     fn forward_attn(
         &self,
         x: &Tensor,
-        mask: Option<&Tensor>,
-        input_positions: &[Vec<usize>],
+        mask: Option<&Vec<Tensor>>,
+        input_positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_sz, seq_len, _) = x.dims3()?;
-
-        let q = self.attention_wq.forward(x)?;
-        let k = self.attention_wk.forward(x)?;
-        let v = self.attention_wv.forward(x)?;
-
-        let q = if self.attention_bq.is_some() {
-            q.broadcast_add(self.attention_bq.as_ref().unwrap())?
-        } else {
-            q
-        };
-
-        let k = if self.attention_bk.is_some() {
-            k.broadcast_add(self.attention_bk.as_ref().unwrap())?
-        } else {
-            k
-        };
-
-        let v = if self.attention_bv.is_some() {
-            v.broadcast_add(self.attention_bv.as_ref().unwrap())?
-        } else {
-            v
-        };
-
-        let (q, k, v) = if seq_len == 1 {
-            //no need transpose for seq_len == 1, change reshape dim
-            let q = q.reshape((b_sz, self.n_head, seq_len, self.head_dim))?;
-            let k = k.reshape((b_sz, self.n_kv_head, seq_len, self.head_dim))?;
-            let v = v.reshape((b_sz, self.n_kv_head, seq_len, self.head_dim))?;
-            (q, k, v)
-        } else {
-            let q = q
-                .reshape((b_sz, seq_len, self.n_head, self.head_dim))?
-                .transpose(1, 2)?;
-            let k = k
-                .reshape((b_sz, seq_len, self.n_kv_head, self.head_dim))?
-                .transpose(1, 2)?;
-            let v = v
-                .reshape((b_sz, seq_len, self.n_kv_head, self.head_dim))?
-                .transpose(1, 2)?;
-            (q.contiguous()?, k.contiguous()?, v.contiguous()?)
-        };
-
-        let (q, k) = self.rotary_emb.apply_rotary_emb(
-            &q.to_dtype(DType::F32)?,
-            &k.to_dtype(DType::F32)?,
-            input_positions,
-        )?;
-        let (q, k, v) = (
-            q.to_dtype(self.dtype)?,
-            k.to_dtype(self.dtype)?,
-            v.to_dtype(self.dtype)?,
-        );
-
-        let y = self
-            .attn
-            .forward(
-                &q,
-                &k,
-                &v,
-                mask,
-                cache.map(|(k_, _)| k_.clone()),
-                cache.map(|(_, v_)| v_.clone()),
-                input_metadata,
-                None,
-            )?
-            .reshape((b_sz, seq_len, ()))?;
-
-        let y = self.attention_wo.forward(&y.to_dtype(x.dtype())?)?;
-        Ok(y)
+        self.self_attn
+            .forward(x, mask, input_positions, cache, input_metadata)
     }
 }
 
@@ -275,50 +194,6 @@ impl GGUFGLM4 {
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {
             let prefix = format!("blk.{layer_idx}");
-            let attention_wq = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device)?;
-            let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
-            let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
-
-            let attention_bq = ct.tensor(reader, &format!("{prefix}.attn_q.bias"), device);
-            let attention_bk = ct.tensor(reader, &format!("{prefix}.attn_k.bias"), device);
-            let attention_bv = ct.tensor(reader, &format!("{prefix}.attn_v.bias"), device);
-
-            let attention_bq = if attention_bq.is_ok() {
-                Some(
-                    attention_bq
-                        .unwrap()
-                        .dequantize(device)?
-                        .to_dtype(DType::F32)?,
-                )
-            } else {
-                None
-            };
-
-            let attention_bk = if attention_bk.is_ok() {
-                Some(
-                    attention_bk
-                        .unwrap()
-                        .dequantize(device)?
-                        .to_dtype(DType::F32)?,
-                )
-            } else {
-                None
-            };
-
-            let attention_bv = if attention_bv.is_ok() {
-                Some(
-                    attention_bv
-                        .unwrap()
-                        .dequantize(device)?
-                        .to_dtype(DType::F32)?,
-                )
-            } else {
-                None
-            };
-
-            let attention_wo =
-                ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
-
             let mlp = {
                 let ffn_gate_up = ct.tensor(reader, &format!("{prefix}.ffn_up.weight"), device)?;
                 let ffn_down = ct.tensor(reader, &format!("{prefix}.ffn_down.weight"), device)?;
@@ -340,34 +215,24 @@ impl GGUFGLM4 {
             )?;
             let post_ffw_norm = RmsNorm::from_qtensor(post_ffw_norm, rms_norm_eps)?;
             let post_attention_norm = RmsNorm::from_qtensor(post_attention_norm, rms_norm_eps)?;
+            let self_attn = QuantizedAttention::new(
+                &cfg,
+                ct,
+                reader,
+                &prefix,
+                device,
+                dtype,
+                rotary_emb.clone(),
+                cfg.sliding_window,
+            )?;
 
             layers.push(LayerWeights {
-                attention_wq: QMatMul::from_qtensor(attention_wq)?,
-                attention_wk: QMatMul::from_qtensor(attention_wk)?,
-                attention_wv: QMatMul::from_qtensor(attention_wv)?,
-                attention_bq,
-                attention_bk,
-                attention_bv,
-                attention_wo: QMatMul::from_qtensor(attention_wo)?,
+                self_attn,
                 attention_norm: RmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
                 post_ffw_norm,
                 post_attention_norm,
                 mlp,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
-                n_head: head_count,
-                n_kv_head: head_count_kv,
-                head_dim,
-                rotary_emb: rotary_emb.clone(),
-                attn: PagedAttention::new(
-                    head_count,
-                    head_dim,
-                    1. / ((head_dim as f32).sqrt()),
-                    Some(head_count_kv),
-                    None,
-                    device.clone(),
-                    None,
-                )?,
-                dtype,
             });
             reporter.write().unwrap().set_progress(layer_idx + 1);
         }
@@ -386,36 +251,37 @@ impl GGUFGLM4 {
     pub fn forward(
         &self,
         x: &Tensor,
-        input_positions: &[Vec<usize>],
+        input_positions: &Tensor,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_sz, seq_len) = x.dims2()?;
-        assert!(
-            seq_len < self.cfg.max_seq_len,
-            "Input token length exceed maximum context allowed for this model."
-        );
-        let mask = if seq_len <= 1 {
-            None
+        let seqlens = if input_metadata.cu_seqlens_q.is_some() {
+            input_metadata
+                .cu_seqlens_q
+                .as_ref()
+                .unwrap()
+                .to_vec1::<u32>()?[1..]
+                .into()
         } else {
-            super::get_attention_casual_mask(
-                &self.device,
-                self.dtype,
-                b_sz,
-                seq_len,
-                input_positions,
-                self.cfg.sliding_window,
-            )
+            Vec::new()
         };
-        let mut layer_in = self.tok_embeddings.forward(x)?;
+        let attention_mask = get_attention_casual_mask(
+            &self.device,
+            self.dtype,
+            input_positions,
+            &seqlens,
+            self.cfg.sliding_window,
+            input_metadata.is_prefill,
+        );
+        let mut xs = self.tok_embeddings.forward(x)?;
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
-                let x = layer_in;
+                let x = xs;
                 let residual = &x;
                 let x = layer.attention_norm.forward(&x)?;
                 let attn = layer.forward_attn(
                     &x,
-                    mask.as_ref(),
+                    attention_mask.as_ref(),
                     input_positions,
                     Some((k_cache, v_cache)),
                     input_metadata,
@@ -429,15 +295,20 @@ impl GGUFGLM4 {
                 let x = layer.mlp.forward(&x)?;
                 let x = layer.post_ffw_norm.forward(&x)?;
                 let x = (x + residual)?;
-                layer_in = x
+                xs = x
             }
         } else {
             for layer in self.layers.iter() {
-                let x = layer_in;
+                let x = xs;
                 let residual = &x;
                 let x = layer.ffn_norm.forward(&x)?;
-                let attn =
-                    layer.forward_attn(&x, mask.as_ref(), input_positions, None, input_metadata)?;
+                let attn = layer.forward_attn(
+                    &x,
+                    attention_mask.as_ref(),
+                    input_positions,
+                    None,
+                    input_metadata,
+                )?;
                 let attn = layer.attention_norm.forward(&attn)?;
                 let x = (attn + residual)?;
 
@@ -447,14 +318,16 @@ impl GGUFGLM4 {
                 let x = layer.mlp.forward(&x)?;
                 let x = layer.post_ffw_norm.forward(&x)?;
                 let x = (x + residual)?;
-                layer_in = x
+                xs = x
             }
         }
-        let x = layer_in
-            .i((.., seq_len - 1, ..))?
-            .contiguous()?
-            .apply(&self.norm)?;
-        self.output.forward(&x)
+        if !seqlens.is_empty() {
+            let indices: Vec<_> = seqlens.iter().map(|x| x - 1 as u32).collect();
+            let batch = indices.len();
+            xs = xs.index_select(&Tensor::from_vec(indices, (batch,), xs.device())?, 0)?;
+        }
+        let xs = self.norm.forward(&xs)?;
+        self.output.forward(&xs)?.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {
