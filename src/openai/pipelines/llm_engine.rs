@@ -491,10 +491,6 @@ impl LLMEngine {
                     positions,
                     metadata,
                 } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
-                    assert!(
-                        scheduled.len() == 1,
-                        "only one prompt can be schedule at same time!"
-                    );
                     e.prepare_prompt(&scheduled, device)
                 } else {
                     e.prepare_decode(&scheduled, device)
