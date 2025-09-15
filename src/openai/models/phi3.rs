@@ -6,9 +6,10 @@ use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::paged_attention::input_metadata::InputMetadata;
-use crate::paged_attention::PagedAttention;
-use candle::{DType, Device, IndexOp, Module, Result, Tensor, D};
+use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::rotary_emb::DefaultRotaryEmbedding;
+use crate::{InputMetadata, PagedAttention};
+use candle::{DType, Device, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::RmsNorm;
 use std::iter::zip;
@@ -48,15 +49,12 @@ impl Phi {
 
 #[derive(Debug, Clone)]
 struct RotaryEmbedding {
-    sin: Tensor,
-    cos: Tensor,
-    sin_long: Option<Tensor>,
-    cos_long: Option<Tensor>,
-    original_max_position_embeddings: Option<usize>,
+    normal_emb: DefaultRotaryEmbedding,
+    long_emb: Option<DefaultRotaryEmbedding>,
 }
 
 impl RotaryEmbedding {
-    fn new(_dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
+    fn new(dtype: DType, cfg: &Config, dev: &Device) -> Result<Self> {
         let dim = cfg.hidden_size / cfg.num_attention_heads;
         let max_seq_len = cfg.max_seq_len;
         let rope_theta = cfg.rope_theta;
@@ -145,14 +143,23 @@ impl RotaryEmbedding {
                     let short_sin = (freqs_short.sin()? * scaling_factor)?;
                     let short_cos = (freqs_short.cos()? * scaling_factor)?;
 
+                    let normal_emb = DefaultRotaryEmbedding {
+                        cos: short_sin.to_dtype(dtype)?,
+                        sin: short_cos.to_dtype(dtype)?,
+                        is_gpt_neox: true,
+                        rotary_dim: None,
+                    };
+
+                    let long_emb = Some(DefaultRotaryEmbedding {
+                        cos: long_sin.to_dtype(dtype)?,
+                        sin: long_cos.to_dtype(dtype)?,
+                        is_gpt_neox: true,
+                        rotary_dim: None,
+                    });
+
                     return Ok(Self {
-                        sin: short_sin,
-                        cos: short_cos,
-                        sin_long: Some(long_sin),
-                        cos_long: Some(long_cos),
-                        original_max_position_embeddings: Some(
-                            *original_max_position_embeddings as usize,
-                        ),
+                        normal_emb,
+                        long_emb,
                     });
                 }
                 _ => {
@@ -160,13 +167,15 @@ impl RotaryEmbedding {
                 }
             }
         }
-
+        let normal_emb = DefaultRotaryEmbedding {
+            cos: freqs.cos()?.to_dtype(dtype)?,
+            sin: freqs.sin()?.to_dtype(dtype)?,
+            is_gpt_neox: true,
+            rotary_dim: None,
+        };
         Ok(Self {
-            sin: freqs.sin()?,
-            cos: freqs.cos()?,
-            sin_long: None,
-            cos_long: None,
-            original_max_position_embeddings: None,
+            normal_emb,
+            long_emb: None,
         })
     }
 
@@ -174,42 +183,16 @@ impl RotaryEmbedding {
         &self,
         q: &Tensor,
         k: &Tensor,
-        input_positions: &[Vec<usize>],
+        input_positions: &Tensor,
     ) -> Result<(Tensor, Tensor)> {
-        let (b_size, _h, seq_len, _n_embd) = q.dims4()?;
-
-        let mut q_embeds = Vec::new();
-        let mut k_embeds = Vec::new();
-
-        for (b, seqlen_offset) in zip(0..b_size, input_positions) {
-            let (cos, sin) = if self.sin_long.as_ref().is_some()
-                && self.cos_long.as_ref().is_some()
-                && seqlen_offset[0] > self.original_max_position_embeddings.unwrap()
-            {
-                let cos = self
-                    .cos_long
-                    .as_ref()
-                    .unwrap()
-                    .narrow(0, seqlen_offset[0], seq_len)?;
-                let sin = self
-                    .sin_long
-                    .as_ref()
-                    .unwrap()
-                    .narrow(0, seqlen_offset[0], seq_len)?;
-                (cos, sin)
-            } else {
-                let cos = self.cos.narrow(0, seqlen_offset[0], seq_len)?;
-                let sin = self.sin.narrow(0, seqlen_offset[0], seq_len)?;
-                (cos, sin)
-            };
-            let x_q = q.narrow(0, b, 1)?;
-            let x_k = k.narrow(0, b, 1)?;
-            let q_embed = candle_nn::rotary_emb::rope(&x_q, &cos, &sin)?;
-            let k_embed = candle_nn::rotary_emb::rope(&x_k, &cos, &sin)?;
-            q_embeds.push(q_embed);
-            k_embeds.push(k_embed);
+        if self.long_emb.is_some() {
+            self.long_emb
+                .as_ref()
+                .unwrap()
+                .apply_rotary_emb(q, k, input_positions)
+        } else {
+            self.normal_emb.apply_rotary_emb(q, k, input_positions)
         }
-        Ok((Tensor::cat(&q_embeds, 0)?, Tensor::cat(&k_embeds, 0)?))
     }
 }
 
@@ -277,17 +260,19 @@ impl Attention {
     fn forward(
         &self,
         xs: &Tensor,
-        attention_mask: Option<&Tensor>,
-        input_positions: &[Vec<usize>],
+        attention_mask: Option<&Vec<Tensor>>,
+        input_positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_sz, seq_len, _) = xs.dims3()?;
+        let (seq_len, _) = xs.dims2()?;
 
         let qkv = self.qkv_proj.forward(xs)?;
         let query_pos = self.num_heads * self.head_dim;
-        let query_states = qkv.narrow(D::Minus1, 0, query_pos)?;
-        let key_states = qkv.narrow(D::Minus1, query_pos, self.num_kv_heads * self.head_dim)?;
+        let query_states = qkv.narrow(D::Minus1, 0, query_pos)?.to_dtype(DType::F32)?;
+        let key_states = qkv
+            .narrow(D::Minus1, query_pos, self.num_kv_heads * self.head_dim)?
+            .to_dtype(DType::F32)?;
         let value_states = qkv
             .narrow(
                 D::Minus1,
@@ -296,31 +281,23 @@ impl Attention {
             )?
             .contiguous()?;
 
-        let (q, k, v) = if seq_len == 1 {
-            //no need transpose for seq_len == 1, change reshape dim
-            let q = query_states.reshape((b_sz, self.num_heads, seq_len, self.head_dim))?;
-            let k = key_states.reshape((b_sz, self.num_kv_heads, seq_len, self.head_dim))?;
-            let v = value_states.reshape((b_sz, self.num_kv_heads, seq_len, self.head_dim))?;
-            (q, k, v)
-        } else {
-            let q = query_states
-                .reshape((b_sz, seq_len, self.num_heads, self.head_dim))?
-                .transpose(1, 2)?;
-            let k = key_states
-                .reshape((b_sz, seq_len, self.num_kv_heads, self.head_dim))?
-                .transpose(1, 2)?;
-            let v = value_states
-                .reshape((b_sz, seq_len, self.num_kv_heads, self.head_dim))?
-                .transpose(1, 2)?;
-            (q, k, v.contiguous()?)
-        };
+        let q = query_states
+            .reshape((1, seq_len, self.num_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = key_states
+            .reshape((1, seq_len, self.num_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = value_states
+            .reshape((1, seq_len, self.num_kv_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
 
         //preserve the precision with F32 type
-        let (q, k) = self.rotary_emb.apply_rotary_emb_qkv(
-            &q.to_dtype(DType::F32)?,
-            &k.to_dtype(DType::F32)?,
-            input_positions,
-        )?;
+        let (q, k) = self
+            .rotary_emb
+            .apply_rotary_emb_qkv(&q, &k, input_positions)?;
         let q = q.to_dtype(v.dtype())?;
         let k = k.to_dtype(v.dtype())?;
 
@@ -336,7 +313,7 @@ impl Attention {
                 input_metadata,
                 None,
             )?
-            .reshape((b_sz, seq_len, ()))?;
+            .reshape((seq_len, ()))?;
 
         let y = self.o_proj.forward(&y)?;
         Ok(y)
@@ -425,8 +402,8 @@ impl DecoderLayer {
     fn forward(
         &self,
         xs: &Tensor,
-        attention_mask: Option<&Tensor>,
-        input_positions: &[Vec<usize>],
+        attention_mask: Option<&Vec<Tensor>>,
+        input_positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
@@ -463,7 +440,7 @@ impl Phi {
     ) -> Result<Self> {
         let vb_m = vb.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let rotary_emb = Arc::new(RotaryEmbedding::new(dtype, cfg, vb_m.device())?);
+        let rotary_emb = Arc::new(RotaryEmbedding::new(DType::F32, cfg, vb_m.device())?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
         let reporter = progress_reporter.clone();
@@ -496,23 +473,28 @@ impl Phi {
     pub fn forward(
         &self,
         input_ids: &Tensor,
-        input_positions: &[Vec<usize>],
+        input_positions: &Tensor,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let (b_size, seq_len) = input_ids.dims2()?;
-        let attention_mask = if seq_len <= 1 {
-            None
+        let seqlens = if input_metadata.cu_seqlens_q.is_some() {
+            input_metadata
+                .cu_seqlens_q
+                .as_ref()
+                .unwrap()
+                .to_vec1::<u32>()?[1..]
+                .into()
         } else {
-            super::get_attention_casual_mask(
-                &self.device,
-                self.dtype,
-                b_size,
-                seq_len,
-                input_positions,
-                self.cfg.sliding_window,
-            )
+            Vec::new()
         };
+        let attention_mask = get_attention_casual_mask(
+            &self.device,
+            self.dtype,
+            input_positions,
+            &seqlens,
+            self.cfg.sliding_window,
+            input_metadata.is_prefill,
+        );
         let mut xs = self.embed_tokens.forward(input_ids)?;
 
         if let Some(kv_caches) = kv_caches {
@@ -536,7 +518,12 @@ impl Phi {
                 )?
             }
         }
-        let xs = xs.i((.., seq_len - 1, ..))?.apply(&self.norm)?;
+        if !seqlens.is_empty() {
+            let indices: Vec<_> = seqlens.iter().map(|x| x - 1 as u32).collect();
+            let batch = indices.len();
+            xs = xs.index_select(&Tensor::from_vec(indices, (batch,), xs.device())?, 0)?;
+        }
+        let xs = self.norm.forward(&xs)?;
         self.lm_head.forward(&xs)?.to_dtype(DType::F32)
     }
 

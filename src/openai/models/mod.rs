@@ -2,6 +2,7 @@ pub mod deepseek;
 pub mod gemma;
 pub mod gemma3;
 pub mod glm4;
+pub mod layers;
 pub mod linear;
 pub mod llama;
 pub mod mistral;
@@ -14,14 +15,13 @@ pub mod quantized_qwen;
 pub mod quantized_qwen3_moe;
 pub mod qwen;
 pub mod qwen3_moe;
-pub mod rotary_emb;
 pub mod stable_lm;
 pub mod yi;
 use crate::openai::distributed::Comm;
-use crate::paged_attention::input_metadata::InputMetadata;
-use crate::paged_attention::PagedAttention;
-use candle_core::{DType, Device, Result, Tensor};
+use crate::{InputMetadata, PagedAttention};
+use candle_core::{Device, Result, Tensor};
 use either::Either;
+pub use layers::{attention, mask, mlp, rotary_emb};
 use serde::Deserialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -289,66 +289,6 @@ impl Config {
     }
 }
 
-#[cfg(feature = "flash-attn")]
-pub fn get_attention_casual_mask(
-    _: &Device,
-    _: DType,
-    _: usize,
-    _: usize,
-    _: &[Vec<usize>],
-    _: Option<usize>,
-) -> Option<Tensor> {
-    None
-}
-
-#[cfg(not(feature = "flash-attn"))]
-pub fn get_attention_casual_mask(
-    device: &Device,
-    dtype: DType,
-    b_size: usize,
-    tgt_len: usize,
-    _: &[Vec<usize>],
-    sliding_window: Option<usize>,
-) -> Option<Tensor> {
-    let seqlen_offset = 0;
-    let mask: Vec<_> = if let Some(sliding_window) = sliding_window {
-        (0..tgt_len)
-            .flat_map(|i| {
-                (0..tgt_len).map(move |j| {
-                    if i < j || j + sliding_window < i {
-                        f32::NEG_INFINITY
-                    } else {
-                        0.
-                    }
-                })
-            })
-            .collect()
-    } else {
-        (0..tgt_len)
-            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0f32 }))
-            .collect()
-    };
-    let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), device).ok();
-    let mask = if seqlen_offset > 0 && mask.is_some() {
-        match Tensor::zeros((tgt_len, seqlen_offset), DType::F32, device) {
-            Ok(mask0) => Tensor::cat(&[&mask0, &mask.unwrap()], candle_core::D::Minus1).ok(),
-            Err(_) => {
-                return None;
-            }
-        }
-    } else {
-        mask
-    };
-    match mask {
-        Some(m) => m
-            .expand((b_size, 1, tgt_len, tgt_len + seqlen_offset))
-            .unwrap()
-            .to_dtype(dtype)
-            .ok(),
-        _ => None,
-    }
-}
-
 #[derive(Debug, Clone)]
 enum KvCache {
     Normal(candle_nn::kv_cache::KvCache),
@@ -385,7 +325,7 @@ impl NaiveAttention {
         q: &Tensor,
         k: &Tensor,
         v: &Tensor,
-        attention_mask: Option<&Tensor>,
+        attention_mask: Option<&Vec<Tensor>>,
         softcapping: Option<f64>,
     ) -> Result<Tensor> {
         let (b_sz, _, seq_len, _) = q.dims4()?;
@@ -412,7 +352,7 @@ impl NaiveAttention {
 
         let attn_weights = match attention_mask {
             None => attn_weights,
-            Some(mask) => attn_weights.broadcast_add(mask)?,
+            Some(mask) => attn_weights.broadcast_add(&mask[0])?,
         };
         let attn_out = candle_nn::ops::softmax_last_dim(&attn_weights)?;
         attn_out
@@ -469,7 +409,7 @@ impl AttentionSelect {
         q: &Tensor,
         k: &Tensor,
         v: &Tensor,
-        attention_mask: Option<&Tensor>,
+        attention_mask: Option<&Vec<Tensor>>,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
         softcapping: Option<f64>,
