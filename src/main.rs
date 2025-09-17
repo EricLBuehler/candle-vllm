@@ -432,7 +432,9 @@ async fn main() -> Result<()> {
         args.prefill_chunk_size,
     )?;
 
-    if (args.top_k.is_some() && args.top_p.is_some()) || pipeline_config.generation_cfg.is_none() {
+    if args.temperature.is_some() || pipeline_config.generation_cfg.is_none() {
+        //overwrite the generation config when temperature (and others) specified in arguments
+        //disable multinomial sampling (generation randomness) by setting `temperature` as 0
         pipeline_config.generation_cfg = Some(GenerationConfig {
             temperature: args.temperature,
             top_k: args.top_k,
