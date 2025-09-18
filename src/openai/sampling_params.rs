@@ -118,6 +118,13 @@ impl SamplingParams {
         skip_special_tokens: bool,
         thinking: Option<bool>,
     ) -> Result<Self, APIError> {
+        //top_p and top_k can be specified when no temperature given
+        //in this case, we use default temperature 1.0
+        let temperature = if temperature.is_none() && (top_p.is_some() || top_k.is_some()) {
+            Some(1.0)
+        } else {
+            temperature
+        };
         let this = Self {
             n,
             best_of: best_of.unwrap_or(n),
