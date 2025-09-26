@@ -1,7 +1,7 @@
 use axum::{
     http::{self, Method},
-    routing::post,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
 use candle_core::{DType, Device, Result};
 #[cfg(feature = "nccl")]
@@ -18,6 +18,7 @@ use std::sync::Arc;
 use tracing::{info, warn};
 const SIZE_IN_MB: usize = 1024 * 1024;
 use candle_vllm::openai::models::Config;
+use serde_json::json;
 use tokio::sync::Notify;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 #[derive(Parser, Debug)]
@@ -501,6 +502,26 @@ async fn main() -> Result<()> {
 
     let app = Router::new()
         .layer(cors_layer)
+        .route(
+            "/v1/models",
+            get(|| async {
+                Json(json!({
+                    "object": "list",
+                    "data": [
+                        {
+                            "id": "default",
+                            "object": "model",
+                            "created": std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_millis() as i64,
+                            "owned_by": "candle-vllm",
+                            "permission": []
+                        }
+                    ]
+                }))
+            }),
+        )
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(Arc::new(server_data));
 
