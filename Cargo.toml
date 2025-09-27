@@ -59,6 +59,9 @@ chrono = "0.4.41"
 which = "5"
 ahash = "0.8.11"
 
+[dev-dependencies]
+async-openai  = "0.29.3"
+
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "attention-rs/cuda"]
