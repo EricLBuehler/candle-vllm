@@ -118,6 +118,9 @@ struct Args {
 
     #[arg(long)]
     prefill_chunk_size: Option<usize>,
+
+    #[arg(long, default_value_t = false)]
+    fp8_kvcache: bool,
 }
 
 fn get_cache_config(
@@ -253,6 +256,8 @@ async fn main() -> Result<()> {
     let (paths, gguf) = loader.prepare_model_weights(args.hf_token, args.hf_token_path)?;
 
     let dtype = get_dtype(args.dtype);
+    let kv_cache_dtype = if args.fp8_kvcache { DType::U8 } else { dtype };
+
     let device_ids: Vec<usize> = match args.device_ids {
         Some(ids) => ids,
         _ => vec![0usize],
@@ -272,6 +277,10 @@ async fn main() -> Result<()> {
     if gguf && args.isq.is_some() {
         panic!("Quantized gguf/ggml model does not support isq option!");
     }
+
+    // if cfg!(feature = "flash-attn") && args.fp8_kvcache {
+    //     panic!("fp8 kvcache is not supported under flash-attn feature enabled!");
+    // }
 
     assert!(
         args.prefill_chunk_size.is_none() || args.prefill_chunk_size.unwrap() % 1024 == 0,
@@ -311,6 +320,7 @@ async fn main() -> Result<()> {
                 .load_model(
                     paths,
                     dtype,
+                    kv_cache_dtype,
                     gguf,
                     args.isq.clone(),
                     vec![device_ids[local_rank]],
@@ -334,6 +344,7 @@ async fn main() -> Result<()> {
                 .load_model(
                     paths,
                     dtype,
+                    kv_cache_dtype,
                     gguf,
                     args.isq.clone(),
                     device_ids,
@@ -365,7 +376,16 @@ async fn main() -> Result<()> {
         let _ = config_log(logger, args.log, log_file);
         (
             loader
-                .load_model(paths, dtype, gguf, args.isq.clone(), device_ids, None, None)
+                .load_model(
+                    paths,
+                    dtype,
+                    kv_cache_dtype,
+                    gguf,
+                    args.isq.clone(),
+                    device_ids,
+                    None,
+                    None,
+                )
                 .await,
             0,
         )
@@ -382,17 +402,12 @@ async fn main() -> Result<()> {
         .into_iter()
         .map(|pipeline| {
             let cfg = pipeline.get_model_config();
-            let kv_dtype = if matches!(pipeline.name(), "phi2" | "PhiForCausalLM") {
-                DType::F32
-            } else {
-                dtype
-            };
             let cache_cfg = get_cache_config(
                 args.kvcache_mem_gpu,
                 args.kvcache_mem_cpu, //dummy 512MB for cpu
                 args.block_size,
                 &cfg,
-                kv_dtype,
+                kv_cache_dtype,
                 num_shards,
             );
             let cache_engine = CacheEngine::new(

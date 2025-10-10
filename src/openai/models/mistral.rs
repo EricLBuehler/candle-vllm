@@ -139,6 +139,7 @@ impl Mistral {
             quantization_config: config.text_config.quantization_config.clone(),
             moe_config: None,
             quant,
+            fp8_kvcache: None,
         };
         Ok(config)
     }

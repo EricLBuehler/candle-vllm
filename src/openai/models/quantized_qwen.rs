@@ -70,6 +70,7 @@ impl GGUFQWen {
         max_seq_len: usize,
         original_max_position_embeddings: Option<usize>,
         partial_rotary_factor: Option<f32>,
+        kv_cache_dtype: DType,
     ) -> Config {
         Config {
             architectures: Some(vec!["qwen".to_string()]),
@@ -104,6 +105,7 @@ impl GGUFQWen {
             quantization_config: None,
             moe_config: None,
             quant: Some("gguf".to_string()),
+            fp8_kvcache: Some(kv_cache_dtype == DType::U8),
         }
     }
 
@@ -112,6 +114,7 @@ impl GGUFQWen {
         reader: &mut R,
         device: &Device,
         dtype: DType,
+        kv_cache_dtype: DType,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -186,6 +189,7 @@ impl GGUFQWen {
             context_length,
             original_max_position_embeddings,
             partial_rotary_factor,
+            kv_cache_dtype,
         );
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 

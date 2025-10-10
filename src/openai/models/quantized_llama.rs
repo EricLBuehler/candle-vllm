@@ -149,6 +149,7 @@ impl GGUFLLaMa {
         max_seq_len: usize,
         original_max_position_embeddings: Option<usize>,
         partial_rotary_factor: Option<f32>,
+        kv_cache_dtype: DType,
     ) -> Config {
         Config {
             architectures: Some(vec!["llama".to_string()]),
@@ -183,6 +184,7 @@ impl GGUFLLaMa {
             quantization_config: None,
             moe_config: None,
             quant: Some("gguf".to_string()),
+            fp8_kvcache: Some(kv_cache_dtype == DType::U8),
         }
     }
 
@@ -191,6 +193,7 @@ impl GGUFLLaMa {
         reader: &mut R,
         device: &Device,
         dtype: DType,
+        kv_cache_dtype: DType,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -273,6 +276,7 @@ impl GGUFLLaMa {
             context_length,
             original_max_position_embeddings,
             partial_rotary_factor,
+            kv_cache_dtype,
         );
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
             DType::F32,

@@ -322,6 +322,7 @@ impl DefaultLoader {
         &self,
         paths: DefaultModelPaths,
         dtype: DType,
+        kv_cache_dtype: DType,
         gguf: bool,
         isq: Option<String>,
         device_ids: Vec<usize>, //pass only 1 device_id in multiprocess mode, otherwise, multiple device_ids in multithread mode
@@ -390,6 +391,7 @@ impl DefaultLoader {
                         &mut file,
                         &device,
                         dtype,
+                        kv_cache_dtype,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -402,6 +404,7 @@ impl DefaultLoader {
                         &mut file,
                         &device,
                         dtype,
+                        kv_cache_dtype,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -414,6 +417,7 @@ impl DefaultLoader {
                         &mut file,
                         &device,
                         dtype,
+                        kv_cache_dtype,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -426,6 +430,7 @@ impl DefaultLoader {
                         &mut file,
                         &device,
                         dtype,
+                        kv_cache_dtype,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -438,6 +443,7 @@ impl DefaultLoader {
                         &mut file,
                         &device,
                         dtype,
+                        kv_cache_dtype,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -450,6 +456,7 @@ impl DefaultLoader {
                         &mut file,
                         &device,
                         dtype,
+                        kv_cache_dtype,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -464,7 +471,7 @@ impl DefaultLoader {
             let cfile = paths.get_config_filename();
             let arch = Config::get_model_arch(&cfile)?;
 
-            let config = match arch.as_str() {
+            let mut config = match arch.as_str() {
                 "LlamaForCausalLM" => Llama::load_config(&cfile, isq)?,
                 "PhiForCausalLM" => Phi2::load_config(&cfile, isq)?,
                 "Phi3ForCausalLM" => Phi::load_config(&cfile, isq)?,
@@ -484,7 +491,7 @@ impl DefaultLoader {
                 }
                 _ => panic!("Model not supported!"),
             };
-
+            config.fp8_kvcache = Some(kv_cache_dtype == DType::U8);
             info!("Model {:?}", config);
 
             info!("Loading {} model.", arch);
@@ -722,6 +729,11 @@ impl DefaultLoader {
             (models, devices, config, sep_style[0].clone())
         };
 
+        info!(
+            "Using FP8 KV Cache? {}, cache dtype {:?}",
+            kv_cache_dtype == DType::U8,
+            kv_cache_dtype
+        );
         warn!("Done loading.");
 
         //max and min number of tokens generated per request
