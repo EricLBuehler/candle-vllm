@@ -192,6 +192,7 @@ impl DeepSeek {
             quantization_config: config.quantization_config.clone(),
             moe_config: Some(MoEConfig::DeepSeekMoE(moe_config)),
             quant,
+            fp8_kvcache: None,
         };
         Ok(config)
     }
@@ -521,6 +522,7 @@ impl Attention {
                 cfg.sliding_window,
                 vb.device().clone(),
                 None,
+                cfg.fp8_kvcache.unwrap_or(false),
             )?,
             moe_cfg,
         })

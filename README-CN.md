@@ -91,14 +91,14 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
 ### 构建/运行参数
 
-- [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`]
+- [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`CACHE CONFIG`]
   <details open>
     <summary>显示详情</summary>
 
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507] [--fp8-kvcache]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
@@ -109,7 +109,9 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507
 
-    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)，`--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存。
+    `CACHE CONFIG`: --fp8-kvcache
+
+    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)，`--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存; `--fp8-kvcache` 参数用于启用FP8 KV Cache缓存。
   </details>
 
 ## 如何运行？

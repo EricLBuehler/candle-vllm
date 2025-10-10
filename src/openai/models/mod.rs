@@ -209,6 +209,7 @@ pub struct Config {
     pub moe_config: Option<MoEConfig>,
     pub quantization_config: Option<QuantConfig>,
     pub quant: Option<String>,
+    pub fp8_kvcache: Option<bool>,
 }
 
 impl Config {
@@ -398,6 +399,7 @@ impl AttentionSelect {
                     sliding_window,
                     device.clone(),
                     None,
+                    cfg.fp8_kvcache.unwrap_or(false),
                 )
                 .unwrap(),
             )

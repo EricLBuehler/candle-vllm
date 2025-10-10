@@ -73,6 +73,7 @@ impl GGUFGLM4 {
         rms_eps: f64,
         max_seq_len: usize,
         partial_rotary_factor: Option<f32>,
+        kv_cache_dtype: DType,
     ) -> Config {
         Config {
             architectures: Some(vec!["glm4".to_string()]),
@@ -107,6 +108,7 @@ impl GGUFGLM4 {
             quantization_config: None,
             moe_config: None,
             quant: Some("gguf".to_string()),
+            fp8_kvcache: Some(kv_cache_dtype == DType::U8),
         }
     }
 
@@ -115,6 +117,7 @@ impl GGUFGLM4 {
         reader: &mut R,
         device: &Device,
         dtype: DType,
+        kv_cache_dtype: DType,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -183,6 +186,7 @@ impl GGUFGLM4 {
             rms_norm_eps,
             context_length,
             partial_rotary_factor,
+            kv_cache_dtype,
         );
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
             DType::F32,

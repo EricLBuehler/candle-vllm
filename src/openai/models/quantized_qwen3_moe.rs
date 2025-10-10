@@ -136,6 +136,7 @@ impl GGUFQWenMoE {
         original_max_position_embeddings: Option<usize>,
         partial_rotary_factor: Option<f32>,
         moe_cfg: &QwenMoEConfig,
+        kv_cache_dtype: DType,
     ) -> Config {
         Config {
             architectures: Some(vec![arch]),
@@ -170,6 +171,7 @@ impl GGUFQWenMoE {
             quantization_config: None,
             moe_config: Some(MoEConfig::QwenMoE(moe_cfg.clone())),
             quant: Some("gguf".to_string()),
+            fp8_kvcache: Some(kv_cache_dtype == DType::U8),
         }
     }
 
@@ -178,6 +180,7 @@ impl GGUFQWenMoE {
         reader: &mut R,
         device: &Device,
         dtype: DType,
+        kv_cache_dtype: DType,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -279,6 +282,7 @@ impl GGUFQWenMoE {
             original_max_position_embeddings,
             partial_rotary_factor,
             &moe_cfg,
+            kv_cache_dtype,
         );
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 
