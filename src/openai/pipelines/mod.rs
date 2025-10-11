@@ -11,6 +11,28 @@ pub mod pipeline;
 type TokenOrFinishReason = Either<Logprobs, String>;
 use crate::openai::pipelines::pipeline::DefaultPipeline;
 
+#[cfg(all(feature = "cuda", feature = "graph"))]
+#[macro_export]
+macro_rules! graph_model_wrapper {
+    ($model:expr, $device:expr, $( $variant:ident ),+ $(,)?) => {
+        match &$model {
+            $(
+                LLMModel::$variant(m) => {
+                    let model_arc = Arc::clone(&m);
+                    let closure = move |input_ids: &Tensor,
+                                        positions: &Tensor,
+                                        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+                                        input_metadata: &InputMetadata| {
+                        model_arc.forward(input_ids, positions, kv_caches, input_metadata)
+                    };
+                    let boxed_closure: Box<ModelFn> = Box::new(closure);
+                    CudaGraphWrapper::new(boxed_closure, $device.as_cuda_device()?.clone().into())
+                },
+            )+
+        }
+    };
+}
+
 pub(crate) fn get_token(hf_token: Option<String>, hf_token_path: Option<String>) -> Result<String> {
     Ok(match (hf_token, hf_token_path) {
         (Some(envvar), None) => env::var(envvar)

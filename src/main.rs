@@ -42,11 +42,11 @@ struct Args {
     verbose: bool,
 
     /// Maximum number of sequences to allow
-    #[arg(long, default_value_t = 256)]
+    #[arg(long, default_value_t = 16)]
     max_num_seqs: usize,
 
     /// Size of a block
-    #[arg(long, default_value_t = 32)]
+    #[arg(long, default_value_t = 64)]
     block_size: usize,
 
     /// if weight_path is passed, it will ignore the model_id
@@ -278,10 +278,6 @@ async fn main() -> Result<()> {
         panic!("Quantized gguf/ggml model does not support isq option!");
     }
 
-    // if cfg!(feature = "flash-attn") && args.fp8_kvcache {
-    //     panic!("fp8 kvcache is not supported under flash-attn feature enabled!");
-    // }
-
     assert!(
         args.prefill_chunk_size.is_none() || args.prefill_chunk_size.unwrap() % 1024 == 0,
         "Error: prefill_chunk_size must be divisible by 1024!"
@@ -298,6 +294,18 @@ async fn main() -> Result<()> {
     } else {
         !args.multithread
     };
+
+    #[cfg(all(feature = "cuda", feature = "graph"))]
+    {
+        assert!(
+            multi_process,
+            "Graph capture is only available under multi process mode!"
+        );
+        if args.max_num_seqs > 16 {
+            tracing::warn!("Higher GPU memory required for capturing large batch!");
+        }
+    }
+
     let logger: ftail::Ftail = ftail::Ftail::new();
     let mut port = args.port;
     #[cfg(feature = "nccl")]
@@ -323,6 +331,8 @@ async fn main() -> Result<()> {
                     kv_cache_dtype,
                     gguf,
                     args.isq.clone(),
+                    args.block_size,
+                    args.max_num_seqs,
                     vec![device_ids[local_rank]],
                     Some(id),
                     Some(local_rank),
@@ -347,6 +357,8 @@ async fn main() -> Result<()> {
                     kv_cache_dtype,
                     gguf,
                     args.isq.clone(),
+                    args.block_size,
+                    args.max_num_seqs,
                     device_ids,
                     None,
                     None,
@@ -382,6 +394,8 @@ async fn main() -> Result<()> {
                     kv_cache_dtype,
                     gguf,
                     args.isq.clone(),
+                    args.block_size,
+                    args.max_num_seqs,
                     device_ids,
                     None,
                     None,
@@ -495,6 +509,9 @@ async fn main() -> Result<()> {
         daemon_manager.as_mut().unwrap().mpi_sync();
     }
 
+    #[cfg(all(feature = "cuda", feature = "graph"))]
+    LLMEngine::graph_capture(&server_data.model).unwrap();
+
     if global_rank == 0 {
         warn!(
             "Maximum Model Length (affected by `--mem` (kvcache-mem-gpu) and the number of ranks):"
@@ -506,7 +523,7 @@ async fn main() -> Result<()> {
                 std::cmp::min(kvcached_tokens / batch, max_model_len)
             );
         }
-        warn!("Server started at http://0.0.0.0:{}.", port);
+        warn!("Server started at http://0.0.0.0:{}/v1/", port);
     }
 
     let allow_origin = AllowOrigin::any();

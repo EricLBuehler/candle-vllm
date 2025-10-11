@@ -12,11 +12,12 @@ use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Activation, RmsNorm};
 use either::Either;
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[doc(hidden)]
 #[macro_export]
@@ -378,7 +379,7 @@ impl Gemma3 {
                 is_sliding_window.then_some(cfg.sliding_window.unwrap()),
             )?;
             layers.push(layer);
-            reporter.write().unwrap().set_progress(layer_idx + 1);
+            reporter.write().set_progress(layer_idx + 1);
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
         let lm_head = ReplicatedLinear::from_weight_bias(embed_tokens.embeddings().clone(), None)?;

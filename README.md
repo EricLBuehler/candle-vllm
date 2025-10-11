@@ -23,6 +23,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support `Multi-GPU` inference (both `multi-process` and  `multi-threaded` mode)
 - Support `Multi-node` inference with MPI runner
 - Support Chunked Prefilling (default chunk size 8K)
+- Support CUDA Graph
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.
@@ -77,8 +78,11 @@ export PATH=$PATH:/usr/local/cuda/bin/
 #CUDA: single-node compilation (single gpu, or multi-gpus on single machine)
 cargo build --release --features cuda,nccl
 
+#CUDA: single-node compilation (+CUDA Graph)
+cargo build --release --features cuda,nccl,graph
+
 #CUDA: single-node compilation with flash attention (takes few minutes for the first build, faster inference for long-context, requires CUDA_ARCH >= 800)
-cargo build --release --features cuda,nccl,flash-attn
+cargo build --release --features cuda,nccl,graph,flash-attn
 
 #CUDA: multinode compilation with MPI (multi-gpus, multiple machines)
 sudo apt update

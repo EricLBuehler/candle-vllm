@@ -1,11 +1,11 @@
 use crate::openai::models::linear::{linear_no_bias_x as linear, LinearX as Linear};
+#[cfg(feature = "nccl")]
+pub use candle_core::cuda_backend::cudarc::nccl::safe::{Comm, Id};
 use candle_core::{CpuStorage, Layout, Module, Result, Shape, Tensor};
 use candle_core::{CustomOp1, DType};
 use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use candle_nn::{Embedding, LayerNorm, RmsNorm};
-#[cfg(feature = "nccl")]
-pub use cudarc::nccl::safe::{Comm, Id};
 #[cfg(not(feature = "nccl"))]
 pub struct Comm {}
 #[cfg(not(feature = "nccl"))]
@@ -123,9 +123,9 @@ impl CustomOp1 for AllReduce {
     ) -> Result<(candle_core::CudaStorage, Shape)> {
         use candle_core::backend::BackendStorage;
         use candle_core::cuda_backend::cudarc::driver::DeviceSlice;
+        use candle_core::cuda_backend::cudarc::nccl::safe::ReduceOp;
         use candle_core::cuda_backend::WrapErr;
         use candle_core::DType;
-        use cudarc::nccl::safe::ReduceOp;
         use half::{bf16, f16};
 
         let elem_count = l.shape().elem_count();

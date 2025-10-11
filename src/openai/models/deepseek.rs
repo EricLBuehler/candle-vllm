@@ -15,15 +15,15 @@ use crate::{InputMetadata, PagedAttention};
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_core as candle;
 use candle_nn::{Activation, Embedding, Module, RmsNorm};
+use parking_lot::RwLock;
 use serde::Deserialize;
-use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::f32::consts::PI;
 use std::iter::{zip, FromIterator};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
-
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 #[doc(hidden)]
 #[macro_export]
 macro_rules! serde_default_fn {
@@ -615,11 +615,11 @@ impl Attention {
 }
 
 struct Mlp {
-    gate: RefCell<ReplicatedLinear>,
-    up: RefCell<ReplicatedLinear>,
-    down: RefCell<ReplicatedLinear>,
+    gate: RwLock<ReplicatedLinear>,
+    up: RwLock<ReplicatedLinear>,
+    down: RwLock<ReplicatedLinear>,
     act: Activation,
-    preloaded: Cell<bool>,
+    preloaded: AtomicBool,
     can_be_offloaded: bool,
 }
 
@@ -664,37 +664,37 @@ impl Mlp {
             down.offload()?;
         }
         Ok(Self {
-            gate: RefCell::new(gate),
-            up: RefCell::new(up),
-            down: RefCell::new(down),
-            preloaded: Cell::new(!offload),
+            gate: RwLock::new(gate),
+            up: RwLock::new(up),
+            down: RwLock::new(down),
+            preloaded: AtomicBool::new(!offload),
             can_be_offloaded: offload,
             act: cfg.hidden_act.unwrap(),
         })
     }
 
     pub fn reload(&self) {
-        if !self.preloaded.get() {
-            let _ = self.gate.borrow_mut().reload();
-            let _ = self.up.borrow_mut().reload();
-            let _ = self.down.borrow_mut().reload();
-            self.preloaded.set(true);
+        if !self.preloaded.load(Ordering::SeqCst) {
+            let _ = self.gate.write().reload();
+            let _ = self.up.write().reload();
+            let _ = self.down.write().reload();
+            self.preloaded.store(true, Ordering::SeqCst);
         }
     }
 
     pub fn offload(&self) {
-        if self.can_be_offloaded && self.preloaded.get() {
-            let _ = self.gate.borrow_mut().offload();
-            let _ = self.up.borrow_mut().offload();
-            let _ = self.down.borrow_mut().offload();
-            self.preloaded.set(false);
+        if self.can_be_offloaded && self.preloaded.load(Ordering::SeqCst) {
+            let _ = self.gate.write().offload();
+            let _ = self.up.write().offload();
+            let _ = self.down.write().offload();
+            self.preloaded.store(false, Ordering::SeqCst);
         }
     }
 
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let lhs = self.gate.borrow().forward(xs)?.apply(&self.act)?;
-        let rhs = self.up.borrow().forward(xs)?;
-        self.down.borrow().forward(&(&lhs * &rhs)?)
+        let lhs = self.gate.read().forward(xs)?.apply(&self.act)?;
+        let rhs = self.up.read().forward(xs)?;
+        self.down.read().forward(&(&lhs * &rhs)?)
     }
 }
 
@@ -1114,7 +1114,7 @@ impl DeepSeek {
                 comm.clone(),
             )?;
             layers.push(layer);
-            reporter.write().unwrap().set_progress(layer_idx + 1);
+            reporter.write().set_progress(layer_idx + 1);
         }
 
         Ok(Self {

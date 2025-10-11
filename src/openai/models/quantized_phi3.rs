@@ -8,8 +8,9 @@ use candle_core::quantized::QTensor;
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::{Embedding, RmsNorm};
 use either::Either;
+use parking_lot::RwLock;
 use std::iter::zip;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct QLinear {
@@ -308,7 +309,7 @@ impl GGUFPhi3 {
                 rotary_emb: rotary_emb.clone(),
                 dtype,
             });
-            reporter.write().unwrap().set_progress(layer_idx + 1);
+            reporter.write().set_progress(layer_idx + 1);
         }
         Ok(Self {
             tok_embeddings: Embedding::new(tok_embeddings, embedding_length),
