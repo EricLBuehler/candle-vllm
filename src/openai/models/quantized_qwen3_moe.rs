@@ -9,8 +9,9 @@ use candle_core::{DType, Device, Result, Tensor, D};
 use candle_nn::{Embedding, Module};
 use candle_transformers::quantized_nn::RmsNorm;
 use either::Either;
+use parking_lot::RwLock;
 use std::iter::zip;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct Mlp {
@@ -387,7 +388,7 @@ impl GGUFQWenMoE {
                 shared_expert,
                 ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
             });
-            reporter.write().unwrap().set_progress(layer_idx + 1);
+            reporter.write().set_progress(layer_idx + 1);
         }
 
         Ok(Self {

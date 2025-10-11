@@ -6,10 +6,11 @@ use crate::InputMetadata;
 use candle::{DType, Device, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Embedding, Module, RmsNorm};
+use parking_lot::RwLock;
 use std::iter::zip;
 use std::path::PathBuf;
 pub use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 impl Llama {
     pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
@@ -193,7 +194,7 @@ impl Llama {
                     rotary_emb.clone(),
                 )
                 .unwrap();
-                reporter.write().unwrap().set_progress(i + 1);
+                reporter.write().set_progress(i + 1);
                 b
             })
             .collect();

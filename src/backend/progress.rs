@@ -1,8 +1,9 @@
 #[cfg(feature = "nccl")]
 use crate::openai::communicator::DaemonManager;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use parking_lot::RwLock;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::{thread, time};
 
 pub trait ProgressLike: Send + Sync {
@@ -138,7 +139,7 @@ pub async fn progress_worker(
 
         loop {
             {
-                let (rank, progress) = reporter.read().unwrap().get_progress();
+                let (rank, progress) = reporter.read().get_progress();
                 finished_map.insert(rank, progress);
                 #[cfg(feature = "nccl")]
                 if DaemonManager::is_daemon() {

@@ -40,6 +40,8 @@ pub use gptq::*;
 // pub use paged_attention::*;
 pub use std::ops::Deref;
 pub mod custom_ops;
+#[cfg(all(feature = "cuda", feature = "graph"))]
+pub mod graph;
 #[cfg(feature = "nccl")]
 pub mod heartbeat;
 pub mod progress;

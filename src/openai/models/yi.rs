@@ -5,10 +5,11 @@ use crate::openai::models::mask::get_attention_casual_mask;
 use crate::InputMetadata;
 use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::RmsNorm;
+use parking_lot::RwLock;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 impl Yi {
     pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
@@ -131,7 +132,7 @@ impl Yi {
             let layer =
                 DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_idx), comm.clone())?;
             layers.push(layer);
-            reporter.write().unwrap().set_progress(layer_idx + 1);
+            reporter.write().set_progress(layer_idx + 1);
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
 

@@ -9,10 +9,11 @@ use crate::InputMetadata;
 use candle::{DType, Device, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Embedding, Module, RmsNorm};
+use parking_lot::RwLock;
 use std::iter::zip;
 use std::path::PathBuf;
 pub use std::rc::Rc;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 impl GLM4 {
     pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
@@ -205,7 +206,7 @@ impl GLM4 {
             let layer =
                 DecoderLayer::new(rotary_emb.clone(), cfg, vb_l.pp(layer_index), comm.clone())?;
             layers.push(layer);
-            reporter.write().unwrap().set_progress(layer_index + 1);
+            reporter.write().set_progress(layer_index + 1);
         }
 
         let lm_head = ReplicatedLinear::load_no_bias(

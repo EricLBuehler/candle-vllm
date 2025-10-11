@@ -23,6 +23,7 @@
 - 支持`多GPU`推理（包括`多进程`和`多线程`模式）。
 - 支持`多节点`推理（使用MPI运行）。
 - 支持分块Prefilling (默认块大小8K)
+- 支持CUDA Graph
 
 ## 支持的模型
 - 目前，candle-vllm支持以下模型结构的推理服务。
@@ -77,8 +78,11 @@ export PATH=$PATH:/usr/local/cuda/bin/
 #CUDA平台：单节点（单机单卡或单机多卡）编译命令
 cargo build --release --features cuda,nccl
 
+#CUDA平台：单节点（+CUDA Graph）编译命令
+cargo build --release --features cuda,nccl,graph
+
 #CUDA平台：单节点（使用flash attention kernel，适用于长上下文推理，需要CUDA_ARCH >= 800）编译命令
-cargo build --release --features cuda,nccl,flash-attn
+cargo build --release --features cuda,nccl,graph,flash-attn
 
 #CUDA平台：多节点（多机推理）编译命令
 sudo apt update
