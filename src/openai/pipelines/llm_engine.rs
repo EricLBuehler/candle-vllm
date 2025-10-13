@@ -1070,9 +1070,13 @@ impl LLMEngine {
                 .get(&seq.deref().get_id())
                 .unwrap();
             let block_table_last = table.back().unwrap().deref_mut().block_id as u32;
-            let last_block_tokens = seqlen
-                - (seqlen.div_ceil(self.cache_config.block_size) - 1)
-                    * self.cache_config.block_size;
+            let last_block_tokens = if seqlen > 0 && seqlen % self.cache_config.block_size == 0 {
+                0
+            } else {
+                seqlen
+                    - (seqlen.div_ceil(self.cache_config.block_size) - 1)
+                        * self.cache_config.block_size
+            };
             let slot = block_table_last * self.cache_config.block_size as u32
                 + last_block_tokens as u32
                 - 1;
