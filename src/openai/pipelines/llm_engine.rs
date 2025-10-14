@@ -864,54 +864,13 @@ impl LLMEngine {
         Ok(())
     }
 
-    fn prepare_block_tables(
-        &self,
-        groups: &VecDeque<Arc<SequenceGroup>>,
-        device: &Device,
-    ) -> Result<Tensor> {
-        let len = groups.len();
-
-        let mut max_len = 0;
-        for group in groups {
-            let seq = group.get_seqs().values().nth(0).unwrap();
-            let table = self
-                .scheduler
-                .block_engine
-                .block_tables
-                .get(&seq.deref().get_id())
-                .unwrap();
-            if table.len() > max_len {
-                max_len = table.len();
-            }
-        }
-
-        let mut flat: Vec<u32> = Vec::with_capacity(len * max_len);
-        for group in groups {
-            let seq = group.get_seqs().values().nth(0).unwrap();
-            let table = self
-                .scheduler
-                .block_engine
-                .block_tables
-                .get(&seq.deref().get_id())
-                .unwrap();
-            let table = table
-                .iter()
-                .map(|block| block.deref_mut().block_id as u32)
-                .collect::<Vec<_>>();
-            let table_len = table.len();
-            flat.extend(table);
-            flat.extend(std::iter::repeat(0).take(max_len - table_len));
-        }
-
-        Tensor::from_vec(flat, (len, max_len), device)
-    }
-
     //Revised based on https://github.com/guoqingbao/vllm.rs/blob/main/src/core/runner.rs#L392
     fn prepare_prompt(
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
         device: &Device,
     ) -> Result<PreparedInputs> {
+        let mut prompt_lens = Vec::new();
         let mut input_ids: Vec<u32> = Vec::new();
         let mut positions = Vec::new();
         let mut cu_seqlens_q = vec![0];
@@ -920,68 +879,81 @@ impl LLMEngine {
         let mut max_seqlen_k = 0;
         let mut slot_mapping = Vec::new();
         let chunk_size = self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
-
-        // let flash_context = self.config.flash_context.unwrap_or(false);
-        let flash_context = false; //TODO
-
-        let mut context_lens = Vec::<u32>::new();
+        let mut max_context_len = 0;
         for group in groups {
-            let seq = group.get_seqs().values().nth(0).unwrap();
-            let prompt_ids = seq.deref_mut().get_token_ids();
-            let seqlen = seq.deref().get_len();
-            context_lens.push(seqlen as u32);
-            let num_cached_tokens = seq.deref().get_num_cached_tokens();
-
-            let num_tokens = std::cmp::min(chunk_size, seqlen - num_cached_tokens);
-            input_ids.extend(&prompt_ids[num_cached_tokens..num_cached_tokens + num_tokens]);
-            positions.extend(
-                (num_cached_tokens as i64..(num_cached_tokens + num_tokens) as i64)
-                    .collect::<Vec<_>>(),
-            );
-
-            let seqlen_q = num_tokens; //seqlen - seq.num_cached_tokens;
-            let seqlen_k = if flash_context {
-                num_cached_tokens + num_tokens
-            } else {
-                num_tokens
-            };
-            cu_seqlens_q.push(cu_seqlens_q.last().unwrap() + seqlen_q as u32);
-            cu_seqlens_k.push(cu_seqlens_k.last().unwrap() + seqlen_k as u32);
-            max_seqlen_q = std::cmp::max(max_seqlen_q, seqlen_q);
-            max_seqlen_k = std::cmp::max(max_seqlen_k, seqlen_k);
-
-            let mut slot_mapping_tokens: i64 = 0;
-
-            let table = self
-                .scheduler
-                .block_engine
-                .block_tables
-                .get(&seq.deref().get_id())
-                .unwrap();
-            let table = table
-                .iter()
-                .map(|block| block.deref_mut().block_id as u32)
-                .collect::<Vec<_>>();
-
-            let num_cached_blocks = num_cached_tokens / self.cache_config.block_size;
-            let num_blocks = seqlen.div_ceil(self.cache_config.block_size);
-
-            for i in num_cached_blocks..num_blocks {
-                let start = (table[i] * self.cache_config.block_size as u32) as i64;
-                let start = if i == num_cached_blocks {
-                    start + (num_cached_tokens as i64 % self.cache_config.block_size as i64)
+            for seq in group.get_seqs().values() {
+                let prompt_ids = seq.deref_mut().get_token_ids();
+                let seq_len = prompt_ids.len();
+                if seq_len > max_context_len {
+                    max_context_len = seq_len + self.cache_config.block_size;
+                }
+                let num_cached_tokens = seq.deref().get_num_cached_tokens();
+                let num_tokens = if chunk_size > 0 {
+                    std::cmp::min(chunk_size, seq_len - num_cached_tokens)
                 } else {
-                    start
+                    seq_len - num_cached_tokens
                 };
-                let end = start
-                    + std::cmp::min(
-                        num_tokens as i64 - slot_mapping_tokens,
-                        self.cache_config.block_size as i64,
-                    );
-                slot_mapping.extend((start..end).collect::<Vec<i64>>());
-                slot_mapping_tokens += end - start;
-                if slot_mapping_tokens >= num_tokens as i64 {
-                    break;
+
+                prompt_lens.push(num_tokens);
+
+                let seqlen_q = num_tokens; //seqlen - seq.num_cached_tokens;
+                let seqlen_k = num_tokens;
+                cu_seqlens_q.push(cu_seqlens_q.last().unwrap() + seqlen_q as u32);
+                cu_seqlens_k.push(cu_seqlens_k.last().unwrap() + seqlen_k as u32);
+                max_seqlen_q = std::cmp::max(max_seqlen_q, seqlen_q);
+                max_seqlen_k = std::cmp::max(max_seqlen_k, seqlen_k);
+
+                input_ids
+                    .extend(prompt_ids[num_cached_tokens..num_cached_tokens + num_tokens].to_vec());
+                positions.extend(
+                    (num_cached_tokens as i64..(num_cached_tokens + num_tokens) as i64)
+                        .collect::<Vec<_>>(),
+                );
+                let table = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.deref().get_id());
+                if table.is_none() {
+                    slot_mapping.extend([_PAD_SLOT_ID].repeat(num_tokens));
+                    continue;
+                }
+                let table = table
+                    .unwrap()
+                    .iter()
+                    .map(|block| block.deref_mut().block_id)
+                    .collect::<Vec<_>>();
+
+                let start_idx = if let Some(sliding_window) = self.config.sliding_window {
+                    if seq_len > sliding_window {
+                        0.min(seq_len - sliding_window)
+                    } else {
+                        0
+                    }
+                } else {
+                    0
+                };
+
+                for i in num_cached_tokens..num_cached_tokens + num_tokens {
+                    if i < start_idx {
+                        // Pad [0,start_idx) with _PAD_TOKEN_ID
+                        slot_mapping.push(_PAD_SLOT_ID);
+                        continue;
+                    }
+
+                    let block_number = if i / self.cache_config.block_size >= table.len() {
+                        candle_core::bail!(
+                            "Block table is too small (prompt)! i={} block_size={} table_len={}",
+                            i,
+                            self.cache_config.block_size,
+                            table.len()
+                        );
+                    } else {
+                        table.get(i / self.cache_config.block_size).unwrap()
+                    };
+                    let block_offset = i % self.cache_config.block_size;
+                    let slot = block_number * self.cache_config.block_size + block_offset;
+                    slot_mapping.push(slot as i64);
                 }
             }
         }
@@ -1014,27 +986,27 @@ impl LLMEngine {
         let slot_mapping = Tensor::from_vec(slot_mapping, (s_len,), device)?;
 
         // Handle context cache
-        let (context_lens, block_tables) = if cu_seqlens_k.last() > cu_seqlens_q.last() {
-            let ctx_len = context_lens.len();
-            let context_lens_t = Tensor::from_vec(context_lens, ctx_len, device)?;
-            let block_tables_t = self.prepare_block_tables(groups, device)?;
-            (Some(context_lens_t), Some(block_tables_t))
-        } else {
-            (None, None)
-        };
+        // let (context_lens, block_tables) = if cu_seqlens_k.last() > cu_seqlens_q.last() {
+        //     let ctx_len = context_lens.len();
+        //     let context_lens_t = Tensor::from_vec(context_lens, ctx_len, device)?;
+        //     let block_tables_t = self.prepare_block_tables(groups, device)?;
+        //     (Some(context_lens_t), Some(block_tables_t))
+        // } else {
+        //     (None, None)
+        // };
         let cu_seqlens_q = Tensor::from_vec(cu_seqlens_q, (q_len,), device)?;
         let cu_seqlens_k = Tensor::from_vec(cu_seqlens_k, (k_len,), device)?;
 
         let input_metadata = InputMetadata {
             is_prefill: true,
             slot_mapping,
-            block_tables,
-            context_lens,
+            block_tables: None,
+            context_lens: None,
             cu_seqlens_q: Some(cu_seqlens_q),
             cu_seqlens_k: Some(cu_seqlens_k),
             max_seqlen_q,
             max_seqlen_k,
-            max_context_len: self.config.max_seq_len,
+            max_context_len,
         };
 
         Ok(PreparedInputs {
@@ -1054,46 +1026,75 @@ impl LLMEngine {
         let mut positions = Vec::new();
         let mut slot_mapping = Vec::new();
         let mut context_lens = Vec::new();
-
+        let mut block_tables = Vec::new();
         for group in groups {
-            let seq = group.get_seqs().values().nth(0).unwrap();
-            let last_token_id = seq.deref().get_last_token_id();
-            let seqlen = seq.deref().get_len();
-            input_ids.push(last_token_id);
-            positions.push(seqlen as i64);
-            context_lens.push(seqlen as u32);
+            for seq in group.get_seqs().values() {
+                let last_token_id = seq.deref_mut().get_last_token_id();
+                input_ids.push(last_token_id);
+                let position = seq.deref_mut().get_len() - 1;
+                positions.push(position as i64);
 
-            let table = self
-                .scheduler
-                .block_engine
-                .block_tables
-                .get(&seq.deref().get_id())
-                .unwrap();
-            let block_table_last = table.back().unwrap().deref_mut().block_id as u32;
-            let last_block_tokens = if seqlen > 0 && seqlen % self.cache_config.block_size == 0 {
-                0
-            } else {
-                seqlen
-                    - (seqlen.div_ceil(self.cache_config.block_size) - 1)
-                        * self.cache_config.block_size
-            };
-            let slot = block_table_last * self.cache_config.block_size as u32
-                + last_block_tokens as u32
-                - 1;
-            slot_mapping.push(slot as i64);
+                let context_len = if let Some(sliding_window) = self.config.sliding_window {
+                    seq.deref_mut().get_len().min(sliding_window)
+                } else {
+                    seq.deref_mut().get_len()
+                };
+                context_lens.push(context_len as u32);
+
+                let table = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.deref().get_id())
+                    .unwrap();
+                let table = table
+                    .iter()
+                    .map(|block| block.deref_mut().block_id)
+                    .collect::<Vec<_>>();
+
+                let block_number = if position / self.cache_config.block_size >= table.len() {
+                    candle_core::bail!("Block table is too small (completion)! start_pos={} block_size={} table_len={}", position, self.cache_config.block_size, table.len());
+                } else {
+                    table.get(position / self.cache_config.block_size).unwrap()
+                };
+                let block_offset = position % self.cache_config.block_size;
+                let slot = block_number * self.cache_config.block_size + block_offset;
+                let slot: i64 = slot.try_into().unwrap();
+                slot_mapping.push(slot);
+
+                if let Some(sliding_window) = self.config.sliding_window {
+                    let sliding_window_blocks = sliding_window / self.cache_config.block_size;
+                    let slide_idx = if table.len() > sliding_window_blocks {
+                        table.len() - sliding_window_blocks
+                    } else {
+                        0
+                    };
+                    block_tables.push(table.get(slide_idx..).unwrap().to_vec());
+                } else {
+                    block_tables.push(table);
+                }
+            }
         }
 
-        // Create tensors
-        let length = positions.len();
+        let length = input_ids.len();
         let input_ids = Tensor::from_vec(input_ids, (length,), device)?;
         let positions = Tensor::from_vec(positions, (length,), device)?;
-        let s_len = slot_mapping.len();
-        let c_len = context_lens.len();
+        let slot_mapping = Tensor::from_vec(slot_mapping, (length,), device)?;
 
-        let slot_mapping = Tensor::from_vec(slot_mapping, (s_len,), device)?;
-        let context_lens = Tensor::from_vec(context_lens, (c_len,), device)?;
-        let block_tables = self.prepare_block_tables(groups, device)?;
+        let max_context_len = context_lens.clone().into_iter().max().unwrap();
+        let context_lens = Tensor::from_vec(context_lens, (length,), device)?;
 
+        let max_block_table_len = block_tables.iter().map(|x| x.len()).max().unwrap();
+        let block_tables = super::_make_tensor_with_pad(
+            block_tables
+                .iter()
+                .map(|x| x.iter().map(|x| *x as u32).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            max_block_table_len,
+            0,
+            device,
+        )?;
+        let block_tables = block_tables.reshape(((), max_block_table_len))?;
         let input_metadata = InputMetadata {
             is_prefill: false,
             slot_mapping,
@@ -1103,7 +1104,7 @@ impl LLMEngine {
             cu_seqlens_k: None,
             max_seqlen_q: 0,
             max_seqlen_k: 0,
-            max_context_len: self.config.max_seq_len,
+            max_context_len: max_context_len as usize,
         };
 
         Ok(PreparedInputs {
