@@ -10,7 +10,7 @@ use crate::openai::distributed::{
     TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::linear::LinearX as Linear;
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::QwenMoEConfig;
 use candle::{DType, Device, Module, Result, Tensor, D};
 use candle_core as candle;
@@ -664,7 +664,7 @@ impl Qwen3MoE {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,

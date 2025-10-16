@@ -4,7 +4,7 @@ use super::{
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, Comm, ReplicatedLinear, VarBuilder};
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
@@ -217,7 +217,7 @@ impl Gemma {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,

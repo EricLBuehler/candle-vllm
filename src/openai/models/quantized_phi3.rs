@@ -1,7 +1,7 @@
 use super::rotary_emb::ScalingRotaryEmbedding;
 use super::Config;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use crate::{InputMetadata, PagedAttention};
 use candle_core::quantized::gguf_file;
 use candle_core::quantized::QTensor;
@@ -339,7 +339,7 @@ impl GGUFPhi3 {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,

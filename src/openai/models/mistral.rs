@@ -1,7 +1,7 @@
 use super::{attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, rms_norm, Comm, ReplicatedLinear, VarBuilder};
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::QuantConfig;
 use crate::openai::models::TokenID;
 use crate::InputMetadata;
@@ -284,7 +284,7 @@ impl Mistral {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,

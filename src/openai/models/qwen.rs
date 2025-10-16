@@ -3,7 +3,7 @@ use super::{
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, rms_norm, Comm, ReplicatedLinear, VarBuilder};
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::RmsNorm;
@@ -172,7 +172,7 @@ impl Qwen {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,

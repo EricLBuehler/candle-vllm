@@ -5,7 +5,7 @@ use crate::openai::distributed::{
     embedding, layer_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use crate::{InputMetadata, PagedAttention};
 use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::{Activation, Embedding, LayerNorm};
@@ -363,7 +363,7 @@ impl Phi2 {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,
