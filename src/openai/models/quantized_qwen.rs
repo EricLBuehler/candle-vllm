@@ -1,6 +1,6 @@
 use super::{attention::QuantizedAttention, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle_core::quantized::{gguf_file, QMatMul};
 use candle_core::{DType, Device, Result, Tensor};
@@ -264,7 +264,7 @@ impl GGUFQWen {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,

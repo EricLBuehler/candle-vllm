@@ -4,7 +4,7 @@ use crate::openai::distributed::{
     embedding, rms_norm, Comm, MergedParallelColumnLinear, ReplicatedLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle::{DType, Device, Result, Tensor};
 use candle_core as candle;
@@ -245,7 +245,7 @@ impl GLM4 {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,

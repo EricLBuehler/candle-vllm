@@ -2,7 +2,7 @@ use candle_core::{DType, Device, Tensor};
 
 #[cfg(feature = "flash-attn")] // If flash-attn or metal is enabled, we don't implement this function.
                                // The actual implementation would be embedded in the flash or metal attention kernel.
-pub fn get_attention_casual_mask(
+pub fn get_attention_causal_mask(
     _: &Device,
     _: DType,
     _: &Tensor,
@@ -13,6 +13,7 @@ pub fn get_attention_casual_mask(
     None
 }
 
+#[allow(unreachable_code)]
 #[cfg(not(feature = "flash-attn"))]
 fn get_casual_mask_internal(
     device: &Device,
@@ -20,12 +21,16 @@ fn get_casual_mask_internal(
     tgt_len: usize,
     sliding_window: Option<usize>,
 ) -> candle_core::Result<Tensor> {
-    use rayon::iter::IntoParallelIterator;
-    use rayon::iter::ParallelIterator;
+    #[cfg(feature = "cuda")]
+    {
+        use attention_rs::mask::causal_mask;
+        let mask = Tensor::zeros((tgt_len, tgt_len), dtype, device)?;
+        let _ = causal_mask(&mask, sliding_window)?;
+        return mask.unsqueeze(0)?.unsqueeze(0);
+    }
     let mask: Vec<_> = if let Some(sliding_window) = sliding_window {
         (0..tgt_len)
-            .into_par_iter()
-            .flat_map_iter(|i| {
+            .flat_map(|i| {
                 (0..tgt_len).map(move |j| {
                     if i < j || j + sliding_window < i {
                         f32::NEG_INFINITY
@@ -37,10 +42,7 @@ fn get_casual_mask_internal(
             .collect()
     } else {
         (0..tgt_len)
-            .into_par_iter()
-            .flat_map_iter(|i| {
-                (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0.0 })
-            })
+            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0.0 }))
             .collect()
     };
     let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), device)?
@@ -54,7 +56,7 @@ fn get_casual_mask_internal(
 }
 
 #[cfg(not(feature = "flash-attn"))]
-pub fn get_attention_casual_mask(
+pub fn get_attention_causal_mask(
     device: &Device,
     dtype: DType,
     _: &Tensor,

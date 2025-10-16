@@ -8,7 +8,7 @@ use crate::openai::distributed::{
     embedding, rms_norm, AllReduce, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::openai::models::mask::get_attention_casual_mask;
+use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::rotary_emb::DefaultRotaryEmbedding;
 use crate::openai::models::DeepSeekMoEConfig;
 use crate::{InputMetadata, PagedAttention};
@@ -1145,7 +1145,7 @@ impl DeepSeek {
         } else {
             Vec::new()
         };
-        let attention_mask = get_attention_casual_mask(
+        let attention_mask = get_attention_causal_mask(
             &self.device,
             self.dtype,
             input_positions,
