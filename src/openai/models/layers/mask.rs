@@ -21,38 +21,10 @@ fn get_casual_mask_internal(
     tgt_len: usize,
     sliding_window: Option<usize>,
 ) -> candle_core::Result<Tensor> {
-    #[cfg(feature = "cuda")]
-    {
-        use attention_rs::mask::causal_mask;
-        let mask = Tensor::zeros((tgt_len, tgt_len), dtype, device)?;
-        let _ = causal_mask(&mask, sliding_window)?;
-        return mask.unsqueeze(0)?.unsqueeze(0);
-    }
-    let mask: Vec<_> = if let Some(sliding_window) = sliding_window {
-        (0..tgt_len)
-            .flat_map(|i| {
-                (0..tgt_len).map(move |j| {
-                    if i < j || j + sliding_window < i {
-                        f32::NEG_INFINITY
-                    } else {
-                        0.
-                    }
-                })
-            })
-            .collect()
-    } else {
-        (0..tgt_len)
-            .flat_map(|i| (0..tgt_len).map(move |j| if i < j { f32::NEG_INFINITY } else { 0.0 }))
-            .collect()
-    };
-    let mask = Tensor::from_slice(&mask, (tgt_len, tgt_len), device)?
-        .unsqueeze(0)?
-        .unsqueeze(0)?;
-    if mask.dtype() != dtype {
-        mask.to_dtype(dtype)
-    } else {
-        Ok(mask)
-    }
+    use attention_rs::mask::causal_mask;
+    let mask = Tensor::zeros((tgt_len, tgt_len), dtype, device)?;
+    let _ = causal_mask(&mask, sliding_window)?;
+    mask.unsqueeze(0)?.unsqueeze(0)
 }
 
 #[cfg(not(feature = "flash-attn"))]
