@@ -70,6 +70,19 @@ impl PagedAttention {
         input_metadata: &InputMetadata,
         softcapping: Option<f64>,
     ) -> Result<Tensor> {
+        fn repeat_kv(x: &Tensor, n_rep: usize) -> Result<Tensor> {
+            if n_rep == 1 {
+                Ok(x.to_owned())
+            } else {
+                let (b_sz, n_kv_head, seq_len, head_dim) = x.dims4()?;
+                Tensor::cat(&vec![&x; n_rep], 2)?.reshape((
+                    b_sz,
+                    n_kv_head * n_rep,
+                    seq_len,
+                    head_dim,
+                ))
+            }
+        }
         let dims = input_metadata.slot_mapping.dims();
         let slot_mapping = if dims.len() > 1 {
             input_metadata.slot_mapping.flatten_all()?
@@ -82,12 +95,12 @@ impl PagedAttention {
 
         #[cfg(feature = "flash-attn")]
         let att = if input_metadata.is_prompt {
-            let k = candle_transformers::utils::repeat_kv(
+            let k = repeat_kv(
                 key.clone(),
                 attention_heads / key_value_heads,
             )?
             .contiguous()?;
-            let v = candle_transformers::utils::repeat_kv(
+            let v = repeat_kv(
                 value.clone(),
                 attention_heads / key_value_heads,
             )?
@@ -120,20 +133,6 @@ impl PagedAttention {
         } else {
             None
         };
-
-        fn repeat_kv(x: &Tensor, n_rep: usize) -> Result<Tensor> {
-            if n_rep == 1 {
-                Ok(x.to_owned())
-            } else {
-                let (b_sz, n_kv_head, seq_len, head_dim) = x.dims4()?;
-                Tensor::cat(&vec![&x; n_rep], 2)?.reshape((
-                    b_sz,
-                    n_kv_head * n_rep,
-                    seq_len,
-                    head_dim,
-                ))
-            }
-        }
 
         #[cfg(not(feature = "flash-attn"))]
         let att = if input_metadata.is_prompt {
