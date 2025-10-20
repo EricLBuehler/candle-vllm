@@ -2,12 +2,13 @@ use super::rotary_emb::ScalingRotaryEmbedding;
 use crate::openai::distributed::{
     rms_norm_with_dtype, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
 };
+use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::Config;
 use crate::{InputMetadata, PagedAttention};
 use candle_core::quantized::{gguf_file, QMatMul};
 use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::RmsNorm;
-use candle_transformers::quantized_nn::RmsNorm as QRmsNorm;
+
 use std::rc::Rc;
 use std::sync::Arc;
 

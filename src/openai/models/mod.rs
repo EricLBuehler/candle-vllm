@@ -302,6 +302,15 @@ pub struct NaiveAttention {
     scale: f64,
 }
 
+fn repeat_kv(x: &Tensor, n_rep: usize) -> Result<Tensor> {
+    if n_rep == 1 {
+        Ok(x.to_owned())
+    } else {
+        let (b_sz, n_kv_head, seq_len, head_dim) = x.dims4()?;
+        Tensor::cat(&vec![&x; n_rep], 2)?.reshape((b_sz, n_kv_head * n_rep, seq_len, head_dim))
+    }
+}
+
 impl NaiveAttention {
     pub fn new(cfg: &Config, sliding_window: Option<usize>) -> Self {
         let num_heads = cfg.num_attention_heads;
@@ -341,8 +350,8 @@ impl NaiveAttention {
             KvCache::Rotating(c) => c.append(k, v)?,
         };
 
-        let k = candle_transformers::utils::repeat_kv(k, self.num_kv_groups)?.contiguous()?;
-        let v = candle_transformers::utils::repeat_kv(v, self.num_kv_groups)?.contiguous()?;
+        let k = repeat_kv(&k, self.num_kv_groups)?.contiguous()?;
+        let v = repeat_kv(&v, self.num_kv_groups)?.contiguous()?;
 
         let attn_weights = (q.matmul(&k.transpose(2, 3)?)? * self.scale)?;
 

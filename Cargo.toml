@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 
 [dependencies]
@@ -14,9 +14,7 @@ rand = "0.9.0"
 rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
 candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
-candle-examples = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
 candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
-candle-transformers = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
 candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "42c9b42" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
@@ -61,12 +59,12 @@ which = "5"
 ahash = "0.8.11"
 
 [features]
-accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "attention-rs/cuda"]
-metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "dep:metal", "attention-rs/metal"]
+accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "attention-rs/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "dep:metal", "attention-rs/metal"]
 cudnn = ["candle-core/cudnn"]
-flash-attn = ["cuda", "candle-transformers/flash-attn", "dep:candle-flash-attn", "attention-rs/flash-attn"]
-mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
+flash-attn = ["cuda", "dep:candle-flash-attn", "attention-rs/flash-attn"]
+mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl"]
 nccl = ["candle-core/nccl"]
 mpi = ["candle-core/nccl", "dep:mpi"]
 graph = ["attention-rs/graph", "candle-core/graph"]

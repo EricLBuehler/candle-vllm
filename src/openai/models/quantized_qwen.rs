@@ -1,11 +1,11 @@
 use super::{attention::QuantizedAttention, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
+use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle_core::quantized::{gguf_file, QMatMul};
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Embedding, Module};
-use candle_transformers::quantized_nn::RmsNorm;
 use either::Either;
 use parking_lot::RwLock;
 use std::iter::zip;
@@ -29,9 +29,9 @@ impl Module for Mlp {
 
 struct LayerWeights {
     self_attn: QuantizedAttention,
-    attention_norm: RmsNorm,
+    attention_norm: QRmsNorm,
     mlp: Mlp,
-    ffn_norm: RmsNorm,
+    ffn_norm: QRmsNorm,
 }
 
 impl LayerWeights {
@@ -51,7 +51,7 @@ impl LayerWeights {
 pub struct GGUFQWen {
     tok_embeddings: Embedding,
     layers: Vec<LayerWeights>,
-    norm: RmsNorm,
+    norm: QRmsNorm,
     output: QMatMul,
     cfg: Config,
     dtype: DType,
@@ -148,7 +148,7 @@ impl GGUFQWen {
 
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;
-        let norm = RmsNorm::from_qtensor(
+        let norm = QRmsNorm::from_qtensor(
             ct.tensor(reader, "output_norm.weight", device)?,
             rms_norm_eps,
         )?;
@@ -229,9 +229,9 @@ impl GGUFQWen {
 
             layers.push(LayerWeights {
                 self_attn,
-                attention_norm: RmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
+                attention_norm: QRmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
                 mlp,
-                ffn_norm: RmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
+                ffn_norm: QRmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
             });
             reporter.write().set_progress(layer_idx + 1);
         }
