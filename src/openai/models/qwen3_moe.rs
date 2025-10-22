@@ -216,8 +216,8 @@ impl Moe {
 
 struct FusedMoe {
     gate: Linear,
-    gate_experts: QMatMul,
-    up_experts: QMatMul,
+    gate_up_experts: QMatMul,
+    expert_size_n: usize,
     down_experts: QMatMul,
     act: candle_nn::Activation,
     norm_topk_prob: bool,
@@ -372,12 +372,14 @@ impl FusedMoe {
         let gate_experts = Tensor::stack(&gate_experts, 0)?;
         let up_experts = Tensor::stack(&up_experts, 0)?;
         let down_experts = Tensor::stack(&down_experts, 0)?;
-        // in-situ quantization for using fused moe kernel
-        let qtensor = QTensor::quantize(&gate_experts, quant_type).unwrap();
-        let gate_experts = QMatMul::QTensor(Arc::new(qtensor));
 
-        let qtensor = QTensor::quantize(&up_experts, quant_type).unwrap();
-        let up_experts = QMatMul::QTensor(Arc::new(qtensor));
+        // pack gate_proj and up_proj
+        let gate_up_experts = Tensor::cat(&[gate_experts, up_experts], candle_core::D::Minus2)?;
+        let expert_size_n = gate_up_experts.dim(1)?;
+
+        // in-situ quantization for using fused moe kernel
+        let qtensor = QTensor::quantize(&gate_up_experts, quant_type).unwrap();
+        let gate_up_experts = QMatMul::QTensor(Arc::new(qtensor));
 
         //down_experts requires higher precision
         let qtensor = QTensor::quantize(&down_experts, GgmlDType::Q8_0).unwrap();
@@ -386,8 +388,8 @@ impl FusedMoe {
 
         Ok(Self {
             gate,
-            gate_experts,
-            up_experts,
+            gate_up_experts,
+            expert_size_n,
             down_experts,
             act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
@@ -418,8 +420,13 @@ impl FusedMoe {
 
         let ys = {
             let xs = xs.reshape((num_tokens, 1, hidden_dim))?;
-            let gate = self.gate_experts.indexed_moe_forward(&xs, &indices)?;
-            let up = self.up_experts.indexed_moe_forward(&xs, &indices)?;
+            let gate_up = self.gate_up_experts.indexed_moe_forward(&xs, &indices)?;
+            let gate = gate_up.narrow(candle_core::D::Minus1, 0, self.expert_size_n / 2)?;
+            let up = gate_up.narrow(
+                candle_core::D::Minus1,
+                self.expert_size_n / 2,
+                self.expert_size_n / 2,
+            )?;
             self.down_experts
                 .indexed_moe_forward(&(up * gate.apply(&self.act)?)?, &indices)?
         };
