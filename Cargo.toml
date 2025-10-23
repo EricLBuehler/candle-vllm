@@ -13,9 +13,9 @@ anyhow = "1.0.75"
 rand = "0.9.0"
 rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "42c9b42" }
-candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "42c9b42" }
+candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "ed18596" }
+candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "ed18596" }
+candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "ed18596" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
 tokenizers = "0.21.2"
@@ -38,7 +38,7 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version="0.1.3", rev = "cfc419a" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version="0.1.3", rev = "0e2bb7a" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 #kernels = {path = "./kernels", version="0.1.0", optional = true}
 #metal-kernels = {path = "./metal-kernels", version="0.1.0", optional = true}
