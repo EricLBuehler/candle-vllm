@@ -107,6 +107,8 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                               refresh_per_second=frequency,
                               vertical_overflow="visible") as l:
                         for chunk in response:
+                            if chunk.choices[0].error != None:
+                                raise Exception(chunk.choices[0].error)
                             content = chunk.choices[0].delta.content
                             if content:
                                 if msg == "" and prefix == "" and content[0] == "<":
@@ -116,6 +118,8 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
   
                 else:
                     for chunk in response:
+                        if chunk.choices[0].error != None:
+                            raise Exception(chunk.choices[0].error)
                         content = chunk.choices[0].delta.content
                         if content:
                             msg += content
