@@ -34,8 +34,8 @@ struct Args {
     hf_token_path: Option<String>,
 
     /// Host address to bind to, to serve on host:port
-    #[arg(long = "h")]
-    host: Option<String>,
+    #[arg(long = "h", default_value = "0.0.0.0")]
+    host: String,
 
     /// Port to serve on (host:port)
     #[arg(long = "p", default_value_t = 2000)]
@@ -311,7 +311,7 @@ async fn main() -> Result<()> {
     }
 
     let logger: ftail::Ftail = ftail::Ftail::new();
-    let host = args.host.unwrap_or("0.0.0.0".to_string());
+    let host = args.host;
     let mut port = args.port;
     #[cfg(feature = "nccl")]
     let (pipelines, global_rank, daemon_manager) = if multi_process {
