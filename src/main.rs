@@ -33,7 +33,11 @@ struct Args {
     #[arg(long)]
     hf_token_path: Option<String>,
 
-    /// Port to serve on (localhost:port)
+    /// Host address to bind to, to serve on host:port
+    #[arg(long = "h", default_value = "0.0.0.0")]
+    host: String,
+
+    /// Port to serve on (host:port)
     #[arg(long = "p", default_value_t = 2000)]
     port: u16,
 
@@ -307,6 +311,7 @@ async fn main() -> Result<()> {
     }
 
     let logger: ftail::Ftail = ftail::Ftail::new();
+    let host = args.host;
     let mut port = args.port;
     #[cfg(feature = "nccl")]
     let (pipelines, global_rank, daemon_manager) = if multi_process {
@@ -523,7 +528,7 @@ async fn main() -> Result<()> {
                 std::cmp::min(kvcached_tokens / batch, max_model_len)
             );
         }
-        warn!("Server started at http://0.0.0.0:{}/v1/", port);
+        warn!("Server started at http://{host}:{port}/v1/");
     }
 
     let allow_origin = AllowOrigin::any();
@@ -557,7 +562,7 @@ async fn main() -> Result<()> {
         .route("/v1/chat/completions", post(chat_completions))
         .with_state(Arc::new(server_data));
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+    let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
         .await
         .map_err(candle_core::Error::wrap)?;
     axum::serve(listener, app)
