@@ -2,21 +2,17 @@ use super::{
     attention::Attention, rotary_emb::ScalingRotaryEmbedding, Config, InputMetadata, MoEConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::candle::quantized::QTensor;
-use crate::openai::distributed::shard;
-use crate::openai::distributed::AllReduce;
 use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
+use crate::openai::models::layers::moe::{FusedMoe, FusedMoeISQ};
 use crate::openai::models::linear::LinearX as Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::QwenMoEConfig;
-use candle::{DType, Device, Module, Result, Tensor, D};
+use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
-use candle_core::quantized::GgmlDType;
-use candle_core::quantized::QMatMul;
-use candle_nn::var_builder::Shard;
+
 use candle_nn::RmsNorm;
 use parking_lot::RwLock;
 use std::iter::zip;
@@ -120,341 +116,18 @@ impl Module for Mlp {
     }
 }
 
-struct Moe {
-    gate: Linear,
-    experts: Vec<Mlp>,
-    norm_topk_prob: bool,
-    num_experts_per_tok: usize,
-}
-
-impl Moe {
-    fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
-        let moe_cfg = if let Some(MoEConfig::QwenMoE(moe_cfg)) = &cfg.moe_config {
-            moe_cfg.clone()
-        } else {
-            candle::bail!("Expected QwenMoEConfig")
-        };
-        let num_experts = moe_cfg.num_experts.unwrap();
-        let ws = vb.pp("gate").get_with_hints_dtype(
-            (num_experts, cfg.hidden_size),
-            "weight",
-            Shard::default(),
-            DType::F32,
-        )?;
-        let gate = Linear::new(ws, None, &None, &None);
-
-        let experts_vb = vb.pp("experts");
-        let mut experts = Vec::with_capacity(num_experts);
-        for i in 0..num_experts {
-            experts.push(Mlp::new(
-                cfg,
-                moe_cfg.moe_intermediate_size,
-                experts_vb.pp(format!("{}", i).as_str()).clone(),
-                comm.clone(),
-            )?);
-        }
-
-        Ok(Self {
-            gate,
-            experts,
-            norm_topk_prob: moe_cfg.norm_topk_prob,
-            num_experts_per_tok: moe_cfg.num_experts_per_tok,
-        })
-    }
-
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let (num_tokens, hidden_dim) = xs.dims2()?;
-        let router_logits = self.gate.forward(&xs.to_dtype(DType::F32)?)?;
-        let routing_weights = candle_nn::ops::softmax_last_dim(&router_logits)?;
-
-        let experts_per_tok = routing_weights
-            .arg_sort_last_dim(false)?
-            .narrow(D::Minus1, 0, self.num_experts_per_tok)?
-            .contiguous()?;
-
-        let routing_weights = routing_weights.gather(&experts_per_tok, D::Minus1)?;
-
-        let routing_weights = routing_weights.to_vec2::<f32>()?;
-        let experts_per_tok = experts_per_tok.to_vec2::<u32>()?;
-        let mut top_x = vec![vec![]; self.experts.len()];
-        let mut selected_experts = vec![vec![]; self.experts.len()];
-        for (row_idx, (rw, expert_idxs)) in routing_weights
-            .iter()
-            .zip(experts_per_tok.iter())
-            .enumerate()
-        {
-            let sum_rw = rw.iter().sum::<f32>();
-            for (&rw, &expert_idx) in rw.iter().zip(expert_idxs.iter()) {
-                top_x[expert_idx as usize].push(row_idx as u32);
-                let rw = if self.norm_topk_prob { rw / sum_rw } else { rw };
-                selected_experts[expert_idx as usize].push(rw)
-            }
-        }
-
-        let mut ys = xs.zeros_like()?;
-        for (expert_idx, expert_layer) in self.experts.iter().enumerate() {
-            let top_x = &top_x[expert_idx];
-            if top_x.is_empty() {
-                continue;
-            }
-            let top_x = Tensor::new(top_x.as_slice(), xs.device())?;
-            let selected_experts =
-                Tensor::new(selected_experts[expert_idx].as_slice(), xs.device())?
-                    .reshape(((), 1))?
-                    .to_dtype(xs.dtype())?;
-            let current_state = xs.index_select(&top_x, 0)?.reshape(((), hidden_dim))?;
-            let current_hidden_states = expert_layer
-                .forward(&current_state.unsqueeze(0)?)?
-                .squeeze(0)?;
-            let current_hidden_states = current_hidden_states.broadcast_mul(&selected_experts)?;
-            ys = ys.index_add(&top_x, &current_hidden_states, 0)?;
-        }
-        ys = ys.reshape((num_tokens, hidden_dim))?;
-        Ok(ys)
-    }
-}
-
-struct FusedMoe {
-    gate: Linear,
-    gate_up_experts: QMatMul,
-    expert_size_n: usize,
-    down_experts: QMatMul,
-    act: candle_nn::Activation,
-    norm_topk_prob: bool,
-    num_experts_per_tok: usize,
-    all_reduce: AllReduce,
-    world_size: usize,
-}
-
-impl FusedMoe {
-    fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>) -> Result<Self> {
-        let moe_cfg = if let Some(MoEConfig::QwenMoE(moe_cfg)) = &cfg.moe_config {
-            moe_cfg.clone()
-        } else {
-            candle::bail!("Expected QwenMoEConfig")
-        };
-
-        let num_experts = moe_cfg.num_experts.unwrap();
-
-        let quant_type = match cfg.quant.as_ref().unwrap().as_str() {
-            "q4_0" => GgmlDType::Q4_0,
-            "q4_1" => GgmlDType::Q4_1,
-            "q5_0" => GgmlDType::Q5_0,
-            "q5_1" => GgmlDType::Q5_1,
-            "q8_0" => GgmlDType::Q8_0,
-            "q2k" => GgmlDType::Q2K,
-            "q3k" => GgmlDType::Q3K,
-            "q4k" => GgmlDType::Q4K,
-            "q5k" => GgmlDType::Q5K,
-            "q6k" => GgmlDType::Q6K,
-            _ => panic!("Unsupported GGML data type!"),
-        };
-
-        let block_size = quant_type.block_size();
-
-        let ws = vb.pp("gate").get_with_hints_dtype(
-            (num_experts, cfg.hidden_size),
-            "weight",
-            Shard::default(),
-            DType::F32,
-        )?;
-        let gate = Linear::new(ws, None, &None, &None);
-
-        let experts_vb = vb.pp("experts");
-        let mut gate_experts = Vec::with_capacity(num_experts);
-        let mut up_experts = Vec::with_capacity(num_experts);
-        let mut down_experts = Vec::with_capacity(num_experts);
-
-        let moe_intermediate_chunk =
-            if moe_cfg.moe_intermediate_size / comm.world_size() % block_size != 0 {
-                ((moe_cfg.moe_intermediate_size / comm.world_size() + block_size - 1) / block_size)
-                    * block_size
-            } else {
-                moe_cfg.moe_intermediate_size / comm.world_size()
-            };
-
-        //pack experts
-        for i in 0..num_experts {
-            let experts_vb = experts_vb.pp(format!("{}", i).as_str());
-            let (gate_expert, up_expert, down_expert) = if moe_cfg.moe_intermediate_size
-                / comm.world_size()
-                % block_size
-                != 0
-            {
-                let gate_expert = experts_vb.pp("gate_proj").get_with_hints(
-                    (moe_cfg.moe_intermediate_size, cfg.hidden_size),
-                    "weight",
-                    Shard::default(),
-                )?;
-                let up_expert = experts_vb.pp("up_proj").get_with_hints(
-                    (moe_cfg.moe_intermediate_size, cfg.hidden_size),
-                    "weight",
-                    Shard::default(),
-                )?;
-                let down_expert = experts_vb.pp("down_proj").get_with_hints(
-                    (cfg.hidden_size, moe_cfg.moe_intermediate_size),
-                    "weight",
-                    Shard::default(),
-                )?;
-
-                let (gate_expert, up_expert, down_expert) = if comm.rank() * moe_intermediate_chunk
-                    + moe_intermediate_chunk
-                    < moe_cfg.moe_intermediate_size
-                {
-                    (
-                        gate_expert.narrow(
-                            0,
-                            comm.rank() * moe_intermediate_chunk,
-                            moe_intermediate_chunk,
-                        )?,
-                        up_expert.narrow(
-                            0,
-                            comm.rank() * moe_intermediate_chunk,
-                            moe_intermediate_chunk,
-                        )?,
-                        down_expert.narrow(
-                            1,
-                            comm.rank() * moe_intermediate_chunk,
-                            moe_intermediate_chunk,
-                        )?,
-                    )
-                } else {
-                    let last_remain_size =
-                        moe_cfg.moe_intermediate_size - comm.rank() * moe_intermediate_chunk;
-                    assert!(last_remain_size > 0 && last_remain_size % block_size == 0,
-                        "Unable to split moe_intermediate_size {} into {} ranks under block_size of {}! \n \
-                        \t*****Tips: you may try these gglm types: `q8_0` (recommend), `q4_0`, `q4_1`, `q5_0`, `q5_1` (with smaller block_size 32)",
-                        moe_cfg.moe_intermediate_size,
-                        comm.world_size(),
-                        block_size
-                    );
-                    let gate_expert = gate_expert.narrow(
-                        0,
-                        comm.rank() * moe_intermediate_chunk,
-                        last_remain_size,
-                    )?;
-                    let up_expert = up_expert.narrow(
-                        0,
-                        comm.rank() * moe_intermediate_chunk,
-                        last_remain_size,
-                    )?;
-                    let down_expert = down_expert.narrow(
-                        1,
-                        comm.rank() * moe_intermediate_chunk,
-                        last_remain_size,
-                    )?;
-                    (gate_expert, up_expert, down_expert)
-                };
-                (gate_expert, up_expert, down_expert)
-            } else {
-                let gate_expert = experts_vb.pp("gate_proj").get_with_hints(
-                    (moe_cfg.moe_intermediate_size, cfg.hidden_size),
-                    "weight",
-                    shard(0, comm.rank(), comm.world_size()),
-                )?;
-                let up_expert = experts_vb.pp("up_proj").get_with_hints(
-                    (moe_cfg.moe_intermediate_size, cfg.hidden_size),
-                    "weight",
-                    shard(0, comm.rank(), comm.world_size()),
-                )?;
-                let down_expert = experts_vb.pp("down_proj").get_with_hints(
-                    (cfg.hidden_size, moe_cfg.moe_intermediate_size),
-                    "weight",
-                    shard(1, comm.rank(), comm.world_size()),
-                )?;
-                (gate_expert, up_expert, down_expert)
-            };
-
-            gate_experts.push(gate_expert);
-            up_experts.push(up_expert);
-            down_experts.push(down_expert);
-        }
-        let gate_experts = Tensor::stack(&gate_experts, 0)?;
-        let up_experts = Tensor::stack(&up_experts, 0)?;
-        let down_experts = Tensor::stack(&down_experts, 0)?;
-
-        // pack gate_proj and up_proj
-        let gate_up_experts = Tensor::cat(&[gate_experts, up_experts], candle_core::D::Minus2)?;
-        let expert_size_n = gate_up_experts.dim(1)?;
-
-        // in-situ quantization for using fused moe kernel
-        let qtensor = QTensor::quantize(&gate_up_experts, quant_type).unwrap();
-        let gate_up_experts = QMatMul::QTensor(Arc::new(qtensor));
-
-        //down_experts requires higher precision
-        let qtensor = QTensor::quantize(&down_experts, GgmlDType::Q8_0).unwrap();
-        let down_experts = QMatMul::QTensor(Arc::new(qtensor));
-        let world_size = comm.world_size();
-
-        Ok(Self {
-            gate,
-            gate_up_experts,
-            expert_size_n,
-            down_experts,
-            act: candle_nn::Activation::Silu,
-            norm_topk_prob: moe_cfg.norm_topk_prob,
-            num_experts_per_tok: moe_cfg.num_experts_per_tok,
-            all_reduce: AllReduce::new(comm),
-            world_size,
-        })
-    }
-
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let (num_tokens, hidden_dim) = xs.dims2()?;
-        let original_dtype = xs.dtype();
-        let xs = xs.to_dtype(DType::F32)?;
-        let router_logits = self.gate.forward(&xs)?;
-        let routing_weights = candle_nn::ops::softmax_last_dim(&router_logits)?;
-
-        //last dim size 128
-        let indices = routing_weights
-            .arg_sort_last_dim(false)?
-            .narrow(D::Minus1, 0, self.num_experts_per_tok)?
-            .contiguous()?;
-
-        let mut scores = routing_weights.gather(&indices, D::Minus1)?;
-
-        if self.norm_topk_prob {
-            scores = scores.broadcast_div(&scores.sum_keepdim(D::Minus1)?)?;
-        }
-
-        let ys = {
-            let xs = xs.reshape((num_tokens, 1, hidden_dim))?;
-            let gate_up = self.gate_up_experts.indexed_moe_forward(&xs, &indices)?;
-            let gate = gate_up.narrow(candle_core::D::Minus1, 0, self.expert_size_n / 2)?;
-            let up = gate_up.narrow(
-                candle_core::D::Minus1,
-                self.expert_size_n / 2,
-                self.expert_size_n / 2,
-            )?;
-            self.down_experts
-                .indexed_moe_forward(&(up * gate.apply(&self.act)?)?, &indices)?
-        };
-        let mut ys = ys
-            .broadcast_mul(&scores.unsqueeze(D::Minus1)?)?
-            .sum(D::Minus2)?
-            .reshape((num_tokens, hidden_dim))?
-            .to_dtype(original_dtype)?;
-
-        if self.world_size > 1 {
-            ys = self.all_reduce.apply(&ys)?;
-        }
-        Ok(ys)
-    }
-}
-
 enum MoeOrMlp {
-    Moe(Moe),
     FusedMoe(FusedMoe),
+    FusedMoeISQ(FusedMoeISQ),
     Mlp(Mlp),
 }
 
 impl MoeOrMlp {
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+    fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
         match self {
             Self::Mlp(m) => m.forward(xs),
-            Self::Moe(m) => m.forward(xs),
-            Self::FusedMoe(m) => m.forward(xs),
+            Self::FusedMoe(m) => m.forward(xs, is_prefill),
+            Self::FusedMoeISQ(m) => m.forward(xs, is_prefill),
         }
     }
 }
@@ -500,9 +173,19 @@ impl DecoderLayer {
                 && (layer_idx + 1) % moe_cfg.decoder_sparse_step.unwrap_or(1) == 0)
         {
             if cfg.quant.is_some() {
-                MoeOrMlp::FusedMoe(FusedMoe::new(cfg, vb.pp("mlp").clone(), comm.clone())?)
+                MoeOrMlp::FusedMoeISQ(FusedMoeISQ::new(
+                    cfg,
+                    vb.pp("mlp").clone(),
+                    comm.clone(),
+                    dtype,
+                )?)
             } else {
-                MoeOrMlp::Moe(Moe::new(cfg, vb.pp("mlp").clone(), comm.clone())?)
+                MoeOrMlp::FusedMoe(FusedMoe::new(
+                    cfg,
+                    vb.pp("mlp").clone(),
+                    comm.clone(),
+                    dtype,
+                )?)
             }
         } else {
             let mlp = Mlp::new(
@@ -585,7 +268,7 @@ impl DecoderLayer {
             }
             _ => None,
         };
-        let mlp_output = self.mlp.forward(&xs)?;
+        let mlp_output = self.mlp.forward(&xs, input_metadata.is_prefill)?;
         if let Some(shared_output) = shared_output {
             residual + (mlp_output + shared_output)?
         } else {
