@@ -361,7 +361,12 @@ impl FusedMoeISQ {
     pub fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
         let (num_tokens, hidden_dim) = xs.dims2()?;
         let original_dtype = xs.dtype();
-        let router_logits = self.gate.forward(&xs.to_dtype(DType::F32)?)?;
+        let xs = if xs.dtype() != DType::F32 {
+            xs.to_dtype(DType::F32)?
+        } else {
+            xs.to_owned()
+        };
+        let router_logits = self.gate.forward(&xs)?;
 
         let (mut topk_weights, topk_ids) =
             attention_rs::topk::topk_softmax(&router_logits, self.num_experts_per_tok)?;
@@ -370,24 +375,14 @@ impl FusedMoeISQ {
             topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
         }
 
-        let xs = if xs.dtype() != self.dtype {
-            xs.to_dtype(self.dtype)?
-        } else {
-            xs.to_owned()
-        };
-
         let (expert_ids, sorted_token_ids) = if is_prefill {
             #[cfg(feature = "cuda")]
-            use attention_rs::sort::ArgSortOp;
-            #[cfg(feature = "cuda")]
-            let (expert_ids, sorted_token_ids) = topk_ids.flatten_all()?.sort(true)?;
-
+            {
+                use attention_rs::sort::ArgSortOp;
+                topk_ids.flatten_all()?.sort(true)?
+            }
             #[cfg(not(feature = "cuda"))]
-            let (expert_ids, sorted_token_ids) = topk_ids
-                .flatten_all()?
-                .to_device(&candle_core::Device::Cpu)?
-                .sort_last_dim(true)?;
-            (expert_ids, sorted_token_ids)
+            topk_ids.flatten_all()?.sort_last_dim(true)?
         } else {
             topk_ids.flatten_all()?.sort_last_dim(true)?
         };
@@ -401,6 +396,7 @@ impl FusedMoeISQ {
                 &expert_ids,
                 self.num_experts_per_tok,
                 is_prefill,
+                self.dtype,
             )?;
             let gate = gate_up
                 .narrow(candle_core::D::Minus1, 0, self.w_size_n)?
@@ -417,10 +413,13 @@ impl FusedMoeISQ {
                 &expert_ids,
                 self.num_experts_per_tok,
                 is_prefill,
+                self.dtype,
             )?
         };
         let mut ys = ys.reshape((num_tokens, (), hidden_dim))?.sum(D::Minus2)?;
-
+        if ys.dtype() != self.dtype {
+            ys = ys.to_dtype(self.dtype)?;
+        }
         if self.world_size > 1 {
             ys = self.all_reduce.apply(&ys)?;
         }
