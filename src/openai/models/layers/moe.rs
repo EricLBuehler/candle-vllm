@@ -112,36 +112,27 @@ impl FusedMoe {
             topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
         }
 
-        let gemm_func = if is_prefill {
-            moe::moe_gemm_wmma
-        } else {
-            moe::moe_gemm
-        };
-
         let (expert_ids, sorted_token_ids) = if is_prefill {
             #[cfg(feature = "cuda")]
-            use attention_rs::sort::ArgSortOp;
-            #[cfg(feature = "cuda")]
-            let (expert_ids, sorted_token_ids) = topk_ids.flatten_all()?.sort(true)?;
-
+            {
+                use attention_rs::sort::ArgSortOp;
+                topk_ids.flatten_all()?.sort(true)?
+            }
             #[cfg(not(feature = "cuda"))]
-            let (expert_ids, sorted_token_ids) = topk_ids
-                .flatten_all()?
-                .to_device(&candle_core::Device::Cpu)?
-                .sort_last_dim(true)?;
-            (expert_ids, sorted_token_ids)
+            topk_ids.flatten_all()?.sort_last_dim(true)?
         } else {
             topk_ids.flatten_all()?.sort_last_dim(true)?
         };
 
         //out (M, top_k, N)
-        let gate_up = gemm_func(
+        let gate_up = moe::moe_gemm(
             &xs,
             &self.gate_up_w,
             &None,
             &sorted_token_ids,
             &expert_ids,
             self.num_experts_per_tok,
+            is_prefill,
         )?;
 
         let gate = gate_up
@@ -155,13 +146,14 @@ impl FusedMoe {
         let down_inputs = (up * gate.apply(&self.act)?)?.reshape(((), self.w_size_n))?;
 
         //view(M, top_k, K) -> sum -> (M, K)
-        let mut ys = gemm_func(
+        let mut ys = moe::moe_gemm(
             &down_inputs,
             &self.down_w,
             &Some(topk_weights),
             &sorted_token_ids,
             &expert_ids,
             self.num_experts_per_tok,
+            is_prefill,
         )?
         .reshape((num_tokens, (), hidden_dim))?
         .sum(D::Minus2)?;
