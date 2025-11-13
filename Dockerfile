@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 
 FROM docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
+SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN <<HEREDOC
@@ -42,6 +43,8 @@ ARG WITH_FEATURES="cuda,cudnn,nccl,mkl,mpi"
 RUN cargo build --release --workspace --features "${WITH_FEATURES}"
 
 FROM docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 AS base
+SHELL ["/bin/bash", "-e", "-o", "pipefail", "-c"]
+
 ENV HUGGINGFACE_HUB_CACHE=/data \
     PORT=80
 
