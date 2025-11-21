@@ -81,8 +81,12 @@ cargo build --release --features cuda,nccl
 #CUDA: single-node compilation (+CUDA Graph)
 cargo build --release --features cuda,nccl,graph
 
-#CUDA: single-node compilation with flash attention (takes few minutes for the first build, faster inference for long-context, requires CUDA_ARCH >= 800)
+#CUDA: single-node compilation with flash attention for prefill only (requires CUDA_ARCH >= 800)
 cargo build --release --features cuda,nccl,graph,flash-attn
+
+#CUDA: single-node compilation with flash attention for both prefill and decoding 
+#(takes few minutes for the first build, faster inference for long-context, requires CUDA_ARCH >= 800)
+cargo build --release --features cuda,nccl,graph,flash-attn,flash-decoding
 
 #CUDA: multinode compilation with MPI (multi-gpus, multiple machines)
 sudo apt update
