@@ -262,6 +262,13 @@ async fn main() -> Result<()> {
     let dtype = get_dtype(args.dtype);
     let kv_cache_dtype = if args.fp8_kvcache { DType::U8 } else { dtype };
 
+    if cfg!(feature = "flash-decoding") {
+        assert!(
+            !args.fp8_kvcache,
+            "fp8 kvcache is not compatible with `flash-decoding` feature!"
+        );
+    }
+
     let device_ids: Vec<usize> = match args.device_ids {
         Some(ids) => ids,
         _ => vec![0usize],

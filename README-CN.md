@@ -81,8 +81,11 @@ cargo build --release --features cuda,nccl
 #CUDA平台：单节点（+CUDA Graph）编译命令
 cargo build --release --features cuda,nccl,graph
 
-#CUDA平台：单节点（使用flash attention kernel，适用于长上下文推理，需要CUDA_ARCH >= 800）编译命令
+#CUDA平台：单节点（+Flash attention仅用于Prefill，需要CUDA_ARCH >= 800）编译命令
 cargo build --release --features cuda,nccl,graph,flash-attn
+
+#CUDA平台：单节点（+Flash attention同时用于Prefill/Decode，适用于长上下文推理，需要CUDA_ARCH >= 800）编译命令
+cargo build --release --features cuda,nccl,graph,flash-attn,flash-decoding
 
 #CUDA平台：多节点（多机推理）编译命令
 sudo apt update
