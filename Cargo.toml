@@ -13,9 +13,8 @@ anyhow = "1.0.75"
 rand = "0.9.0"
 rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "ad95763" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "ad95763" }
-#candle-flash-attn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", optional = true, rev = "ad95763" }
+candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
+candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
 tokenizers = "0.21.2"
@@ -25,7 +24,6 @@ serde_json = "1.0.108"
 derive_more = "0.99.17"
 accelerate-src = { version = "0.3.2", optional = true }
 intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"], optional = true }
-#cudarc = {git = "https://github.com/guoqingbao/cudarc.git", version = "0.13.9", features = ["f16", "cuda-version-from-build-system"], optional = true, rev="cc13092" }
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
 clap = { version = "4.4.7", features = ["derive"] }
 futures = "0.3.29"
@@ -38,10 +36,8 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version="0.1.6", rev = "b92a5c5" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version="0.1.7", rev = "753f0a6" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
-#kernels = {path = "./kernels", version="0.1.0", optional = true}
-#metal-kernels = {path = "./metal-kernels", version="0.1.0", optional = true}
 lazy_static = {version = "1.4.0"}
 interprocess = "2.2.2"
 serde-big-array = "0.5.1"
