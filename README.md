@@ -99,14 +99,14 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
 ### Build/Run Parameters
 
-- [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`CACHE CONFIG`]
+- [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`CACHE CONFIG`] [`WEB UI`]
   <details open>
     <summary>Show details</summary>
 
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507] [--fp8-kvcache]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
@@ -119,7 +119,9 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     `CACHE CONFIG`: --fp8-kvcache
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); `--fp8-kvcache` used to enable fp8 kvcache.
+    `WEB UI`: --ui-server
+
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); `--fp8-kvcache` used to enable fp8 kvcache; `--ui-server` start with a built-in ChatGPT-like Web UI sever.
   </details>
 
 
@@ -133,13 +135,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Local Path (with port, device and isq specified)**
 
     ```shell
-    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k
+    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    target/release/candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+    target/release/candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --ui-server
     ```
 
   </details>
@@ -151,13 +153,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Local Path**
 
     ```shell
-    target/release/candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+    target/release/candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    target/release/candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+    target/release/candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
     ```
 
   </details>
@@ -169,13 +171,13 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     **Local Path (assume model downloaded in /home)**
 
     ```shell
-    cargo run --release --features metal -- --f /home/qwq-32b-q4_k_m.gguf
+    cargo run --release --features metal -- --f /home/qwq-32b-q4_k_m.gguf --ui-server
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    cargo run --release --features metal -- --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf
+    cargo run --release --features metal -- --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf --ui-server
     ```
 
   </details>
