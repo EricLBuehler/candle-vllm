@@ -6,4 +6,5 @@ target/release/candle-vllm \
   --kvcache-mem-cpu 2048 \
   --max-num-seqs 32 \
   --h 0.0.0.0 \
-  --p 2000
+  --p 2000 \
+  --ui-server

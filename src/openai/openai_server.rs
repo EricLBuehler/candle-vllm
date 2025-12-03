@@ -1,8 +1,8 @@
-use super::requests::ChatCompletionRequest;
-use super::requests::Messages;
-use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
+use super::requests::{ChatCompletionRequest, Messages, ToolCall};
+use super::responses::{APIError, ChatChoiceData, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{Streamer, StreamingStatus};
+use super::tool_parser::{get_tool_parser, ParsedOutput};
 use super::OpenAIServerData;
 use axum::response::sse::KeepAlive;
 use axum::{
@@ -18,7 +18,7 @@ use tokio::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
 
-// Get prompt, roles
+// Get prompt, roles - now with tool support
 async fn get_gen_prompt(
     data: &OpenAIServerData,
     request: &ChatCompletionRequest,
@@ -29,21 +29,42 @@ async fn get_gen_prompt(
         .ok_or(APIError::new("Missing pipeline".to_string()))?;
     let conversation = pipeline.0.get_conversation(data.record_conversation);
 
+    // Set tools if provided
+    if let Some(ref tools) = request.tools {
+        conversation.set_tools(Some(tools.clone()));
+    } else {
+        conversation.set_tools(None);
+    }
+
     match &request.messages {
         Messages::Literal(msg) => {
             return Ok(msg.clone());
         }
+        Messages::Chat(messages) => {
+            // New Chat format with full tool support
+            for message in messages {
+                if message.role == "system" {
+                    if let Some(ref content) = message.content {
+                        tracing::info!("system prompt found: {}", content);
+                        conversation.set_system_message(Some(content.clone()));
+                    }
+                }
+                conversation.append_message_ext(
+                    message.role.clone(),
+                    message.content.clone(),
+                    message.tool_calls.clone(),
+                    message.tool_call_id.clone(),
+                    message.name.clone(),
+                );
+            }
+        }
         Messages::Map(messages) => {
+            // Legacy format - convert to simple messages
             for message in messages {
                 let role = message
                     .get("role")
                     .ok_or(APIError::new("Message key `role` not found.".to_string()))?;
-                let content = message
-                    .get("content")
-                    .ok_or(APIError::new(
-                        "Message key `content` not found.".to_string(),
-                    ))?
-                    .clone();
+                let content = message.get("content").cloned().unwrap_or_default();
 
                 if role == "system" {
                     tracing::info!("system prompt found: {}", content);
@@ -55,6 +76,38 @@ async fn get_gen_prompt(
     }
 
     Ok(conversation.get_prompt(request.thinking.unwrap_or(false)))
+}
+
+/// Parse the model output for tool calls
+fn parse_tool_calls(output: &str, model_name: &str) -> ParsedOutput {
+    let parser = get_tool_parser(model_name);
+    parser.parse(output)
+}
+
+/// Build a ChatChoiceData from parsed output
+fn build_choice_data(parsed: ParsedOutput) -> ChatChoiceData {
+    match parsed {
+        ParsedOutput::Text(text) => ChatChoiceData::text(text),
+        ParsedOutput::ToolCalls(tool_calls) => {
+            let api_calls: Vec<ToolCall> =
+                tool_calls.into_iter().map(|tc| tc.to_tool_call()).collect();
+            ChatChoiceData::with_tool_calls(api_calls)
+        }
+        ParsedOutput::Mixed { text, tool_calls } => {
+            let api_calls: Vec<ToolCall> =
+                tool_calls.into_iter().map(|tc| tc.to_tool_call()).collect();
+            ChatChoiceData::with_content_and_tool_calls(text, api_calls)
+        }
+    }
+}
+
+/// Determine the finish reason based on output
+fn determine_finish_reason(choice_data: &ChatChoiceData, original_reason: Option<&str>) -> String {
+    if choice_data.has_tool_calls() {
+        "tool_calls".to_string()
+    } else {
+        original_reason.unwrap_or("stop").to_string()
+    }
 }
 
 async fn check_length(
