@@ -2,6 +2,7 @@ use crate::models_config::ModelsState;
 use axum::{
     extract::State,
     http::HeaderMap,
+    response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
@@ -65,6 +66,7 @@ pub fn build_router(state: AppState) -> Router {
                                                 .map(|t| t.function.name.clone())
                                                 .collect();
                                             
+                                            let mcp_tools_len = mcp_tools.len();
                                             let new_mcp_tools: Vec<_> = mcp_tools
                                                 .into_iter()
                                                 .filter(|t| !existing_names.contains(&t.function.name))
@@ -75,11 +77,11 @@ pub fn build_router(state: AppState) -> Router {
                                                     "Merging {} MCP tools with {} client-provided tools ({} duplicates skipped)",
                                                     new_mcp_tools.len(),
                                                     client_tools.len(),
-                                                    mcp_tools.len() - new_mcp_tools.len()
+                                                    mcp_tools_len - new_mcp_tools.len()
                                                 );
                                                 client_tools.extend(new_mcp_tools);
                                             } else {
-                                                debug!("All {} MCP tools already present in client-provided tools", mcp_tools.len());
+                                                debug!("All {} MCP tools already present in client-provided tools", mcp_tools_len);
                                             }
                                         }
                                         None => {
@@ -112,8 +114,15 @@ pub fn build_router(state: AppState) -> Router {
                         HashSet::new()
                     };
                     
+                    // Extract original messages and clone req before it's moved
+                    let original_messages = match &req.messages {
+                        candle_vllm_core::openai::requests::Messages::Chat(msgs) => msgs.clone(),
+                        _ => vec![],
+                    };
+                    let req_clone = req.clone();
+                    
                     // Get the initial response
-                    let mut responder = chat_completions_with_data(state.data.clone(), req).await?;
+                    let responder = chat_completions_with_data(state.data.clone(), req).await;
                     
                     // Handle tool calls: execute MCP tools automatically, forward client tools
                     match responder {
@@ -121,10 +130,13 @@ pub fn build_router(state: AppState) -> Router {
                             // Check if there are tool calls in the response
                             if let Some(choice) = response.choices.first_mut() {
                                 if let Some(ref tool_calls) = choice.message.tool_calls {
-                                    // Separate MCP tool calls from client tool calls
+                                    // Separate MCP tool calls from client tool calls (clone to get owned values)
                                     let (mcp_tool_calls, client_tool_calls): (Vec<_>, Vec<_>) = tool_calls
                                         .iter()
-                                        .partition(|tc| mcp_tool_names.contains(&tc.function.name));
+                                        .map(|tc| (tc.clone(), mcp_tool_names.contains(&tc.function.name)))
+                                        .partition(|(_, is_mcp)| *is_mcp);
+                                    let mcp_tool_calls: Vec<_> = mcp_tool_calls.into_iter().map(|(tc, _)| tc).collect();
+                                    let client_tool_calls: Vec<_> = client_tool_calls.into_iter().map(|(tc, _)| tc).collect();
                                     
                                     if !mcp_tool_calls.is_empty() {
                                         info!("Executing {} MCP tool call(s) automatically", mcp_tool_calls.len());
@@ -134,12 +146,6 @@ pub fn build_router(state: AppState) -> Router {
                                             match mcp_session.execute_mcp_tool_calls(&mcp_tool_calls).await {
                                                 Ok(tool_responses) => {
                                                     info!("Successfully executed {} MCP tool call(s)", mcp_tool_calls.len());
-                                                    
-                                                    // Extract original messages from request
-                                                    let original_messages = match &req.messages {
-                                                        candle_vllm_core::openai::requests::Messages::Chat(msgs) => msgs.clone(),
-                                                        _ => vec![],
-                                                    };
                                                     
                                                     // Build conversation with tool results
                                                     let mut messages = original_messages;
@@ -153,12 +159,12 @@ pub fn build_router(state: AppState) -> Router {
                                                     messages.extend(tool_responses);
                                                     
                                                     // Continue conversation with tool results
-                                                    let mut follow_up_req = req.clone();
+                                                    let mut follow_up_req = req_clone.clone();
                                                     follow_up_req.messages = candle_vllm_core::openai::requests::Messages::Chat(messages);
                                                     // Keep tools in case there are more tool calls needed
                                                     
                                                     // Get follow-up response
-                                                    let follow_up_responder = chat_completions_with_data(state.data.clone(), follow_up_req).await?;
+                                                    let follow_up_responder = chat_completions_with_data(state.data.clone(), follow_up_req).await;
                                                     
                                                     match follow_up_responder {
                                                         candle_vllm_core::openai::responses::ChatResponder::Completion(mut follow_up_response) => {
@@ -173,9 +179,9 @@ pub fn build_router(state: AppState) -> Router {
                                                                     }
                                                                 }
                                                             }
-                                                            Ok(follow_up_response.into_response())
+                                                            Json(follow_up_response).into_response()
                                                         }
-                                                        _ => Ok(response.into_response()),
+                                                        _ => Json(response).into_response(),
                                                     }
                                                 }
                                                 Err(e) => {
@@ -186,29 +192,29 @@ pub fn build_router(state: AppState) -> Router {
                                                     } else {
                                                         choice.message.tool_calls = None;
                                                     }
-                                                    Ok(response.into_response())
+                                                    Json(response).into_response()
                                                 }
                                             }
                                         } else {
                                             // No MCP session but MCP tools were called - shouldn't happen
                                             warn!("MCP tool calls detected but no MCP session available");
-                                            Ok(response.into_response())
+                                            Json(response).into_response()
                                         }
                                     } else if !client_tool_calls.is_empty() {
                                         // Only client tool calls - return them to client
                                         info!("Returning {} client tool call(s) to client for execution", client_tool_calls.len());
                                         choice.message.tool_calls = Some(client_tool_calls);
-                                        Ok(response.into_response())
+                                        Json(response).into_response()
                                     } else {
                                         // No tool calls
-                                        Ok(response.into_response())
+                                        Json(response).into_response()
                                     }
                                 } else {
                                     // No tool calls in response
-                                    Ok(response.into_response())
+                                    Json(response).into_response()
                                 }
                             } else {
-                                Ok(response.into_response())
+                                Json(response).into_response()
                             }
                         }
                         _ => responder.into_response(),

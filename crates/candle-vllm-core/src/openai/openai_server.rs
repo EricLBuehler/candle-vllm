@@ -215,7 +215,7 @@ pub async fn chat_completions_with_data(
 
     // Store conversation_id and resource_id for this request
     {
-        let mut model = data.model.write();
+        let model = data.model.write();
         model.request_metadata.write().insert(
             request_id.clone(),
             (request.conversation_id.clone(), request.resource_id.clone()),

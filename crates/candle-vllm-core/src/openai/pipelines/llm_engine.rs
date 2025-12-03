@@ -65,7 +65,7 @@ pub struct LLMEngine {
     senders: HashMap<String, Option<Arc<Sender<ChatResponse>>>>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
     // Store conversation_id and resource_id per request
-    request_metadata: RwLock<HashMap<String, (Option<String>, Option<String>)>>,
+    pub request_metadata: RwLock<HashMap<String, (Option<String>, Option<String>)>>,
     sequence_groups: RwLock<VecDeque<Arc<SequenceGroup>>>,
     multi_process: bool,
     num_shards: usize,
@@ -434,17 +434,6 @@ impl LLMEngine {
             parsed.remove(&request_id);
         }
         
-        let choice = Choice {
-            delta: ChoiceData {
-                role: Some(pipeline.get_past_conversation().get_roles().0.clone()),
-                content,
-                tool_calls: tool_calls_delta,
-            },
-            finish_reason,
-            index: 0,
-        };
-        choices.push(choice);
-
         // Retrieve conversation_id and resource_id (only include in first chunk)
         let (conversation_id, resource_id) = if finish_reason.is_none() && content.is_some() {
             // Check if this is the first chunk (has role but no previous content)
@@ -457,6 +446,17 @@ impl LLMEngine {
         } else {
             (None, None) // Don't include in finish chunks
         };
+
+        let choice = Choice {
+            delta: ChoiceData {
+                role: Some(pipeline.get_past_conversation().get_roles().0.clone()),
+                content,
+                tool_calls: tool_calls_delta,
+            },
+            finish_reason,
+            index: 0,
+        };
+        choices.push(choice);
 
         ChatCompletionChunk {
             id: request_id,

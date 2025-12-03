@@ -285,6 +285,8 @@ impl ChatCompletionChunk {
             model,
             object: "chat.completion.chunk",
             system_fingerprint: None,
+            conversation_id: None,
+            resource_id: None,
         }
     }
 

@@ -304,6 +304,8 @@ impl ResponsesSession {
                 logprobs: None,
                 thinking: None,
                 parallel_tool_calls: None,
+                conversation_id: None,
+                resource_id: None,
             };
 
             // Generate response
