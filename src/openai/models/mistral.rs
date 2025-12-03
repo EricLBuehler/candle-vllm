@@ -1,4 +1,6 @@
-use super::{attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config};
+use super::{
+    attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config, ScalingValue,
+};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, rms_norm, Comm, ReplicatedLinear, VarBuilder};
 use crate::openai::models::mask::get_attention_causal_mask;
@@ -9,10 +11,29 @@ use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::{Activation, RmsNorm};
 use either::Either;
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+
+fn default_rope_theta() -> f64 {
+    10000.0
+}
+
+#[derive(serde::Deserialize, Debug, Clone)]
+pub struct RopeParameters {
+    #[serde(default = "default_rope_theta")]
+    pub(crate) rope_theta: f64,
+    pub(crate) rope_type: Option<String>,
+    pub(crate) original_max_position_embeddings: Option<usize>,
+    pub(crate) factor: Option<f64>,
+    pub(crate) beta_fast: Option<f64>,
+    pub(crate) beta_slow: Option<f64>,
+    pub(crate) mscale: Option<f64>,
+    pub(crate) mscale_all_dim: Option<f64>,
+    pub(crate) llama_4_scaling_beta: Option<f64>,
+}
 
 #[derive(serde::Deserialize, Debug, Clone)]
 pub struct MistralTextConfig {
@@ -28,12 +49,34 @@ pub struct MistralTextConfig {
     pub(crate) rms_norm_eps: f64,
     #[serde(default)]
     pub(crate) tie_word_embeddings: bool,
-    pub(crate) rope_theta: f64,
+    /// Direct rope_theta field (for older config formats)
+    #[serde(default)]
+    pub(crate) rope_theta: Option<f64>,
+    /// Nested rope_parameters (for newer Ministral/Mistral3 config formats)
+    pub(crate) rope_parameters: Option<RopeParameters>,
     #[serde(default)]
     pub(crate) attention_bias: bool,
     pub(crate) hidden_act: Option<Activation>,
     pub(crate) sliding_window: Option<usize>,
     pub(crate) quantization_config: Option<QuantConfig>,
+}
+
+impl MistralTextConfig {
+    /// Get rope_theta from either direct field or nested rope_parameters
+    pub fn get_rope_theta(&self) -> f64 {
+        self.rope_theta
+            .or_else(|| self.rope_parameters.as_ref().map(|rp| rp.rope_theta))
+            .unwrap_or(default_rope_theta())
+    }
+
+    /// Get original_max_position_embeddings from either direct field or nested rope_parameters
+    pub fn get_original_max_position_embeddings(&self) -> Option<usize> {
+        self.original_max_position_embeddings.or_else(|| {
+            self.rope_parameters
+                .as_ref()
+                .and_then(|rp| rp.original_max_position_embeddings)
+        })
+    }
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
@@ -107,6 +150,50 @@ impl Mistral {
             None
         };
 
+        // Build rope_scaling from rope_parameters if present and rope_type is yarn
+        let rope_scaling = config.text_config.rope_parameters.as_ref().and_then(|rp| {
+            if rp.rope_type.as_deref() == Some("yarn") {
+                let mut map = HashMap::<String, ScalingValue>::new();
+                map.insert(
+                    "rope_type".to_string(),
+                    ScalingValue::String("yarn".to_string()),
+                );
+                if let Some(factor) = rp.factor {
+                    map.insert("factor".to_string(), ScalingValue::Single(factor));
+                }
+                if let Some(beta_fast) = rp.beta_fast {
+                    map.insert("beta_fast".to_string(), ScalingValue::Single(beta_fast));
+                }
+                if let Some(beta_slow) = rp.beta_slow {
+                    map.insert("beta_slow".to_string(), ScalingValue::Single(beta_slow));
+                }
+                if let Some(orig_max_pos) = rp.original_max_position_embeddings {
+                    map.insert(
+                        "original_max_position_embeddings".to_string(),
+                        ScalingValue::Single(orig_max_pos as f64),
+                    );
+                }
+                if let Some(mscale) = rp.mscale {
+                    map.insert("mscale".to_string(), ScalingValue::Single(mscale));
+                }
+                if let Some(mscale_all_dim) = rp.mscale_all_dim {
+                    map.insert(
+                        "mscale_all_dim".to_string(),
+                        ScalingValue::Single(mscale_all_dim),
+                    );
+                }
+                // Add attn_factor and extrapolation_factor with default values for yarn
+                map.insert("attn_factor".to_string(), ScalingValue::Single(1.0));
+                map.insert(
+                    "extrapolation_factor".to_string(),
+                    ScalingValue::Single(1.0),
+                );
+                Some(map)
+            } else {
+                None
+            }
+        });
+
         let config = Config {
             architectures: config.architectures,
             hidden_size: config.text_config.hidden_size,
@@ -117,7 +204,7 @@ impl Mistral {
             num_attention_heads: config.text_config.num_attention_heads,
             num_key_value_heads: Some(config.text_config.num_key_value_heads),
             rms_norm_eps: config.text_config.rms_norm_eps,
-            rope_theta: config.text_config.rope_theta,
+            rope_theta: config.text_config.get_rope_theta(),
             rope_local_base_freq: None,
             bos_token_id: Some(bos_token_id),
             eos_token_id,
@@ -127,9 +214,11 @@ impl Mistral {
             hidden_act: Some(config.text_config.hidden_act.unwrap_or(Activation::Silu)),
             hidden_activation: None,
             tie_word_embeddings: config.text_config.tie_word_embeddings,
-            rope_scaling: None,
+            rope_scaling,
             max_position_embeddings: Some(config.text_config.max_position_embeddings),
-            original_max_position_embeddings: config.text_config.original_max_position_embeddings,
+            original_max_position_embeddings: config
+                .text_config
+                .get_original_max_position_embeddings(),
             attention_bias: Some(config.text_config.attention_bias),
             partial_rotary_factor: None,
             qk_layernorm: false,
@@ -242,19 +331,24 @@ impl Mistral {
             reporter.write().set_progress(layer_idx + 1);
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = ReplicatedLinear::load_no_bias(
-            cfg.hidden_size,
-            cfg.vocab_size,
-            if cfg.architectures.is_some()
-                && cfg.architectures.as_ref().unwrap()[0] == "Mistral3ForConditionalGeneration"
-            {
-                vb.pp("language_model.lm_head")
-            } else {
-                vb.pp("lm_head")
-            },
-            &None,
-            &None,
-        )?;
+        let lm_head = if cfg.tie_word_embeddings {
+            // When tie_word_embeddings is true, reuse the embedding weights for lm_head
+            ReplicatedLinear::from_weight_bias(embed_tokens.embeddings().clone(), None)?
+        } else {
+            ReplicatedLinear::load_no_bias(
+                cfg.hidden_size,
+                cfg.vocab_size,
+                if cfg.architectures.is_some()
+                    && cfg.architectures.as_ref().unwrap()[0] == "Mistral3ForConditionalGeneration"
+                {
+                    vb.pp("language_model.lm_head")
+                } else {
+                    vb.pp("lm_head")
+                },
+                &None,
+                &None,
+            )?
+        };
 
         Ok(Self {
             embed_tokens,

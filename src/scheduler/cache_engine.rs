@@ -5,6 +5,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+#[cfg(any(feature = "cuda", feature = "metal"))]
 use crate::backend::{copy_blocks, swap_blocks};
 
 #[derive(Clone, Debug)]
@@ -198,44 +199,74 @@ impl CacheEngine {
 
 impl CacheEngine {
     pub fn swap_in(&self, src_to_dst: HashMap<usize, usize>) -> Result<()> {
-        for i in 0..self.num_layers {
-            let (src_key_cache, src_value_cache) = self.cpu_cache.get(i).unwrap();
-            let mut gpu_cache = self.get_kv_cache();
-            let (dst_key_cache, dst_value_cache) = gpu_cache.get_mut(i).unwrap();
-            // Swap (copy) key blocks
-            swap_blocks(src_key_cache.clone(), dst_key_cache, src_to_dst.clone())?;
-            // Swap (copy) key blocks
-            swap_blocks(src_value_cache.clone(), dst_value_cache, src_to_dst.clone())?;
+        #[cfg(not(any(feature = "cuda", feature = "metal")))]
+        {
+            // Dummy implementation when cuda/metal features are not enabled
+            let _ = src_to_dst; // Avoid unused variable warning
+            return Ok(());
         }
-        Ok(())
+
+        #[cfg(any(feature = "cuda", feature = "metal"))]
+        {
+            for i in 0..self.num_layers {
+                let (src_key_cache, src_value_cache) = self.cpu_cache.get(i).unwrap();
+                let mut gpu_cache = self.get_kv_cache();
+                let (dst_key_cache, dst_value_cache) = gpu_cache.get_mut(i).unwrap();
+                // Swap (copy) key blocks
+                swap_blocks(src_key_cache.clone(), dst_key_cache, src_to_dst.clone())?;
+                // Swap (copy) key blocks
+                swap_blocks(src_value_cache.clone(), dst_value_cache, src_to_dst.clone())?;
+            }
+            Ok(())
+        }
     }
 
     pub fn swap_out(&mut self, src_to_dst: HashMap<usize, usize>) -> Result<()> {
-        for i in 0..self.num_layers {
-            let gpu_cache = self.get_kv_cache();
-            let (src_key_cache, src_value_cache) = gpu_cache.get(i).unwrap().clone();
-            drop(gpu_cache);
-
-            let (dst_key_cache, dst_value_cache) = self.cpu_cache.get_mut(i).unwrap();
-            // Swap (copy) key blocks
-            swap_blocks(src_key_cache.clone(), dst_key_cache, src_to_dst.clone())?;
-            // Swap (copy) key blocks
-            swap_blocks(src_value_cache.clone(), dst_value_cache, src_to_dst.clone())?;
+        #[cfg(not(any(feature = "cuda", feature = "metal")))]
+        {
+            // Dummy implementation when cuda/metal features are not enabled
+            let _ = src_to_dst; // Avoid unused variable warning
+            return Ok(());
         }
-        Ok(())
+
+        #[cfg(any(feature = "cuda", feature = "metal"))]
+        {
+            for i in 0..self.num_layers {
+                let gpu_cache = self.get_kv_cache();
+                let (src_key_cache, src_value_cache) = gpu_cache.get(i).unwrap().clone();
+                drop(gpu_cache);
+
+                let (dst_key_cache, dst_value_cache) = self.cpu_cache.get_mut(i).unwrap();
+                // Swap (copy) key blocks
+                swap_blocks(src_key_cache.clone(), dst_key_cache, src_to_dst.clone())?;
+                // Swap (copy) key blocks
+                swap_blocks(src_value_cache.clone(), dst_value_cache, src_to_dst.clone())?;
+            }
+            Ok(())
+        }
     }
     #[allow(unused_unsafe)]
     pub fn copy(&mut self, src_to_dst: HashMap<usize, Vec<usize>>) -> Result<()> {
-        let mut gpu_cache = self.get_kv_cache();
-        #[allow(clippy::map_identity)]
-        let caches: (Vec<&mut Tensor>, Vec<&mut Tensor>) =
-            gpu_cache.iter_mut().map(|(a, b)| (a, b)).unzip();
-        let (key_caches, value_caches) = caches;
-
-        // NOTE(EricLBuehler): This may synchronize the CPU and GPU
-        unsafe {
-            copy_blocks(key_caches, value_caches, src_to_dst)?;
+        #[cfg(not(any(feature = "cuda", feature = "metal")))]
+        {
+            // Dummy implementation when cuda/metal features are not enabled
+            let _ = src_to_dst; // Avoid unused variable warning
+            return Ok(());
         }
-        Ok(())
+
+        #[cfg(any(feature = "cuda", feature = "metal"))]
+        {
+            let mut gpu_cache = self.get_kv_cache();
+            #[allow(clippy::map_identity)]
+            let caches: (Vec<&mut Tensor>, Vec<&mut Tensor>) =
+                gpu_cache.iter_mut().map(|(a, b)| (a, b)).unzip();
+            let (key_caches, value_caches) = caches;
+
+            // NOTE(EricLBuehler): This may synchronize the CPU and GPU
+            unsafe {
+                copy_blocks(key_caches, value_caches, src_to_dst)?;
+            }
+            Ok(())
+        }
     }
 }
