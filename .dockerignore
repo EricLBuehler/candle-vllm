@@ -1,0 +1,14 @@
+.git
+.github
+target
+debug
+release
+Cargo.lock
+**/*.log
+.env*
+node_modules
+.vscode
+.idea
+__pycache__
+*.pyc
+kernels/src/lib.rs

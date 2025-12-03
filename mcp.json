@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "sequential-thinking": {
+      "type": "node",
+      "command": "/Users/gqadonis/.nvm/versions/node/v22.20.0/bin/mcp-server-sequential-thinking",
+      "args": [],
+      "env": {}
+    }
+  }
+}

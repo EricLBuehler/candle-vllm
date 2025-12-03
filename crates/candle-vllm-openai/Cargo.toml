@@ -1,0 +1,38 @@
+[package]
+name = "candle-vllm-openai"
+version = "0.4.5"
+edition = "2021"
+license = "MIT"
+description = "OpenAI-compatible adapter for candle-vllm core"
+
+[dependencies]
+candle-vllm-core = { path = "../candle-vllm-core" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+thiserror.workspace = true
+futures.workspace = true
+minijinja.workspace = true
+minijinja-contrib.workspace = true
+chrono.workspace = true
+regex.workspace = true
+parking_lot.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+either.workspace = true
+tokenizers.workspace = true
+rmcp.workspace = true
+rmcp-macros.workspace = true
+serde_yaml.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+candle-core.workspace = true
+
+[features]
+accelerate = ["candle-vllm-core/accelerate"]
+cuda = ["candle-vllm-core/cuda"]
+metal = ["candle-vllm-core/metal"]
+flash-attn = ["candle-vllm-core/flash-attn"]
+flash-decoding = ["candle-vllm-core/flash-decoding"]
