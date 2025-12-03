@@ -12,6 +12,7 @@ pub mod requests;
 pub mod responses;
 pub mod sampling_params;
 pub mod streaming;
+pub mod tool_parser;
 use either::Either;
 use serde::{Deserialize, Serialize};
 pub trait TokenizerWrapper<'s, E>
