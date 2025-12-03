@@ -22,6 +22,7 @@ fn default_rope_theta() -> f64 {
 }
 
 #[derive(serde::Deserialize, Debug, Clone)]
+#[allow(unused)]
 pub struct RopeParameters {
     #[serde(default = "default_rope_theta")]
     pub(crate) rope_theta: f64,
