@@ -60,6 +60,7 @@ impl Scheduler {
                 cache_config.block_size,
                 cache_config.num_gpu_blocks.unwrap(),
                 cache_config.num_cpu_blocks.unwrap(),
+                cache_config.kvcache_mem_gpu,
             ),
             is_last_prefill: false,
         }
@@ -235,10 +236,15 @@ impl Scheduler {
 
     pub fn print_free_blocks(&self) {
         let free_blocks = self.block_engine.get_num_free_blocks();
+        let num_blocks = self.block_engine.get_num_blocks();
+        let kvcache_mem_size = self.block_engine.get_kvcache_mem_size() as f32 / 1024f32;
+        let used_percent = (num_blocks - free_blocks) as f32 * 100f32 / num_blocks as f32;
         tracing::info!(
-            "Available kvcache blocks {} (for {} tokens)",
-            free_blocks,
-            free_blocks * self.block_engine.get_block_size()
+            "Available {} KvCache tokens ({:.02}/{:.02}GB, used {:.02}%)",
+            free_blocks * self.block_engine.get_block_size(),
+            used_percent / 100f32 * kvcache_mem_size,
+            kvcache_mem_size,
+            used_percent,
         );
     }
 
