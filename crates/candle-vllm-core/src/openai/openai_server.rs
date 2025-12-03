@@ -213,6 +213,15 @@ pub async fn chat_completions_with_data(
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
 
+    // Store conversation_id and resource_id for this request
+    {
+        let mut model = data.model.write();
+        model.request_metadata.write().insert(
+            request_id.clone(),
+            (request.conversation_id.clone(), request.resource_id.clone()),
+        );
+    }
+
     let mut max_request_tokens = request
         .max_tokens
         .unwrap_or(data.pipeline_config.default_max_tokens);
@@ -336,6 +345,14 @@ pub async fn chat_completions_with_data(
 
         let choices = &model.completion_records[&request_id_clone].0;
         let usage = &model.completion_records[&request_id_clone].1;
+        
+        // Retrieve conversation_id and resource_id from metadata
+        let (conversation_id, resource_id) = model
+            .request_metadata
+            .read()
+            .get(&request_id_clone)
+            .cloned()
+            .unwrap_or((None, None));
 
         ChatResponder::Completion(ChatCompletionResponse {
             id: request_id_clone,
@@ -344,6 +361,8 @@ pub async fn chat_completions_with_data(
             model: model_name,
             object: "chat.completion",
             usage: usage.clone(),
+            conversation_id,
+            resource_id,
         })
     }
 }

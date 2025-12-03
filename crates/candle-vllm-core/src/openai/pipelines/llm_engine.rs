@@ -64,6 +64,8 @@ pub struct LLMEngine {
     sync_notifies: HashMap<String, Option<Arc<Notify>>>,
     senders: HashMap<String, Option<Arc<Sender<ChatResponse>>>>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
+    // Store conversation_id and resource_id per request
+    request_metadata: RwLock<HashMap<String, (Option<String>, Option<String>)>>,
     sequence_groups: RwLock<VecDeque<Arc<SequenceGroup>>>,
     multi_process: bool,
     num_shards: usize,
@@ -129,6 +131,7 @@ impl LLMEngine {
             group_id: 0,
             notify: notify.clone(),
             completion_records: HashMap::new(),
+            request_metadata: RwLock::new(HashMap::new()),
             sequence_groups: RwLock::new(VecDeque::new()),
             multi_process,
             num_shards,
@@ -442,6 +445,19 @@ impl LLMEngine {
         };
         choices.push(choice);
 
+        // Retrieve conversation_id and resource_id (only include in first chunk)
+        let (conversation_id, resource_id) = if finish_reason.is_none() && content.is_some() {
+            // Check if this is the first chunk (has role but no previous content)
+            // For simplicity, include in all chunks but they'll be serialized only if Some
+            self.request_metadata
+                .read()
+                .get(&request_id)
+                .cloned()
+                .unwrap_or((None, None))
+        } else {
+            (None, None) // Don't include in finish chunks
+        };
+
         ChatCompletionChunk {
             id: request_id,
             choices,
@@ -449,6 +465,8 @@ impl LLMEngine {
             model: pipeline.name().to_string(),
             object: "chat.completion.chunk",
             system_fingerprint: None,
+            conversation_id,
+            resource_id,
         }
     }
 

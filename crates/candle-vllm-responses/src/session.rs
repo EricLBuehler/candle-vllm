@@ -220,6 +220,15 @@ impl ResponsesSession {
         client.call_tool(tool_name, payload).await
     }
 
+    /// Execute MCP tool calls using the orchestrator.
+    pub async fn execute_mcp_tool_calls(
+        &self,
+        tool_calls: &[candle_vllm_core::openai::requests::ToolCall],
+    ) -> anyhow::Result<Vec<ChatMessage>> {
+        let orchestrator = Orchestrator::new(self.mcp_clients.clone());
+        orchestrator.execute_tool_calls(tool_calls, None).await
+    }
+
     /// Run a multi-turn conversation with automatic tool execution.
     ///
     /// This method:

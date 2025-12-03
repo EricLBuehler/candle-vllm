@@ -573,6 +573,18 @@ pub struct ChatCompletionRequest {
     /// Whether to enable parallel tool calling (default: true)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+
+    // ========================================================================
+    // Conversation and Resource Tracking
+    // ========================================================================
+    /// Conversation ID for tracking multi-turn conversations
+    /// If provided, this ID will be returned in responses and can be used to maintain context
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    /// Resource ID identifying the calling application or resource
+    /// Used for tracking and analytics purposes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
 }
 
 impl ChatCompletionRequest {

@@ -145,6 +145,12 @@ pub struct ChatCompletionResponse {
     pub model: String,
     pub object: &'static str,
     pub usage: ChatCompletionUsageResponse,
+    /// Conversation ID from the request (if provided)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    /// Resource ID from the request (if provided)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
 }
 
 // ============================================================================
@@ -261,6 +267,12 @@ pub struct ChatCompletionChunk {
     pub model: String,
     pub object: &'static str,
     pub system_fingerprint: Option<String>,
+    /// Conversation ID from the request (if provided, sent in first chunk only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+    /// Resource ID from the request (if provided, sent in first chunk only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<String>,
 }
 
 impl ChatCompletionChunk {
