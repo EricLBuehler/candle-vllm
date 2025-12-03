@@ -1,8 +1,7 @@
-use super::requests::{ChatCompletionRequest, Messages, ToolCall};
-use super::responses::{APIError, ChatChoiceData, ChatCompletionResponse, ChatResponder};
+use super::requests::{ChatCompletionRequest, Messages};
+use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{Streamer, StreamingStatus};
-use super::tool_parser::{get_tool_parser, ParsedOutput};
 use super::OpenAIServerData;
 use axum::response::sse::KeepAlive;
 use axum::{
@@ -76,38 +75,6 @@ async fn get_gen_prompt(
     }
 
     Ok(conversation.get_prompt(request.thinking.unwrap_or(false)))
-}
-
-/// Parse the model output for tool calls
-fn parse_tool_calls(output: &str, model_name: &str) -> ParsedOutput {
-    let parser = get_tool_parser(model_name);
-    parser.parse(output)
-}
-
-/// Build a ChatChoiceData from parsed output
-fn build_choice_data(parsed: ParsedOutput) -> ChatChoiceData {
-    match parsed {
-        ParsedOutput::Text(text) => ChatChoiceData::text(text),
-        ParsedOutput::ToolCalls(tool_calls) => {
-            let api_calls: Vec<ToolCall> =
-                tool_calls.into_iter().map(|tc| tc.to_tool_call()).collect();
-            ChatChoiceData::with_tool_calls(api_calls)
-        }
-        ParsedOutput::Mixed { text, tool_calls } => {
-            let api_calls: Vec<ToolCall> =
-                tool_calls.into_iter().map(|tc| tc.to_tool_call()).collect();
-            ChatChoiceData::with_content_and_tool_calls(text, api_calls)
-        }
-    }
-}
-
-/// Determine the finish reason based on output
-fn determine_finish_reason(choice_data: &ChatChoiceData, original_reason: Option<&str>) -> String {
-    if choice_data.has_tool_calls() {
-        "tool_calls".to_string()
-    } else {
-        original_reason.unwrap_or("stop").to_string()
-    }
 }
 
 async fn check_length(
