@@ -1,0 +1,68 @@
+[package]
+name = "candle-vllm-core"
+version = "0.4.5"
+edition = "2021"
+license = "MIT"
+description = "Core inference engine and scheduler for candle-vllm"
+
+[dependencies]
+anyhow.workspace = true
+attention-rs.workspace = true
+bincode.workspace = true
+candle-core.workspace = true
+candle-nn.workspace = true
+derive_more.workspace = true
+dirs.workspace = true
+dyn-fmt.workspace = true
+either.workspace = true
+flume.workspace = true
+hf-hub.workspace = true
+itertools.workspace = true
+lazy_static.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+rayon.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde-big-array.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokenizers.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+half = { workspace = true, features = ["num-traits", "use-intrinsics", "rand_distr"] }
+interprocess.workspace = true
+akin.workspace = true
+which.workspace = true
+mpi = { workspace = true, optional = true }
+rmcp = { workspace = true, optional = true }
+rmcp-macros = { workspace = true, optional = true }
+axum.workspace = true
+tokio.workspace = true
+futures.workspace = true
+minijinja.workspace = true
+minijinja-contrib.workspace = true
+chrono.workspace = true
+indicatif.workspace = true
+ahash.workspace = true
+utoipa.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+
+[dependencies.metal]
+version = "0.27"
+features = ["mps"]
+optional = true
+
+[features]
+accelerate = ["candle-core/accelerate", "candle-nn/accelerate"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "attention-rs/cuda"]
+metal = ["candle-core/metal", "candle-nn/metal", "attention-rs/metal", "dep:metal"]
+cudnn = ["candle-core/cudnn"]
+flash-attn = ["cuda", "attention-rs/flash-attn"]
+flash-decoding = ["attention-rs/flash-decoding"]
+mkl = ["candle-core/mkl", "candle-nn/mkl"]
+nccl = ["candle-core/nccl"]
+mpi = ["candle-core/nccl", "dep:mpi"]
+graph = ["attention-rs/graph", "candle-core/graph"]

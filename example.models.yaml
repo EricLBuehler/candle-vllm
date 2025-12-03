@@ -1,0 +1,87 @@
+# Example models.yaml configuration file for candle-vllm
+#
+# This file defines model aliases and their configurations.
+# Set CANDLE_VLLM_MODELS_CONFIG environment variable to point to your models.yaml file,
+# or place it as 'models.yaml' or 'models.yml' in the current directory.
+#
+# Example usage:
+#   export CANDLE_VLLM_MODELS_CONFIG=/path/to/models.yaml
+#   cargo run --release --features metal -- --m mistral-7b
+
+# Optional: Auto-unload models after being idle for this many seconds
+# Set to null or omit to disable auto-unloading
+idle_unload_secs: 3600  # 1 hour
+
+models:
+  # Example: Hugging Face model
+  - name: mistral-7b
+    hf_id: mistralai/Mistral-7B-Instruct-v0.3
+    params:
+      dtype: f16
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 8192  # MB
+      max_num_seqs: 256
+    notes: "Mistral 7B Instruct model from Hugging Face"
+
+  # Example: Local model path
+  - name: local-mistral
+    local_path: ./models/mistral-7b-instruct
+    params:
+      dtype: f16
+      quantization: q4k
+      kvcache_mem_gpu: 4096
+      max_num_seqs: 128
+    notes: "Local Mistral model with quantization"
+
+  # Example: Model with specific weight file
+  - name: custom-model
+    hf_id: microsoft/phi-2
+    weight_file: model.safetensors
+    params:
+      dtype: f16
+      block_size: 16
+      kvcache_mem_gpu: 2048
+      device_ids: [0]  # Use GPU 0
+    notes: "Custom model configuration"
+
+  # Example: Multi-GPU model
+  - name: large-model
+    hf_id: mistralai/Mixtral-8x7B-Instruct-v0.1
+    params:
+      dtype: f16
+      device_ids: [0, 1, 2, 3]  # Use GPUs 0-3
+      kvcache_mem_gpu: 16384
+      max_num_seqs: 512
+      multithread: true
+    notes: "Large model distributed across multiple GPUs"
+
+  # Example: CPU-only model
+  - name: cpu-model
+    hf_id: microsoft/phi-2
+    params:
+      dtype: f32
+      kvcache_mem_cpu: 4096
+      device_ids: []  # Empty = CPU
+    notes: "Model running on CPU"
+
+# Parameter reference:
+#   dtype: Data type (f32, f16, bf16)
+#   quantization: Quantization method (q4k, q8_0, etc.)
+#   block_size: KV cache block size
+#   max_num_seqs: Maximum number of sequences in batch
+#   kvcache_mem_gpu: KV cache memory in MB (GPU)
+#   kvcache_mem_cpu: KV cache memory in MB (CPU)
+#   prefill_chunk_size: Chunk size for prefill (optional)
+#   multithread: Enable multi-threading (true/false)
+#   device_ids: List of GPU device IDs to use (empty = CPU)
+#   temperature: Sampling temperature (0.0-2.0)
+#   top_p: Nucleus sampling parameter
+#   top_k: Top-k sampling parameter
+#   frequency_penalty: Frequency penalty (-2.0 to 2.0)
+#   presence_penalty: Presence penalty (-2.0 to 2.0)
+#   isq: In-situ quantization (q4k, q8_0, etc.)
+
