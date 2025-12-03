@@ -2,6 +2,7 @@ use anyhow::Result;
 use reqwest::Client;
 use serde_json::Value;
 use std::time::Duration;
+use tracing::{debug, info};
 
 #[derive(Clone, Debug)]
 pub struct McpServerConfig {
@@ -48,6 +49,7 @@ impl McpClient {
     /// List available tools from the MCP server with timeout and error handling.
     pub async fn list_tools(&self) -> Result<Value> {
         let url = format!("{}/tools", self.config.url.trim_end_matches('/'));
+        debug!("Listing tools from MCP server: {}", url);
         let resp = self.client.get(&url).send().await.map_err(|e| {
             if e.is_timeout() {
                 anyhow::anyhow!(
@@ -77,6 +79,8 @@ impl McpClient {
     /// Call a tool on the MCP server with timeout and error handling.
     pub async fn call_tool(&self, name: &str, payload: Value) -> Result<Value> {
         let url = format!("{}/tools/{}", self.config.url.trim_end_matches('/'), name);
+        info!("Calling MCP tool '{}' at {}", name, url);
+        debug!("Tool call payload: {:?}", payload);
         let resp = self
             .client
             .post(&url)

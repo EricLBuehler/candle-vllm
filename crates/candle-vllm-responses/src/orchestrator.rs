@@ -6,6 +6,7 @@
 use crate::mcp_client::McpClient;
 use candle_vllm_core::openai::requests::{ChatMessage, ToolCall};
 use std::collections::HashMap;
+use tracing::{debug, info, warn};
 
 /// Orchestrator for managing tool calls and routing them to MCP servers.
 pub struct Orchestrator {
@@ -30,19 +31,24 @@ impl Orchestrator {
         tool_calls: &[ToolCall],
         allowed_tools: Option<&[String]>,
     ) -> anyhow::Result<Vec<ChatMessage>> {
+        info!("Executing {} tool call(s)", tool_calls.len());
         let mut responses = Vec::new();
 
         for tool_call in tool_calls {
+            let full_tool_name = tool_call.name();
+            
             // Check if tool is allowed
             if let Some(allowed) = allowed_tools {
-                let tool_name = tool_call.name();
-                if !allowed.iter().any(|a| tool_name.contains(a)) {
+                if !allowed.iter().any(|a| full_tool_name.contains(a)) {
+                    warn!("Tool '{}' is not in allowed list, skipping", full_tool_name);
                     continue;
                 }
             }
 
             // Parse server::tool_name format
-            let (server, tool_name) = self.parse_tool_name(tool_call.name())?;
+            let (server, tool_name) = self.parse_tool_name(full_tool_name)?;
+
+            info!("Executing tool call: {}::{}", server, tool_name);
 
             // Get the MCP client for this server
             let client = self
@@ -54,7 +60,9 @@ impl Orchestrator {
             let mcp_payload = tool_call.to_mcp_call();
 
             // Execute the tool call
+            debug!("Calling MCP tool {}::{} with payload: {:?}", server, tool_name, mcp_payload);
             let result = client.call_tool(&tool_name, mcp_payload).await?;
+            info!("Tool call {}::{} completed successfully", server, tool_name);
 
             // Convert result to ChatMessage
             let response = ChatMessage::from_mcp_result(

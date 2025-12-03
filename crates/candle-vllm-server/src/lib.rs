@@ -711,26 +711,34 @@ pub async fn run() -> Result<()> {
             }
         });
     let mcp_session = if let Some(path) = mcp_config_path {
+        info!("Loading MCP config from: {}", path);
         match McpConfig::load(&path).and_then(|cfg| match validate_mcp(&cfg) {
             Ok(_) => Ok(cfg),
             Err(errs) => Err(anyhow::anyhow!(errs.join(", "))),
         }) {
-            Ok(cfg) => match serde_json::to_value(&cfg)
-                .map_err(anyhow::Error::from)
-                .and_then(|v| executor::block_on(ResponsesSession::from_config_value(&v)))
-            {
-                Ok(session) => Some(Arc::new(session)),
-                Err(err) => {
-                    warn!("Failed to initialize MCP session from {path}: {err}");
-                    None
+            Ok(cfg) => {
+                info!("MCP config loaded successfully with {} server(s)", cfg.servers.len());
+                match serde_json::to_value(&cfg)
+                    .map_err(anyhow::Error::from)
+                    .and_then(|v| executor::block_on(ResponsesSession::from_config_value(&v)))
+                {
+                    Ok(session) => {
+                        info!("MCP session initialized successfully");
+                        Some(Arc::new(session))
+                    }
+                    Err(err) => {
+                        warn!("Failed to initialize MCP session from {path}: {err}");
+                        None
+                    }
                 }
-            },
+            }
             Err(err) => {
                 warn!("Failed to load MCP config {path}: {err}");
                 None
             }
         }
     } else {
+        info!("No MCP config found (checked CLI arg, CANDLE_VLLM_MCP_CONFIG env var, and mcp.json)");
         None
     };
 

@@ -12,7 +12,7 @@ use candle_vllm_responses::status::ModelStatus;
 use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -35,15 +35,21 @@ pub fn build_router(state: AppState) -> Router {
                             match mcp_session.list_openai_tools(None).await {
                                 Ok(tools) => {
                                     if !tools.is_empty() {
-                                        debug!("Auto-injecting {} MCP tools into request", tools.len());
+                                        info!("Auto-injecting {} MCP tools into request", tools.len());
                                         req.tools = Some(tools);
+                                    } else {
+                                        debug!("MCP session available but no tools found");
                                     }
                                 }
                                 Err(err) => {
-                                    debug!("Failed to list MCP tools: {}", err);
+                                    warn!("Failed to list MCP tools: {}", err);
                                 }
                             }
+                        } else {
+                            debug!("No MCP session available for tool injection");
                         }
+                    } else {
+                        debug!("Request already specifies tools, skipping auto-injection");
                     }
                     chat_completions_with_data(state.data.clone(), req).await
                 }
