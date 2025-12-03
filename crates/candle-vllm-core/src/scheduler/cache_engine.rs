@@ -15,6 +15,7 @@ pub struct CacheConfig {
     pub num_cpu_blocks: Option<usize>, // Set after profiling init
     pub fully_init: bool,
     pub dtype: DType,
+    pub kvcache_mem_gpu: usize, // in MB
 }
 
 impl CacheConfig {

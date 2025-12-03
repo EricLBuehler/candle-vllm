@@ -5,7 +5,6 @@
 
 use crate::mcp_client::McpClient;
 use candle_vllm_core::openai::requests::{ChatMessage, ToolCall};
-use serde_json::Value;
 use std::collections::HashMap;
 
 /// Orchestrator for managing tool calls and routing them to MCP servers.

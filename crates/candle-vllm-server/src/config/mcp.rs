@@ -19,7 +19,9 @@ struct McpServersEntry {
     #[serde(rename = "type")]
     _type: Option<String>,
     command: Option<String>,
+    #[allow(dead_code)]
     args: Option<Vec<String>>,
+    #[allow(dead_code)]
     env: Option<HashMap<String, String>>,
     // HTTP server format
     url: Option<String>,
@@ -66,7 +68,7 @@ impl McpConfig {
                         timeout_secs: entry.timeout_secs,
                         instructions: entry.instructions,
                     });
-                } else if let Some(command) = entry.command {
+                } else if let Some(_command) = entry.command {
                     // For command-based servers, we need to convert to HTTP URL
                     // This assumes the server is running locally and exposes HTTP
                     // Default to localhost:3000 + server name

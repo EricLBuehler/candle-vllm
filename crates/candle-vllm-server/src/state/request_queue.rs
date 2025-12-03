@@ -6,7 +6,6 @@
 use candle_vllm_core::openai::requests::ChatCompletionRequest;
 use parking_lot::Mutex;
 use std::collections::VecDeque;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 

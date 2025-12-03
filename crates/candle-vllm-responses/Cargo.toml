@@ -18,6 +18,7 @@ uuid.workspace = true
 anyhow.workspace = true
 rmcp.workspace = true
 rmcp-macros.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

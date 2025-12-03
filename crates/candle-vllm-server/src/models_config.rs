@@ -3,7 +3,6 @@ use candle_vllm_openai::model_registry::{ModelAlias, ModelRegistry};
 use candle_vllm_responses::status::{ModelLifecycleStatus, ModelStatus};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 

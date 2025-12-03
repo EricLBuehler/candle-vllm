@@ -1,4 +1,4 @@
-use super::{McpConfig, McpServerDefinition, ModelProfile, ModelRegistryConfig};
+use super::{McpConfig, McpServerDefinition, ModelRegistryConfig};
 use std::collections::HashSet;
 
 pub fn validate_models(registry: &ModelRegistryConfig) -> Result<(), Vec<String>> {

@@ -107,7 +107,7 @@ impl OpenAIAdapter {
         let responder = chat_completions_with_data(Arc::new(data), stream_request).await;
 
         match responder {
-            ChatResponder::Streamer(sse) => {
+            ChatResponder::Streamer(_sse) => {
                 // Extract the stream from the SSE wrapper
                 // For now, return a placeholder stream that indicates streaming is not fully implemented
                 Ok(StreamingPlaceholder {})

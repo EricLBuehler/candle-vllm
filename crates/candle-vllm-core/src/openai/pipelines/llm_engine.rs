@@ -50,7 +50,7 @@ struct PreparedInputs {
 }
 
 const _PAD_SLOT_ID: i64 = -1;
-const PREFILL_CHUNK_SIZE: usize = 2048;
+const PREFILL_CHUNK_SIZE: usize = 8192;
 
 #[allow(unused)]
 pub struct LLMEngine {
@@ -603,7 +603,12 @@ impl LLMEngine {
 
             if is_prompt {
                 let mut e = engine.write();
-                let prefill_chunk_size = e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
+                let prefill_chunk_size = if cfg!(feature = "flash-decoding") {
+                    e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE / 2)
+                } else {
+                    e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE)
+                };
+
                 if prefill_chunk_size > 0 {
                     let (finished_indices, finished_groups) = e
                         .scheduler
@@ -715,7 +720,29 @@ impl LLMEngine {
                         if seq.deref().is_prompt() {
                             let e = engine.read();
                             e.scheduler.print_free_blocks();
-                            prompt_finish_times.insert(*group.get_id(), SystemTime::now());
+                            let prompt_finish_time = SystemTime::now();
+                            prompt_finish_times.insert(*group.get_id(), prompt_finish_time);
+
+                            #[cfg(feature = "nccl")]
+                            let do_log = DaemonManager::is_master_rank();
+                            #[cfg(not(feature = "nccl"))]
+                            let do_log = true;
+                            if do_log {
+                                let prompt_time_costs = prompt_finish_time
+                                    .duration_since(group.created_time)
+                                    .unwrap()
+                                    .as_millis();
+                                if prompt_time_costs > 0 {
+                                    warn!(
+                                        "Prefilling {} tokens finished in {} seconds ({} tokens/s) ({})",
+                                        seq.deref().get_prompt_len(),
+                                        prompt_time_costs / 1000,
+                                        seq.deref().get_prompt_len() * 1000
+                                            / prompt_time_costs as usize,
+                                        group.request_id,
+                                    );
+                                }
+                            }
                         }
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
@@ -1019,7 +1046,11 @@ impl LLMEngine {
         let mut max_seqlen_q = 0;
         let mut max_seqlen_k = 0;
         let mut slot_mapping = Vec::new();
-        let chunk_size = self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
+        let chunk_size = if cfg!(feature = "flash-decoding") {
+            self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE / 2)
+        } else {
+            self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE)
+        };
         let mut max_context_len = 0;
         for group in groups {
             for seq in group.get_seqs().values() {

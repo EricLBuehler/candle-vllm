@@ -11,8 +11,6 @@ use candle_core::{
     cuda_backend::CudaStorageSlice,
     Device, IndexOp, Result, Storage, Tensor,
 };
-#[cfg(feature = "metal")]
-use metal::NSUInteger;
 #[cfg(any(feature = "cuda", feature = "metal"))]
 use std::{collections::HashMap, iter::zip};
 

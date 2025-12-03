@@ -4,11 +4,11 @@ use crate::openai::pipelines::llm_engine::LLMEngine;
 use crate::openai::pipelines::pipeline::{DefaultLoader, DefaultPipeline};
 use crate::openai::requests::{ChatCompletionRequest, ChatMessage, Messages};
 use crate::openai::responses::{ChatCompletionResponse, ChatResponder};
-use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
-use crate::openai::{OpenAIServerData, TokenizerWrapper};
+use crate::openai::sampling_params::GenerationConfig;
+use crate::openai::OpenAIServerData;
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use crate::scheduler::SchedulerConfig;
-use candle_core::{DType, Device, Result as CandleResult};
+use candle_core::{DType, Device};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -261,7 +261,7 @@ impl InferenceEngine {
         let kv_cache_dtype = dtype;
         let device_ids = vec![config.device.unwrap_or(0)];
         let notify = Arc::new(Notify::new());
-        let (pipelines, pipeline_cfg) = loader
+        let (pipelines, _pipeline_cfg) = loader
             .load_model(
                 paths,
                 dtype,
@@ -294,6 +294,7 @@ impl InferenceEngine {
             num_cpu_blocks: Some(128),
             fully_init: true,
             dtype: kv_cache_dtype,
+            kvcache_mem_gpu: config.kv_cache_memory.unwrap_or(4096),
         };
 
         let scheduler_config = SchedulerConfig {

@@ -69,7 +69,7 @@ impl ModelManager {
 
     /// Drain requests for a model after it becomes active.
     pub fn drain_model_queue(&self, model: &str) -> Vec<QueuedRequest> {
-        let mut queues = self.request_queues.lock();
+        let queues = self.request_queues.lock();
         if let Some(queue) = queues.get(model) {
             queue.drain()
         } else {

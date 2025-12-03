@@ -7,7 +7,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
-#[cfg(feature = "tracing")]
 use tracing::warn;
 
 #[derive(Clone, Debug, Default)]
@@ -23,7 +22,7 @@ pub struct SessionConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct McpConfigFile {
+pub struct McpConfigFile {
     #[serde(default)]
     servers: Vec<McpConfigEntry>,
     // Support mcpServers format (object with server names as keys)
@@ -37,12 +36,15 @@ struct McpConfigEntry {
     url: String,
     auth: Option<String>,
     timeout_secs: Option<u64>,
+    #[allow(dead_code)]
     instructions: Option<String>,
     // Support command-based format
     #[serde(rename = "type")]
     _type: Option<String>,
     command: Option<String>,
+    #[allow(dead_code)]
     args: Option<Vec<String>>,
+    #[allow(dead_code)]
     env: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
@@ -108,10 +110,9 @@ impl ResponsesSession {
             // Otherwise, if command is provided, convert to HTTP URL (assumes local server)
             let url = if !entry.url.is_empty() {
                 entry.url
-            } else if let Some(command) = entry.command {
+            } else if let Some(_command) = entry.command {
                 // For command-based servers, assume they expose HTTP on localhost
                 let default_url = format!("http://localhost:3000/{}", entry.name);
-                #[cfg(feature = "tracing")]
                 warn!(
                     "MCP server '{}' uses command format. Converting to HTTP URL: {}",
                     entry.name, default_url
@@ -143,9 +144,8 @@ impl ResponsesSession {
                     let timeout = entry.timeout_secs.unwrap_or(30).max(1);
                     let url = if !entry.url.is_empty() {
                         entry.url
-                    } else if let Some(command) = entry.command {
+                    } else if let Some(_command) = entry.command {
                         let default_url = format!("http://localhost:3000/{}", name);
-                        #[cfg(feature = "tracing")]
                         warn!(
                             "MCP server '{}' uses command format. Converting to HTTP URL: {}",
                             name, default_url
@@ -233,11 +233,6 @@ impl ResponsesSession {
         initial_messages: Vec<ChatMessage>,
         options: ConversationOptions,
     ) -> anyhow::Result<ConversationResult> {
-        let adapter = self
-            .adapter
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("Inference engine not configured. Use ResponsesSessionBuilder to set up the engine."))?;
-
         // Clone MCP clients for orchestrator (needed because we need mutable access to adapter)
         let mcp_clients = self.mcp_clients.clone();
         let orchestrator = Orchestrator::new(mcp_clients);
@@ -274,7 +269,7 @@ impl ResponsesSession {
             turns += 1;
 
             // Create chat completion request
-            let mut request = ChatCompletionRequest {
+            let request = ChatCompletionRequest {
                 model: "local".to_string(),
                 messages: Messages::Chat(messages.clone()),
                 tools: Some(tools.clone()),

@@ -1,15 +1,13 @@
 use crate::config::validation::{validate_mcp, validate_models};
 use crate::config::{McpConfig, ModelRegistryConfig};
 use crate::models_config::{to_model_registry, ModelsState};
-use crate::routes::{build_router, AppState};
+use crate::routes::build_router;
 use crate::state::model_manager::ModelManager;
 use candle_vllm_openai::model_registry::ModelRegistry;
 pub mod config;
 pub mod state;
 use axum::{
     http::{self, Method},
-    routing::{get, post},
-    Json, Router,
 };
 use candle_core::{DType, Device, Result};
 #[cfg(feature = "nccl")]
@@ -17,7 +15,6 @@ use candle_vllm_core::backend::heartbeat;
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm_core::scheduler::SchedulerConfig;
 use candle_vllm_openai::model_registry::ModelAlias;
-use candle_vllm_openai::openai_server::chat_completions;
 use candle_vllm_openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm_openai::pipelines::pipeline::DefaultLoader;
 use candle_vllm_openai::sampling_params::GenerationConfig;
@@ -34,7 +31,6 @@ use tracing::{info, warn};
 const SIZE_IN_MB: usize = 1024 * 1024;
 use candle_vllm_openai::models::Config;
 use rustchatui::start_ui_server;
-use serde_json::json;
 use tokio::sync::Notify;
 use tower_http::cors::{Any, CorsLayer};
 #[derive(Parser, Debug)]
@@ -301,6 +297,7 @@ fn get_cache_config(
         num_cpu_blocks: Some(num_cpu_blocks),
         fully_init: true,
         dtype: kv_dtype,
+        kvcache_mem_gpu,
     }
 }
 

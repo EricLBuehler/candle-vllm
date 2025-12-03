@@ -90,12 +90,14 @@ async fn get_gen_prompt(
 }
 
 /// Parse the model output for tool calls
+#[allow(dead_code)]
 fn parse_tool_calls(output: &str, model_name: &str) -> ParsedOutput {
     let parser = get_tool_parser(model_name);
     parser.parse(output)
 }
 
 /// Build a ChatChoiceData from parsed output
+#[allow(dead_code)]
 fn build_choice_data(parsed: ParsedOutput) -> ChatChoiceData {
     match parsed {
         ParsedOutput::Text(text) => ChatChoiceData::text(text),
@@ -113,6 +115,7 @@ fn build_choice_data(parsed: ParsedOutput) -> ChatChoiceData {
 }
 
 /// Determine the finish reason based on output
+#[allow(dead_code)]
 fn determine_finish_reason(choice_data: &ChatChoiceData, original_reason: Option<&str>) -> String {
     if choice_data.has_tool_calls() {
         "tool_calls".to_string()

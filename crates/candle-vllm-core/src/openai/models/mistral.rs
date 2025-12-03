@@ -32,6 +32,7 @@ pub struct RopeParameters {
     pub(crate) beta_slow: Option<f64>,
     pub(crate) mscale: Option<f64>,
     pub(crate) mscale_all_dim: Option<f64>,
+    #[allow(dead_code)]
     pub(crate) llama_4_scaling_beta: Option<f64>,
 }
 
