@@ -24,6 +24,13 @@ cp .example.env .env
   export CANDLE_VLLM_MCP_CONFIG=/path/to/mcp.json
   ```
 
+- **`MCP_PROXY_PORT`**: Port for MCP HTTP proxy/gateway (default: `3000`)
+  - Used when converting command-based MCP servers to HTTP endpoints
+  - This is the port where your MCP gateway or proxy is running
+  ```bash
+  export MCP_PROXY_PORT=3000
+  ```
+
 #### Models Configuration
 
 - **`CANDLE_VLLM_MODELS_CONFIG`**: Path to the models registry file (default: `models.yaml` or `models.yml` in current directory)
@@ -83,7 +90,7 @@ The MCP configuration file supports two formats:
 }
 ```
 
-**Note**: For command-based servers (without `url`), the system will attempt to convert them to HTTP URLs assuming they run on `localhost:3000`. For best results, provide the `url` field explicitly.
+**Note**: For command-based servers (without `url`), the system will attempt to convert them to HTTP URLs assuming they run on `localhost` with the port specified by the `MCP_PROXY_PORT` environment variable (default: `3000`). For example, if `MCP_PROXY_PORT=3001`, a command-based server named `sequential-thinking` will be converted to `http://localhost:3001/sequential-thinking`. For best results, provide the `url` field explicitly.
 
 ### MCP Server Fields
 
