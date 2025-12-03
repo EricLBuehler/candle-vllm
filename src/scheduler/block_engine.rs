@@ -104,6 +104,7 @@ impl Deref for GPUAllocatorWrapper {
 struct Allocator<T> {
     free_blocks: BlockTable,
     _ghost: PhantomData<T>,
+    num_blocks: usize,
 }
 
 impl<T> Allocator<T> {
@@ -142,12 +143,17 @@ impl Allocator<GPUAllocator> {
         }
         Allocator {
             free_blocks,
+            num_blocks,
             _ghost: PhantomData,
         }
     }
 
     fn get_num_free_blocks(&self) -> GPUAllocatorWrapper {
         GPUAllocatorWrapper(self.free_blocks.len())
+    }
+
+    fn get_num_blocks(&self) -> GPUAllocatorWrapper {
+        GPUAllocatorWrapper(self.num_blocks)
     }
 }
 
@@ -167,6 +173,7 @@ impl Allocator<CPUAllocator> {
         Allocator {
             free_blocks,
             _ghost: PhantomData,
+            num_blocks,
         }
     }
 }
@@ -189,17 +196,24 @@ pub struct BlockEngine {
     cpu_allocator: Allocator<CPUAllocator>,
     pub block_tables: HashMap<SeqID, BlockTable>,
     block_size: usize,
+    kvcache_mem_gpu: usize,
 }
 
 impl BlockEngine {
     #[must_use]
-    pub fn new(block_size: usize, num_gpu_blocks: usize, num_cpu_blocks: usize) -> Self {
+    pub fn new(
+        block_size: usize,
+        num_gpu_blocks: usize,
+        num_cpu_blocks: usize,
+        kvcache_mem_gpu: usize,
+    ) -> Self {
         Self {
             num_gpu_blocks,
             gpu_allocator: Allocator::<GPUAllocator>::new(block_size, num_gpu_blocks),
             cpu_allocator: Allocator::<CPUAllocator>::new(block_size, num_cpu_blocks),
             block_tables: HashMap::new(),
             block_size,
+            kvcache_mem_gpu,
         }
     }
 
@@ -209,6 +223,14 @@ impl BlockEngine {
 
     pub fn get_num_free_blocks(&self) -> usize {
         *self.gpu_allocator.get_num_free_blocks()
+    }
+
+    pub fn get_num_blocks(&self) -> usize {
+        *self.gpu_allocator.get_num_blocks()
+    }
+
+    pub fn get_kvcache_mem_size(&self) -> usize {
+        self.kvcache_mem_gpu
     }
 
     pub fn can_allocate(&self, seq_group: &SequenceGroup) -> AllocStatus {

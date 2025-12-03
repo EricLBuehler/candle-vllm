@@ -160,6 +160,7 @@ fn get_cache_config(
         num_cpu_blocks: Some(num_cpu_blocks),
         fully_init: true,
         dtype: kv_dtype,
+        kvcache_mem_gpu,
     }
 }
 
