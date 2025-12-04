@@ -1311,6 +1311,18 @@ impl DefaultPipeline {
         self.rank
     }
 
+    /// Get the stop token IDs for this model
+    pub fn get_stop_token_ids(&self) -> &Vec<u32> {
+        &self.stop_token_ids
+    }
+
+    /// Decode token IDs to text using the tokenizer
+    pub fn decode(&self, token_ids: &[u32]) -> Result<String> {
+        self.tokenizer
+            .decode(token_ids, true)
+            .map_err(|e| candle_core::Error::Msg(format!("Tokenizer decode error: {}", e)))
+    }
+
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub fn warmup_capture(&mut self, kv_caches: Option<&Vec<(Tensor, Tensor)>>) -> Result<()> {
         self.capturer.capture(&self.device, kv_caches)

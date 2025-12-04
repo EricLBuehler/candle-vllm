@@ -340,16 +340,23 @@ pub async fn chat_completions_with_data(
     let _ = tokio::task::spawn_blocking(move || {
         // Construct InputMetadata for the worker
         // Note: In the lock-free design, workers handle their own cache management
+        let seq_len = token_ids.len();
+        
+        // For prefill, cu_seqlens_q and cu_seqlens_k are cumulative sequence lengths
+        // For a single sequence batch: [0, seq_len]
+        let cu_seqlens = Tensor::new(&[0u32, seq_len as u32], &data.device)
+            .expect("cu_seqlens tensor creation failed");
+        
         let input_metadata = crate::InputMetadata {
             is_prefill: true, // First pass is prefill
-            slot_mapping: Tensor::zeros(token_ids.len(), DType::I64, &data.device)
+            slot_mapping: Tensor::zeros(seq_len, DType::I64, &data.device)
                 .expect("slot_mapping tensor creation failed"),
             block_tables: None,
             context_lens: None,
-            cu_seqlens_q: None,
-            cu_seqlens_k: None,
-            max_seqlen_q: 0,
-            max_seqlen_k: 0,
+            cu_seqlens_q: Some(cu_seqlens.clone()),
+            cu_seqlens_k: Some(cu_seqlens),
+            max_seqlen_q: seq_len,
+            max_seqlen_k: seq_len,
             max_context_len: data.pipeline_config.max_model_len,
         };
 
