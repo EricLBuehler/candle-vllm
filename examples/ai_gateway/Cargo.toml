@@ -15,8 +15,8 @@ candle-vllm-core = { path = "../../crates/candle-vllm-core" }
 tokio = { version = "1.38.0", features = ["rt-multi-thread", "macros", "sync"] }
 
 # HTTP server
-axum = { version = "0.7.4", features = ["tokio"] }
-tower-http = { version = "0.5.1", features = ["cors", "trace"] }
+axum = { version = "0.8.7", features = ["tokio"] }
+tower-http = { version = "0.6.7", features = ["cors", "trace"] }
 
 # Serialization
 serde = { version = "1.0.190", features = ["derive"] }

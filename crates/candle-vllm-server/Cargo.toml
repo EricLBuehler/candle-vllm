@@ -9,25 +9,25 @@ description = "HTTP server for candle-vllm with OpenAI-compatible API"
 candle-vllm-core = { path = "../candle-vllm-core" }
 candle-vllm-openai = { path = "../candle-vllm-openai" }
 candle-vllm-responses = { path = "../candle-vllm-responses" }
-axum.workspace = true
-tower-http.workspace = true
+axum = { workspace = true }
+tower-http = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
-clap.workspace = true
-serde_json.workspace = true
-serde_yaml.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-anyhow.workspace = true
-uuid.workspace = true
-utoipa.workspace = true
-hyper.workspace = true
-ftail.workspace = true
-parking_lot.workspace = true
-rustchatui.workspace = true
-candle-core.workspace = true
-serde.workspace = true
-futures.workspace = true
-flume.workspace = true
+clap = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+utoipa = { workspace = true }
+hyper = { workspace = true }
+ftail = { workspace = true }
+parking_lot = { workspace = true }
+rustchatui = { workspace = true }
+candle-core = { workspace = true }
+serde = { workspace = true }
+futures = { workspace = true }
+flume = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
