@@ -14,7 +14,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 ## Features
 - OpenAI compatible API server provided for serving LLMs.
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
-- Streaming support in generation.
+- Streaming support in generation, **including incremental tool-call deltas** so consumers can react to tool invocations in real time.
 - Efficient management of key-value cache with PagedAttention.
 - Continuous batching (batched decoding for incoming requests over time).
 - `In-situ` quantization (and `In-situ` marlin format conversion)
@@ -24,6 +24,8 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support `Multi-node` inference with MPI runner
 - Support Chunked Prefilling (default chunk size 8K)
 - Support CUDA Graph
+- **Tool Calling** support (OpenAI-compatible function calling API) with automatic MCP tool injection from `mcp.json`.
+- Support for **Mistral 3 / Ministral** models (BF16/FP16 variants with nested rope parameters)
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.
@@ -33,7 +35,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     | Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K` or `Marlin`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
     |--|--|--|--|--|--|--|
     | #1 | **LLAMA** |✅|65 tks/s (8B) | 553 tks/s (8B) | 75 tks/s (8B), 115 tks/s (8B, **Marlin**) |968 tks/s (8B)|
-    | #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), 115 tks/s (7B, **Marlin**) |981 tks/s (7B)|
+    | #2 | **Mistral/Ministral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), 115 tks/s (7B, **Marlin**) |981 tks/s (7B)|
     | #3 | **Phi** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
     | #4 | **QWen2/Qwen3** |✅|81 tks/s (8B)|831 tks/s (8B) |-|TBD|S
     | #4 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|TBD|
@@ -48,6 +50,14 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     | #13 | **QWen3 MoE** |✅|TBD|TBD |76 tks/s **(32B, Q4K)** |TBD|
   </details>
 
+### Mistral 3 / Ministral Model Notes
+- Candle-vllm supports **Mistral 3** and **Ministral** models with nested `rope_parameters` configuration format.
+- **Important**: Use **BF16 or FP16** model variants. FP8 (F8_E4M3) quantized models are not currently supported.
+- Recommended models:
+  - `mistralai/Mistral-7B-Instruct-v0.3` (BF16)
+  - `mistralai/Ministral-8B-Instruct-2410` (BF16)
+  - For Ministral-3B, use reasoning variants like `Ministral-3B-Reasoning` which ship in BF16.
+
 ### Demo Video
 - Nvidia GPU and Apple Silicon
 
@@ -59,6 +69,50 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     Chat demo on **Apple Silicon** (M4 with 16GB unified memory, Q2K, QWen3-8B)
     <img src="res/Qwen3-8B-Apple-M4.gif" width="85%" height="85%" >
   </details>
+
+## Using as a Library
+
+candle-vllm can be used as a library in your Rust applications. Add to your `Cargo.toml`:
+
+```toml
+[dependencies]
+# Core inference engine
+candle-vllm-core = { path = "../candle-vllm/crates/candle-vllm-core" }
+
+# OpenAI-compatible adapter
+candle-vllm-openai = { path = "../candle-vllm/crates/candle-vllm-openai" }
+
+# Multi-turn agent conversations with MCP
+candle-vllm-responses = { path = "../candle-vllm/crates/candle-vllm-responses" }
+```
+
+### Quick Example
+
+```rust
+use candle_vllm_core::{InferenceEngine, EngineConfig, GenerationParams};
+use candle_core::Device;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // Initialize engine
+    let engine = InferenceEngine::builder()
+        .model_path("mistralai/Mistral-7B-Instruct-v0.3")
+        .device(Device::Cpu) // or Device::Metal(0) or Device::Cuda(0)
+        .max_batch_size(1)
+        .build()
+        .await?;
+
+    // Generate text
+    let prompt = engine.tokenize("Hello, how are you?")?;
+    let output = engine.generate(prompt, GenerationParams::default()).await?;
+    let text = engine.detokenize(&output.tokens)?;
+
+    println!("Generated: {}", text);
+    Ok(())
+}
+```
+
+For detailed API documentation, see [LIBRARY_API.md](./LIBRARY_API.md).
 
 ## General Usage
 ### Build Candle-vLLM
@@ -96,6 +150,22 @@ cargo build --release --features cuda,nccl,mpi #build with mpi feature
 # or
 cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn and mpi features
 ```
+
+### Development commands
+
+- Format: `cargo fmt --all`
+- Lint: `cargo clippy --all-targets --all-features -D warnings`
+- Test (CPU-safe): `cargo test --all --all-features`
+- Example GPU builds: `cargo build --release --features metal` (Metal) or `cargo build --release --features cuda,nccl` (CUDA/NCCL)
+
+### Configuration & Environment
+
+- Copy `.example.env` to `.env` (or export variables manually) to discover every supported knob. Key variables include:
+  - `CANDLE_VLLM_MCP_CONFIG` – location of your `mcp.json`
+  - `CANDLE_VLLM_MODELS_CONFIG` – location of your `models.yaml`
+  - `RUST_LOG`, `KEEP_ALIVE_INTERVAL`, `HF_TOKEN`, `CANDLE_VLLM_TEST_*`, etc.
+- See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for details plus example files (`.example.env`, `example.models.yaml`).
+- MCP tools defined in `mcp.json` are auto-injected into requests when available; set `tools: []` in a request to opt out.
 
 ### Build/Run Parameters
 
@@ -406,6 +476,170 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
 Chat frontend (any frontend compatible with openai API, simple options available below):
 
+- **Option 0: Tool Calling (Function Calling)**
+  <details>
+    <summary>Show Tool Calling Examples</summary>
+
+    Candle-vllm supports OpenAI-compatible tool calling (function calling). This allows models to request external tool/function execution.
+
+    **Basic Tool Call Request:**
+    ```shell
+    curl http://localhost:2000/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer EMPTY" \
+      -d '{
+        "model": "mistral",
+        "messages": [
+          {"role": "user", "content": "What is the weather like in San Francisco?"}
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_current_weather",
+              "description": "Get the current weather in a given location",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "location": {
+                    "type": "string",
+                    "description": "The city and state, e.g. San Francisco, CA"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "enum": ["celsius", "fahrenheit"]
+                  }
+                },
+                "required": ["location"]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "max_tokens": 256
+      }'
+    ```
+
+    **Tool Choice Options:**
+    - `"auto"` - Model decides whether to call a tool
+    - `"none"` - Model won't call any tools
+    - `"required"` - Model must call at least one tool
+    - `{"type": "function", "function": {"name": "get_weather"}}` - Force a specific tool
+
+    **Expected Response with Tool Call:**
+    ```json
+    {
+      "id": "chatcmpl-...",
+      "object": "chat.completion",
+      "choices": [{
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": null,
+          "tool_calls": [{
+            "id": "call_abc123",
+            "type": "function",
+            "function": {
+              "name": "get_current_weather",
+              "arguments": "{\"location\": \"San Francisco, CA\"}"
+            }
+          }]
+        },
+        "finish_reason": "tool_calls"
+      }]
+    }
+    ```
+
+    **Multiple Tools Example:**
+    ```shell
+    curl http://localhost:2000/v1/chat/completions \
+      -H "Content-Type: application/json" \
+      -H "Authorization: Bearer EMPTY" \
+      -d '{
+        "model": "mistral",
+        "messages": [
+          {"role": "user", "content": "Schedule a meeting with John and send him an email"}
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "schedule_meeting",
+              "description": "Schedule a meeting",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "attendees": {"type": "array", "items": {"type": "string"}},
+                  "datetime": {"type": "string"}
+                },
+                "required": ["attendees", "datetime"]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "send_email",
+              "description": "Send an email",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "to": {"type": "string"},
+                  "subject": {"type": "string"},
+                  "body": {"type": "string"}
+                },
+                "required": ["to", "subject", "body"]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "max_tokens": 512
+      }'
+    ```
+
+    **Python Example with OpenAI SDK:**
+    ```python
+    import openai
+
+    openai.api_key = "EMPTY"
+    openai.base_url = "http://localhost:2000/v1/"
+
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Get weather for a location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {"type": "string", "description": "City name"}
+                },
+                "required": ["location"]
+            }
+        }
+    }]
+
+    response = openai.chat.completions.create(
+        model="mistral",
+        messages=[{"role": "user", "content": "What's the weather in Tokyo?"}],
+        tools=tools,
+        tool_choice="auto"
+    )
+
+    if response.choices[0].message.tool_calls:
+        for tool_call in response.choices[0].message.tool_calls:
+            print(f"Tool: {tool_call.function.name}")
+            print(f"Arguments: {tool_call.function.arguments}")
+    ```
+
+    **Supported Tool Call Formats:**
+    - Mistral/Ministral native format (`[TOOL_CALLS]`)
+    - Llama format (`<function=name>`)
+    - Qwen format (`<tool_call>`)
+    - Generic JSON format
+  </details>
+
 - **Option 1: Chat with Chat.py (for simple tests)**
   <details>
     <summary>Show Option 1</summary>
@@ -656,6 +890,128 @@ Chat frontend (any frontend compatible with openai API, simple options available
     **Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment. 
   </details>
 
+## Tool Calling (Function Calling)
+
+Candle-vllm supports OpenAI-compatible tool calling, enabling models to request execution of external functions. This feature is compatible with models that support function calling, including Mistral, Llama, and Qwen families.
+
+### Supported Tool Call Formats
+
+The tool parser automatically detects and parses multiple formats:
+
+| Format | Models | Pattern |
+|--------|--------|---------|
+| **Mistral/Ministral** | Mistral-7B-Instruct-v0.3, Ministral-8B | `[TOOL_CALLS] [{"name": "...", "arguments": {...}}]` |
+| **Llama** | Llama-3.x-Instruct | `<function=func_name>{"arg": "value"}</function>` |
+| **Qwen** | Qwen2/Qwen3 | `<tool_call>{"name": "...", "arguments": {...}}</tool_call>` |
+| **Generic JSON** | Various | `{"name": "...", "arguments": {...}}` or `{"function": {...}}` |
+
+### Tool Calling API
+
+Tool calls follow the OpenAI API specification:
+
+```json
+{
+  "model": "mistral",
+  "messages": [{"role": "user", "content": "What's the weather in Tokyo?"}],
+  "tools": [{
+    "type": "function",
+    "function": {
+      "name": "get_weather",
+      "description": "Get weather for a location",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "location": {"type": "string", "description": "City name"}
+        },
+        "required": ["location"]
+      }
+    }
+  }],
+  "tool_choice": "auto"
+}
+```
+
+### Tool Choice Options
+
+| Option | Description |
+|--------|-------------|
+| `"auto"` | Model decides whether to call a tool (default) |
+| `"none"` | Model won't call any tools |
+| `"required"` | Model must call at least one tool |
+| `{"type": "function", "function": {"name": "..."}}` | Force a specific tool |
+
+### Response Format
+
+When the model decides to call a tool, the response includes:
+
+```json
+{
+  "choices": [{
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [{
+        "id": "call_abc123",
+        "type": "function",
+        "function": {
+          "name": "get_weather",
+          "arguments": "{\"location\": \"Tokyo\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}
+```
+
+## Mistral 3 / Ministral Model Support
+
+Candle-vllm includes enhanced support for Mistral 3 and Ministral model families, which use a different configuration format than earlier Mistral models.
+
+### Configuration Handling
+
+Newer Mistral/Ministral models use nested `rope_parameters` in their configuration:
+
+```json
+{
+  "text_config": {
+    "rope_parameters": {
+      "rope_theta": 1000000.0,
+      "rope_type": "default",
+      "original_max_position_embeddings": 32768
+    }
+  }
+}
+```
+
+Candle-vllm automatically detects and handles both:
+- **Legacy format**: `rope_theta` at the top level
+- **New format**: Nested `rope_parameters` structure
+
+### Supported Models
+
+| Model | Precision | Status |
+|-------|-----------|--------|
+| `mistralai/Mistral-7B-Instruct-v0.3` | BF16 | ✅ Fully supported |
+| `mistralai/Ministral-8B-Instruct-2410` | BF16 | ✅ Fully supported |
+| `mistralai/Ministral-3B-Instruct-2410` | BF16 | ✅ Fully supported |
+| FP8 (F8_E4M3) variants | FP8 | ❌ Not supported |
+
+### Important Notes
+
+1. **Use BF16/FP16 variants**: FP8 quantized models (F8_E4M3 dtype) are not currently supported by the safetensors loader.
+
+2. **Yarn RoPE Scaling**: Models with `rope_type: "yarn"` automatically use Yarn rotary embeddings with the correct scaling parameters.
+
+3. **Running Ministral models**:
+   ```shell
+   # Ministral-8B
+   target/release/candle-vllm --m mistralai/Ministral-8B-Instruct-2410 --ui-server
+   
+   # With quantization for consumer GPUs
+   target/release/candle-vllm --m mistralai/Ministral-8B-Instruct-2410 --isq q4k --ui-server
+   ```
+
 ## Report issue
 Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
 [issue](https://github.com/EricLBuehler/candle-vllm/issues).
@@ -666,6 +1022,10 @@ The following features are planned to be implemented, but contributions are espe
 - Sampling methods:
   - Beam search ([huggingface/candle#1319](https://github.com/huggingface/candle/issues/1319))
 - More pipelines (from `candle-transformers`)
+- Tool calling enhancements:
+  - Streaming tool call deltas
+  - Parallel tool calling improvements
+  - Additional model format support
 
 ## Resources
 - Python implementation: [`vllm-project`](https://github.com/vllm-project/vllm)

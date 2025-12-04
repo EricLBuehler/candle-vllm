@@ -1,0 +1,55 @@
+[package]
+name = "candle-vllm-openai"
+version = "0.4.5"
+edition = "2021"
+license = "MIT"
+description = "OpenAI-compatible adapter and types for candle-vllm"
+
+[dependencies]
+# Core dependency for inference engine and types
+candle-vllm-core = { path = "../candle-vllm-core" }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+
+# Async runtime
+tokio = { workspace = true }
+futures = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+derive_more = { workspace = true }
+
+# Template rendering
+minijinja = { workspace = true }
+minijinja-contrib = { workspace = true }
+chrono = { workspace = true }
+
+# Tool parsing
+regex = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+parking_lot = { workspace = true }
+tracing = { workspace = true }
+either = { workspace = true }
+tokenizers = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+candle-core = { workspace = true }
+
+[features]
+accelerate = ["candle-vllm-core/accelerate"]
+cuda = ["candle-vllm-core/cuda"]
+metal = ["candle-vllm-core/metal"]
+cudnn = ["candle-vllm-core/cudnn"]
+flash-attn = ["candle-vllm-core/flash-attn"]
+flash-decoding = ["candle-vllm-core/flash-decoding"]
+mkl = ["candle-vllm-core/mkl"]
+nccl = ["candle-vllm-core/nccl"]
+mpi = ["candle-vllm-core/mpi"]
+graph = ["candle-vllm-core/graph"]
