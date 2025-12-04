@@ -331,6 +331,7 @@ impl InferenceWorker {
                     token_id: 0,
                     is_finished: true,
                     finish_reason: Some("stop".to_string()),
+                    is_reasoning: false, // TODO: Detect reasoning tokens based on model type
                 };
 
                 if work.stream_tx.send(Ok(streaming_token)).is_err() {

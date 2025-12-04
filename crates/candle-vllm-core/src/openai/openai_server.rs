@@ -121,6 +121,55 @@ fn build_choice_data(parsed: ParsedOutput) -> ChatChoiceData {
     }
 }
 
+/// Check if a model supports reasoning/thinking output
+/// 
+/// This function checks if a model is known to emit reasoning tokens
+/// when thinking mode is enabled. Detection is based on model name patterns.
+fn is_reasoning_model(model_name: &str) -> bool {
+    let name_lower = model_name.to_lowercase();
+    // Known reasoning model patterns
+    name_lower.contains("reasoning")
+        || name_lower.contains("thinking")
+        || name_lower.contains("cot")  // Chain-of-thought
+        || name_lower.contains("ministral") && name_lower.contains("reasoning")
+        || name_lower.contains("deepseek") && name_lower.contains("r1")
+        || name_lower.contains("qwq")
+}
+
+/// Check if a token is part of reasoning/thinking output
+/// 
+/// Reasoning tokens are detected by:
+/// 1. The thinking_enabled flag from the request
+/// 2. Model type (must be a reasoning model)
+/// 3. Token content patterns (e.g., <think>, </think> tags)
+/// 4. The is_reasoning flag on the StreamingToken (if set by the worker)
+fn is_reasoning_token(
+    token_text: &str,
+    _token_id: u32,
+    model_name: &str,
+    thinking_enabled: bool,
+    token_is_reasoning: bool,
+) -> bool {
+    // If the worker already marked this as a reasoning token, trust it
+    if token_is_reasoning {
+        return true;
+    }
+    
+    // Must have thinking enabled and be a reasoning model
+    if !thinking_enabled || !is_reasoning_model(model_name) {
+        return false;
+    }
+    
+    // Check for common reasoning token patterns
+    let text = token_text.to_lowercase();
+    text.contains("<think>")
+        || text.contains("</think>")
+        || text.contains("<reasoning>")
+        || text.contains("</reasoning>")
+        || text.contains("<thought>")
+        || text.contains("</thought>")
+}
+
 /// Determine the finish reason based on output
 #[allow(dead_code)]
 fn determine_finish_reason(choice_data: &ChatChoiceData, original_reason: Option<&str>) -> String {
@@ -282,6 +331,7 @@ pub async fn chat_completions_with_data(
     let stream_request = request.stream.is_some_and(|x| x);
     let model_name = request.model.clone();
     let model_name_for_response = model_name.clone(); // Clone for use outside the spawned task
+    let thinking_enabled = request.thinking.unwrap_or(false);
     let sync_notify = Arc::new(Notify::new());
     let sync_notify_clone = Arc::clone(&sync_notify);
 
@@ -323,22 +373,57 @@ pub async fn chat_completions_with_data(
             };
 
             // Bridge streaming tokens to ChatResponse chunks
+            // Clone model_name for use in the spawned thread
+            let model_name_for_stream = model_name.clone();
             std::thread::spawn(move || {
                 let mut full_content = String::new();
+                let mut full_reasoning = String::new();
+                let mut is_first_chunk = true;
+                
                 while let Ok(result) = stream_rx.recv() {
                     match result {
                         Ok(token) => {
-                            full_content.push_str(&token.text);
+                            // Detect if this token is a reasoning token
+                            let token_is_reasoning = is_reasoning_token(
+                                &token.text,
+                                token.token_id,
+                                &model_name_for_stream,
+                                thinking_enabled,
+                                token.is_reasoning,
+                            );
+                            
+                            // Track content separately for reasoning vs regular content
+                            if token_is_reasoning {
+                                full_reasoning.push_str(&token.text);
+                            } else {
+                                full_content.push_str(&token.text);
+                            }
 
-                            // Create streaming chunk
+                            // Create streaming chunk with appropriate delta type
+                            let delta = if token_is_reasoning {
+                                // Reasoning token - use reasoning field
+                                crate::openai::responses::ChoiceData {
+                                    role: if is_first_chunk { Some("assistant".to_string()) } else { None },
+                                    content: None,
+                                    tool_calls: None,
+                                    reasoning: Some(token.text.clone()),
+                                }
+                            } else {
+                                // Regular content token
+                                crate::openai::responses::ChoiceData {
+                                    role: if is_first_chunk { Some("assistant".to_string()) } else { None },
+                                    content: Some(token.text.clone()),
+                                    tool_calls: None,
+                                    reasoning: None,
+                                }
+                            };
+                            
+                            is_first_chunk = false;
+                            
                             let chunk = crate::openai::responses::ChatCompletionChunk {
                                 id: request_id.clone(),
                                 choices: vec![crate::openai::responses::Choice {
-                                    delta: crate::openai::responses::ChoiceData {
-                                        role: Some("assistant".to_string()),
-                                        content: Some(token.text.clone()),
-                                        tool_calls: None,
-                                    },
+                                    delta,
                                     finish_reason: if token.is_finished {
                                         token.finish_reason.clone()
                                     } else {
@@ -347,7 +432,7 @@ pub async fn chat_completions_with_data(
                                     index: 0,
                                 }],
                                 created,
-                                model: model_name.to_string(),
+                                model: model_name_for_stream.to_string(),
                                 object: "chat.completion.chunk",
                                 system_fingerprint: None,
                                 conversation_id: None,
@@ -421,6 +506,7 @@ pub async fn chat_completions_with_data(
                                         role: Some(c.message.role.clone()),
                                         content: c.message.content.clone(),
                                         tool_calls: None,
+                                        reasoning: None,
                                     },
                                     finish_reason: c.finish_reason.clone(),
                                     index: c.index,

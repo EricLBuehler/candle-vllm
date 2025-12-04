@@ -32,6 +32,7 @@ pub struct ModelsState {
     pub active: Arc<Mutex<Option<LoadedModel>>>,
     pub idle_unload: Option<Duration>,
     pub validation: HashMap<String, String>,
+    pub default_model: Option<String>,
 }
 
 #[derive(Clone)]
@@ -44,12 +45,14 @@ impl ModelsState {
         registry: Option<ModelRegistry>,
         validation: HashMap<String, String>,
         idle_unload: Option<Duration>,
+        default_model: Option<String>,
     ) -> Self {
         Self {
             registry,
             active: Arc::new(Mutex::new(None)),
             idle_unload,
             validation,
+            default_model,
         }
     }
 
@@ -84,7 +87,13 @@ impl ModelsState {
     }
 
     pub fn resolve(&self, name: &str) -> Option<ModelAlias> {
-        self.registry.as_ref()?.find(name)
+        // Handle "default" model name by resolving to default_model
+        let resolved_name = if name == "default" {
+            self.default_model.as_deref().unwrap_or(name)
+        } else {
+            name
+        };
+        self.registry.as_ref()?.find(resolved_name)
     }
 
     pub async fn set_active(&self, name: String) {

@@ -156,6 +156,24 @@ impl ModelManager {
         guard.switch_requested_at = None;
     }
 
+    /// Mark a model as active (for initial load at startup).
+    /// This bypasses the switch queue and directly marks the model as ready.
+    /// Returns any queued requests that were waiting for this model.
+    pub async fn mark_model_active(&self, model: String) -> Vec<QueuedRequest> {
+        let mut guard = self.inner.lock();
+        guard.active_model = Some(model.clone());
+        guard.status = ModelLifecycleStatus::Ready;
+        guard.last_error = None;
+        guard.switch_requested_at = None;
+        drop(guard);
+        
+        // Also mark it in ModelsState
+        self.models_state.set_active(model.clone()).await;
+        
+        // Drain any queued requests for this model (they can now be processed)
+        self.drain_model_queue(&model)
+    }
+
     pub fn status(&self) -> ModelStatus {
         let guard = self.inner.lock();
         let queues = self.request_queues.lock();

@@ -69,17 +69,24 @@ async fn chat_completions_handler(
                         Some(response_tx),
                     );
 
-                    match queue.enqueue(queued_request) {
+                        match queue.enqueue(queued_request) {
                         Ok(()) => {
                             info!("Request queued for model switch to {}", alias.name);
                             // Wait for the response from the queue processor
+                            // Use a longer timeout for initial model loads (up to 10 minutes for large model downloads)
+                            // The queue timeout is configurable via --request-timeout, but we use a longer timeout here
+                            // to account for model downloads which can take several minutes
+                            let timeout_duration = Duration::from_secs(600); // 10 minutes for initial loads
                             match tokio::time::timeout(
-                                Duration::from_secs(60), // 60 second timeout
+                                timeout_duration,
                                 response_rx
                             ).await {
                                 Ok(Ok(responder)) => return responder,
                                 Ok(Err(_)) => return ChatResponder::ModelError(APIError::new("Queue processing failed".to_string())),
-                                Err(_) => return ChatResponder::ModelError(APIError::new("Request timed out in queue".to_string())),
+                                Err(_) => return ChatResponder::ModelError(APIError::new(format!(
+                                    "Request timed out in queue after {} seconds. Model may still be loading.",
+                                    timeout_duration.as_secs()
+                                ))),
                             }
                         }
                         Err(QueueError::QueueFull) => {

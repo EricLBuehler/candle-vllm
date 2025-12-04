@@ -34,8 +34,8 @@ use clap::Parser;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-mod models_config;
-mod routes;
+pub mod models_config;
+pub mod routes;
 use tracing::{info, warn};
 const SIZE_IN_MB: usize = 1024 * 1024;
 use candle_vllm_core::openai::models::Config;
@@ -576,6 +576,9 @@ pub async fn run() -> Result<()> {
         }
     });
     
+    // Store model name for later use (before it gets moved)
+    let startup_model_name = model_name.clone();
+    
     // Apply model alias if we have a model name (from CLI or default)
     if let (Some(registry_ref), Some(name)) = (registry.as_ref(), model_name) {
         if let Some(alias) = registry_ref.find(&name) {
@@ -915,7 +918,7 @@ pub async fn run() -> Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let models = ModelsState::new(registry, validation, idle_unload);
+    let models = ModelsState::new(registry, validation, idle_unload, default_model.clone());
 
     // Load MCP config: CLI arg > env var > ~/.candle-vllm/mcp.json > current dir
     let mcp_config_path = args.mcp_config.clone()
@@ -976,6 +979,23 @@ pub async fn run() -> Result<()> {
         args.queue_size,
         Duration::from_secs(args.request_timeout),
     ));
+
+    // If a model was loaded at startup, mark it as active in the ModelManager
+    // This prevents requests from being queued unnecessarily when they arrive
+    // Note: Any requests that arrive before this point will still be queued,
+    // but they will be processed once the model is marked active
+    if let Some(ref model_name) = startup_model_name {
+        if let Some(alias) = models.resolve(model_name) {
+            info!("Marking model '{}' as active after startup load", alias.name);
+            let queued_requests = model_manager.mark_model_active(alias.name.clone()).await;
+            if !queued_requests.is_empty() {
+                warn!("Found {} queued requests for model '{}' - these should be processed by a background task", 
+                    queued_requests.len(), alias.name);
+                // TODO: Process queued requests in a background task
+                // For now, these requests will timeout, but future requests won't be queued
+            }
+        }
+    }
 
     let app_state = routes::AppState {
         models,

@@ -85,6 +85,10 @@ pub struct StreamingToken {
     pub is_finished: bool,
     /// Finish reason if finished
     pub finish_reason: Option<String>,
+    /// Whether this token is part of reasoning/thinking output
+    /// Reasoning tokens are emitted by models that support chain-of-thought
+    /// or thinking capabilities when thinking mode is enabled
+    pub is_reasoning: bool,
 }
 
 /// Type alias for streaming response sender (multiple tokens).

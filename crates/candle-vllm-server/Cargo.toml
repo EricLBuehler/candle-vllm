@@ -35,6 +35,9 @@ tokio-test = "0.4"
 axum-test = "8.0"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
+base64 = "0.22"
+dotenvy = "0.15"
+dirs = "5.0"
 
 [features]
 accelerate = ["candle-vllm-core/accelerate", "candle-vllm-openai/accelerate"]

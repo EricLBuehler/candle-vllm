@@ -587,6 +587,7 @@ impl LLMEngine {
                 role: Some(self.roles.0.clone()),
                 content,
                 tool_calls: tool_calls_delta,
+                reasoning: None, // Reasoning is handled at streaming level
             },
             finish_reason,
             index: 0,

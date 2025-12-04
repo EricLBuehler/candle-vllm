@@ -169,6 +169,11 @@ pub struct ChoiceData {
     /// Tool call deltas for streaming tool calls
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCallDelta>>,
+    /// Reasoning content delta (for reasoning/thinking models)
+    /// This field contains incremental reasoning tokens emitted by models
+    /// that support chain-of-thought or thinking capabilities
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 impl ChoiceData {
@@ -178,6 +183,7 @@ impl ChoiceData {
             content: Some(text),
             role: None,
             tool_calls: None,
+            reasoning: None,
         }
     }
 
@@ -187,6 +193,7 @@ impl ChoiceData {
             content: None,
             role: Some(role),
             tool_calls: None,
+            reasoning: None,
         }
     }
 
@@ -196,6 +203,17 @@ impl ChoiceData {
             content: None,
             role: None,
             tool_calls: Some(vec![delta]),
+            reasoning: None,
+        }
+    }
+
+    /// Create a reasoning delta (for reasoning/thinking models)
+    pub fn reasoning(text: String) -> Self {
+        Self {
+            content: None,
+            role: None,
+            tool_calls: None,
+            reasoning: Some(text),
         }
     }
 
@@ -205,12 +223,18 @@ impl ChoiceData {
             content: None,
             role: None,
             tool_calls: None,
+            reasoning: None,
         }
     }
 
     /// Check if this delta is empty
     pub fn is_empty(&self) -> bool {
-        self.content.is_none() && self.role.is_none() && self.tool_calls.is_none()
+        self.content.is_none() && self.role.is_none() && self.tool_calls.is_none() && self.reasoning.is_none()
+    }
+
+    /// Check if this delta contains reasoning content
+    pub fn has_reasoning(&self) -> bool {
+        self.reasoning.is_some()
     }
 }
 
@@ -244,6 +268,15 @@ impl Choice {
     pub fn tool_call_chunk(index: usize, tool_call_delta: ToolCallDelta) -> Self {
         Self {
             delta: ChoiceData::tool_call(tool_call_delta),
+            finish_reason: None,
+            index,
+        }
+    }
+
+    /// Create a reasoning chunk (for reasoning/thinking models)
+    pub fn reasoning_chunk(index: usize, reasoning: String) -> Self {
+        Self {
+            delta: ChoiceData::reasoning(reasoning),
             finish_reason: None,
             index,
         }
@@ -293,6 +326,11 @@ impl ChatCompletionChunk {
     /// Create a content chunk
     pub fn content(id: String, index: usize, content: String, created: u64, model: String) -> Self {
         Self::new(id, Choice::content_chunk(index, content), created, model)
+    }
+
+    /// Create a reasoning chunk (for reasoning/thinking models)
+    pub fn reasoning(id: String, index: usize, reasoning: String, created: u64, model: String) -> Self {
+        Self::new(id, Choice::reasoning_chunk(index, reasoning), created, model)
     }
 
     /// Create a finish chunk
@@ -450,6 +488,36 @@ mod tests {
         let delta = ChoiceData::content("Hello".to_string());
         assert!(!delta.is_empty());
         assert_eq!(delta.content, Some("Hello".to_string()));
+        assert!(!delta.has_reasoning());
+    }
+
+    #[test]
+    fn test_choice_data_delta_reasoning() {
+        let delta = ChoiceData::reasoning("Let me think about this...".to_string());
+        assert!(!delta.is_empty());
+        assert!(delta.has_reasoning());
+        assert_eq!(delta.reasoning, Some("Let me think about this...".to_string()));
+        assert!(delta.content.is_none());
+    }
+
+    #[test]
+    fn test_reasoning_chunk() {
+        let chunk = ChatCompletionChunk::reasoning(
+            "cmpl-456".to_string(),
+            0,
+            "<think>Analyzing the problem...</think>".to_string(),
+            1234567890,
+            "reasoning-model".to_string(),
+        );
+
+        assert_eq!(chunk.id, "cmpl-456");
+        assert_eq!(chunk.choices.len(), 1);
+        assert!(chunk.choices[0].delta.has_reasoning());
+        assert_eq!(
+            chunk.choices[0].delta.reasoning,
+            Some("<think>Analyzing the problem...</think>".to_string())
+        );
+        assert!(chunk.choices[0].delta.content.is_none());
     }
 
     #[test]
