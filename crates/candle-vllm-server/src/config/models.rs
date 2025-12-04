@@ -40,6 +40,8 @@ pub struct ModelRegistryConfig {
     #[serde(default)]
     pub models: Vec<ModelProfile>,
     pub idle_unload_secs: Option<u64>,
+    /// Default model to use if no model is specified via CLI arguments
+    pub default_model: Option<String>,
 }
 
 impl ModelProfile {

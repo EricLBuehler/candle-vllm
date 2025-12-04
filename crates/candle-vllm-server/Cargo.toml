@@ -28,6 +28,7 @@ candle-core = { workspace = true }
 serde = { workspace = true }
 futures = { workspace = true }
 flume = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"

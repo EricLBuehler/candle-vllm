@@ -7,13 +7,17 @@
 # Example usage:
 #   export CANDLE_VLLM_MODELS_CONFIG=/path/to/models.yaml
 #   cargo run --release --features metal -- --m mistral-7b
+#
+# The model alias (e.g., "mistral-7b") can then be used with the --m flag:
+#   cargo run --release --features metal -- --m mistral-7b
 
 # Optional: Auto-unload models after being idle for this many seconds
 # Set to null or omit to disable auto-unloading
+# Models will be automatically unloaded if no requests are received for this duration
 idle_unload_secs: 3600  # 1 hour
 
 models:
-  # Example: Hugging Face model
+  # Example: Hugging Face model with basic parameters
   - name: mistral-7b
     hf_id: mistralai/Mistral-7B-Instruct-v0.3
     params:
@@ -68,20 +72,61 @@ models:
       device_ids: []  # Empty = CPU
     notes: "Model running on CPU"
 
-# Parameter reference:
-#   dtype: Data type (f32, f16, bf16)
-#   quantization: Quantization method (q4k, q8_0, etc.)
-#   block_size: KV cache block size
-#   max_num_seqs: Maximum number of sequences in batch
-#   kvcache_mem_gpu: KV cache memory in MB (GPU)
-#   kvcache_mem_cpu: KV cache memory in MB (CPU)
-#   prefill_chunk_size: Chunk size for prefill (optional)
-#   multithread: Enable multi-threading (true/false)
-#   device_ids: List of GPU device IDs to use (empty = CPU)
-#   temperature: Sampling temperature (0.0-2.0)
-#   top_p: Nucleus sampling parameter
-#   top_k: Top-k sampling parameter
-#   frequency_penalty: Frequency penalty (-2.0 to 2.0)
-#   presence_penalty: Presence penalty (-2.0 to 2.0)
-#   isq: In-situ quantization (q4k, q8_0, etc.)
+  # Example: Model with in-situ quantization
+  - name: quantized-model
+    hf_id: mistralai/Mistral-7B-Instruct-v0.3
+    params:
+      dtype: f16
+      isq: q4k  # In-situ quantization
+      kvcache_mem_gpu: 4096
+      max_num_seqs: 128
+    notes: "Model with in-situ quantization enabled"
 
+  # Example: Model with prefill chunking
+  - name: chunked-model
+    hf_id: mistralai/Mistral-7B-Instruct-v0.3
+    params:
+      dtype: f16
+      prefill_chunk_size: 512
+      kvcache_mem_gpu: 8192
+      max_num_seqs: 256
+    notes: "Model with chunked prefill for better throughput"
+
+# ============================================================================
+# Parameter Reference
+# ============================================================================
+#
+# Model-level fields:
+#   name:          Alias name for the model (used with --m <name>)
+#   hf_id:         Hugging Face model identifier (e.g., "mistralai/Mistral-7B-Instruct-v0.3")
+#   local_path:    Local path to model files (alternative to hf_id)
+#   weight_file:   Specific weight file to load (optional, for hf_id or local_path)
+#   params:        Model execution parameters (see below)
+#   notes:         Optional description/notes about the model
+#
+# Parameters (under "params" key):
+#   dtype:              Data type (f32, f16, bf16)
+#   quantization:       Quantization method (q4k, q8_0, etc.) - applied at load time
+#   isq:                In-situ quantization (q4k, q8_0, etc.) - applied during inference
+#   block_size:         KV cache block size (default: 64)
+#   max_num_seqs:       Maximum number of sequences in batch
+#   kvcache_mem_gpu:    KV cache memory in MB (GPU)
+#   kvcache_mem_cpu:    KV cache memory in MB (CPU)
+#   prefill_chunk_size: Chunk size for prefill (optional, improves throughput)
+#   multithread:        Enable multi-threading (true/false)
+#   device_ids:         List of GPU device IDs to use (empty [] = CPU)
+#   temperature:        Sampling temperature (0.0-2.0, default: 0.7)
+#   top_p:              Nucleus sampling parameter (0.0-1.0)
+#   top_k:              Top-k sampling parameter (positive integer or -1 for disabled)
+#   frequency_penalty:  Frequency penalty (-2.0 to 2.0)
+#   presence_penalty:   Presence penalty (-2.0 to 2.0)
+#
+# Notes:
+#   - Either "hf_id" or "local_path" must be specified (not both)
+#   - "weight_file" is optional and used to specify a specific file when multiple exist
+#   - All sampling parameters (temperature, top_p, etc.) are optional and have defaults
+#   - Memory parameters (kvcache_mem_gpu, kvcache_mem_cpu) are in megabytes
+#   - For CPU-only models, set device_ids to [] and use kvcache_mem_cpu
+#   - For multi-GPU models, specify multiple device_ids and enable multithread
+#   - quantization and isq are different: quantization is applied at load time,
+#     while isq (in-situ quantization) is applied during inference

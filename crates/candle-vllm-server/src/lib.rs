@@ -371,25 +371,49 @@ fn load_model_registry() -> (
     Option<ModelRegistry>,
     HashMap<String, String>,
     Option<Duration>,
+    Option<String>, // default_model
 ) {
     let mut validation = HashMap::new();
     let mut idle_unload = None;
-    // Load models config: env var > default locations
+    let mut default_model = None;
+    
+    // Load models config: env var > ~/.candle-vllm/models.yaml > current dir
     let models_config_path = std::env::var("CANDLE_VLLM_MODELS_CONFIG")
         .ok()
         .filter(|p| std::path::Path::new(p).exists());
     
-    let candidates: Vec<&str> = if let Some(ref path) = models_config_path {
-        vec![path.as_str()]
+    let home_dir = dirs::home_dir();
+    let mut candidates = Vec::new();
+    
+    if let Some(ref path) = models_config_path {
+        candidates.push(path.clone());
     } else {
-        vec!["models.yaml", "models.yml"]
-    };
+        // Check ~/.candle-vllm/models.yaml first
+        if let Some(ref home) = home_dir {
+            let config_path = home.join(".candle-vllm").join("models.yaml");
+            if config_path.exists() {
+                if let Some(path_str) = config_path.to_str() {
+                    candidates.push(path_str.to_string());
+                }
+            }
+            let config_path_yml = home.join(".candle-vllm").join("models.yml");
+            if config_path_yml.exists() {
+                if let Some(path_str) = config_path_yml.to_str() {
+                    candidates.push(path_str.to_string());
+                }
+            }
+        }
+        // Then check current directory
+        candidates.push("models.yaml".to_string());
+        candidates.push("models.yml".to_string());
+    }
     
     for candidate in candidates {
-        if std::path::Path::new(candidate).exists() {
-            match ModelRegistryConfig::load(candidate) {
+        if std::path::Path::new(&candidate).exists() {
+            match ModelRegistryConfig::load(&candidate) {
                 Ok(cfg) => {
                     idle_unload = cfg.idle_unload_secs.map(Duration::from_secs);
+                    default_model = cfg.default_model.clone();
                     match validate_models(&cfg) {
                         Ok(_) => {
                             for m in &cfg.models {
@@ -404,7 +428,7 @@ fn load_model_registry() -> (
                         }
                     }
                     let registry = to_model_registry(&cfg);
-                    return (Some(registry), validation, idle_unload);
+                    return (Some(registry), validation, idle_unload, default_model);
                 }
                 Err(err) => {
                     warn!("Failed to load models registry {candidate}: {err}");
@@ -412,7 +436,7 @@ fn load_model_registry() -> (
             }
         }
     }
-    (None, validation, idle_unload)
+    (None, validation, idle_unload, default_model)
 }
 
 fn get_cache_config(
@@ -540,11 +564,35 @@ pub async fn run() -> Result<()> {
     }
 
     // Apply model alias before using args fields
-    let (registry, validation, idle_unload) = load_model_registry();
-    if let (Some(registry_ref), Some(name)) = (registry.as_ref(), args.model_id.clone()) {
+    let (registry, validation, idle_unload, default_model) = load_model_registry();
+    
+    // If no model specified via CLI, use default_model from config
+    let model_name = args.model_id.clone().or_else(|| {
+        if let Some(ref default) = default_model {
+            info!("No model specified via CLI, using default model '{}' from config", default);
+            Some(default.clone())
+        } else {
+            None
+        }
+    });
+    
+    // Apply model alias if we have a model name (from CLI or default)
+    if let (Some(registry_ref), Some(name)) = (registry.as_ref(), model_name) {
         if let Some(alias) = registry_ref.find(&name) {
             info!("Using model alias '{}' from models.yaml", name);
             apply_model_alias(&mut args, &alias);
+            // apply_model_alias already sets args.model_id from alias.model_id (hf_id)
+            // or args.weight_path from alias.weight_path (local_path)
+            // So we don't need to set args.model_id here
+        } else if args.model_id.is_none() && args.weight_path.is_none() {
+            // If default_model was specified but not found, and no model was provided via CLI
+            return Err(candle_core::Error::Msg(format!(
+                "Default model '{}' not found in registry and no model specified via CLI.\n\
+                Please either:\n\
+                \t1. Fix the default_model in models.yaml\n\
+                \t2. Specify a model via --m <model_id> or --w <weight_path>",
+                name
+            )));
         }
     }
 
@@ -557,12 +605,12 @@ pub async fn run() -> Result<()> {
 
     // Prepare model weights for validation (needed for both paths)
     let loader = DefaultLoader::new(
-        args.hf_token.clone(),
+        args.model_id.clone(),
         args.weight_path.clone(),
-        args.hf_token_path.clone(),
+        args.weight_file.clone(),
     );
     let (paths, gguf) = loader
-        .prepare_model_weights(args.model_id.clone(), args.weight_file.clone())
+        .prepare_model_weights(args.hf_token.clone(), args.hf_token_path.clone())
         .map_err(candle_core::Error::wrap)?;
 
     let dtype = get_dtype(args.dtype.clone());
@@ -869,10 +917,20 @@ pub async fn run() -> Result<()> {
 
     let models = ModelsState::new(registry, validation, idle_unload);
 
-    // Load MCP config: CLI arg > env var > default location
+    // Load MCP config: CLI arg > env var > ~/.candle-vllm/mcp.json > current dir
     let mcp_config_path = args.mcp_config.clone()
         .or_else(|| std::env::var("CANDLE_VLLM_MCP_CONFIG").ok())
         .or_else(|| {
+            // Check ~/.candle-vllm/mcp.json first
+            if let Some(home) = dirs::home_dir() {
+                let config_path = home.join(".candle-vllm").join("mcp.json");
+                if config_path.exists() {
+                    if let Some(path_str) = config_path.to_str() {
+                        return Some(path_str.to_string());
+                    }
+                }
+            }
+            // Then check current directory
             if std::path::Path::new("mcp.json").exists() {
                 Some("mcp.json".to_string())
             } else {
