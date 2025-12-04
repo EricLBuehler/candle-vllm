@@ -38,7 +38,11 @@ pub type KVCache = (Tensor, Tensor);
 #[derive(Debug)]
 pub struct CacheEngine {
     gpu_cache: Arc<Mutex<Vec<KVCache>>>,
+    /// CPU KV cache for offloading (reserved for future use)
+    #[allow(dead_code)]
     cpu_cache: Vec<KVCache>,
+    /// Number of model layers (reserved for layer-wise cache management)
+    #[allow(dead_code)]
     num_layers: usize,
 }
 

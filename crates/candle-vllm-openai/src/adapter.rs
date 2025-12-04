@@ -56,6 +56,7 @@ impl OpenAIAdapter {
             pipeline_config,
             record_conversation: false,
             device: self.engine.device().clone(),
+            vision_tool: None,
         };
 
         let responder = chat_completions_with_data(Arc::new(data), request).await;
@@ -102,6 +103,7 @@ impl OpenAIAdapter {
             pipeline_config,
             record_conversation: false,
             device: self.engine.device().clone(),
+            vision_tool: None,
         };
 
         let responder = chat_completions_with_data(Arc::new(data), stream_request).await;

@@ -7,6 +7,7 @@ description = "Core inference engine and scheduler for candle-vllm"
 
 [dependencies]
 anyhow.workspace = true
+async-trait.workspace = true
 attention-rs.workspace = true
 bincode.workspace = true
 candle-core.workspace = true
@@ -26,6 +27,7 @@ regex.workspace = true
 serde.workspace = true
 serde-big-array.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 thiserror.workspace = true
 tokenizers.workspace = true
 tracing.workspace = true
@@ -34,9 +36,11 @@ half = { workspace = true, features = ["num-traits", "use-intrinsics", "rand_dis
 interprocess.workspace = true
 akin.workspace = true
 which.workspace = true
+base64.workspace = true
+reqwest.workspace = true
 mpi = { workspace = true, optional = true }
-rmcp = { workspace = true, optional = true }
-rmcp-macros = { workspace = true, optional = true }
+rmcp = { git = "https://github.com/GQAdonis/rust-sdk.git", optional = true }
+rmcp-macros = { git = "https://github.com/GQAdonis/rust-sdk.git", optional = true }
 axum.workspace = true
 tokio.workspace = true
 futures.workspace = true
@@ -46,9 +50,11 @@ chrono.workspace = true
 indicatif.workspace = true
 ahash.workspace = true
 utoipa.workspace = true
+crossbeam.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = "3.8"
 
 [dependencies.metal]
 version = "0.27"

@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
@@ -342,4 +342,10 @@ impl SequenceGroup {
     pub fn get_created_time(&self) -> SystemTime {
         self.created_time
     }
+}
+
+/// Metadata container for sequence groups used in lock-free worker communication
+#[derive(Clone)]
+pub struct SequenceGroupMetadata {
+    pub seq_groups: VecDeque<Arc<SequenceGroup>>,
 }

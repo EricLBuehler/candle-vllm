@@ -3,7 +3,17 @@ use crate::config::{McpConfig, ModelRegistryConfig};
 use crate::models_config::{to_model_registry, ModelsState};
 use crate::routes::build_router;
 use crate::state::model_manager::ModelManager;
+use candle_vllm_responses::session::ResponsesSession;
 use candle_vllm_openai::model_registry::ModelRegistry;
+// TODO: Re-enable when vision path is restored
+// use candle_vllm_core::models_engine_builder::{
+//     ModelsEngineBuilderConfig, ModelsEngineBuilderFactory
+// };
+use candle_vllm_core::models_engine_builder::ModelsEngineBuilderConfig;
+use candle_vllm_core::openai::image_tool::ImageDescriptionConfig;
+use candle_vllm_core::engine_params::EngineParams;
+use candle_vllm_core::engine_state::EngineStateConfig;
+use candle_vllm_core::openai::vision_proxy::VisionProxyConfig;
 pub mod config;
 pub mod state;
 use axum::{
@@ -15,13 +25,12 @@ use candle_vllm_core::backend::heartbeat;
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm_core::scheduler::SchedulerConfig;
 use candle_vllm_openai::model_registry::ModelAlias;
-use candle_vllm_openai::pipelines::llm_engine::LLMEngine;
-use candle_vllm_openai::pipelines::pipeline::DefaultLoader;
-use candle_vllm_openai::sampling_params::GenerationConfig;
-use candle_vllm_openai::OpenAIServerData;
-use candle_vllm_responses::session::ResponsesSession;
+use candle_vllm_core::openai::pipelines::llm_engine::LLMEngine;
+use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
+use candle_vllm_core::openai::sampling_params::GenerationConfig;
+use candle_vllm_core::openai::OpenAIServerData;
+// use candle_vllm_responses::session::ResponsesSession;
 use clap::Parser;
-use futures::executor;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +38,7 @@ mod models_config;
 mod routes;
 use tracing::{info, warn};
 const SIZE_IN_MB: usize = 1024 * 1024;
-use candle_vllm_openai::models::Config;
+use candle_vllm_core::openai::models::Config;
 use rustchatui::start_ui_server;
 use tokio::sync::Notify;
 use tower_http::cors::{Any, CorsLayer};
@@ -152,6 +161,144 @@ struct Args {
     /// Request timeout in seconds (default: 30)
     #[arg(long, default_value_t = 30)]
     request_timeout: u64,
+
+    /// Path to models configuration file (YAML/JSON)
+    #[arg(long)]
+    models_config: Option<String>,
+
+    /// Enable vision model support
+    #[arg(long)]
+    enable_vision: bool,
+
+    /// Path to vision model (optional, overrides models config)
+    #[arg(long)]
+    vision_model_path: Option<String>,
+
+    /// Vision model device (optional, overrides models config)
+    #[arg(long)]
+    vision_device: Option<String>,
+
+    /// Vision model dtype (optional, overrides models config)
+    #[arg(long)]
+    vision_dtype: Option<String>,
+}
+
+// TODO: Re-enable when ModelsEngineBuilder API is stable
+// /// Create engine using ModelsEngineBuilder for vision support
+// async fn build_vision_enabled_engines(
+//     config: ModelsEngineBuilderConfig,
+//     args: &Args,
+// ) -> Result<(Arc<parking_lot::RwLock<LLMEngine>>, Option<std::sync::Arc<candle_vllm_core::openai::local_vision_tool::LocalVisionModelTool>>)> {
+//     info!("Building vision-enabled engines using ModelsEngineBuilder");
+//     // Use the ModelsEngineBuilder for concurrent model loading
+//     let builder = ModelsEngineBuilderFactory::production();
+//     let builder_result = builder.build_from_config(config).await
+//         .map_err(|e| format!("Failed to build engines: {}", e))?;
+//     // Extract the LLMEngine from the primary engine
+//     let llm_engine = builder_result.primary_engine.engine().clone();
+//     let vision_tool = builder_result.vision_tool;
+//     info!("Vision-enabled engines built successfully. Vision: {}",
+//           if vision_tool.is_some() { "✓" } else { "✗" });
+//     Ok((llm_engine, vision_tool))
+// }
+
+// TODO: Re-enable when ModelsEngineBuilder API is stable
+// /// Setup and run server with vision-enabled engines
+// async fn setup_vision_enabled_server(
+//     server_data: OpenAIServerData,
+//     args: Args,
+// ) -> Result<()> {
+//     let host = args.host.clone();
+//     let port = args.port;
+//     let ui_server = args.ui_server;
+//     // Load model registry and validation for models state
+//     let (registry, validation, idle_unload) = load_model_registry();
+//     let cors_layer = CorsLayer::new()
+//         .allow_methods([Method::GET, Method::POST])
+//         .allow_headers([http::header::CONTENT_TYPE])
+//         .allow_origin(Any) // same as "*"
+//         .allow_methods(Any)
+//         .allow_headers(Any);
+//     let models = ModelsState::new(registry, validation, idle_unload);
+//     // ... MCP and server setup code
+//     Ok(())
+// }
+
+/// Load models configuration from file or create default config from CLI args
+fn load_models_config(args: &Args) -> Result<ModelsEngineBuilderConfig> {
+    if let Some(config_path) = &args.models_config {
+        info!("Loading models configuration from: {}", config_path);
+        let config_content = std::fs::read_to_string(config_path)
+            .map_err(|e| candle_core::Error::Msg(format!("Failed to read models config file: {}", e)))?;
+
+        let config: ModelsEngineBuilderConfig = if config_path.ends_with(".yaml") || config_path.ends_with(".yml") {
+            serde_yaml::from_str(&config_content)
+                .map_err(|e| candle_core::Error::Msg(format!("Failed to parse YAML models config: {}", e)))?
+        } else {
+            serde_json::from_str(&config_content)
+                .map_err(|e| candle_core::Error::Msg(format!("Failed to parse JSON models config: {}", e)))?
+        };
+        Ok(config)
+    } else {
+        // Create default config from CLI args
+        let mut fallback_params = EngineParams::default();
+
+        // Map CLI args to EngineParams
+        fallback_params.dtype = args.dtype.clone();
+        fallback_params.quantization = args.isq.clone();
+        fallback_params.block_size = Some(args.block_size);
+        fallback_params.max_num_seqs = Some(args.max_num_seqs);
+        fallback_params.mem = Some(args.kvcache_mem_gpu);
+        fallback_params.kvcache_mem_cpu = Some(args.kvcache_mem_cpu);
+        fallback_params.device_ids = args.device_ids.clone();
+        fallback_params.prefill_chunk_size = args.prefill_chunk_size;
+
+        // Validate that model path is provided
+        if args.weight_path.is_none() && args.model_id.is_none() {
+            return Err(candle_core::Error::Msg("Either model_id or weight_path must be provided".to_string()));
+        }
+
+        let default_vision_config = if args.enable_vision {
+            Some(ImageDescriptionConfig {
+                max_image_size: Some((1024, 1024)),
+                timeout_secs: 30,
+                include_metadata: false,
+                prompt_template: None,
+                model_params: HashMap::new(),
+            })
+        } else {
+            None
+        };
+
+        let default_vision_proxy_config = if args.enable_vision {
+            Some(VisionProxyConfig {
+                enabled: true,
+                image_description_template: Some("[Image: {description}]".to_string()),
+                include_confidence: false,
+                include_timing: false,
+                max_images_per_message: 5,
+                max_images_per_request: 20,
+            })
+        } else {
+            None
+        };
+
+        let config = ModelsEngineBuilderConfig {
+            enable_vision_auto_load: args.enable_vision,
+            default_vision_config,
+            default_vision_proxy_config,
+            state_management_config: EngineStateConfig {
+                health_check_interval_secs: 30,
+                max_consecutive_failures: 3,
+                enable_auto_recovery: true,
+                health_check_timeout_ms: 5000,
+                include_detailed_stats: false,
+            },
+            fallback_params,
+        };
+
+        Ok(config)
+    }
 }
 
 fn apply_model_alias(args: &mut Args, alias: &ModelAlias) {
@@ -401,14 +548,22 @@ pub async fn run() -> Result<()> {
         }
     }
 
-    let loader = Box::new(DefaultLoader::new(
-        args.model_id.clone(),
-        args.weight_path.clone(),
-        args.weight_file.clone(),
-    ));
+    // Load models configuration (vision-enabled approach)
+    let models_config = load_models_config(&args)?;
+    info!("Loaded models configuration: vision_enabled={}", models_config.enable_vision_auto_load);
 
-    let (paths, gguf) =
-        loader.prepare_model_weights(args.hf_token.clone(), args.hf_token_path.clone())?;
+    // Vision support temporarily disabled - using traditional model loading path
+    // TODO: Re-enable vision path when ModelsEngineBuilder API is stable
+
+    // Prepare model weights for validation (needed for both paths)
+    let loader = DefaultLoader::new(
+        args.hf_token.clone(),
+        args.weight_path.clone(),
+        args.hf_token_path.clone(),
+    );
+    let (paths, gguf) = loader
+        .prepare_model_weights(args.model_id.clone(), args.weight_file.clone())
+        .map_err(candle_core::Error::wrap)?;
 
     let dtype = get_dtype(args.dtype.clone());
     let kv_cache_dtype = if args.fp8_kvcache { DType::U8 } else { dtype };
@@ -468,6 +623,15 @@ pub async fn run() -> Result<()> {
         }
     }
 
+    // Vision-enabled path: Use ModelsEngineBuilder for single-process mode
+    // TODO: Re-enable when ModelsEngineBuilder API is stable
+    // if use_vision_path && !multi_process {
+    //     info!("Using vision-enabled model loading path (single-process mode)");
+    //     let (llm_engine, vision_tool) = build_vision_enabled_engines(models_config, &args).await?;
+    //     // ... vision-enabled server setup
+    //     return setup_vision_enabled_server(server_data, args).await;
+    // }
+
     let logger: ftail::Ftail = ftail::Ftail::new();
     let host = args.host.clone();
     let mut port = args.port;
@@ -475,7 +639,7 @@ pub async fn run() -> Result<()> {
     let ui_port = args.port;
     #[cfg(feature = "nccl")]
     let (pipelines, global_rank, daemon_manager) = if multi_process {
-        use candle_vllm_openai::communicator::init_subprocess;
+        use candle_vllm_core::openai::communicator::init_subprocess;
         let (id, local_rank, global_rank, global_world_size, daemon_manager) =
             init_subprocess(device_ids.clone()).unwrap();
         if global_rank != 0 {
@@ -510,7 +674,7 @@ pub async fn run() -> Result<()> {
             Some(daemon_manager),
         )
     } else {
-        use candle_vllm_openai::communicator::DaemonManager;
+        use candle_vllm_core::openai::communicator::DaemonManager;
         DaemonManager::set_master_rank(true); //master rank default for multithreaded mode
         let log_file = format!("candle-vllm-{}ranks.log", device_ids.len());
         let _ = config_log(logger, args.log, log_file);
@@ -526,8 +690,8 @@ pub async fn run() -> Result<()> {
                     args.max_num_seqs,
                     device_ids,
                     None,
-                    None,
-                    None,
+                    Some(0),
+                    Some(1),
                     None,
                     None,
                 )
@@ -563,7 +727,7 @@ pub async fn run() -> Result<()> {
                     args.max_num_seqs,
                     device_ids,
                     None,
-                    None,
+                    Some(0),
                 )
                 .await,
             0,
@@ -656,11 +820,16 @@ pub async fn run() -> Result<()> {
 
     let max_model_len = pipeline_config.max_model_len;
     let kvcached_tokens = cache_config.num_gpu_blocks.unwrap() * cache_config.block_size;
+
+    // Wrap LLMEngine in Arc for shared ownership (no RwLock needed - engine uses internal synchronization)
+    let llm_engine = Arc::new(llm_engine);
+
     let server_data = OpenAIServerData {
         pipeline_config,
-        model: llm_engine,
+        model: llm_engine.clone(),
         record_conversation: args.record_conversation,
         device: Device::Cpu,
+        vision_tool: None,
     };
 
     if global_rank != 0 {
@@ -669,8 +838,8 @@ pub async fn run() -> Result<()> {
 
     #[cfg(feature = "nccl")]
     if multi_process {
-        let e = server_data.model.read();
-        let mut daemon_manager = e.daemon_manager.write();
+        // Access daemon_manager through the engine's internal RwLock
+        let mut daemon_manager = server_data.model.daemon_manager.write();
         daemon_manager.as_mut().unwrap().mpi_sync();
     }
 
@@ -720,7 +889,7 @@ pub async fn run() -> Result<()> {
                 info!("MCP config loaded successfully with {} server(s)", cfg.servers.len());
                 match serde_json::to_value(&cfg)
                     .map_err(anyhow::Error::from)
-                    .and_then(|v| executor::block_on(ResponsesSession::from_config_value(&v)))
+                    .and_then(|v| futures::executor::block_on(ResponsesSession::from_config_value(&v)))
                 {
                     Ok(session) => {
                         info!("MCP session initialized successfully");

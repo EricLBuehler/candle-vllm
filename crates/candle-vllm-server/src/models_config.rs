@@ -1,10 +1,30 @@
 use crate::config::ModelRegistryConfig;
 use candle_vllm_openai::model_registry::{ModelAlias, ModelRegistry};
-use candle_vllm_responses::status::{ModelLifecycleStatus, ModelStatus};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::Mutex;
+use std::sync::Arc;
+
+// Temporary placeholder types to replace candle_vllm_responses dependencies
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub enum ModelLifecycleStatus {
+    Idle,
+    Loading,
+    Ready,
+    Switching,
+    Error,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ModelStatus {
+    pub active_model: Option<String>,
+    pub status: ModelLifecycleStatus,
+    pub last_error: Option<String>,
+    pub in_flight_requests: usize,
+    pub switch_requested_at: Option<u64>,
+    pub queue_lengths: std::collections::HashMap<String, usize>,
+}
 
 #[derive(Clone)]
 pub struct ModelsState {
@@ -17,7 +37,6 @@ pub struct ModelsState {
 #[derive(Clone)]
 pub struct LoadedModel {
     pub name: String,
-    pub last_used: Instant,
 }
 
 impl ModelsState {
@@ -72,7 +91,6 @@ impl ModelsState {
         let mut active = self.active.lock().await;
         *active = Some(LoadedModel {
             name,
-            last_used: Instant::now(),
         });
     }
 
@@ -108,8 +126,6 @@ pub struct ModelInfo {
     pub created: u64,
     pub status: String,
 }
-
-use std::sync::Arc;
 
 pub fn to_model_registry(cfg: &ModelRegistryConfig) -> ModelRegistry {
     let models = cfg

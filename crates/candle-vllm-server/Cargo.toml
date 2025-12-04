@@ -27,6 +27,7 @@ rustchatui.workspace = true
 candle-core.workspace = true
 serde.workspace = true
 futures.workspace = true
+flume.workspace = true
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -1,0 +1,44 @@
+[package]
+name = "candle-vllm-tauri-example"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Example Tauri application demonstrating candle-vllm library-first usage"
+
+# Keep this example independent of the main workspace
+[workspace]
+
+[[bin]]
+name = "candle-vllm-tauri-example"
+path = "src/main.rs"
+
+[dependencies]
+# candle-vllm libraries (no HTTP server needed)
+candle-vllm-core = { path = "../../crates/candle-vllm-core" }
+candle-vllm-openai = { path = "../../crates/candle-vllm-openai" }
+
+# Async runtime
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync"] }
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0.17"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Note: In a real Tauri app, you would add:
+# tauri = { version = "1.5", features = [] }
+# For this example, we demonstrate the library usage pattern without the full Tauri framework
+
+[features]
+default = []
+cuda = ["candle-vllm-core/cuda", "candle-vllm-openai/cuda"]
+metal = ["candle-vllm-core/metal", "candle-vllm-openai/metal"]
+

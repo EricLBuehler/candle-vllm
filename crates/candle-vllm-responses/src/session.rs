@@ -1,7 +1,7 @@
 use crate::mcp_client::{McpClient, McpServerConfig};
 use crate::orchestrator::Orchestrator;
 use candle_vllm_core::api::InferenceEngine;
-use candle_vllm_core::openai::requests::{ChatCompletionRequest, ChatMessage, Messages, Tool};
+use candle_vllm_core::openai::requests::{ChatCompletionRequest, ChatMessage, Messages, MessageContent, Tool};
 use candle_vllm_openai::adapter::OpenAIAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -323,7 +323,7 @@ impl ResponsesSession {
             // Convert ChatChoiceData to ChatMessage
             let assistant_msg = ChatMessage {
                 role: choice.message.role.clone(),
-                content: choice.message.content.clone(),
+                content: choice.message.content.as_ref().map(|c| MessageContent::Text(c.clone())),
                 tool_calls: choice.message.tool_calls.clone(),
                 tool_call_id: None,
                 name: None,
@@ -335,7 +335,7 @@ impl ResponsesSession {
                 if tool_calls.is_empty() {
                     // No tool calls, conversation complete
                     return Ok(ConversationResult {
-                        final_message: assistant_msg.content.unwrap_or_default(),
+                        final_message: assistant_msg.content.map(|c| c.get_text_content()).unwrap_or_default(),
                         tool_calls: all_tool_calls,
                         turns_taken: turns,
                         completed: true,
@@ -353,7 +353,7 @@ impl ResponsesSession {
             } else {
                 // No tool calls, conversation complete
                 return Ok(ConversationResult {
-                    final_message: assistant_msg.content.unwrap_or_default(),
+                    final_message: assistant_msg.content.map(|c| c.get_text_content()).unwrap_or_default(),
                     tool_calls: all_tool_calls,
                     turns_taken: turns,
                     completed: true,

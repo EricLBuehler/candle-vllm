@@ -290,14 +290,190 @@ pub struct ToolCallDelta {
 // Message Types
 // ============================================================================
 
-/// A chat message with full support for tool calls
+/// URL of an image to include in the message
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ImageUrl {
+    /// The URL of the image (can be a web URL or data: URL)
+    pub url: String,
+    /// Detail level for image processing (low, high, auto)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl ImageUrl {
+    /// Create a new image URL
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            detail: None,
+        }
+    }
+
+    /// Set the detail level (low, high, auto)
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Check if this is a data URL (base64 encoded image)
+    pub fn is_data_url(&self) -> bool {
+        self.url.starts_with("data:")
+    }
+
+    /// Check if this is a web URL
+    pub fn is_web_url(&self) -> bool {
+        self.url.starts_with("http://") || self.url.starts_with("https://")
+    }
+}
+
+/// Content part for multimodal messages
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    /// Text content
+    Text {
+        /// The text content
+        text: String,
+    },
+    /// Image content
+    ImageUrl {
+        /// The image URL and configuration
+        image_url: ImageUrl,
+    },
+}
+
+impl ContentPart {
+    /// Create a text content part
+    pub fn text(text: impl Into<String>) -> Self {
+        ContentPart::Text {
+            text: text.into(),
+        }
+    }
+
+    /// Create an image content part
+    pub fn image_url(url: impl Into<String>) -> Self {
+        ContentPart::ImageUrl {
+            image_url: ImageUrl::new(url),
+        }
+    }
+
+    /// Create an image content part with detail level
+    pub fn image_url_with_detail(url: impl Into<String>, detail: impl Into<String>) -> Self {
+        ContentPart::ImageUrl {
+            image_url: ImageUrl::new(url).with_detail(detail),
+        }
+    }
+
+    /// Check if this is a text part
+    pub fn is_text(&self) -> bool {
+        matches!(self, ContentPart::Text { .. })
+    }
+
+    /// Check if this is an image part
+    pub fn is_image(&self) -> bool {
+        matches!(self, ContentPart::ImageUrl { .. })
+    }
+
+    /// Get text content if this is a text part
+    pub fn as_text(&self) -> Option<&str> {
+        match self {
+            ContentPart::Text { text } => Some(text),
+            _ => None,
+        }
+    }
+
+    /// Get image URL if this is an image part
+    pub fn as_image_url(&self) -> Option<&ImageUrl> {
+        match self {
+            ContentPart::ImageUrl { image_url } => Some(image_url),
+            _ => None,
+        }
+    }
+}
+
+/// Message content that can be either a string (legacy) or multimodal content parts
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum MessageContent {
+    /// Simple text content (legacy format)
+    Text(String),
+    /// Multimodal content with text and/or images
+    Parts(Vec<ContentPart>),
+}
+
+impl Default for MessageContent {
+    fn default() -> Self {
+        MessageContent::Text(String::new())
+    }
+}
+
+impl MessageContent {
+    /// Create text content
+    pub fn text(text: impl Into<String>) -> Self {
+        MessageContent::Text(text.into())
+    }
+
+    /// Create multimodal content from parts
+    pub fn parts(parts: Vec<ContentPart>) -> Self {
+        MessageContent::Parts(parts)
+    }
+
+    /// Check if this content contains any images
+    pub fn has_images(&self) -> bool {
+        match self {
+            MessageContent::Text(_) => false,
+            MessageContent::Parts(parts) => parts.iter().any(|p| p.is_image()),
+        }
+    }
+
+    /// Get all image URLs from this content
+    pub fn get_image_urls(&self) -> Vec<&ImageUrl> {
+        match self {
+            MessageContent::Text(_) => Vec::new(),
+            MessageContent::Parts(parts) => parts.iter()
+                .filter_map(|p| p.as_image_url())
+                .collect(),
+        }
+    }
+
+    /// Get all text content concatenated
+    pub fn get_text_content(&self) -> String {
+        match self {
+            MessageContent::Text(text) => text.clone(),
+            MessageContent::Parts(parts) => parts.iter()
+                .filter_map(|p| p.as_text())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        }
+    }
+
+    /// Convert to legacy string format (for backward compatibility)
+    pub fn to_string_content(&self) -> String {
+        self.get_text_content()
+    }
+}
+
+impl From<String> for MessageContent {
+    fn from(text: String) -> Self {
+        MessageContent::Text(text)
+    }
+}
+
+impl From<&str> for MessageContent {
+    fn from(text: &str) -> Self {
+        MessageContent::Text(text.to_string())
+    }
+}
+
+/// A chat message with full support for tool calls and multimodal content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     /// The role of the message author (system, user, assistant, tool)
     pub role: String,
     /// The content of the message (can be null for assistant messages with tool_calls)
+    /// Supports both legacy string format and new multimodal content format
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     /// Tool calls made by the assistant (only for role="assistant")
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
@@ -310,26 +486,60 @@ pub struct ChatMessage {
 }
 
 impl ChatMessage {
+    /// Create a user message with text content
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: "user".to_string(),
-            content: Some(content.into()),
+            content: Some(MessageContent::text(content)),
             tool_calls: None,
             tool_call_id: None,
             name: None,
         }
     }
 
+    /// Create a user message with multimodal content
+    pub fn user_with_content(content: MessageContent) -> Self {
+        Self {
+            role: "user".to_string(),
+            content: Some(content),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    /// Create a user message with mixed text and images
+    pub fn user_multimodal(text: impl Into<String>, image_urls: Vec<String>) -> Self {
+        let mut parts = vec![ContentPart::text(text)];
+        for url in image_urls {
+            parts.push(ContentPart::image_url(url));
+        }
+        Self::user_with_content(MessageContent::parts(parts))
+    }
+
+    /// Create an assistant message with text content
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: "assistant".to_string(),
-            content: Some(content.into()),
+            content: Some(MessageContent::text(content)),
             tool_calls: None,
             tool_call_id: None,
             name: None,
         }
     }
 
+    /// Create an assistant message with multimodal content
+    pub fn assistant_with_content(content: MessageContent) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: Some(content),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    /// Create an assistant message with tool calls (no text content)
     pub fn assistant_with_tool_calls(tool_calls: Vec<ToolCall>) -> Self {
         Self {
             role: "assistant".to_string(),
@@ -340,20 +550,22 @@ impl ChatMessage {
         }
     }
 
+    /// Create a system message with text content
     pub fn system(content: impl Into<String>) -> Self {
         Self {
             role: "system".to_string(),
-            content: Some(content.into()),
+            content: Some(MessageContent::text(content)),
             tool_calls: None,
             tool_call_id: None,
             name: None,
         }
     }
 
+    /// Create a tool response message
     pub fn tool(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Self {
             role: "tool".to_string(),
-            content: Some(content.into()),
+            content: Some(MessageContent::text(content)),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             name: None,
@@ -371,7 +583,7 @@ impl ChatMessage {
     ) -> Self {
         Self {
             role: "tool".to_string(),
-            content: Some(content.into()),
+            content: Some(MessageContent::text(content)),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             name: Some(name.into()),
@@ -388,7 +600,7 @@ impl ChatMessage {
         name: Option<String>,
     ) -> Self {
         // MCP results can have complex content arrays, flatten to string
-        let content =
+        let content_str =
             if let Some(content_array) = mcp_result.get("content").and_then(|c| c.as_array()) {
                 content_array
                     .iter()
@@ -411,7 +623,7 @@ impl ChatMessage {
 
         Self {
             role: "tool".to_string(),
-            content: Some(content),
+            content: Some(MessageContent::text(content_str)),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
             name,
@@ -426,6 +638,26 @@ impl ChatMessage {
     /// Check if this is an assistant message with tool calls
     pub fn has_tool_calls(&self) -> bool {
         self.role == "assistant" && self.tool_calls.as_ref().map_or(false, |tc| !tc.is_empty())
+    }
+
+    /// Check if this message contains images
+    pub fn has_images(&self) -> bool {
+        self.content.as_ref().map_or(false, |c| c.has_images())
+    }
+
+    /// Get all image URLs from this message
+    pub fn get_image_urls(&self) -> Vec<&ImageUrl> {
+        self.content.as_ref().map_or(Vec::new(), |c| c.get_image_urls())
+    }
+
+    /// Get the text content of this message (multimodal-aware)
+    pub fn get_text_content(&self) -> String {
+        self.content.as_ref().map_or(String::new(), |c| c.get_text_content())
+    }
+
+    /// Convert content to legacy string format for backward compatibility
+    pub fn to_legacy_content(&self) -> Option<String> {
+        self.content.as_ref().map(|c| c.to_string_content())
     }
 }
 
@@ -450,7 +682,7 @@ impl Messages {
                 .iter()
                 .map(|m| ChatMessage {
                     role: m.get("role").cloned().unwrap_or_default(),
-                    content: m.get("content").cloned(),
+                    content: m.get("content").map(|c| MessageContent::text(c.clone())),
                     tool_calls: None,
                     tool_call_id: None,
                     name: m.get("name").cloned(),
@@ -474,6 +706,29 @@ impl Messages {
             Messages::Chat(messages) => messages.iter().any(|m| m.role == "tool"),
             _ => false,
         }
+    }
+
+    /// Check if any message contains images (multimodal content)
+    pub fn has_images(&self) -> bool {
+        match self {
+            Messages::Chat(messages) => messages.iter().any(|m| m.has_images()),
+            _ => false,
+        }
+    }
+
+    /// Get all image URLs from all messages
+    pub fn get_all_image_urls(&self) -> Vec<&ImageUrl> {
+        match self {
+            Messages::Chat(messages) => messages.iter()
+                .flat_map(|m| m.get_image_urls())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Check if this is a multimodal conversation (contains images)
+    pub fn is_multimodal(&self) -> bool {
+        self.has_images()
     }
 }
 
@@ -703,7 +958,7 @@ mod tests {
         let chat_messages = messages.to_chat_messages();
         assert_eq!(chat_messages.len(), 1);
         assert_eq!(chat_messages[0].role, "user");
-        assert_eq!(chat_messages[0].content, Some("Hello".to_string()));
+        assert_eq!(chat_messages[0].content, Some(MessageContent::Text("Hello".to_string())));
     }
 
     #[test]
@@ -825,8 +1080,8 @@ mod tests {
         assert_eq!(msg.role, "tool");
         assert_eq!(msg.tool_call_id, Some("call_123".to_string()));
         assert_eq!(msg.name, Some("get_weather".to_string()));
-        assert!(msg.content.as_ref().unwrap().contains("sunny"));
-        assert!(msg.content.as_ref().unwrap().contains("72°F"));
+        assert!(msg.content.as_ref().unwrap().get_text_content().contains("sunny"));
+        assert!(msg.content.as_ref().unwrap().get_text_content().contains("72°F"));
     }
 
     #[test]
@@ -1088,5 +1343,213 @@ mod tests {
 
         let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
         assert!(request.tools_disabled());
+    }
+
+    // ========================================================================
+    // Multimodal Content Tests
+    // ========================================================================
+
+    #[test]
+    fn test_image_url_creation() {
+        let image_url = ImageUrl::new("https://example.com/image.jpg")
+            .with_detail("high");
+
+        assert_eq!(image_url.url, "https://example.com/image.jpg");
+        assert_eq!(image_url.detail, Some("high".to_string()));
+        assert!(image_url.is_web_url());
+        assert!(!image_url.is_data_url());
+    }
+
+    #[test]
+    fn test_data_url_detection() {
+        let data_url = ImageUrl::new("data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD...");
+        assert!(data_url.is_data_url());
+        assert!(!data_url.is_web_url());
+    }
+
+    #[test]
+    fn test_content_part_creation() {
+        let text_part = ContentPart::text("Hello world");
+        assert!(text_part.is_text());
+        assert!(!text_part.is_image());
+        assert_eq!(text_part.as_text(), Some("Hello world"));
+
+        let image_part = ContentPart::image_url("https://example.com/image.jpg");
+        assert!(!image_part.is_text());
+        assert!(image_part.is_image());
+        assert!(image_part.as_image_url().is_some());
+    }
+
+    #[test]
+    fn test_message_content_multimodal() {
+        let parts = vec![
+            ContentPart::text("Describe this image:"),
+            ContentPart::image_url("https://example.com/image.jpg"),
+        ];
+        let content = MessageContent::parts(parts);
+
+        assert!(content.has_images());
+        assert_eq!(content.get_image_urls().len(), 1);
+        assert_eq!(content.get_text_content(), "Describe this image:");
+    }
+
+    #[test]
+    fn test_message_content_text_only() {
+        let content = MessageContent::text("Just text");
+
+        assert!(!content.has_images());
+        assert_eq!(content.get_image_urls().len(), 0);
+        assert_eq!(content.get_text_content(), "Just text");
+        assert_eq!(content.to_string_content(), "Just text");
+    }
+
+    #[test]
+    fn test_chat_message_multimodal() {
+        let message = ChatMessage::user_multimodal(
+            "What do you see in this image?",
+            vec!["https://example.com/image1.jpg".to_string(), "https://example.com/image2.jpg".to_string()]
+        );
+
+        assert_eq!(message.role, "user");
+        assert!(message.has_images());
+        assert_eq!(message.get_image_urls().len(), 2);
+        assert_eq!(message.get_text_content(), "What do you see in this image?");
+    }
+
+    #[test]
+    fn test_multimodal_message_serialization() {
+        let json = r#"{
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "What's in this image?"
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "https://example.com/image.jpg",
+                        "detail": "high"
+                    }
+                }
+            ]
+        }"#;
+
+        let message: ChatMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(message.role, "user");
+        assert!(message.has_images());
+        assert_eq!(message.get_image_urls().len(), 1);
+        assert_eq!(message.get_image_urls()[0].url, "https://example.com/image.jpg");
+        assert_eq!(message.get_image_urls()[0].detail, Some("high".to_string()));
+    }
+
+    #[test]
+    fn test_legacy_text_message_compatibility() {
+        // Old format: string content
+        let json = r#"{
+            "role": "user",
+            "content": "Hello world"
+        }"#;
+
+        let message: ChatMessage = serde_json::from_str(json).unwrap();
+        assert_eq!(message.role, "user");
+        assert!(!message.has_images());
+        assert_eq!(message.get_text_content(), "Hello world");
+
+        // Should be able to serialize back to legacy format
+        assert_eq!(message.to_legacy_content(), Some("Hello world".to_string()));
+    }
+
+    #[test]
+    fn test_messages_multimodal_detection() {
+        let multimodal_message = ChatMessage::user_multimodal(
+            "Analyze this image",
+            vec!["https://example.com/image.jpg".to_string()]
+        );
+
+        let text_message = ChatMessage::user("Just text");
+
+        let messages = Messages::Chat(vec![text_message, multimodal_message]);
+
+        assert!(messages.has_images());
+        assert!(messages.is_multimodal());
+        assert_eq!(messages.get_all_image_urls().len(), 1);
+    }
+
+    #[test]
+    fn test_multimodal_chat_completion_request() {
+        let json = r#"{
+            "model": "gpt-4o",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "What do you see in these images?"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "https://example.com/image1.jpg"
+                            }
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": "data:image/jpeg;base64,/9j/4AAQ...",
+                                "detail": "low"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 300
+        }"#;
+
+        let request: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+
+        assert!(request.messages.has_images());
+        assert!(request.messages.is_multimodal());
+
+        let chat_messages = request.messages.to_chat_messages();
+        assert_eq!(chat_messages.len(), 1);
+        assert_eq!(chat_messages[0].get_image_urls().len(), 2);
+
+        // Check both web URL and data URL
+        let image_urls = chat_messages[0].get_image_urls();
+        assert!(image_urls[0].is_web_url());
+        assert!(image_urls[1].is_data_url());
+        assert_eq!(image_urls[1].detail, Some("low".to_string()));
+    }
+
+    #[test]
+    fn test_mixed_content_text_extraction() {
+        let parts = vec![
+            ContentPart::text("First part"),
+            ContentPart::image_url("https://example.com/image.jpg"),
+            ContentPart::text("Second part"),
+        ];
+        let content = MessageContent::parts(parts);
+
+        // Should concatenate text parts with newline
+        assert_eq!(content.get_text_content(), "First part\nSecond part");
+        assert!(content.has_images());
+        assert_eq!(content.get_image_urls().len(), 1);
+    }
+
+    #[test]
+    fn test_content_part_serialization_format() {
+        // Test that ContentPart uses the correct tagged enum format
+        let text_part = ContentPart::text("Hello");
+        let serialized = serde_json::to_value(&text_part).unwrap();
+        assert_eq!(serialized["type"], "text");
+        assert_eq!(serialized["text"], "Hello");
+
+        let image_part = ContentPart::image_url_with_detail("https://example.com/test.jpg", "high");
+        let serialized = serde_json::to_value(&image_part).unwrap();
+        assert_eq!(serialized["type"], "image_url");
+        assert_eq!(serialized["image_url"]["url"], "https://example.com/test.jpg");
+        assert_eq!(serialized["image_url"]["detail"], "high");
     }
 }

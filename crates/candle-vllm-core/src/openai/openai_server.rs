@@ -1,20 +1,22 @@
-use super::requests::{ChatCompletionRequest, Messages, ToolCall};
+use super::requests::{ChatCompletionRequest, ToolCall};
 use super::responses::{APIError, ChatChoiceData, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
-use super::streaming::{Streamer, StreamingStatus};
+use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::tool_parser::{get_tool_parser, ParsedOutput};
+use super::utils::get_created_time_secs;
 use super::OpenAIServerData;
 use axum::extract::State;
 use axum::response::sse::KeepAlive;
 use axum::{response::Sse, Json};
+use candle_core::{DType, Tensor};
 use flume;
 use std::env;
 use std::sync::Arc;
-use std::time::SystemTime;
 use tokio::sync::Notify;
 use tokio::time::Duration;
-use tracing::debug;
+use tracing::{debug, info};
 use uuid::Uuid;
+
 #[utoipa::path(
     post,
     tag = "candle-vllm",
@@ -29,64 +31,69 @@ pub async fn chat_completions(
     chat_completions_with_data(data, request.0).await
 }
 
-// Get prompt, roles - now with tool support
-async fn get_gen_prompt(
+// Process images in multimodal content
+#[allow(dead_code)]
+async fn process_multimodal_content(
+    data: &OpenAIServerData,
+    content: &crate::openai::requests::MessageContent,
+) -> Result<String, APIError> {
+    use crate::openai::image_tool::ImageDescriptionTool;
+    use crate::openai::requests::{ContentPart, MessageContent};
+
+    match content {
+        MessageContent::Text(text) => Ok(text.clone()),
+        MessageContent::Parts(parts) => {
+            let mut processed_content = String::new();
+
+            for part in parts {
+                match part {
+                    ContentPart::Text { text } => {
+                        processed_content.push_str(text);
+                        processed_content.push('\n');
+                    }
+                    ContentPart::ImageUrl { image_url } => {
+                        if let Some(ref vision_tool) = data.vision_tool {
+                            // Process the image through vision tool
+                            let description = vision_tool
+                                .describe_image(image_url, None)
+                                .await
+                                .map_err(|e| {
+                                    APIError::new(format!("Vision processing failed: {}", e))
+                                })?;
+
+                            processed_content
+                                .push_str(&format!("[Image: {}]", description.description));
+                            processed_content.push('\n');
+                        } else {
+                            // No vision tool available, add placeholder
+                            processed_content.push_str("[Image: vision processing not available]");
+                            processed_content.push('\n');
+                        }
+                    }
+                }
+            }
+
+            Ok(processed_content)
+        }
+    }
+}
+
+/// Build prompt from messages using the lock-free LLMEngine.
+///
+/// Uses `model.build_prompt()` which handles conversation formatting
+/// without requiring pipeline access.
+fn get_gen_prompt(
     data: &OpenAIServerData,
     request: &ChatCompletionRequest,
 ) -> Result<String, APIError> {
-    let mut model = data.model.write();
-    let pipeline = model
-        .get_mut_pipeline(0)
-        .ok_or(APIError::new("Missing pipeline".to_string()))?;
-    let conversation = pipeline.0.get_conversation(data.record_conversation);
-
-    // Set tools if provided
-    if let Some(ref tools) = request.tools {
-        conversation.set_tools(Some(tools.clone()));
-    } else {
-        conversation.set_tools(None);
-    }
-
-    match &request.messages {
-        Messages::Literal(msg) => {
-            return Ok(msg.clone());
-        }
-        Messages::Chat(messages) => {
-            // New Chat format with full tool support
-            for message in messages {
-                if message.role == "system" {
-                    if let Some(ref content) = message.content {
-                        tracing::info!("system prompt found: {}", content);
-                        conversation.set_system_message(Some(content.clone()));
-                    }
-                }
-                conversation.append_message_ext(
-                    message.role.clone(),
-                    message.content.clone(),
-                    message.tool_calls.clone(),
-                    message.tool_call_id.clone(),
-                    message.name.clone(),
-                );
-            }
-        }
-        Messages::Map(messages) => {
-            // Legacy format - convert to simple messages
-            for message in messages {
-                let role = message
-                    .get("role")
-                    .ok_or(APIError::new("Message key `role` not found.".to_string()))?;
-                let content = message.get("content").cloned().unwrap_or_default();
-
-                if role == "system" {
-                    tracing::info!("system prompt found: {}", content);
-                    conversation.set_system_message(Some(content.clone()));
-                }
-                conversation.append_message(role.to_string(), content)
-            }
-        }
-    }
-
-    Ok(conversation.get_prompt(request.thinking.unwrap_or(false)))
+    // Use the engine's stateless prompt builder
+    data.model
+        .build_prompt(
+            &request.messages,
+            request.tools.as_ref(),
+            request.thinking.unwrap_or(false),
+        )
+        .map_err(|e| APIError::new(e))
 }
 
 /// Parse the model output for tool calls
@@ -124,28 +131,26 @@ fn determine_finish_reason(choice_data: &ChatChoiceData, original_reason: Option
     }
 }
 
-async fn check_length(
+/// Check token length using lock-free engine accessors.
+///
+/// Uses `model.tokenizer()` and `model.get_available_kv_tokens()`
+/// without requiring lock acquisition.
+fn check_length(
     request: &ChatCompletionRequest,
     prompt: String,
     data: &OpenAIServerData,
 ) -> Result<(Vec<u32>, usize), APIError> {
-    let (token_ids, available_kv_tokens) = {
-        let model = data.model.read();
-        let available_kv_tokens = model.get_available_kv_tokens();
-        let pipeline = model
-            .get_pipeline(0)
-            .ok_or(APIError::new("Missing pipeline".to_string()))?;
-        (
-            pipeline
-                .0
-                .tokenizer()
-                .encode_fast(prompt, false)
-                .map_err(APIError::from)?
-                .get_ids()
-                .to_vec(),
-            available_kv_tokens,
-        )
-    };
+    // Get available KV tokens from cache config (no lock needed)
+    let available_kv_tokens = data.model.get_available_kv_tokens();
+
+    // Tokenize using the shared tokenizer (no lock needed)
+    let token_ids = data
+        .model
+        .tokenizer()
+        .encode(prompt.as_str(), false)
+        .map_err(|e| APIError::new(format!("Tokenization failed: {}", e)))?
+        .get_ids()
+        .to_vec();
 
     let max_gen_tokens = request
         .max_tokens
@@ -198,80 +203,69 @@ pub async fn chat_completions_with_data(
         ));
     }
 
-    let prompt = match get_gen_prompt(&data, &request).await {
+    // Build prompt using stateless conversation handler (no lock needed)
+    let prompt = match get_gen_prompt(&data, &request) {
         Ok(p) => p,
         Err(e) => return ChatResponder::ValidationError(e),
     };
 
+    // Check length using shared tokenizer (no lock needed)
     let (token_ids, available_tokens): (Vec<u32>, usize) =
-        match check_length(&request, prompt.clone(), &data).await {
-            Ok(ids) => ids,
+        match check_length(&request, prompt, &data) {
+            Ok(v) => v,
             Err(e) => return ChatResponder::ValidationError(e),
         };
 
-    debug!("\n\n\nPrompt {:?}", prompt);
+    let created = get_created_time_secs();
 
-    let request_id = format!("cmpl-{}", Uuid::new_v4());
+    let request_id = if let Some(conv_id) = request.conversation_id.clone() {
+        conv_id
+    } else {
+        Uuid::new_v4().to_string()
+    };
 
-    // Store conversation_id and resource_id for this request
-    {
-        let model = data.model.write();
-        model.request_metadata.write().insert(
-            request_id.clone(),
-            (request.conversation_id.clone(), request.resource_id.clone()),
-        );
-    }
+    debug!(
+        "New ChatCompletionRequest: request_id={}, model={}, logprobs={:?}",
+        request_id, request.model, request.logprobs
+    );
 
-    let mut max_request_tokens = request
-        .max_tokens
-        .unwrap_or(data.pipeline_config.default_max_tokens);
+    let max_request_tokens = available_tokens;
 
-    if max_request_tokens + token_ids.len() > available_tokens {
-        tracing::warn!(
-            "Requested max tokens + prompt length {} larger than available tokens {}, \
-        max_tokens changed to {} ({} tokens reserved for prompt)!",
-            max_request_tokens + token_ids.len(),
-            available_tokens,
-            available_tokens - token_ids.len(),
-            token_ids.len()
-        );
-        max_request_tokens = if available_tokens > token_ids.len() {
-            available_tokens - token_ids.len()
+    // Convert logprobs from Option<bool> to Option<usize>
+    let logprobs_count: Option<usize> = request.logprobs.and_then(|enabled| {
+        if enabled {
+            Some(5) // Default to 5 logprobs when enabled
         } else {
-            return ChatResponder::ValidationError(APIError::new(format!(
-                "Requested prompt({} tokens) is  \
-                larger than available kvcache (maximum {} tokens).\n \
-                You can increase kvcache by setting `--mem` to a larger value!",
-                token_ids.len(),
-                available_tokens
-            )));
+            None
         }
-    }
+    });
 
-    let generation_cfg = data.pipeline_config.generation_cfg.as_ref().unwrap();
+    // Build SamplingParams using the new constructor
     let sampling_params = match SamplingParams::new(
         request.n.unwrap_or(1),
         request.best_of,
-        request
-            .presence_penalty
-            .unwrap_or(generation_cfg.presence_penalty.unwrap_or(0.0)),
-        request
-            .frequency_penalty
-            .unwrap_or(generation_cfg.frequency_penalty.unwrap_or(0.0)),
-        request.repeat_last_n,
-        request.temperature.or(generation_cfg.temperature),
-        request.top_p.or(generation_cfg.top_p),
-        request.min_p.or(generation_cfg.min_p),
-        request.top_k.or(generation_cfg.top_k),
+        request.presence_penalty.unwrap_or(0.0),
+        request.frequency_penalty.unwrap_or(0.0),
+        None, // repeat_last_n
+        request.temperature,
+        request.top_p,
+        request.min_p,
+        request.top_k,
         request.use_beam_search.unwrap_or(false),
-        1.0,
+        1.0, // length_penalty
         EarlyStoppingCondition::UnlikelyBetterCandidates,
         request.stop.clone(),
-        request.stop_token_ids.clone().unwrap_or_default(),
+        request
+            .stop_token_ids
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|id| id as usize)
+            .collect(),
         request.ignore_eos.unwrap_or(false),
         max_request_tokens,
-        None,
-        None,
+        logprobs_count,
+        None, // prompt_logprobs
         request.skip_special_tokens.unwrap_or(true),
         request.thinking,
     ) {
@@ -279,41 +273,179 @@ pub async fn chat_completions_with_data(
         Err(e) => return ChatResponder::ValidationError(e),
     };
 
-    let (response_tx, rx) = flume::unbounded();
-    tracing::info!("{:?}", sampling_params);
+    // Create flume channel for ChatResponse (matches Streamer expectation)
+    let (response_tx, rx) = flume::unbounded::<ChatResponse>();
+    info!("sampling_params prepared for request {}", request_id);
 
     let data_clone = data.clone();
     let request_id_clone = request_id.clone();
     let stream_request = request.stream.is_some_and(|x| x);
     let model_name = request.model.clone();
+    let model_name_for_response = model_name.clone(); // Clone for use outside the spawned task
     let sync_notify = Arc::new(Notify::new());
-    let sync_completion_notify = if stream_request {
-        None
-    } else {
-        Some(Arc::clone(&sync_notify))
-    };
+    let sync_notify_clone = Arc::clone(&sync_notify);
 
+    // Spawn blocking task to submit work to the lock-free worker pool
+    let sampling_params_clone = sampling_params.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        tokio::runtime::Handle::current().block_on(async move {
-            {
-                //send completion request to inference engine
-                let mut model = data.model.write();
-                model.add_request(
-                    token_ids,
-                    request_id.clone(),
-                    SystemTime::now(),
-                    sampling_params,
-                    request.logprobs.unwrap_or(false),
-                    if stream_request {
-                        Some(Arc::new(response_tx))
-                    } else {
-                        None
-                    },
-                    sync_completion_notify,
-                );
-                model.notify.notify_one();
-            }
-        });
+        // Construct InputMetadata for the worker
+        // Note: In the lock-free design, workers handle their own cache management
+        let input_metadata = crate::InputMetadata {
+            is_prefill: true, // First pass is prefill
+            slot_mapping: Tensor::zeros(token_ids.len(), DType::I64, &data.device)
+                .expect("slot_mapping tensor creation failed"),
+            block_tables: None,
+            context_lens: None,
+            cu_seqlens_q: None,
+            cu_seqlens_k: None,
+            max_seqlen_q: 0,
+            max_seqlen_k: 0,
+            max_context_len: data.pipeline_config.max_model_len,
+        };
+
+        let positions: Vec<usize> = (0..token_ids.len()).collect();
+
+        if stream_request {
+            // Submit streaming request
+            let stream_rx = match data.model.add_streaming_request(
+                request_id.clone(),
+                token_ids.clone(),
+                positions,
+                input_metadata,
+                sampling_params_clone,
+                created,
+            ) {
+                Ok(rx) => rx,
+                Err(e) => {
+                    let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));
+                    return;
+                }
+            };
+
+            // Bridge streaming tokens to ChatResponse chunks
+            std::thread::spawn(move || {
+                let mut full_content = String::new();
+                while let Ok(result) = stream_rx.recv() {
+                    match result {
+                        Ok(token) => {
+                            full_content.push_str(&token.text);
+
+                            // Create streaming chunk
+                            let chunk = crate::openai::responses::ChatCompletionChunk {
+                                id: request_id.clone(),
+                                choices: vec![crate::openai::responses::Choice {
+                                    delta: crate::openai::responses::ChoiceData {
+                                        role: Some("assistant".to_string()),
+                                        content: Some(token.text.clone()),
+                                        tool_calls: None,
+                                    },
+                                    finish_reason: if token.is_finished {
+                                        token.finish_reason.clone()
+                                    } else {
+                                        None
+                                    },
+                                    index: 0,
+                                }],
+                                created,
+                                model: model_name.to_string(),
+                                object: "chat.completion.chunk",
+                                system_fingerprint: None,
+                                conversation_id: None,
+                                resource_id: None,
+                            };
+
+                            let _ = response_tx.send(ChatResponse::Chunk(chunk));
+
+                            if token.is_finished {
+                                let _ = response_tx.send(ChatResponse::Done);
+                                sync_notify_clone.notify_one();
+                                break;
+                            }
+                        }
+                        Err(err) => {
+                            let _ = response_tx.send(ChatResponse::ModelError(err));
+                            sync_notify_clone.notify_one();
+                            break;
+                        }
+                    }
+                }
+            });
+        } else {
+            // Submit completion request (no lock needed - uses lock-free channel)
+            let response_rx = match data.model.add_request(
+                request_id.clone(),
+                token_ids.clone(),
+                positions,
+                input_metadata,
+                sampling_params_clone,
+            ) {
+                Ok(rx) => rx,
+                Err(e) => {
+                    let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));
+                    sync_notify_clone.notify_one();
+                    return;
+                }
+            };
+
+            // Bridge the engine's response channel to ChatResponse
+            std::thread::spawn(move || {
+                match response_rx.recv() {
+                    Ok(Ok((choices, usage))) => {
+                        // For non-streaming, we still need to send via the response channel
+                        // but we'll handle the final response differently
+                        let response = ChatCompletionResponse {
+                            id: request_id.clone(),
+                            object: "chat.completion",
+                            created: usage.created,
+                            model: model_name.to_string(),
+                            choices,
+                            usage,
+                            conversation_id: None,
+                            resource_id: None,
+                        };
+                        // Store in completion_records for non-streaming retrieval
+                        if let Some(mut records) = data.model.completion_records.try_write() {
+                            records.insert(
+                                request_id.clone(),
+                                (response.choices.clone(), response.usage.clone()),
+                            );
+                        }
+                        // Also send as chunk for consistency
+                        let chunk = crate::openai::responses::ChatCompletionChunk {
+                            id: request_id.clone(),
+                            choices: response
+                                .choices
+                                .iter()
+                                .map(|c| crate::openai::responses::Choice {
+                                    delta: crate::openai::responses::ChoiceData {
+                                        role: Some(c.message.role.clone()),
+                                        content: c.message.content.clone(),
+                                        tool_calls: None,
+                                    },
+                                    finish_reason: c.finish_reason.clone(),
+                                    index: c.index,
+                                })
+                                .collect(),
+                            created: response.usage.created,
+                            model: model_name.to_string(),
+                            object: "chat.completion.chunk",
+                            system_fingerprint: None,
+                            conversation_id: None,
+                            resource_id: None,
+                        };
+                        let _ = response_tx.send(ChatResponse::Chunk(chunk));
+                        let _ = response_tx.send(ChatResponse::Done);
+                    }
+                    Ok(Err(err)) => {
+                        let _ = response_tx.send(ChatResponse::ModelError(err));
+                    }
+                    Err(e) => {
+                        let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));
+                    }
+                }
+                sync_notify_clone.notify_one();
+            });
+        }
     });
 
     if stream_request {
@@ -333,36 +465,28 @@ pub async fn chat_completions_with_data(
             ),
         )
     } else {
-        // wait until current response finished
-        tracing::warn!("waiting response for sync request {}", request_id_clone);
-        sync_notify.as_ref().notified().await;
-        let model = data_clone.model.read();
-        if !model.completion_records.contains_key(&request_id_clone) {
-            return ChatResponder::ModelError(APIError::from(format!(
-                "Unable to generate response for request {request_id_clone}"
-            )));
+        // Wait until current response finished
+        debug!("Waiting for sync response for request {}", request_id_clone);
+        sync_notify.notified().await;
+
+        // Get response from completion_records
+        let records = data_clone.model.completion_records.read();
+        if let Some((choices, usage)) = records.get(&request_id_clone) {
+            ChatResponder::Completion(ChatCompletionResponse {
+                id: request_id_clone,
+                object: "chat.completion",
+                created,
+                model: model_name_for_response,
+                choices: choices.clone(),
+                usage: usage.clone(),
+                conversation_id: None,
+                resource_id: None,
+            })
+        } else {
+            ChatResponder::ModelError(APIError::new(format!(
+                "Unable to generate response for request {}",
+                request_id_clone
+            )))
         }
-
-        let choices = &model.completion_records[&request_id_clone].0;
-        let usage = &model.completion_records[&request_id_clone].1;
-        
-        // Retrieve conversation_id and resource_id from metadata
-        let (conversation_id, resource_id) = model
-            .request_metadata
-            .read()
-            .get(&request_id_clone)
-            .cloned()
-            .unwrap_or((None, None));
-
-        ChatResponder::Completion(ChatCompletionResponse {
-            id: request_id_clone,
-            choices: choices.to_vec(),
-            created: usage.created,
-            model: model_name,
-            object: "chat.completion",
-            usage: usage.clone(),
-            conversation_id,
-            resource_id,
-        })
     }
 }

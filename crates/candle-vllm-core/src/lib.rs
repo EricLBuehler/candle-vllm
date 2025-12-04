@@ -6,14 +6,32 @@ use std::path::Path;
 use tracing::warn;
 pub mod api;
 pub mod backend;
+pub mod config;
+pub mod engine_params;
+pub mod engine_builder_ext;
+pub mod engine_state;
 pub mod openai;
+pub mod models_config;
+pub mod models_engine_builder;
 pub mod scheduler;
+pub mod vision;
 pub use attention_rs::{InputMetadata, PagedAttention};
 
 // Re-export public API types
 pub use api::{
     EngineConfig, EngineConfigBuilder, Error, FinishReason, GenerationOutput, GenerationParams,
     GenerationStats, InferenceEngine, InferenceEngineBuilder, ModelInfo, Result,
+};
+pub use engine_builder_ext::{
+    EngineBuilderResult, ExtendedEngineBuilder, ExtendedEngineConfigBuilder,
+};
+pub use engine_state::{
+    EngineHealthStatus, EngineStateConfig, EngineStateManager, EngineStateManagerBuilder,
+    EngineStats, VisionToolHealth,
+};
+pub use models_engine_builder::{
+    ModelsEngineBuilder, ModelsEngineBuilderConfig, ModelsEngineBuilderFactory,
+    ModelsEngineBuilderResult,
 };
 
 pub fn hub_load_local_safetensors(

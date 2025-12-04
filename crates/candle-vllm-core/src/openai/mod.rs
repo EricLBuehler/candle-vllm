@@ -1,20 +1,47 @@
-use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
+//! OpenAI-compatible inference module.
+//!
+//! This module provides the inference engine, model implementations, and OpenAI API types.
+//!
+//! The types in this module are the canonical definitions. The `candle-vllm-openai` crate
+//! re-exports these types and provides additional adapters.
+
+use self::pipelines::llm_engine::LLMEngine;
+use self::responses::APIError;
 use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
 use candle_core::Device;
-use parking_lot::RwLock;
+use either::Either;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokenizers::{EncodeInput, Encoding, Tokenizer};
+
+// ============================================================================
+// Modules
+// ============================================================================
+
+// Inference-related modules
 #[cfg(feature = "nccl")]
 pub mod communicator;
+pub mod conversation;
 pub mod distributed;
+pub mod image_tool;
+pub mod local_vision_tool;
+pub mod logits_processor;
+pub mod models;
+pub mod openai_server;
+pub mod pipelines;
 pub mod requests;
 pub mod responses;
 pub mod sampling_params;
 pub mod streaming;
 pub mod tool_parser;
-use either::Either;
-use serde::{Deserialize, Serialize};
+pub mod utils;
+pub mod vision_proxy;
+
+// ============================================================================
+// Tokenizer wrapper trait
+// ============================================================================
+
 pub trait TokenizerWrapper<'s, E>
 where
     E: Into<EncodeInput<'s>>,
@@ -35,6 +62,10 @@ where
         self.decode(input, false).map_err(APIError::from)
     }
 }
+
+// ============================================================================
+// Engine-specific types
+// ============================================================================
 
 #[derive(Clone, Debug)]
 pub struct PipelineConfig {
@@ -57,6 +88,7 @@ pub struct TokenContent {
     rstrip: Option<bool>,
     single_word: Option<bool>,
 }
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct BosEosToken(
     #[serde(with = "either::serde_untagged")] pub Either<Option<String>, Option<TokenContent>>,
@@ -72,11 +104,19 @@ pub struct TokenizerConfig {
     pub eos_token: Option<BosEosToken>,
 }
 
+/// Server data shared across request handlers.
+///
+/// The `model` field is `Arc<LLMEngine>` (no RwLock) because:
+/// - LLMEngine uses internal lock-free channels for work distribution
+/// - Workers own their pipelines and cache engines
+/// - Shared read-only resources (tokenizer, config) are accessed without locks
+/// - Per-request state uses internal RwLock where needed
 pub struct OpenAIServerData {
-    pub model: Arc<RwLock<LLMEngine>>,
+    pub model: Arc<LLMEngine>,
     pub pipeline_config: PipelineConfig,
     pub record_conversation: bool,
     pub device: Device,
+    pub vision_tool: Option<Arc<crate::openai::local_vision_tool::LocalVisionModelTool>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -89,10 +129,3 @@ pub struct TaskData {
     pub sampling_params: SamplingParams,
     pub use_logprobs: bool,
 }
-
-pub mod conversation;
-pub mod logits_processor;
-pub mod models;
-pub mod openai_server;
-pub mod pipelines;
-pub mod utils;

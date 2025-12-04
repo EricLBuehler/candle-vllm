@@ -5,6 +5,11 @@ members = [
     "crates/candle-vllm-responses",
     "crates/candle-vllm-server",
 ]
+exclude = [
+    "examples/ai_gateway",
+    "examples/agent_framework",
+    "examples/tauri_app",
+]
 resolver = "2"
 
 [workspace.package]
@@ -15,6 +20,7 @@ rust-version = "1.83"
 
 [workspace.dependencies]
 anyhow = "1.0.75"
+async-trait = "0.1.77"
 attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version = "0.1.7", rev = "753f0a6" }
 axum = { version = "0.7.4", features = ["tokio"] }
 chrono = "0.4.41"
@@ -36,9 +42,11 @@ lazy_static = "1.4.0"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 mpi = "0.8.0"
-rmcp = { version = "0.10.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client", "transport-sse-client", "transport-io"] }
-rmcp-macros = "0.10.0"
+# rmcp = { version = "0.10.0", default-features = false, features = ["client", "server", "macros", "transport-child-process", "transport-streamable-http-client", "transport-sse-client", "transport-io"] }
+# rmcp-macros = "0.10.0"
+# NOTE: rmcp 0.10.0 has missing base64 dependency - this is an upstream issue
 parking_lot = "0.12"
+crossbeam = "0.8"
 rand = "0.9.0"
 rayon = "1.10.0"
 regex = "1.10"
@@ -66,6 +74,10 @@ akin = "0.4.0"
 which = "5"
 ahash = "0.8.11"
 indicatif = "0.17.11"
+base64 = "0.22.1"
+reqwest = { version = "0.12.7", features = ["json"] }
+schemars = "0.8.17"
+paste = "1.0"
 
 [package]
 name = "candle-vllm"

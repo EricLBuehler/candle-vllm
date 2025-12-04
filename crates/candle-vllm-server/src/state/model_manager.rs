@@ -1,6 +1,5 @@
-use crate::models_config::ModelsState;
+use crate::models_config::{ModelsState, ModelLifecycleStatus, ModelStatus};
 use crate::state::request_queue::{QueuedRequest, RequestQueue};
-use candle_vllm_responses::status::{ModelLifecycleStatus, ModelStatus};
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;

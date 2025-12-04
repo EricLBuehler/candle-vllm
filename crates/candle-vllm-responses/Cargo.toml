@@ -16,8 +16,8 @@ async-trait = "0.1.83"
 thiserror.workspace = true
 uuid.workspace = true
 anyhow.workspace = true
-rmcp.workspace = true
-rmcp-macros.workspace = true
+# rmcp.workspace = true
+# rmcp-macros.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

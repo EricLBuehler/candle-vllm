@@ -1,0 +1,465 @@
+openapi: 3.0.3
+info:
+  title: candle-vllm Proxy Vision API
+  description: OpenAI-compatible chat completions API with multimodal (vision) support
+  version: 1.0.0
+  contact:
+    name: candle-vllm
+    url: https://github.com/huggingface/candle-vllm
+
+servers:
+  - url: http://localhost:2000
+    description: Local development server
+  - url: https://api.example.com
+    description: Production server
+
+paths:
+  /v1/chat/completions:
+    post:
+      summary: Create a chat completion
+      description: |
+        Creates a model response for the given chat conversation, with support for both text-only and multimodal (text + images) input. Maintains full compatibility with OpenAI Chat Completions API.
+
+        **Multimodal Support**:
+        - Supports images via HTTP/HTTPS URLs or data URLs
+        - Processes images using proxy vision model to generate captions
+        - Integrates captions with text for comprehensive responses
+        - Gracefully degrades to text-only when vision model unavailable
+      operationId: createChatCompletion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+            examples:
+              text_only:
+                summary: Text-only chat completion
+                value:
+                  model: "ministral-3-3b-reasoning"
+                  messages:
+                    - role: "user"
+                      content: "Hello, how are you?"
+                  max_tokens: 100
+              multimodal_simple:
+                summary: Simple multimodal request
+                value:
+                  model: "ministral-3-3b-reasoning"
+                  messages:
+                    - role: "user"
+                      content:
+                        - type: "text"
+                          text: "What do you see in this image?"
+                        - type: "image_url"
+                          image_url:
+                            url: "https://example.com/image.jpg"
+                            detail: "high"
+              multimodal_multiple:
+                summary: Multiple images in one request
+                value:
+                  model: "ministral-3-3b-reasoning"
+                  messages:
+                    - role: "user"
+                      content:
+                        - type: "text"
+                          text: "Compare these two images:"
+                        - type: "image_url"
+                          image_url:
+                            url: "https://example.com/image1.jpg"
+                            detail: "high"
+                        - type: "image_url"
+                          image_url:
+                            url: "https://example.com/image2.jpg"
+                            detail: "low"
+      responses:
+        '200':
+          description: Successful completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+              examples:
+                text_response:
+                  summary: Text completion response
+                  value:
+                    id: "chatcmpl-123"
+                    object: "chat.completion"
+                    created: 1677652288
+                    model: "ministral-3-3b-reasoning"
+                    choices:
+                      - index: 0
+                        message:
+                          role: "assistant"
+                          content: "Hello! I'm doing well, thank you for asking."
+                        finish_reason: "stop"
+                    usage:
+                      prompt_tokens: 9
+                      completion_tokens: 12
+                      total_tokens: 21
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-sent events stream for streaming completions
+              example: |
+                data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652288,"model":"ministral-3-3b-reasoning","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-123","object":"chat.completion.chunk","created":1677652289,"model":"ministral-3-3b-reasoning","choices":[{"index":0,"delta":{"content":"!"},"finish_reason":null}]}
+
+                data: [DONE]
+        '400':
+          description: Bad request - invalid parameters or malformed request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_image_format:
+                  summary: Unsupported image format
+                  value:
+                    error:
+                      type: "invalid_image_format"
+                      message: "Unsupported image format. Supported formats: jpeg, png, webp, gif"
+                      code: 400
+                image_too_large:
+                  summary: Image size exceeds limit
+                  value:
+                    error:
+                      type: "image_too_large"
+                      message: "Image too large: 25165824 bytes (max: 20971520 bytes)"
+                      code: 400
+                invalid_url:
+                  summary: Invalid image URL
+                  value:
+                    error:
+                      type: "invalid_image_format"
+                      message: "Invalid image URL: URL must be HTTP/HTTPS"
+                      code: 400
+        '408':
+          description: Request timeout - image download or processing timeout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                image_download_timeout:
+                  summary: Image download timeout
+                  value:
+                    error:
+                      type: "image_download_timeout"
+                      message: "Image download timeout"
+                      code: 408
+        '413':
+          description: Payload too large - image size exceeds limits
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                vision_processing_error:
+                  summary: Vision model processing failed
+                  value:
+                    error:
+                      type: "vision_processing_error"
+                      message: "Vision processing failed: model inference error"
+                      code: 500
+        '503':
+          description: Service unavailable - vision model not available
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                vision_unavailable:
+                  summary: Vision model unavailable
+                  value:
+                    error:
+                      type: "vision_unavailable"
+                      message: "Vision model unavailable: failed to load Qwen2-VL-7B-Instruct"
+                      code: 503
+
+  /v1/models:
+    get:
+      summary: List available models
+      description: Lists the currently available models, including their vision capabilities
+      operationId: listModels
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+
+components:
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: ID of the model to use
+          example: "ministral-3-3b-reasoning"
+        messages:
+          type: array
+          description: List of messages comprising the conversation so far
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        max_tokens:
+          type: integer
+          minimum: 1
+          description: Maximum number of tokens to generate
+          example: 100
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          description: Sampling temperature between 0 and 2
+          example: 1.0
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          description: Nucleus sampling parameter
+          example: 1.0
+        stream:
+          type: boolean
+          description: Whether to stream partial results
+          default: false
+
+    ChatMessage:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+          enum: ["system", "user", "assistant"]
+          description: The role of the message author
+        content:
+          oneOf:
+            - type: string
+              description: Text content (legacy format)
+            - type: array
+              description: Multimodal content parts
+              items:
+                $ref: '#/components/schemas/ContentPart'
+          description: The content of the message
+
+    ContentPart:
+      type: object
+      required:
+        - type
+      discriminator:
+        propertyName: type
+      oneOf:
+        - $ref: '#/components/schemas/TextContentPart'
+        - $ref: '#/components/schemas/ImageContentPart'
+
+    TextContentPart:
+      type: object
+      required:
+        - type
+        - text
+      properties:
+        type:
+          type: string
+          enum: ["text"]
+        text:
+          type: string
+          description: Text content
+          example: "What do you see in this image?"
+
+    ImageContentPart:
+      type: object
+      required:
+        - type
+        - image_url
+      properties:
+        type:
+          type: string
+          enum: ["image_url"]
+        image_url:
+          $ref: '#/components/schemas/ImageUrl'
+
+    ImageUrl:
+      type: object
+      required:
+        - url
+      properties:
+        url:
+          type: string
+          format: uri
+          description: Either a URL of the image or the base64 encoded image data
+          examples:
+            - "https://example.com/image.jpg"
+            - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD..."
+        detail:
+          type: string
+          enum: ["auto", "low", "high"]
+          default: "auto"
+          description: Specifies the detail level of the image
+
+    ChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+          description: Unique identifier for the completion
+          example: "chatcmpl-123"
+        object:
+          type: string
+          enum: ["chat.completion"]
+          description: The object type
+        created:
+          type: integer
+          description: Unix timestamp of when the completion was created
+          example: 1677652288
+        model:
+          type: string
+          description: The model used for the completion
+          example: "ministral-3-3b-reasoning"
+        choices:
+          type: array
+          description: List of completion choices
+          items:
+            $ref: '#/components/schemas/Choice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    Choice:
+      type: object
+      required:
+        - index
+        - message
+        - finish_reason
+      properties:
+        index:
+          type: integer
+          description: The index of the choice
+        message:
+          $ref: '#/components/schemas/ChatMessage'
+        finish_reason:
+          type: string
+          enum: ["stop", "length", "content_filter"]
+          description: The reason the model stopped generating tokens
+
+    Usage:
+      type: object
+      required:
+        - prompt_tokens
+        - completion_tokens
+        - total_tokens
+      properties:
+        prompt_tokens:
+          type: integer
+          description: Number of tokens in the prompt
+        completion_tokens:
+          type: integer
+          description: Number of tokens in the completion
+        total_tokens:
+          type: integer
+          description: Total number of tokens used
+
+    ModelList:
+      type: object
+      required:
+        - object
+        - data
+      properties:
+        object:
+          type: string
+          enum: ["list"]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+
+    Model:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - owned_by
+      properties:
+        id:
+          type: string
+          description: The model identifier
+          example: "ministral-3-3b-reasoning"
+        object:
+          type: string
+          enum: ["model"]
+        created:
+          type: integer
+          description: Unix timestamp of when the model was created
+        owned_by:
+          type: string
+          description: Organization that owns the model
+          example: "candle-vllm"
+        capabilities:
+          type: object
+          description: Model capabilities including vision support
+          properties:
+            vision_supported:
+              type: boolean
+              description: Whether the model supports vision input
+            max_images_per_request:
+              type: integer
+              description: Maximum number of images per request
+              example: 10
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - type
+            - message
+            - code
+          properties:
+            type:
+              type: string
+              description: Error type identifier
+              examples:
+                - "invalid_image_format"
+                - "image_too_large"
+                - "image_download_timeout"
+                - "vision_unavailable"
+                - "vision_processing_error"
+            message:
+              type: string
+              description: Human-readable error message
+            code:
+              type: integer
+              description: HTTP status code
+              example: 400
+
+security: []
+
+tags:
+  - name: Chat
+    description: Chat completion endpoints with multimodal support
+  - name: Models
+    description: Model information and capabilities
+
+externalDocs:
+  description: OpenAI API Reference
+  url: https://platform.openai.com/docs/api-reference/chat

@@ -8,6 +8,8 @@ use std::{env, fs};
 /// which are used to scheduler and manage the cache during generation requests, respectively.
 pub mod llm_engine;
 pub mod pipeline;
+pub mod worker;
+pub mod work_item;
 type TokenOrFinishReason = Either<Logprobs, String>;
 use crate::openai::pipelines::pipeline::DefaultPipeline;
 

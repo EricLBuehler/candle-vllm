@@ -1,6 +1,73 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. When touching configuration or SDK docs, cross-reference `.example.env`, `example.models.yaml`, and the guides in `docs/`.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+> All automated code changes MUST strictly follow the coding standards documented in `docs/coding-standards/README.md`. Treat that document as the single source of truth for Rust, library, application, FFI, safety, performance, and documentation guidelines.
+
+When touching configuration or SDK docs, cross-reference `.example.env`, `example.models.yaml`, and the guides in `docs/`.
+
+## Coding Standards & Code Generation Rules
+
+Claude Code MUST:
+
+- Read and respect `docs/coding-standards/README.md` for all non-trivial code edits or new code it proposes.
+- Prefer changing *less* code when unsure, but NEVER in a way that violates a MUST-level rule from the coding standards doc.
+
+Key rules to enforce during code generation (non-exhaustive; see the full document):
+
+- **Unsafe & Soundness**
+  - Treat `unsafe` as implying potential undefined behavior (M-UNSAFE-IMPLIES-UB).
+  - Avoid introducing `unsafe` unless:
+    - There is a clear, documented reason (FFI, performance, or novel abstraction), and
+    - You can explain why the code remains sound (M-UNSAFE, M-UNSOUND).
+  - If you cannot justify soundness in a short comment, do not introduce new `unsafe` blocks.
+
+- **Panics vs Errors**
+  - Panics mean “stop the program” (M-PANIC-IS-STOP).
+  - Use panics only for *programmer bugs* (M-PANIC-ON-BUG), not for ordinary I/O or configuration failures.
+  - For recoverable conditions, return structured error types instead.
+
+- **Logging & Observability**
+  - Use structured logging with message templates (M-LOG-STRUCTURED).
+  - Avoid string formatting inside the log message when structured fields will do.
+  - Name events, follow OpenTelemetry semantic conventions, and redact sensitive data.
+
+- **Naming, Magic Values, and APIs**
+  - Use concise, non-weasel-word names (M-CONCISE-NAMES).
+  - Document magic values and timeouts, rather than hardcoding unexplained constants (M-DOCUMENTED-MAGIC).
+  - Prefer inherent impls for essential functionality (M-ESSENTIAL-FN-INHERENT).
+  - Prefer regular functions over associated-only constructors when reasonable (M-REGULAR-FN).
+  - For public APIs, use real types rather than leaking external types (M-DONT-LEAK-TYPES) and avoid smart-pointer-heavy signatures (M-AVOID-WRAPPERS).
+
+- **Error Types**
+  - Use canonical struct error types with useful helpers and backtraces (M-ERRORS-CANONICAL-STRUCTS).
+  - Prefer domain-specific error enums/kinds with methods like `is_io`, `is_protocol`, etc.
+
+- **Concurrency & Types**
+  - Ensure types that will cross threads are actually `Send` and sound in async contexts (M-TYPES-SEND).
+  - Long-running tasks must have yield points (M-YIELD-POINTS) in async code for fairness and throughput.
+
+- **Builders & Initialization**
+  - For complex type construction or many optional parameters, prefer builders (M-INIT-BUILDER) and cascaded initialization (M-INIT-CASCADED).
+  - Services that are passed around or cloned in async contexts should implement `Clone` where appropriate (M-SERVICES-CLONE).
+
+- **Libraries & Features**
+  - Keep features additive (M-FEATURES-ADDITIVE); do not introduce mutually exclusive feature gates without strong justification.
+  - Libraries should work out of the box with sensible defaults (M-OOBE).
+  - Test utilities and mocking helpers must be feature-gated appropriately (M-TEST-UTIL).
+
+- **Statics, I/O, and Mocking**
+  - Avoid new global statics where possible (M-AVOID-STATICS).
+  - Design new I/O and system-call–related code so it is mockable (M-MOCKABLE-SYSCALLS).
+
+- **Linting & Static Verification**
+  - Use `#[expect]` (not `allow`) for lint overrides and include a reason (M-LINT-OVERRIDE-EXPECT).
+  - Assume the Clippy and Rust lint sets from the coding standards doc are in force (M-STATIC-VERIFICATION). Do not add code that would require weakening those lints unless explicitly requested.
+
+If a requested change conflicts with a MUST-level guideline in `docs/coding-standards/README.md`, Claude Code should:
+1. Call out the conflict explicitly in its response.
+2. Propose a compliant alternative when possible.
+3. Only provide the non-compliant version if the user explicitly acknowledges and accepts the tradeoff.
 
 ## Project Overview
 
@@ -204,3 +271,10 @@ Common issues:
 2. **Memory Issues**: Adjust `--mem` parameter or reduce batch size
 3. **Multi-GPU**: Disable P2P with `NCCL_P2P_DISABLE=1` if needed
 4. **Performance**: Enable CUDA graph and chunked prefill for optimization
+
+## Active Technologies
+- Rust 1.75+ (existing candle-vllm codebase) + candle-core, candle-nn, tokio, axum, serde, anyhow, tracing (002-proxy-vision)
+- N/A (stateless processing, models loaded from HuggingFace/local paths) (002-proxy-vision)
+
+## Recent Changes
+- 002-proxy-vision: Added Rust 1.75+ (existing candle-vllm codebase) + candle-core, candle-nn, tokio, axum, serde, anyhow, tracing

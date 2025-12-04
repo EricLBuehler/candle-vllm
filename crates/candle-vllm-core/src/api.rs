@@ -2,14 +2,13 @@ use crate::openai::models::Config as ModelConfig;
 use crate::openai::openai_server::chat_completions_with_data;
 use crate::openai::pipelines::llm_engine::LLMEngine;
 use crate::openai::pipelines::pipeline::{DefaultLoader, DefaultPipeline};
-use crate::openai::requests::{ChatCompletionRequest, ChatMessage, Messages};
+use crate::openai::requests::{ChatCompletionRequest, ChatMessage, MessageContent, Messages};
 use crate::openai::responses::{ChatCompletionResponse, ChatResponder};
 use crate::openai::sampling_params::GenerationConfig;
 use crate::openai::OpenAIServerData;
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use crate::scheduler::SchedulerConfig;
 use candle_core::{DType, Device};
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -224,11 +223,14 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// High-level inference engine for text generation.
+///
+/// Uses `Arc<LLMEngine>` (no RwLock) because LLMEngine has internal
+/// lock-free channels and workers own their pipelines.
 pub struct InferenceEngine {
-    pub(crate) engine: Arc<RwLock<LLMEngine>>,
-    tokenizer: tokenizers::Tokenizer,
-    device: Device,
-    model_info: ModelInfo,
+    pub(crate) engine: Arc<LLMEngine>,
+    pub(crate) tokenizer: tokenizers::Tokenizer,
+    pub(crate) device: Device,
+    pub(crate) model_info: ModelInfo,
 }
 
 /// Information about the loaded model.
@@ -326,7 +328,7 @@ impl InferenceEngine {
         let model_config =
             model_config.ok_or_else(|| Error::ModelLoad("no model config".into()))?;
 
-        let engine = LLMEngine::new(
+        let llm_engine = LLMEngine::new(
             pipelines_with_cache,
             scheduler_config,
             &cache_config,
@@ -340,6 +342,9 @@ impl InferenceEngine {
             config.prefill_chunk_size,
         )
         .map_err(|e| Error::ModelLoad(e.to_string()))?;
+
+        // Wrap in Arc only (no RwLock needed - engine has internal synchronization)
+        let engine = Arc::new(llm_engine);
 
         let model_info = ModelInfo {
             model_path: config.model_path.clone(),
@@ -386,7 +391,7 @@ impl InferenceEngine {
             model: "local".to_string(),
             messages: Messages::Chat(vec![ChatMessage {
                 role: "user".to_string(),
-                content: Some(prompt.to_string()),
+                content: Some(MessageContent::Text(prompt.to_string())),
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -441,6 +446,7 @@ impl InferenceEngine {
             pipeline_config,
             record_conversation: false,
             device: self.device.clone(),
+            vision_tool: None, // TODO: Add vision tool support in InferenceEngine
         };
 
         let responder = chat_completions_with_data(Arc::new(data), request).await;
@@ -464,7 +470,7 @@ impl InferenceEngine {
             model: "local".to_string(),
             messages: Messages::Chat(vec![ChatMessage {
                 role: "user".to_string(),
-                content: Some(prompt.to_string()),
+                content: Some(MessageContent::Text(prompt.to_string())),
                 name: None,
                 tool_calls: None,
                 tool_call_id: None,
@@ -519,6 +525,7 @@ impl InferenceEngine {
             pipeline_config,
             record_conversation: false,
             device: self.device.clone(),
+            vision_tool: None, // TODO: Add vision tool support in InferenceEngine
         };
 
         let responder = chat_completions_with_data(Arc::new(data), request).await;
@@ -553,7 +560,10 @@ impl InferenceEngine {
     }
 
     /// Get access to the internal engine (for advanced use cases).
-    pub fn engine(&self) -> &Arc<RwLock<LLMEngine>> {
+    ///
+    /// Returns `Arc<LLMEngine>` - no RwLock wrapper as the engine
+    /// uses internal lock-free channels for work distribution.
+    pub fn engine(&self) -> &Arc<LLMEngine> {
         &self.engine
     }
 
