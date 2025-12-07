@@ -147,6 +147,31 @@ models:
 - **`presence_penalty`**: Presence penalty (-2.0 to 2.0)
 - **`isq`**: In-situ quantization (`q4k`, `q8_0`, etc.)
 
+## Scheduler Pool Configuration
+
+The inference engine uses a resource-aware scheduler based on `prometheus-parking-lot`. The pool configuration is automatically derived from your KV cache settings but can be customized:
+
+### SchedulerPoolConfig Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_units` | `num_gpu_blocks` | Maximum resource units (KV-cache blocks) the pool can use |
+| `max_queue_depth` | `1000` | Maximum queued requests before rejecting new ones |
+| `default_timeout_secs` | `120` | Timeout for queued requests (seconds) |
+
+### How It Works
+
+1. **Resource Tracking**: Each request's cost is calculated based on prompt length and max_tokens
+2. **Capacity Check**: Requests are accepted if `used_units + request_cost <= max_units`
+3. **Backpressure**: When `in_flight_requests >= max_queue_depth`, new requests are rejected
+4. **Automatic Release**: Resources are released when requests complete
+
+### Tuning Tips
+
+- **High throughput**: Increase `kvcache_mem_gpu` in models.yaml to increase `max_units`
+- **Long queues**: The default `max_queue_depth=1000` is suitable for most use cases
+- **Short requests**: Lower `max_tokens` reduces resource cost per request
+
 ## Auto-Injection of MCP Tools
 
 When MCP servers are configured, their tools are **automatically injected** into chat completion requests unless:
