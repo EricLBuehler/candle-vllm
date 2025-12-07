@@ -8,7 +8,6 @@ use super::OpenAIServerData;
 use axum::extract::State;
 use axum::response::sse::KeepAlive;
 use axum::{response::Sse, Json};
-use candle_core::{DType, Tensor};
 use flume;
 use std::env;
 use std::sync::Arc;
@@ -21,7 +20,7 @@ use uuid::Uuid;
     post,
     tag = "candle-vllm",
     path = "/v1/chat/completions",
-    request_body = ChatCompletionRequest,
+    request_body(content = inline(serde_json::Value), description = "Chat completion request"),
     responses((status = 200, description = "Chat completions"))
 )]
 pub async fn chat_completions(
@@ -335,43 +334,23 @@ pub async fn chat_completions_with_data(
     let sync_notify = Arc::new(Notify::new());
     let sync_notify_clone = Arc::clone(&sync_notify);
 
-    // Spawn blocking task to submit work to the lock-free worker pool
+    // Spawn blocking task to submit work to the engine
     let sampling_params_clone = sampling_params.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        // Construct InputMetadata for the worker
-        // Note: In the lock-free design, workers handle their own cache management
-        let seq_len = token_ids.len();
-        
-        // For prefill, cu_seqlens_q and cu_seqlens_k are cumulative sequence lengths
-        // For a single sequence batch: [0, seq_len]
-        let cu_seqlens = Tensor::new(&[0u32, seq_len as u32], &data.device)
-            .expect("cu_seqlens tensor creation failed");
-        
-        let input_metadata = crate::InputMetadata {
-            is_prefill: true, // First pass is prefill
-            slot_mapping: Tensor::zeros(seq_len, DType::I64, &data.device)
-                .expect("slot_mapping tensor creation failed"),
-            block_tables: None,
-            context_lens: None,
-            cu_seqlens_q: Some(cu_seqlens.clone()),
-            cu_seqlens_k: Some(cu_seqlens),
-            max_seqlen_q: seq_len,
-            max_seqlen_k: seq_len,
-            max_context_len: data.pipeline_config.max_model_len,
-        };
-
         let positions: Vec<usize> = (0..token_ids.len()).collect();
+        let max_context_len = data.pipeline_config.max_model_len;
 
         if stream_request {
-            // Submit streaming request
-            let stream_rx = match data.model.add_streaming_request(
+            // Submit streaming request (engine is async, use block_on)
+            let rt = tokio::runtime::Handle::current();
+            let stream_rx = match rt.block_on(data.model.add_streaming_request(
                 request_id.clone(),
                 token_ids.clone(),
-                positions,
-                input_metadata,
+                positions.clone(),
                 sampling_params_clone,
                 created,
-            ) {
+                max_context_len,
+            )) {
                 Ok(rx) => rx,
                 Err(e) => {
                     let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));
@@ -463,14 +442,15 @@ pub async fn chat_completions_with_data(
                 }
             });
         } else {
-            // Submit completion request (no lock needed - uses lock-free channel)
-            let response_rx = match data.model.add_request(
+            // Submit completion request (engine is async, use block_on)
+            let rt = tokio::runtime::Handle::current();
+            let response_rx = match rt.block_on(data.model.add_request(
                 request_id.clone(),
                 token_ids.clone(),
-                positions,
-                input_metadata,
+                positions.clone(),
                 sampling_params_clone,
-            ) {
+                max_context_len,
+            )) {
                 Ok(rx) => rx,
                 Err(e) => {
                     let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));
@@ -481,8 +461,9 @@ pub async fn chat_completions_with_data(
 
             // Bridge the engine's response channel to ChatResponse
             std::thread::spawn(move || {
-                match response_rx.recv() {
-                    Ok(Ok((choices, usage))) => {
+                use crate::parking_lot::InferenceResult;
+                match response_rx.blocking_recv() {
+                    Ok(InferenceResult::Completion { choices, usage }) => {
                         // For non-streaming, we still need to send via the response channel
                         // but we'll handle the final response differently
                         let response = ChatCompletionResponse {
@@ -529,8 +510,13 @@ pub async fn chat_completions_with_data(
                         let _ = response_tx.send(ChatResponse::Chunk(chunk));
                         let _ = response_tx.send(ChatResponse::Done);
                     }
-                    Ok(Err(err)) => {
-                        let _ = response_tx.send(ChatResponse::ModelError(err));
+                    Ok(InferenceResult::Error { message }) => {
+                        let _ = response_tx.send(ChatResponse::ModelError(message));
+                    }
+                    Ok(InferenceResult::Streaming { .. }) => {
+                        let _ = response_tx.send(ChatResponse::ModelError(
+                            "Unexpected streaming result for completion request".to_string()
+                        ));
                     }
                     Err(e) => {
                         let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));

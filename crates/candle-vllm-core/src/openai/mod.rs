@@ -5,7 +5,7 @@
 //! The types in this module are the canonical definitions. The `candle-vllm-openai` crate
 //! re-exports these types and provides additional adapters.
 
-use self::pipelines::llm_engine::LLMEngine;
+pub use self::pipelines::{LLMEngine, SchedulerPoolConfig};
 use self::responses::APIError;
 use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
 use candle_core::Device;
@@ -106,12 +106,16 @@ pub struct TokenizerConfig {
 
 /// Server data shared across request handlers.
 ///
-/// The `model` field is `Arc<LLMEngine>` (no RwLock) because:
-/// - LLMEngine uses internal lock-free channels for work distribution
-/// - Workers own their pipelines and cache engines
-/// - Shared read-only resources (tokenizer, config) are accessed without locks
-/// - Per-request state uses internal RwLock where needed
+/// The `model` field contains the LLMEngine which uses the prometheus_parking_lot
+/// scheduler for resource management.
+///
+/// The engine:
+/// - Uses internal synchronization for work distribution
+/// - Tracks GPU resource usage (KV-cache blocks)
+/// - Queues requests when resources are exhausted
+/// - Automatically dispatches queued work when resources free up
 pub struct OpenAIServerData {
+    /// The inference engine using prometheus_parking_lot scheduler.
     pub model: Arc<LLMEngine>,
     pub pipeline_config: PipelineConfig,
     pub record_conversation: bool,

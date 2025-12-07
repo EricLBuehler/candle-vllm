@@ -22,26 +22,26 @@ rust-version = "1.83"
 anyhow = "1.0.75"
 async-trait = "0.1.77"
 attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version = "0.1.7", rev = "753f0a6" }
-axum = { version = "0.7.4", features = ["tokio"] }
+axum = { version = "0.8.7", features = ["tokio"] }
 chrono = "0.4.41"
 clap = { version = "4.4.7", features = ["derive"] }
 candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
 candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
 derive_more = "0.99.17"
-dirs = "5.0.1"
+dirs = "6.0.0"
 dyn-fmt = "0.4.0"
 either = { version = "1.13.0", features = ["serde"] }
-env_logger = "0.10.1"
-flume = "0.10.14"
+env_logger = "0.11.8"
+flume = "0.11.1"
 futures = "0.3.29"
 hf-hub = "0.4.1"
-hyper = { version = "0.14", features = ["full"] }
+hyper = { version = "1.8.1", features = ["full"] }
 interprocess = "2.2.2"
-itertools = "0.13.0"
+itertools = "0.14.0"
 lazy_static = "1.4.0"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
-mpi = "0.8.0"
+mpi = "0.8.1"
 # rmcp = { version = "0.10.0", default-features = false, features = ["client", "server", "macros", "transport-child-process", "transport-streamable-http-client", "transport-sse-client", "transport-io"] }
 # rmcp-macros = "0.10.0"
 # NOTE: rmcp 0.10.0 has missing base64 dependency - this is an upstream issue
@@ -55,29 +55,32 @@ serde = { version = "1.0.190", features = ["serde_derive"] }
 serde-big-array = "0.5.1"
 serde_json = "1.0.108"
 serde_yaml = "0.9"
-thiserror = "1.0.58"
-tokenizers = "0.21.2"
+thiserror = "2.0.17"
+tokenizers = "0.22.2"
 tokio = { version = "1.38.0", features = ["sync"] }
-tower-http = { version = "0.5.1", features = ["cors"] }
+tower-http = { version = "0.6.7", features = ["cors"] }
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-utoipa = { version = "4.2", features = ["axum_extras"] }
+utoipa = { version = "5.4.0", features = ["axum_extras"] }
 uuid = { version = "1.5.0", features = ["v4"] }
-bincode = { version = "1.3.1" }
-ftail = "0.2"
+bincode = { version = "2.0.1" }
+ftail = "0.3.1"
 tqdm = "0.8.0"
 half = { version = "2.5.0", features = ["num-traits", "use-intrinsics", "rand_distr"] }
 accelerate-src = { version = "0.3.2" }
 intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
-metal = { version = "0.27.0", features = ["mps"] }
+metal = { version = "0.32.0", features = ["mps"] }
 akin = "0.4.0"
-which = "5"
+which = "8.0.0"
 ahash = "0.8.11"
-indicatif = "0.17.11"
+indicatif = "0.18.3"
 base64 = "0.22.1"
-reqwest = { version = "0.12.7", features = ["json"] }
-schemars = "0.8.17"
+reqwest = { version = "0.12.24", features = ["json"] }
+schemars = "1.1.0"
 paste = "1.0"
+
+# Prometheus parking-lot scheduler for resource-constrained pools
+prometheus_parking_lot = { git = "https://github.com/Prometheus-AGS/prometheus-parking-lot-rs.git" }
 
 [package]
 name = "candle-vllm"

@@ -4,12 +4,17 @@ use dirs;
 use either::Either;
 use std::collections::HashMap;
 use std::{env, fs};
-/// The LLMEngine is effectively a wrapper around a ModulePipeline. It contains a Scheduler and a CacheEngine
-/// which are used to scheduler and manage the cache during generation requests, respectively.
+
+/// The LLMEngine using prometheus_parking_lot scheduler for resource management.
+/// This is the main inference engine for candle-vllm.
 pub mod llm_engine;
+pub use llm_engine::LLMEngine;
+pub use llm_engine::SchedulerPoolConfig;
+
 pub mod pipeline;
 pub mod worker;
 pub mod work_item;
+
 type TokenOrFinishReason = Either<Logprobs, String>;
 use crate::openai::pipelines::pipeline::DefaultPipeline;
 

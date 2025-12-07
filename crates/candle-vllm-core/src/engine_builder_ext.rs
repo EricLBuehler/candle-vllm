@@ -3,7 +3,7 @@ use crate::engine_params::EngineParams;
 use crate::openai::local_vision_tool::{LocalVisionModelTool, LocalVisionConfig};
 use crate::openai::image_tool::ImageDescriptionConfig;
 use crate::openai::models::Config as ModelConfig;
-use crate::openai::pipelines::llm_engine::LLMEngine;
+use crate::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
 use crate::openai::pipelines::pipeline::{DefaultLoader, DefaultPipeline};
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use crate::scheduler::SchedulerConfig;
@@ -201,19 +201,16 @@ impl ExtendedEngineBuilder {
         let model_config = model_config
             .ok_or_else(|| Error::ModelLoad("No model configuration found".into()))?;
 
-        // Create the LLM engine
+        // Create the LLM engine with resource-aware scheduling
         let _engine = LLMEngine::new(
             pipelines_with_cache,
             scheduler_config,
             &cache_config,
             &model_config,
             notify.clone(),
-            500, // TODO: Make timeout configurable
-            num_shards,
-            false, // TODO: Make enable_cuda_graph configurable
+            Some(SchedulerPoolConfig::from_cache_config(&cache_config)),
             #[cfg(feature = "nccl")]
             None,
-            params.prefill_chunk_size,
         )
         .map_err(|e| Error::ModelLoad(format!("Failed to create LLM engine: {}", e)))?;
 

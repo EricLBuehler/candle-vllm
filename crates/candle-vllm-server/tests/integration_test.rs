@@ -1280,7 +1280,7 @@ async fn load_model_from_test_config(model_name: &str) -> Option<TestModelData> 
     use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
     use candle_vllm_core::scheduler::SchedulerConfig;
     use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
-    use candle_vllm_core::openai::pipelines::llm_engine::LLMEngine;
+    use candle_vllm_core::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
     use candle_vllm_core::openai::models::Config;
     use candle_vllm_core::openai::OpenAIServerData;
     use candle_vllm_core::openai::sampling_params::GenerationConfig;
@@ -1431,19 +1431,16 @@ async fn load_model_from_test_config(model_name: &str) -> Option<TestModelData> 
     
     eprintln!("Cache config: {:?}", cache_config);
     
-    // Step 4: Create LLMEngine (same as server)
+    // Step 4: Create engine with resource-aware scheduling
     let llm_engine = match LLMEngine::new(
         pipelines_with_cache,
         SchedulerConfig { max_num_seqs },
         &cache_config,
         &config,
         Arc::new(Notify::new()),
-        500, // holding_time
-        num_shards,
-        false, // multi_process
+        Some(SchedulerPoolConfig::from_cache_config(&cache_config)),
         #[cfg(feature = "nccl")]
         None, // daemon_manager
-        None, // prefill_chunk_size
     ) {
         Ok(engine) => engine,
         Err(e) => {
@@ -1452,7 +1449,7 @@ async fn load_model_from_test_config(model_name: &str) -> Option<TestModelData> 
         }
     };
     
-    eprintln!("LLMEngine created successfully for '{}'", model_name);
+    eprintln!("Engine created successfully for '{}'", model_name);
     
     // Step 5: Create OpenAIServerData (same as server)
     // Use default generation config with reasonable temperature

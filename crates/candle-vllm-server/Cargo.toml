@@ -32,12 +32,12 @@ dirs = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
-axum-test = "8.0"
+axum-test = "18.4.1"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }
 base64 = "0.22"
 dotenvy = "0.15"
-dirs = "5.0"
+dirs = "6.0.0"
 
 [features]
 accelerate = ["candle-vllm-core/accelerate", "candle-vllm-openai/accelerate"]

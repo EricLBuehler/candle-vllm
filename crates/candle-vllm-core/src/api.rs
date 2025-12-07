@@ -1,6 +1,6 @@
 use crate::openai::models::Config as ModelConfig;
 use crate::openai::openai_server::chat_completions_with_data;
-use crate::openai::pipelines::llm_engine::LLMEngine;
+use crate::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
 use crate::openai::pipelines::pipeline::{DefaultLoader, DefaultPipeline};
 use crate::openai::requests::{ChatCompletionRequest, ChatMessage, MessageContent, Messages};
 use crate::openai::responses::{ChatCompletionResponse, ChatResponder};
@@ -224,8 +224,10 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 /// High-level inference engine for text generation.
 ///
-/// Uses `Arc<LLMEngine>` (no RwLock) because LLMEngine has internal
-/// lock-free channels and workers own their pipelines.
+/// Uses `Arc<LLMEngine>` which provides resource-aware scheduling through
+/// the prometheus_parking_lot integration.
+///
+/// The engine uses internal synchronization and workers own their pipelines.
 pub struct InferenceEngine {
     pub(crate) engine: Arc<LLMEngine>,
     pub(crate) tokenizer: tokenizers::Tokenizer,
@@ -328,18 +330,16 @@ impl InferenceEngine {
         let model_config =
             model_config.ok_or_else(|| Error::ModelLoad("no model config".into()))?;
 
+        // Create the engine with resource-aware scheduling
         let llm_engine = LLMEngine::new(
             pipelines_with_cache,
             scheduler_config,
             &cache_config,
             &model_config,
             notify.clone(),
-            500,
-            num_shards,
-            false,
+            Some(SchedulerPoolConfig::from_cache_config(&cache_config)),
             #[cfg(feature = "nccl")]
             None,
-            config.prefill_chunk_size,
         )
         .map_err(|e| Error::ModelLoad(e.to_string()))?;
 
@@ -562,7 +562,7 @@ impl InferenceEngine {
     /// Get access to the internal engine (for advanced use cases).
     ///
     /// Returns `Arc<LLMEngine>` - no RwLock wrapper as the engine
-    /// uses internal lock-free channels for work distribution.
+    /// uses internal synchronization for work distribution.
     pub fn engine(&self) -> &Arc<LLMEngine> {
         &self.engine
     }

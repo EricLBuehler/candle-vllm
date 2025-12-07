@@ -12,9 +12,35 @@ use candle_vllm_core::openai::responses::{
     APIError, ChatChoice, ChatChoiceData, ChatCompletionResponse, ChatCompletionUsageResponse,
     Choice, ChoiceData,
 };
-use candle_vllm_core::openai::sampling_params::SamplingParams;
+use candle_vllm_core::openai::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use serde_json::json;
 use std::path::PathBuf;
+
+/// Helper function to create default sampling params for tests.
+fn test_sampling_params() -> SamplingParams {
+    SamplingParams {
+        n: 1,
+        best_of: 1,
+        presence_penalty: 0.0,
+        frequency_penalty: 0.0,
+        repeat_last_n: None,
+        temperature: Some(1.0),
+        top_p: Some(1.0),
+        min_p: None,
+        top_k: Some(-1),
+        use_beam_search: false,
+        length_penalty: 1.0,
+        early_stopping: EarlyStoppingCondition::UnlikelyBetterCandidates,
+        stop: None,
+        stop_token_ids: vec![],
+        ignore_eos: false,
+        max_tokens: 16,
+        logprobs: None,
+        prompt_logprobs: None,
+        skip_special_tokens: true,
+        thinking: None,
+    }
+}
 
 // ============================================================================
 // Configuration Tests
@@ -541,4 +567,119 @@ fn test_error_types() {
 
     let cancelled = Error::Cancelled;
     assert!(cancelled.to_string().contains("cancelled"));
+}
+
+// ============================================================================
+// Parking-Lot Scheduler Integration Tests
+// ============================================================================
+
+#[test]
+fn test_parking_lot_inference_job_creation() {
+    use candle_vllm_core::parking_lot::job::InferenceJob;
+
+    let tokens = vec![1u32, 2, 3, 4, 5];
+    let positions: Vec<usize> = (0..5).collect();
+    let sampling_params = test_sampling_params();
+
+    let job = InferenceJob::new_completion(
+        "test-req-123".to_string(),
+        tokens.clone(),
+        positions.clone(),
+        sampling_params,
+        4096,
+    );
+
+    assert_eq!(job.request_id, "test-req-123");
+    assert_eq!(job.tokens.len(), 5);
+    assert!(!job.is_streaming);
+    assert_eq!(job.max_context_len, 4096);
+}
+
+#[test]
+fn test_parking_lot_streaming_job_creation() {
+    use candle_vllm_core::parking_lot::job::InferenceJob;
+
+    let tokens = vec![1u32, 2, 3];
+    let positions: Vec<usize> = (0..3).collect();
+    let sampling_params = test_sampling_params();
+
+    let job = InferenceJob::new_streaming(
+        "stream-req-456".to_string(),
+        tokens,
+        positions,
+        sampling_params,
+        1699999999,
+        2048,
+    );
+
+    assert_eq!(job.request_id, "stream-req-456");
+    assert!(job.is_streaming);
+    assert_eq!(job.created, 1699999999);
+}
+
+#[test]
+fn test_parking_lot_resource_adapter() {
+    use candle_vllm_core::parking_lot::resource_adapter::ResourceAdapter;
+
+    let adapter = ResourceAdapter::new(16, 1000, 128);
+
+    // Test token to block conversion
+    assert_eq!(adapter.tokens_to_blocks(16), 1);
+    assert_eq!(adapter.tokens_to_blocks(17), 2);
+    assert_eq!(adapter.tokens_to_blocks(32), 2);
+
+    // Test block to token conversion
+    assert_eq!(adapter.blocks_to_tokens(1), 16);
+    assert_eq!(adapter.blocks_to_tokens(10), 160);
+
+    // Test cost calculation
+    let cost = adapter.calculate_cost(100, 50); // 150 total tokens
+    assert_eq!(cost.units, 10); // ceil(150/16) = 10 blocks
+}
+
+#[test]
+fn test_parking_lot_inference_result_types() {
+    use candle_vllm_core::parking_lot::job::{InferenceResult, StreamingTokenResult};
+
+    // Test error result
+    let error_result = InferenceResult::error("Test error");
+    assert!(error_result.is_error());
+    assert_eq!(error_result.error_message(), Some("Test error"));
+
+    // Test streaming token
+    let token = StreamingTokenResult {
+        text: "Hello".to_string(),
+        token_id: 42,
+        is_finished: false,
+        finish_reason: None,
+        is_reasoning: false,
+    };
+    assert_eq!(token.text, "Hello");
+    assert!(!token.is_finished);
+
+    // Test finished token
+    let finished_token = StreamingTokenResult {
+        text: "".to_string(),
+        token_id: 0,
+        is_finished: true,
+        finish_reason: Some("stop".to_string()),
+        is_reasoning: false,
+    };
+    assert!(finished_token.is_finished);
+    assert_eq!(finished_token.finish_reason, Some("stop".to_string()));
+}
+
+#[test]
+fn test_parking_lot_calculate_resource_cost() {
+    use candle_vllm_core::parking_lot::calculate_resource_cost;
+
+    // Without cache config (uses defaults)
+    let cost = calculate_resource_cost(100, 50, None);
+    // Default block size is 16, so (100+50)/16 = 9.375, ceil = 10
+    assert_eq!(cost.units, 10);
+
+    // Larger request
+    let cost = calculate_resource_cost(1000, 500, None);
+    // (1000+500)/16 = 93.75, ceil = 94
+    assert_eq!(cost.units, 94);
 }

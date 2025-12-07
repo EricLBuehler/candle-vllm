@@ -71,7 +71,7 @@ impl SchedulerPoolConfig {
 /// - Tracks GPU resource usage (KV-cache blocks)
 /// - Queues requests when resources are exhausted
 /// - Automatically dispatches queued work when resources free up
-pub struct LLMEngine {
+pub struct LLMEngineV2 {
     /// LLM executor for processing inference jobs
     executor: Arc<LlmExecutor>,
 
@@ -137,8 +137,8 @@ pub struct LLMEngine {
     used_units: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl LLMEngine {
-    /// Initialize a new `LLMEngine` with the parking-lot scheduler.
+impl LLMEngineV2 {
+    /// Initialize a new `LLMEngineV2` with the parking-lot scheduler.
     ///
     /// Unlike the original LLMEngine, this version uses a single executor
     /// and the parking-lot scheduler for resource management.
@@ -153,7 +153,7 @@ impl LLMEngine {
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
     ) -> Result<Self> {
         info!(
-            "Initializing LLMEngine with parking-lot scheduler ({} pipelines)",
+            "Initializing LLMEngineV2 with parking-lot scheduler ({} pipelines)",
             pipelines.len()
         );
 
@@ -216,7 +216,7 @@ impl LLMEngine {
             used_units: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
 
-        info!("LLMEngine initialized with parking-lot scheduler");
+        info!("LLMEngineV2 initialized with parking-lot scheduler");
 
         Ok(engine)
     }
@@ -684,5 +684,176 @@ impl LLMEngine {
     /// Legacy method stub for scheduler step processing.
     pub fn process_scheduler_step(&mut self) -> Result<usize> {
         Ok(0)
+    }
+}
+
+// =============================================================================
+// LLMEngineInterface trait implementation
+// =============================================================================
+
+use async_trait::async_trait;
+use super::engine_trait::{
+    CompletionResult, LLMEngineInterface, StreamingToken,
+    StreamingTokenResult as UnifiedStreamingTokenResult,
+};
+
+#[async_trait]
+impl LLMEngineInterface for LLMEngineV2 {
+    async fn start_processing_loop(&self) {
+        LLMEngineV2::start_processing_loop(self).await
+    }
+
+    fn tokenizer(&self) -> &Tokenizer {
+        &self.tokenizer
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    fn roles(&self) -> &(String, String) {
+        &self.roles
+    }
+
+    fn get_config(&self) -> &Config {
+        &self.config
+    }
+
+    fn get_cache_config(&self) -> &CacheConfig {
+        &self.cache_config
+    }
+
+    fn get_available_kv_tokens(&self) -> usize {
+        LLMEngineV2::get_available_kv_tokens(self)
+    }
+
+    fn queue_depth(&self) -> usize {
+        LLMEngineV2::queue_depth(self)
+    }
+
+    fn can_accept_request(&self, prompt_len: usize, max_tokens: usize) -> bool {
+        LLMEngineV2::can_accept_request(self, prompt_len, max_tokens)
+    }
+
+    fn scheduler(&self) -> &Arc<parking_lot::Mutex<Scheduler>> {
+        &self.scheduler
+    }
+
+    fn notify(&self) -> &Arc<Notify> {
+        &self.notify
+    }
+
+    fn completion_records(&self) -> &RwLock<HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>> {
+        &self.completion_records
+    }
+
+    fn request_metadata(&self) -> &RwLock<HashMap<String, (Option<String>, Option<String>)>> {
+        &self.request_metadata
+    }
+
+    async fn add_completion_request(
+        &self,
+        request_id: String,
+        tokens: Vec<u32>,
+        positions: Vec<usize>,
+        _input_metadata: crate::InputMetadata, // V2 engine doesn't use InputMetadata
+        sampling_params: crate::openai::sampling_params::SamplingParams,
+        max_context_len: usize,
+    ) -> Result<tokio::sync::oneshot::Receiver<CompletionResult>> {
+        // Call the native async method (V2 doesn't use InputMetadata)
+        let inference_rx = self.add_request(
+            request_id.clone(),
+            tokens,
+            positions,
+            sampling_params,
+            max_context_len,
+        ).await?;
+
+        // Create a oneshot channel and spawn a task to convert the result
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            match inference_rx.await {
+                Ok(result) => {
+                    let completion_result = match result {
+                        InferenceResult::Completion { choices, usage } => Ok((choices, usage)),
+                        InferenceResult::Error { message } => Err(message),
+                        InferenceResult::Streaming { .. } => {
+                            Err("Unexpected streaming result for completion request".to_string())
+                        }
+                    };
+                    let _ = tx.send(completion_result);
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("channel error: {}", e)));
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    async fn add_streaming_request(
+        &self,
+        request_id: String,
+        tokens: Vec<u32>,
+        positions: Vec<usize>,
+        _input_metadata: crate::InputMetadata, // V2 engine doesn't use InputMetadata
+        sampling_params: crate::openai::sampling_params::SamplingParams,
+        created: u64,
+        max_context_len: usize,
+    ) -> Result<flume::Receiver<UnifiedStreamingTokenResult>> {
+        // Call the native async method (V2 doesn't use InputMetadata)
+        let streaming_rx = LLMEngineV2::add_streaming_request(
+            self,
+            request_id,
+            tokens,
+            positions,
+            sampling_params,
+            created,
+            max_context_len,
+        ).await?;
+
+        // Create a new flume channel with the unified token type
+        let (tx, rx) = flume::unbounded();
+
+        // Spawn a task to convert V2 tokens to unified tokens
+        tokio::spawn(async move {
+            while let Ok(result) = streaming_rx.recv_async().await {
+                let unified_result = match result {
+                    Ok(v2_token) => Ok(StreamingToken {
+                        text: v2_token.text,
+                        token_id: v2_token.token_id,
+                        is_finished: v2_token.is_finished,
+                        finish_reason: v2_token.finish_reason,
+                        is_reasoning: v2_token.is_reasoning,
+                    }),
+                    Err(e) => Err(e),
+                };
+                if tx.send(unified_result).is_err() {
+                    break;
+                }
+            }
+        });
+
+        Ok(rx)
+    }
+
+    fn build_prompt(
+        &self,
+        messages: &Messages,
+        tools: Option<&Vec<Tool>>,
+        thinking: bool,
+    ) -> std::result::Result<String, String> {
+        LLMEngineV2::build_prompt(self, messages, tools, thinking)
+    }
+
+    fn get_stream_response(
+        &self,
+        request_id: String,
+        created: u64,
+        content: Option<String>,
+        finish_reason: Option<String>,
+    ) -> ChatCompletionChunk {
+        LLMEngineV2::get_stream_response(self, request_id, created, content, finish_reason)
     }
 }

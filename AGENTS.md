@@ -80,6 +80,15 @@ Agents SHOULD skim the relevant sections of `docs/coding-standards/README.md` be
 - Lint/format: `cargo fmt --all` and `cargo clippy --all-targets --all-features -D warnings`.
 - Tests (CPU-only): `cargo test --all --all-features`; GPU-dependent code should be guarded behind feature flags.
 
+### Inference Engine Architecture
+The inference engine uses `prometheus-parking-lot` for resource-aware scheduling:
+- Resource tracking with KV-cache block accounting
+- Automatic backpressure and request rejection when capacity is exhausted
+- Async-first design with native tokio integration
+- Lock-free capacity tracking using atomic operations
+
+See [`docs/PARKING_LOT_SCHEDULER.md`](docs/PARKING_LOT_SCHEDULER.md) for detailed documentation.
+
 ## Coding Style & Naming Conventions
 - Rust defaults: 4-space indentation, `rustfmt` enforced; keep imports ordered and unused code clean (`clippy` must pass).
 - Modules, files, and functions follow `snake_case`; types and traits use `PascalCase`; constants use `SCREAMING_SNAKE_CASE`.

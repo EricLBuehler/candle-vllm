@@ -25,7 +25,7 @@ use candle_vllm_core::backend::heartbeat;
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm_core::scheduler::SchedulerConfig;
 use candle_vllm_openai::model_registry::ModelAlias;
-use candle_vllm_core::openai::pipelines::llm_engine::LLMEngine;
+use candle_vllm_core::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
 use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
 use candle_vllm_core::openai::sampling_params::GenerationConfig;
 use candle_vllm_core::openai::OpenAIServerData;
@@ -500,7 +500,7 @@ fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Resul
     }
     logger
         .console(cfg_filter)
-        .single_file(log_file.as_str(), true, cfg_filter)
+        .single_file(std::path::Path::new(&log_file), true, cfg_filter)
         .init()
         .map_err(candle_core::Error::wrap)
 }
@@ -826,6 +826,7 @@ pub async fn run() -> Result<()> {
     let config = config.as_ref().unwrap().clone();
     info!("Cache config {:?}", cache_config);
 
+    // Create the inference engine with resource-aware scheduling
     let llm_engine = LLMEngine::new(
         pipelines,
         SchedulerConfig {
@@ -834,12 +835,9 @@ pub async fn run() -> Result<()> {
         &cache_config,
         &config,
         Arc::new(Notify::new()),
-        args.holding_time,
-        num_shards,
-        multi_process,
+        Some(SchedulerPoolConfig::from_cache_config(&cache_config)),
         #[cfg(feature = "nccl")]
         daemon_manager,
-        args.prefill_chunk_size,
     )?;
 
     if args.temperature.is_some() || pipeline_config.generation_cfg.is_none() {
@@ -894,8 +892,8 @@ pub async fn run() -> Result<()> {
         daemon_manager.as_mut().unwrap().mpi_sync();
     }
 
-    #[cfg(all(feature = "cuda", feature = "graph"))]
-    LLMEngine::graph_capture(&server_data.model).unwrap();
+    // Note: Graph capture is not currently supported with the parking-lot scheduler
+    // TODO: Add graph capture support to LLMEngine when needed
 
     if global_rank == 0 {
         warn!(

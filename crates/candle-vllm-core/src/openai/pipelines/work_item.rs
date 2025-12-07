@@ -1,9 +1,19 @@
+//! Legacy work item types for the crossbeam-based worker pool.
+//!
+//! **DEPRECATED**: This module is being replaced by the parking-lot scheduler.
+//! Use `crate::parking_lot::job::{InferenceJob, InferenceResult}` instead.
+//!
+//! This module is retained for backward compatibility during the migration period.
+//! It will be removed in a future version once the migration is complete.
+
 use crate::openai::responses::{ChatChoice, ChatCompletionUsageResponse};
 use crate::openai::sampling_params::SamplingParams;
 use crate::InputMetadata;
 
 /// A work item sent to inference workers via lock-free channels.
 /// Contains all data needed to process one inference request (non-streaming).
+///
+/// **DEPRECATED**: Use `crate::parking_lot::job::InferenceJob` instead.
 pub struct WorkItem {
     /// Unique request ID for tracing
     pub request_id: String,

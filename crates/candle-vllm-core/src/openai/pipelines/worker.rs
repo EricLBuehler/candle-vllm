@@ -1,3 +1,11 @@
+//! Legacy inference worker using crossbeam channels.
+//!
+//! **DEPRECATED**: This module is being replaced by the parking-lot scheduler.
+//! Use `crate::parking_lot::LlmExecutor` instead for new implementations.
+//!
+//! This module is retained for backward compatibility during the migration period.
+//! It will be removed in a future version once the migration is complete.
+
 use crossbeam::channel::{select, Receiver};
 use tracing::{debug, error, info, warn};
 
@@ -11,6 +19,8 @@ use candle_core::{DType, Result, Tensor};
 
 /// A dedicated inference worker that owns its pipeline and processes
 /// work from lock-free channels.
+///
+/// **DEPRECATED**: Use `crate::parking_lot::LlmExecutor` instead.
 ///
 /// Key properties:
 /// - Owns its pipeline (no Arc<RwLock<>>)

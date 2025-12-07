@@ -20,18 +20,8 @@ models:
       multithread: false  # Single-threaded is optimal for Metal on M1
     notes: "Mistral 3 Ministral-3-3B-Reasoning-2512 optimized for M1 Mac with 64GB RAM and Metal GPU acceleration"
 
-  - name: phi-3.5-vision-instruct
-    hf_id: microsoft/Phi-3.5-vision-instruct
-    params:
-      dtype: f16
-      temperature: 0.7
-      top_p: 0.9
-      top_k: 50
-      frequency_penalty: 0.0
-      presence_penalty: 0.0
-      kvcache_mem_gpu: 6144  # MB - Smaller KV cache for vision model on M1
-      max_num_seqs: 64  # Reduced batch size for vision processing
-      block_size: 64  # Default block size, optimal for Metal
-      device_ids: [0]  # Use Metal GPU (M1 unified memory)
-      multithread: false  # Single-threaded is optimal for Metal on M1
-    notes: "Phi-3.5 Vision Instruct model for vision tasks, optimized for M1 Mac with 64GB RAM"
+# Vision models are not currently supported by candle-vllm pipeline
+# The following architectures would need to be implemented:
+# - LLaVA, Qwen-VL, or other multimodal architectures
+#
+# Removing phi-3.5-vision-instruct as it's not supported

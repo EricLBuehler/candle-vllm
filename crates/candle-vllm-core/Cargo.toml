@@ -51,6 +51,7 @@ indicatif = { workspace = true }
 ahash = { workspace = true }
 utoipa = { workspace = true }
 crossbeam = { workspace = true }
+prometheus_parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -13,6 +13,7 @@ pub mod engine_state;
 pub mod openai;
 pub mod models_config;
 pub mod models_engine_builder;
+pub mod parking_lot;
 pub mod scheduler;
 pub mod vision;
 pub use attention_rs::{InputMetadata, PagedAttention};

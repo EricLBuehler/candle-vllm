@@ -2,6 +2,12 @@
 //!
 //! This module provides queuing functionality to handle requests when
 //! the requested model is not currently active.
+//!
+//! **DEPRECATED**: This module is being replaced by the parking-lot scheduler's
+//! built-in queueing. The `LLMEngineV2` uses `prometheus_parking_lot::TaskQueue`
+//! for request queueing with configurable backends.
+//!
+//! This module is retained for backward compatibility during the migration period.
 
 use candle_vllm_core::openai::requests::ChatCompletionRequest;
 use parking_lot::Mutex;
