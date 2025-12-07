@@ -1,17 +1,19 @@
-use crate::openai::image_tool::{ImageDescriptionTool, ImageDescriptionConfig, ImageDescription, ImageMetadata};
-use crate::openai::requests::ImageUrl;
-use crate::vision::{VisionResult, VisionError};
 use crate::engine_params::EngineParams;
+use crate::openai::image_tool::{
+    ImageDescription, ImageDescriptionConfig, ImageDescriptionTool, ImageMetadata,
+};
+use crate::openai::requests::ImageUrl;
+use crate::vision::{VisionError, VisionResult};
 use async_trait::async_trait;
 use candle_core::Device;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use std::time::Instant;
-use tracing::{debug, info};
-use tokio::time::timeout;
 use std::time::Duration;
-use serde::{Deserialize, Serialize};
+use std::time::Instant;
+use tokio::sync::Mutex;
+use tokio::time::timeout;
+use tracing::{debug, info};
 
 /// Configuration specific to local vision models
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,7 +81,8 @@ impl VisionModelWrapper {
         match device_str {
             "cpu" => Ok(Device::Cpu),
             s if s.starts_with("cuda:") => {
-                let device_id: usize = s.strip_prefix("cuda:")
+                let device_id: usize = s
+                    .strip_prefix("cuda:")
                     .ok_or_else(|| VisionError::InternalError {
                         message: "Invalid CUDA device format".to_string(),
                     })?
@@ -130,7 +133,7 @@ impl VisionModelWrapper {
             let error_msg = format!("Vision model path does not exist: {}", self.model_path);
             self.state = ModelState::Error(error_msg.clone());
             return Err(VisionError::ModelNotFound {
-                model_path: self.model_path.clone()
+                model_path: self.model_path.clone(),
             });
         }
 
@@ -171,9 +174,7 @@ impl VisionModelWrapper {
             ModelState::Loading => Err(VisionError::ModelNotReady {
                 message: "Vision model still loading".to_string(),
             }),
-            ModelState::Error(ref e) => Err(VisionError::ModelError {
-                message: e.clone(),
-            }),
+            ModelState::Error(ref e) => Err(VisionError::ModelError { message: e.clone() }),
         }
     }
 
@@ -184,25 +185,30 @@ impl VisionModelWrapper {
     pub fn get_health_info(&self) -> HashMap<String, serde_json::Value> {
         let mut info = HashMap::new();
 
-        info.insert("model_path".to_string(), serde_json::Value::String(self.model_path.clone()));
-        info.insert("device".to_string(), serde_json::Value::String(
-            match &self.device {
+        info.insert(
+            "model_path".to_string(),
+            serde_json::Value::String(self.model_path.clone()),
+        );
+        info.insert(
+            "device".to_string(),
+            serde_json::Value::String(match &self.device {
                 Device::Cpu => "cpu".to_string(),
                 Device::Cuda(_) => "cuda".to_string(),
                 #[cfg(feature = "metal")]
                 Device::Metal(_) => "metal".to_string(),
                 #[cfg(not(feature = "metal"))]
                 _ => "unknown".to_string(),
-            }
-        ));
-        info.insert("state".to_string(), serde_json::Value::String(
-            match &self.state {
+            }),
+        );
+        info.insert(
+            "state".to_string(),
+            serde_json::Value::String(match &self.state {
                 ModelState::Uninitialized => "uninitialized".to_string(),
                 ModelState::Loading => "loading".to_string(),
                 ModelState::Ready => "ready".to_string(),
                 ModelState::Error(e) => format!("error: {}", e),
-            }
-        ));
+            }),
+        );
 
         info
     }
@@ -220,7 +226,7 @@ impl LocalVisionModelTool {
     /// Create a new local vision model tool
     pub async fn new(
         config: ImageDescriptionConfig,
-        local_config: LocalVisionConfig
+        local_config: LocalVisionConfig,
     ) -> VisionResult<Self> {
         let model_wrapper = VisionModelWrapper::new(&local_config)?;
         let model = Arc::new(Mutex::new(model_wrapper));
@@ -246,12 +252,15 @@ impl LocalVisionModelTool {
     ) -> VisionResult<Self> {
         let local_config = LocalVisionConfig {
             model_path,
-            device: engine_params.device_ids
+            device: engine_params
+                .device_ids
                 .as_ref()
                 .and_then(|ids| ids.first())
                 .map(|&id| format!("cuda:{}", id))
                 .unwrap_or_else(|| "cpu".to_string()),
-            dtype: engine_params.dtype.clone()
+            dtype: engine_params
+                .dtype
+                .clone()
                 .unwrap_or_else(|| "bf16".to_string()),
             max_seq_len: Some(8192), // Use a reasonable default
             model_params: HashMap::new(),
@@ -295,7 +304,7 @@ impl LocalVisionModelTool {
         }
 
         // Decode base64
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         general_purpose::STANDARD
             .decode(data)
             .map_err(|e| VisionError::InvalidImageData {
@@ -318,11 +327,17 @@ impl LocalVisionModelTool {
 
         if !response.status().is_success() {
             return Err(VisionError::NetworkError {
-                message: format!("HTTP {} from {}: {}", response.status(), url, response.status().canonical_reason().unwrap_or("Unknown")),
+                message: format!(
+                    "HTTP {} from {}: {}",
+                    response.status(),
+                    url,
+                    response.status().canonical_reason().unwrap_or("Unknown")
+                ),
             });
         }
 
-        let bytes = response.bytes()
+        let bytes = response
+            .bytes()
             .await
             .map_err(|e| VisionError::NetworkError {
                 message: format!("Failed to read response body from {}: {}", url, e),
@@ -336,8 +351,8 @@ impl LocalVisionModelTool {
         // This would use an image processing library to get dimensions, format, etc.
 
         ImageMetadata {
-            width: Some(1024), // Placeholder
-            height: Some(1024), // Placeholder
+            width: Some(1024),                // Placeholder
+            height: Some(1024),               // Placeholder
             format: Some("jpeg".to_string()), // Placeholder
             size_bytes: Some(image_data.len() as u64),
             was_resized: false,
@@ -365,9 +380,18 @@ impl ImageDescriptionTool for LocalVisionModelTool {
         let model = self.model.lock().await;
 
         let mut health_info = model.get_health_info();
-        health_info.insert("tool_name".to_string(), serde_json::Value::String(self.name.clone()));
-        health_info.insert("config".to_string(), serde_json::to_value(&self.config).unwrap_or(serde_json::Value::Null));
-        health_info.insert("local_config".to_string(), serde_json::to_value(&self.local_config).unwrap_or(serde_json::Value::Null));
+        health_info.insert(
+            "tool_name".to_string(),
+            serde_json::Value::String(self.name.clone()),
+        );
+        health_info.insert(
+            "config".to_string(),
+            serde_json::to_value(&self.config).unwrap_or(serde_json::Value::Null),
+        );
+        health_info.insert(
+            "local_config".to_string(),
+            serde_json::to_value(&self.local_config).unwrap_or(serde_json::Value::Null),
+        );
 
         Ok(health_info)
     }
@@ -424,9 +448,18 @@ impl ImageDescriptionTool for LocalVisionModelTool {
             .with_metadata(metadata);
 
         // Add model-specific data
-        description = description.with_model_data("model_path", serde_json::Value::String(self.local_config.model_path.clone()));
-        description = description.with_model_data("device", serde_json::Value::String(self.local_config.device.clone()));
-        description = description.with_model_data("dtype", serde_json::Value::String(self.local_config.dtype.clone()));
+        description = description.with_model_data(
+            "model_path",
+            serde_json::Value::String(self.local_config.model_path.clone()),
+        );
+        description = description.with_model_data(
+            "device",
+            serde_json::Value::String(self.local_config.device.clone()),
+        );
+        description = description.with_model_data(
+            "dtype",
+            serde_json::Value::String(self.local_config.dtype.clone()),
+        );
 
         Ok(description)
     }
@@ -467,7 +500,6 @@ impl ImageDescriptionTool for LocalVisionModelTool {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

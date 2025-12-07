@@ -16,6 +16,73 @@
 # Models will be automatically unloaded if no requests are received for this duration
 idle_unload_secs: 3600  # 1 hour
 
+# ============================================================================
+# Parking Lot Scheduler Configuration (Optional)
+# ============================================================================
+# Configure the thread pool and resource scheduler for inference.
+# If omitted, sensible defaults are used based on system resources.
+
+parking_lot:
+  # Thread pool for CPU-bound inference work
+  pool:
+    # Number of worker threads for model inference (default: num_cpus)
+    # Each worker thread can process one inference request at a time
+    worker_threads: 4
+    
+    # Maximum blocking threads for tokio runtime (default: 512)
+    # Used for I/O operations and async tasks
+    max_blocking_threads: 512
+    
+    # Stack size per worker thread in bytes (default: 2MB)
+    thread_stack_size: 2097152
+    
+  # Resource limits and queue configuration
+  limits:
+    # Maximum resource units (GPU KV-cache blocks)
+    # Set to null to auto-derive from kvcache_mem_gpu configuration
+    # This determines how many requests can run concurrently
+    max_units: null
+    
+    # Maximum number of queued requests before rejection
+    # Requests beyond this limit will be rejected with 503 error
+    max_queue_depth: 1000
+    
+    # Request timeout in seconds
+    # Requests that don't complete within this time are cancelled
+    timeout_secs: 120
+    
+  # Queue backend configuration
+  queue:
+    # Backend type for task queue
+    # Options: "memory" (default, non-persistent)
+    #          "postgres" (persistent, requires postgres_url)
+    #          "yaque" (persistent file-based, requires yaque_dir)
+    backend: "memory"
+    
+    # Enable persistent queue (survives server restarts)
+    # Only works with postgres or yaque backends
+    persistence: false
+    
+    # PostgreSQL connection string (required if backend = "postgres")
+    # postgres_url: "postgresql://user:password@localhost:5432/candle_vllm"
+    
+    # Directory for Yaque file-based queue (required if backend = "yaque")
+    # yaque_dir: "./queue_data"
+    
+  # Result mailbox configuration
+  mailbox:
+    # Backend type for storing completed results
+    # Options: "memory" (default, non-persistent)
+    #          "postgres" (persistent, requires postgres_url)
+    backend: "memory"
+    
+    # How long to retain completed results in seconds
+    # After this time, results are purged from the mailbox
+    retention_secs: 3600  # 1 hour
+    
+    # PostgreSQL connection string (required if backend = "postgres")
+    # postgres_url: "postgresql://user:password@localhost:5432/candle_vllm"
+
 models:
   # Example: Hugging Face model with basic parameters
   - name: mistral-7b
@@ -52,7 +119,7 @@ models:
       device_ids: [0]  # Use GPU 0
     notes: "Custom model configuration"
 
-  # Example: Multi-GPU model
+  # Example: Multi-GPU model with custom parking lot settings
   - name: large-model
     hf_id: mistralai/Mixtral-8x7B-Instruct-v0.1
     params:
@@ -61,7 +128,14 @@ models:
       kvcache_mem_gpu: 16384
       max_num_seqs: 512
       multithread: true
-    notes: "Large model distributed across multiple GPUs"
+    # Per-model parking lot overrides (optional)
+    # These override the global parking_lot settings for this specific model
+    parking_lot:
+      limits:
+        max_units: 4096         # Higher limit for large model
+        max_queue_depth: 2000   # Larger queue
+        timeout_secs: 300       # Longer timeout for complex requests
+    notes: "Large model distributed across multiple GPUs with custom resource limits"
 
   # Example: CPU-only model
   - name: cpu-model
@@ -121,7 +195,19 @@ models:
 #   frequency_penalty:  Frequency penalty (-2.0 to 2.0)
 #   presence_penalty:   Presence penalty (-2.0 to 2.0)
 #
-# Notes:
+# Parking Lot Configuration Reference:
+#   pool.worker_threads:      Number of threads for CPU-bound inference (default: num_cpus)
+#   pool.max_blocking_threads: Max tokio blocking threads (default: 512)
+#   pool.thread_stack_size:   Stack size per thread in bytes (default: 2MB)
+#   limits.max_units:         Max KV-cache blocks (null = auto from config)
+#   limits.max_queue_depth:   Max queued requests before rejection
+#   limits.timeout_secs:      Request timeout in seconds
+#   queue.backend:            "memory" | "postgres" | "yaque"
+#   queue.persistence:        Enable persistent queue (bool)
+#   mailbox.backend:          "memory" | "postgres"
+#   mailbox.retention_secs:   How long to keep results (seconds)
+#
+# Model Configuration Notes:
 #   - Either "hf_id" or "local_path" must be specified (not both)
 #   - "weight_file" is optional and used to specify a specific file when multiple exist
 #   - All sampling parameters (temperature, top_p, etc.) are optional and have defaults
@@ -130,3 +216,4 @@ models:
 #   - For multi-GPU models, specify multiple device_ids and enable multithread
 #   - quantization and isq are different: quantization is applied at load time,
 #     while isq (in-situ quantization) is applied during inference
+#   - Per-model "parking_lot" section overrides global parking_lot settings

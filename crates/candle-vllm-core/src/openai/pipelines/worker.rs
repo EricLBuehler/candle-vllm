@@ -141,9 +141,7 @@ impl InferenceWorker {
 
         info!(
             rank = self.rank,
-            processed_count,
-            streaming_count,
-            "Inference worker terminated gracefully"
+            processed_count, streaming_count, "Inference worker terminated gracefully"
         );
     }
 
@@ -220,7 +218,7 @@ impl InferenceWorker {
             Ok(logits) => {
                 let prefill_elapsed = start.elapsed();
                 let decode_start = std::time::Instant::now();
-                
+
                 // Create logits processor for sampling
                 let logits_processor = LogitsProcessor::new(
                     299792458, // SAMPLING_SEED
@@ -229,24 +227,25 @@ impl InferenceWorker {
                     work.sampling_params.top_p,
                     work.sampling_params.min_p,
                 );
-                
+
                 let stop_token_ids = self.pipeline.get_stop_token_ids();
                 let sampling_params = Some(work.sampling_params.clone());
                 let max_tokens = work.sampling_params.max_tokens;
                 let max_context = work.input_metadata.max_context_len;
-                
+
                 let mut generated_tokens: Vec<u32> = Vec::new();
                 let mut generated_text = String::new();
                 let mut all_tokens = work.tokens.clone();
                 let mut current_logits = logits;
                 let mut finish_reason = "length";
-                
+
                 // Autoregressive generation loop
                 for step in 0..max_tokens {
                     // Sample next token from logits (take last position)
                     let last_logits = Self::extract_last_logits(&current_logits);
-                    
-                    let next_tokens = match logits_processor.sample(&last_logits, &sampling_params) {
+
+                    let next_tokens = match logits_processor.sample(&last_logits, &sampling_params)
+                    {
                         Ok(tokens) => tokens,
                         Err(e) => {
                             error!(
@@ -260,22 +259,22 @@ impl InferenceWorker {
                             return;
                         }
                     };
-                    
+
                     let next_token = next_tokens[0];
                     generated_tokens.push(next_token);
                     all_tokens.push(next_token);
-                    
+
                     // Check for EOS
                     if stop_token_ids.contains(&next_token) {
                         finish_reason = "stop";
                         break;
                     }
-                    
+
                     // Decode token and accumulate text
                     if let Ok(text) = self.pipeline.decode(&[next_token]) {
                         generated_text.push_str(&text);
                     }
-                    
+
                     // Check for custom stop strings
                     if let Some(ref stop_strs) = work.sampling_params.stop {
                         let mut should_stop = false;
@@ -290,52 +289,46 @@ impl InferenceWorker {
                             break;
                         }
                     }
-                    
+
                     // Check context length limit
                     if all_tokens.len() >= max_context {
                         finish_reason = "length";
                         break;
                     }
-                    
+
                     // Next step: run forward with ALL accumulated tokens (no KV cache reuse)
                     // This is less efficient but avoids needing block tables from scheduler
-                    let all_tokens_tensor = match Tensor::from_vec(
-                        all_tokens.clone(),
-                        (all_tokens.len(),),
-                        device,
-                    ) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!(
-                                rank = self.rank,
-                                request_id = %work.request_id,
-                                step = step,
-                                error = %e,
-                                "Failed to create tokens tensor"
-                            );
-                            break;
-                        }
-                    };
-                    
+                    let all_tokens_tensor =
+                        match Tensor::from_vec(all_tokens.clone(), (all_tokens.len(),), device) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!(
+                                    rank = self.rank,
+                                    request_id = %work.request_id,
+                                    step = step,
+                                    error = %e,
+                                    "Failed to create tokens tensor"
+                                );
+                                break;
+                            }
+                        };
+
                     let positions: Vec<i64> = (0..all_tokens.len() as i64).collect();
-                    let positions_tensor = match Tensor::from_vec(
-                        positions,
-                        (all_tokens.len(),),
-                        device,
-                    ) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!(
-                                rank = self.rank,
-                                request_id = %work.request_id,
-                                step = step,
-                                error = %e,
-                                "Failed to create positions tensor"
-                            );
-                            break;
-                        }
-                    };
-                    
+                    let positions_tensor =
+                        match Tensor::from_vec(positions, (all_tokens.len(),), device) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!(
+                                    rank = self.rank,
+                                    request_id = %work.request_id,
+                                    step = step,
+                                    error = %e,
+                                    "Failed to create positions tensor"
+                                );
+                                break;
+                            }
+                        };
+
                     // Create metadata for full sequence (is_prefill=true to use chunked attention)
                     let seq_len = all_tokens.len();
                     let cu_seqlens = match Tensor::new(&[0u32, seq_len as u32], device) {
@@ -351,7 +344,7 @@ impl InferenceWorker {
                             break;
                         }
                     };
-                    
+
                     let step_metadata = crate::InputMetadata {
                         is_prefill: true, // Always use prefill/chunked attention
                         slot_mapping: Tensor::zeros(seq_len, DType::I64, device)
@@ -364,7 +357,7 @@ impl InferenceWorker {
                         max_seqlen_k: seq_len,
                         max_context_len: max_context,
                     };
-                    
+
                     // Forward pass for next step (no KV cache - recompute everything)
                     current_logits = match self.pipeline.forward(
                         all_tokens_tensor,
@@ -385,9 +378,9 @@ impl InferenceWorker {
                         }
                     };
                 }
-                
+
                 let decode_elapsed = decode_start.elapsed();
-                
+
                 // Create response
                 let choices = vec![ChatChoice {
                     index: 0,
@@ -424,8 +417,8 @@ impl InferenceWorker {
                     generated_tokens = generated_tokens.len(),
                     prefill_ms = prefill_elapsed.as_millis(),
                     decode_ms = decode_elapsed.as_millis(),
-                    tokens_per_sec = if decode_elapsed.as_secs_f64() > 0.0 { 
-                        generated_tokens.len() as f64 / decode_elapsed.as_secs_f64() 
+                    tokens_per_sec = if decode_elapsed.as_secs_f64() > 0.0 {
+                        generated_tokens.len() as f64 / decode_elapsed.as_secs_f64()
                     } else { 0.0 },
                     finish_reason = finish_reason,
                     "Completion request processed"
@@ -442,14 +435,17 @@ impl InferenceWorker {
             }
         }
     }
-    
+
     /// Extract the last position's logits from a tensor
     fn extract_last_logits(logits: &Tensor) -> Tensor {
         let last_logits = if logits.dims().len() == 3 {
             // Shape: [batch, seq_len, vocab_size] -> take last token
             let seq_len = logits.dim(1).unwrap_or(1);
-            logits.narrow(1, seq_len - 1, 1).unwrap()
-                .squeeze(1).unwrap()
+            logits
+                .narrow(1, seq_len - 1, 1)
+                .unwrap()
+                .squeeze(1)
+                .unwrap()
         } else if logits.dims().len() == 2 {
             // Shape: [seq_len, vocab_size]
             let seq_len = logits.dim(0).unwrap_or(1);
@@ -461,7 +457,7 @@ impl InferenceWorker {
         } else {
             logits.clone()
         };
-        
+
         // Ensure batch dimension for sample
         if last_logits.dims().len() == 1 {
             last_logits.unsqueeze(0).unwrap()
@@ -533,23 +529,24 @@ impl InferenceWorker {
                     work.sampling_params.top_p,
                     work.sampling_params.min_p,
                 );
-                
+
                 let stop_token_ids = self.pipeline.get_stop_token_ids();
                 let sampling_params = Some(work.sampling_params.clone());
                 let max_tokens = work.sampling_params.max_tokens;
                 let max_context = work.input_metadata.max_context_len;
-                
+
                 let mut generated_count = 0usize;
                 let mut all_tokens = work.tokens.clone();
                 let mut current_logits = logits;
                 let mut generated_text = String::new();
-                
+
                 // Autoregressive streaming generation loop
                 for step in 0..max_tokens {
                     // Sample next token
                     let last_logits = Self::extract_last_logits(&current_logits);
-                    
-                    let next_tokens = match logits_processor.sample(&last_logits, &sampling_params) {
+
+                    let next_tokens = match logits_processor.sample(&last_logits, &sampling_params)
+                    {
                         Ok(tokens) => tokens,
                         Err(e) => {
                             error!(
@@ -563,19 +560,21 @@ impl InferenceWorker {
                             return;
                         }
                     };
-                    
+
                     let next_token = next_tokens[0];
                     generated_count += 1;
                     all_tokens.push(next_token);
-                    
+
                     // Check for EOS
                     let is_eos = stop_token_ids.contains(&next_token);
-                    
+
                     // Decode token to text
-                    let token_text = self.pipeline.decode(&[next_token])
+                    let token_text = self
+                        .pipeline
+                        .decode(&[next_token])
                         .unwrap_or_else(|_| String::new());
                     generated_text.push_str(&token_text);
-                    
+
                     // Check for custom stop strings
                     let mut hit_stop_string = false;
                     if let Some(ref stop_strs) = work.sampling_params.stop {
@@ -586,14 +585,21 @@ impl InferenceWorker {
                             }
                         }
                     }
-                    
+
                     let is_finished = is_eos || hit_stop_string || all_tokens.len() >= max_context;
                     let finish_reason = if is_finished {
-                        Some(if is_eos || hit_stop_string { "stop" } else { "length" }.to_string())
+                        Some(
+                            if is_eos || hit_stop_string {
+                                "stop"
+                            } else {
+                                "length"
+                            }
+                            .to_string(),
+                        )
                     } else {
                         None
                     };
-                    
+
                     // Send streaming token to client
                     let streaming_token = StreamingToken {
                         text: token_text,
@@ -602,7 +608,7 @@ impl InferenceWorker {
                         finish_reason: finish_reason.clone(),
                         is_reasoning: false, // TODO: Detect reasoning tokens based on model type
                     };
-                    
+
                     if work.stream_tx.send(Ok(streaming_token)).is_err() {
                         warn!(
                             rank = self.rank,
@@ -612,51 +618,45 @@ impl InferenceWorker {
                         );
                         return;
                     }
-                    
+
                     if is_finished {
                         break;
                     }
-                    
+
                     // Next step: run forward with ALL accumulated tokens (no KV cache reuse)
-                    let all_tokens_tensor = match Tensor::from_vec(
-                        all_tokens.clone(),
-                        (all_tokens.len(),),
-                        device,
-                    ) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!(
-                                rank = self.rank,
-                                request_id = %work.request_id,
-                                step = step,
-                                error = %e,
-                                "Failed to create tokens tensor"
-                            );
-                            let _ = work.stream_tx.send(Err(e.to_string()));
-                            return;
-                        }
-                    };
-                    
+                    let all_tokens_tensor =
+                        match Tensor::from_vec(all_tokens.clone(), (all_tokens.len(),), device) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!(
+                                    rank = self.rank,
+                                    request_id = %work.request_id,
+                                    step = step,
+                                    error = %e,
+                                    "Failed to create tokens tensor"
+                                );
+                                let _ = work.stream_tx.send(Err(e.to_string()));
+                                return;
+                            }
+                        };
+
                     let positions: Vec<i64> = (0..all_tokens.len() as i64).collect();
-                    let positions_tensor = match Tensor::from_vec(
-                        positions,
-                        (all_tokens.len(),),
-                        device,
-                    ) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!(
-                                rank = self.rank,
-                                request_id = %work.request_id,
-                                step = step,
-                                error = %e,
-                                "Failed to create positions tensor"
-                            );
-                            let _ = work.stream_tx.send(Err(e.to_string()));
-                            return;
-                        }
-                    };
-                    
+                    let positions_tensor =
+                        match Tensor::from_vec(positions, (all_tokens.len(),), device) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!(
+                                    rank = self.rank,
+                                    request_id = %work.request_id,
+                                    step = step,
+                                    error = %e,
+                                    "Failed to create positions tensor"
+                                );
+                                let _ = work.stream_tx.send(Err(e.to_string()));
+                                return;
+                            }
+                        };
+
                     // Create metadata for full sequence
                     let seq_len = all_tokens.len();
                     let cu_seqlens = match Tensor::new(&[0u32, seq_len as u32], device) {
@@ -673,7 +673,7 @@ impl InferenceWorker {
                             return;
                         }
                     };
-                    
+
                     let step_metadata = crate::InputMetadata {
                         is_prefill: true,
                         slot_mapping: Tensor::zeros(seq_len, DType::I64, device)
@@ -686,7 +686,7 @@ impl InferenceWorker {
                         max_seqlen_k: seq_len,
                         max_context_len: max_context,
                     };
-                    
+
                     // Forward pass for next step
                     current_logits = match self.pipeline.forward(
                         all_tokens_tensor,
@@ -708,15 +708,15 @@ impl InferenceWorker {
                         }
                     };
                 }
-                
+
                 let elapsed = start.elapsed();
                 info!(
                     rank = self.rank,
                     request_id = %work.request_id,
                     generated_tokens = generated_count,
                     elapsed_ms = elapsed.as_millis(),
-                    tokens_per_sec = if elapsed.as_secs_f64() > 0.0 { 
-                        generated_count as f64 / elapsed.as_secs_f64() 
+                    tokens_per_sec = if elapsed.as_secs_f64() > 0.0 {
+                        generated_count as f64 / elapsed.as_secs_f64()
                     } else { 0.0 },
                     "Streaming generation completed"
                 );

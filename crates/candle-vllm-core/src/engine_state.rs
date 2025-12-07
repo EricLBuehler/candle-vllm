@@ -1,8 +1,8 @@
 use crate::api::{InferenceEngine, ModelInfo};
 use crate::openai::image_tool::ImageDescriptionTool;
 use crate::openai::local_vision_tool::LocalVisionModelTool;
-use crate::openai::vision_proxy::{VisionProxyConfig, PreprocessingStats};
-use crate::vision::{VisionResult, VisionError};
+use crate::openai::vision_proxy::{PreprocessingStats, VisionProxyConfig};
+use crate::vision::{VisionError, VisionResult};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -206,7 +206,9 @@ impl EngineStateManager {
 
     /// Update engine statistics with request processing results
     pub fn update_request_stats(&self, processing_time_ms: u64, success: bool) {
-        self.stats.write().update_request_stats(processing_time_ms, success);
+        self.stats
+            .write()
+            .update_request_stats(processing_time_ms, success);
     }
 
     /// Update vision preprocessing statistics
@@ -234,7 +236,9 @@ impl EngineStateManager {
         };
 
         // Update overall health status
-        let overall_status = self.determine_overall_health_status(primary_healthy, &vision_health).await;
+        let overall_status = self
+            .determine_overall_health_status(primary_healthy, &vision_health)
+            .await;
         *self.health_status.write() = overall_status;
 
         // Update vision tool health info
@@ -343,17 +347,19 @@ impl EngineStateManager {
         let model_info = health_check_result.ok();
 
         // Get current health to update counters
-        let mut current_health = self.vision_tool_health.read().clone().unwrap_or_else(|| {
-            VisionToolHealth {
-                name: tool.name().to_string(),
-                is_available: false,
-                last_check: SystemTime::now(),
-                response_time_ms: None,
-                error_count: 0,
-                success_count: 0,
-                model_info: None,
-            }
-        });
+        let mut current_health =
+            self.vision_tool_health
+                .read()
+                .clone()
+                .unwrap_or_else(|| VisionToolHealth {
+                    name: tool.name().to_string(),
+                    is_available: false,
+                    last_check: SystemTime::now(),
+                    response_time_ms: None,
+                    error_count: 0,
+                    success_count: 0,
+                    model_info: None,
+                });
 
         // Update counters
         if is_available {
@@ -450,7 +456,8 @@ impl EngineStateManagerBuilder {
 
     /// Build the EngineStateManager
     pub fn build(self) -> VisionResult<EngineStateManager> {
-        let primary_engine = self.primary_engine
+        let primary_engine = self
+            .primary_engine
             .ok_or_else(|| VisionError::InternalError {
                 message: "Primary engine is required".to_string(),
             })?;
@@ -483,8 +490,7 @@ mod tests {
         // Note: This would fail in a real test due to model loading
         // but demonstrates the API structure
 
-        let builder = EngineStateManagerBuilder::new()
-            .with_config(EngineStateConfig::default());
+        let builder = EngineStateManagerBuilder::new().with_config(EngineStateConfig::default());
 
         // Would need a real engine for this to work
         // let state_manager = builder.build().unwrap();

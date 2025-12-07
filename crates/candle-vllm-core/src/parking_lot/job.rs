@@ -8,6 +8,15 @@ use crate::openai::sampling_params::SamplingParams;
 use crate::InputMetadata;
 use serde::{Deserialize, Serialize};
 
+/// Type alias for job categorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JobType {
+    /// Non-streaming completion request
+    Completion,
+    /// Streaming token-by-token request
+    Streaming,
+}
+
 /// A serializable description of an LLM inference request.
 ///
 /// This struct contains all data needed to process one inference request,
@@ -109,8 +118,7 @@ impl InferenceJob {
         device: &candle_core::Device,
     ) -> Result<InputMetadata, candle_core::Error> {
         let seq_len = self.tokens.len();
-        let cu_seqlens =
-            candle_core::Tensor::new(&[0u32, seq_len as u32], device)?;
+        let cu_seqlens = candle_core::Tensor::new(&[0u32, seq_len as u32], device)?;
 
         Ok(InputMetadata {
             is_prefill: self.is_prefill,
@@ -217,45 +225,93 @@ impl InferenceResult {
     }
 }
 
-/// Serializable wrapper for InferenceResult (for mailbox storage).
+/// Serializable wrapper for InferenceResult (for mailbox storage and ResourcePool).
 ///
-/// Note: Streaming results cannot be serialized directly since they
-/// contain channel receivers. This wrapper is used for completion results only.
+/// This enum handles both completion and streaming results in a way that can be
+/// serialized for the prometheus-parking-lot mailbox system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SerializableInferenceResult {
-    /// Whether this was a successful completion
-    pub success: bool,
+pub enum SerializableInferenceResult {
+    /// Complete response for non-streaming requests
+    Completion {
+        /// Chat completion choices
+        choices: Vec<ChatChoice>,
+        /// Usage statistics
+        usage: ChatCompletionUsageResponse,
+    },
 
-    /// Chat completion choices (if success)
-    pub choices: Option<Vec<ChatChoice>>,
+    /// Streaming response - contains a mailbox key to retrieve the channel
+    StreamingChannel {
+        /// Request ID for correlation
+        request_id: String,
+        /// Mailbox key to retrieve the streaming channel from StreamingRegistry
+        channel_key: String,
+    },
 
-    /// Usage statistics (if success)
-    pub usage: Option<ChatCompletionUsageResponse>,
+    /// Error during inference
+    Error {
+        /// Error message
+        message: String,
+    },
+}
 
-    /// Error message (if failure)
-    pub error: Option<String>,
+impl SerializableInferenceResult {
+    /// Create a completion result
+    #[must_use]
+    pub fn completion(choices: Vec<ChatChoice>, usage: ChatCompletionUsageResponse) -> Self {
+        Self::Completion { choices, usage }
+    }
+
+    /// Create a streaming channel result
+    #[must_use]
+    pub fn streaming_channel(request_id: String, channel_key: String) -> Self {
+        Self::StreamingChannel {
+            request_id,
+            channel_key,
+        }
+    }
+
+    /// Create an error result
+    #[must_use]
+    pub fn error(message: impl Into<String>) -> Self {
+        Self::Error {
+            message: message.into(),
+        }
+    }
+
+    /// Check if this is an error result
+    #[must_use]
+    pub fn is_error(&self) -> bool {
+        matches!(self, Self::Error { .. })
+    }
+
+    /// Get the error message if this is an error result
+    #[must_use]
+    pub fn error_message(&self) -> Option<&str> {
+        match self {
+            Self::Error { message } => Some(message),
+            _ => None,
+        }
+    }
 }
 
 impl From<&InferenceResult> for SerializableInferenceResult {
     fn from(result: &InferenceResult) -> Self {
         match result {
-            InferenceResult::Completion { choices, usage } => Self {
-                success: true,
-                choices: Some(choices.clone()),
-                usage: Some(usage.clone()),
-                error: None,
+            InferenceResult::Completion { choices, usage } => Self::Completion {
+                choices: choices.clone(),
+                usage: usage.clone(),
             },
-            InferenceResult::Error { message } => Self {
-                success: false,
-                choices: None,
-                usage: None,
-                error: Some(message.clone()),
-            },
-            InferenceResult::Streaming { .. } => Self {
-                success: false,
-                choices: None,
-                usage: None,
-                error: Some("Streaming results cannot be serialized".to_string()),
+            InferenceResult::Streaming { request_id, .. } => {
+                // This shouldn't happen - streaming should use the channel_key constructor
+                Self::Error {
+                    message: format!(
+                        "Streaming result for {} cannot be converted to serializable form directly",
+                        request_id
+                    ),
+                }
+            }
+            InferenceResult::Error { message } => Self::Error {
+                message: message.clone(),
             },
         }
     }

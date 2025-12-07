@@ -3,32 +3,30 @@ use crate::config::{McpConfig, ModelRegistryConfig};
 use crate::models_config::{to_model_registry, ModelsState};
 use crate::routes::build_router;
 use crate::state::model_manager::ModelManager;
-use candle_vllm_responses::session::ResponsesSession;
 use candle_vllm_openai::model_registry::ModelRegistry;
+use candle_vllm_responses::session::ResponsesSession;
 // TODO: Re-enable when vision path is restored
 // use candle_vllm_core::models_engine_builder::{
 //     ModelsEngineBuilderConfig, ModelsEngineBuilderFactory
 // };
-use candle_vllm_core::models_engine_builder::ModelsEngineBuilderConfig;
-use candle_vllm_core::openai::image_tool::ImageDescriptionConfig;
 use candle_vllm_core::engine_params::EngineParams;
 use candle_vllm_core::engine_state::EngineStateConfig;
+use candle_vllm_core::models_engine_builder::ModelsEngineBuilderConfig;
+use candle_vllm_core::openai::image_tool::ImageDescriptionConfig;
 use candle_vllm_core::openai::vision_proxy::VisionProxyConfig;
 pub mod config;
 pub mod state;
-use axum::{
-    http::{self, Method},
-};
+use axum::http::{self, Method};
 use candle_core::{DType, Device, Result};
 #[cfg(feature = "nccl")]
 use candle_vllm_core::backend::heartbeat;
+use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
+use candle_vllm_core::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
+use candle_vllm_core::openai::sampling_params::GenerationConfig;
+use candle_vllm_core::openai::OpenAIServerData;
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm_core::scheduler::SchedulerConfig;
 use candle_vllm_openai::model_registry::ModelAlias;
-use candle_vllm_core::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
-use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
-use candle_vllm_core::openai::sampling_params::GenerationConfig;
-use candle_vllm_core::openai::OpenAIServerData;
 // use candle_vllm_responses::session::ResponsesSession;
 use clap::Parser;
 use std::collections::HashMap;
@@ -228,16 +226,20 @@ struct Args {
 fn load_models_config(args: &Args) -> Result<ModelsEngineBuilderConfig> {
     if let Some(config_path) = &args.models_config {
         info!("Loading models configuration from: {}", config_path);
-        let config_content = std::fs::read_to_string(config_path)
-            .map_err(|e| candle_core::Error::Msg(format!("Failed to read models config file: {}", e)))?;
+        let config_content = std::fs::read_to_string(config_path).map_err(|e| {
+            candle_core::Error::Msg(format!("Failed to read models config file: {}", e))
+        })?;
 
-        let config: ModelsEngineBuilderConfig = if config_path.ends_with(".yaml") || config_path.ends_with(".yml") {
-            serde_yaml::from_str(&config_content)
-                .map_err(|e| candle_core::Error::Msg(format!("Failed to parse YAML models config: {}", e)))?
-        } else {
-            serde_json::from_str(&config_content)
-                .map_err(|e| candle_core::Error::Msg(format!("Failed to parse JSON models config: {}", e)))?
-        };
+        let config: ModelsEngineBuilderConfig =
+            if config_path.ends_with(".yaml") || config_path.ends_with(".yml") {
+                serde_yaml::from_str(&config_content).map_err(|e| {
+                    candle_core::Error::Msg(format!("Failed to parse YAML models config: {}", e))
+                })?
+            } else {
+                serde_json::from_str(&config_content).map_err(|e| {
+                    candle_core::Error::Msg(format!("Failed to parse JSON models config: {}", e))
+                })?
+            };
         Ok(config)
     } else {
         // Create default config from CLI args
@@ -255,7 +257,9 @@ fn load_models_config(args: &Args) -> Result<ModelsEngineBuilderConfig> {
 
         // Validate that model path is provided
         if args.weight_path.is_none() && args.model_id.is_none() {
-            return Err(candle_core::Error::Msg("Either model_id or weight_path must be provided".to_string()));
+            return Err(candle_core::Error::Msg(
+                "Either model_id or weight_path must be provided".to_string(),
+            ));
         }
 
         let default_vision_config = if args.enable_vision {
@@ -376,15 +380,15 @@ fn load_model_registry() -> (
     let mut validation = HashMap::new();
     let mut idle_unload = None;
     let mut default_model = None;
-    
+
     // Load models config: env var > ~/.candle-vllm/models.yaml > current dir
     let models_config_path = std::env::var("CANDLE_VLLM_MODELS_CONFIG")
         .ok()
         .filter(|p| std::path::Path::new(p).exists());
-    
+
     let home_dir = dirs::home_dir();
     let mut candidates = Vec::new();
-    
+
     if let Some(ref path) = models_config_path {
         candidates.push(path.clone());
     } else {
@@ -407,7 +411,7 @@ fn load_model_registry() -> (
         candidates.push("models.yaml".to_string());
         candidates.push("models.yml".to_string());
     }
-    
+
     for candidate in candidates {
         if std::path::Path::new(&candidate).exists() {
             match ModelRegistryConfig::load(&candidate) {
@@ -565,20 +569,23 @@ pub async fn run() -> Result<()> {
 
     // Apply model alias before using args fields
     let (registry, validation, idle_unload, default_model) = load_model_registry();
-    
+
     // If no model specified via CLI, use default_model from config
     let model_name = args.model_id.clone().or_else(|| {
         if let Some(ref default) = default_model {
-            info!("No model specified via CLI, using default model '{}' from config", default);
+            info!(
+                "No model specified via CLI, using default model '{}' from config",
+                default
+            );
             Some(default.clone())
         } else {
             None
         }
     });
-    
+
     // Store model name for later use (before it gets moved)
     let startup_model_name = model_name.clone();
-    
+
     // Apply model alias if we have a model name (from CLI or default)
     if let (Some(registry_ref), Some(name)) = (registry.as_ref(), model_name) {
         if let Some(alias) = registry_ref.find(&name) {
@@ -601,7 +608,10 @@ pub async fn run() -> Result<()> {
 
     // Load models configuration (vision-enabled approach)
     let models_config = load_models_config(&args)?;
-    info!("Loaded models configuration: vision_enabled={}", models_config.enable_vision_auto_load);
+    info!(
+        "Loaded models configuration: vision_enabled={}",
+        models_config.enable_vision_auto_load
+    );
 
     // Vision support temporarily disabled - using traditional model loading path
     // TODO: Re-enable vision path when ModelsEngineBuilder API is stable
@@ -651,6 +661,10 @@ pub async fn run() -> Result<()> {
         "Error: prefill_chunk_size must be divisible by 1024!"
     );
 
+    #[expect(
+        unused_variables,
+        reason = "multi_process is conditionally used behind feature flags (cuda, nccl)"
+    )]
     let multi_process = if num_shards > 1 {
         if args.multithread {
             tracing::warn!("The program is forced running under multithread mode (for debug purpose), which may not stable!");
@@ -919,7 +933,9 @@ pub async fn run() -> Result<()> {
     let models = ModelsState::new(registry, validation, idle_unload, default_model.clone());
 
     // Load MCP config: CLI arg > env var > ~/.candle-vllm/mcp.json > current dir
-    let mcp_config_path = args.mcp_config.clone()
+    let mcp_config_path = args
+        .mcp_config
+        .clone()
         .or_else(|| std::env::var("CANDLE_VLLM_MCP_CONFIG").ok())
         .or_else(|| {
             // Check ~/.candle-vllm/mcp.json first
@@ -945,11 +961,15 @@ pub async fn run() -> Result<()> {
             Err(errs) => Err(anyhow::anyhow!(errs.join(", "))),
         }) {
             Ok(cfg) => {
-                info!("MCP config loaded successfully with {} server(s)", cfg.servers.len());
+                info!(
+                    "MCP config loaded successfully with {} server(s)",
+                    cfg.servers.len()
+                );
                 match serde_json::to_value(&cfg)
                     .map_err(anyhow::Error::from)
-                    .and_then(|v| futures::executor::block_on(ResponsesSession::from_config_value(&v)))
-                {
+                    .and_then(|v| {
+                        futures::executor::block_on(ResponsesSession::from_config_value(&v))
+                    }) {
                     Ok(session) => {
                         info!("MCP session initialized successfully");
                         Some(Arc::new(session))
@@ -966,7 +986,9 @@ pub async fn run() -> Result<()> {
             }
         }
     } else {
-        info!("No MCP config found (checked CLI arg, CANDLE_VLLM_MCP_CONFIG env var, and mcp.json)");
+        info!(
+            "No MCP config found (checked CLI arg, CANDLE_VLLM_MCP_CONFIG env var, and mcp.json)"
+        );
         None
     };
 
@@ -984,7 +1006,10 @@ pub async fn run() -> Result<()> {
     // but they will be processed once the model is marked active
     if let Some(ref model_name) = startup_model_name {
         if let Some(alias) = models.resolve(model_name) {
-            info!("Marking model '{}' as active after startup load", alias.name);
+            info!(
+                "Marking model '{}' as active after startup load",
+                alias.name
+            );
             let queued_requests = model_manager.mark_model_active(alias.name.clone()).await;
             if !queued_requests.is_empty() {
                 warn!("Found {} queued requests for model '{}' - these should be processed by a background task", 

@@ -1,7 +1,9 @@
 use crate::mcp_client::{McpClient, McpServerConfig};
 use crate::orchestrator::Orchestrator;
 use candle_vllm_core::api::InferenceEngine;
-use candle_vllm_core::openai::requests::{ChatCompletionRequest, ChatMessage, Messages, MessageContent, Tool};
+use candle_vllm_core::openai::requests::{
+    ChatCompletionRequest, ChatMessage, MessageContent, Messages, Tool,
+};
 use candle_vllm_openai::adapter::OpenAIAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -101,11 +103,11 @@ impl ResponsesSession {
 
     pub async fn from_config(config: McpConfigFile) -> anyhow::Result<Self> {
         let mut clients = HashMap::new();
-        
+
         // Process servers array format
         for entry in config.servers {
             let timeout = entry.timeout_secs.unwrap_or(30).max(1);
-            
+
             // If URL is provided, use it directly
             // Otherwise, if command is provided, convert to HTTP URL (assumes local server)
             let url = if !entry.url.is_empty() {
@@ -119,9 +121,12 @@ impl ResponsesSession {
                 );
                 default_url
             } else {
-                anyhow::bail!("MCP server '{}' must have either 'url' or 'command'", entry.name);
+                anyhow::bail!(
+                    "MCP server '{}' must have either 'url' or 'command'",
+                    entry.name
+                );
             };
-            
+
             let client = McpClient::connect(McpServerConfig {
                 url,
                 auth: entry.auth.clone(),
@@ -130,17 +135,18 @@ impl ResponsesSession {
             .await?;
             clients.insert(entry.name.clone(), client);
         }
-        
+
         // Process mcpServers object format
         if let Some(mcp_servers) = config.mcp_servers {
             for (name, entry_value) in mcp_servers {
                 // Try to deserialize as McpConfigEntry
-                if let Ok(mut entry) = serde_json::from_value::<McpConfigEntry>(entry_value.clone()) {
+                if let Ok(mut entry) = serde_json::from_value::<McpConfigEntry>(entry_value.clone())
+                {
                     // Set name if not already set
                     if entry.name.is_empty() {
                         entry.name = name.clone();
                     }
-                    
+
                     let timeout = entry.timeout_secs.unwrap_or(30).max(1);
                     let url = if !entry.url.is_empty() {
                         entry.url
@@ -154,7 +160,7 @@ impl ResponsesSession {
                     } else {
                         anyhow::bail!("MCP server '{}' must have either 'url' or 'command'", name);
                     };
-                    
+
                     let client = McpClient::connect(McpServerConfig {
                         url,
                         auth: entry.auth.clone(),
@@ -165,7 +171,7 @@ impl ResponsesSession {
                 }
             }
         }
-        
+
         Ok(Self {
             mcp_clients: clients,
             adapter: None,
@@ -323,7 +329,11 @@ impl ResponsesSession {
             // Convert ChatChoiceData to ChatMessage
             let assistant_msg = ChatMessage {
                 role: choice.message.role.clone(),
-                content: choice.message.content.as_ref().map(|c| MessageContent::Text(c.clone())),
+                content: choice
+                    .message
+                    .content
+                    .as_ref()
+                    .map(|c| MessageContent::Text(c.clone())),
                 tool_calls: choice.message.tool_calls.clone(),
                 tool_call_id: None,
                 name: None,
@@ -335,7 +345,10 @@ impl ResponsesSession {
                 if tool_calls.is_empty() {
                     // No tool calls, conversation complete
                     return Ok(ConversationResult {
-                        final_message: assistant_msg.content.map(|c| c.get_text_content()).unwrap_or_default(),
+                        final_message: assistant_msg
+                            .content
+                            .map(|c| c.get_text_content())
+                            .unwrap_or_default(),
                         tool_calls: all_tool_calls,
                         turns_taken: turns,
                         completed: true,
@@ -353,7 +366,10 @@ impl ResponsesSession {
             } else {
                 // No tool calls, conversation complete
                 return Ok(ConversationResult {
-                    final_message: assistant_msg.content.map(|c| c.get_text_content()).unwrap_or_default(),
+                    final_message: assistant_msg
+                        .content
+                        .map(|c| c.get_text_content())
+                        .unwrap_or_default(),
                     tool_calls: all_tool_calls,
                     turns_taken: turns,
                     completed: true,

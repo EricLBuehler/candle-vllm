@@ -51,7 +51,10 @@ fn test_chat_message_with_tool_calls() {
     assert!(msg.content.is_none());
     assert!(msg.tool_calls.is_some());
     assert_eq!(msg.tool_calls.as_ref().unwrap().len(), 1);
-    assert_eq!(msg.tool_calls.as_ref().unwrap()[0].function.name, "get_weather");
+    assert_eq!(
+        msg.tool_calls.as_ref().unwrap()[0].function.name,
+        "get_weather"
+    );
 }
 
 #[test]
@@ -138,7 +141,9 @@ fn test_chat_completion_request_with_tools() {
         model: "mistral-7b".to_string(),
         messages: Messages::Chat(vec![ChatMessage {
             role: "user".to_string(),
-            content: Some(MessageContent::Text("What's the weather in Paris?".to_string())),
+            content: Some(MessageContent::Text(
+                "What's the weather in Paris?".to_string(),
+            )),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -357,7 +362,8 @@ fn test_tool_parser_qwen() {
     let parser = get_tool_parser("qwen");
     assert_eq!(parser.name(), "qwen");
 
-    let output = r#"<tool_call>{"name": "calculator", "arguments": {"expression": "2+2"}}</tool_call>"#;
+    let output =
+        r#"<tool_call>{"name": "calculator", "arguments": {"expression": "2+2"}}</tool_call>"#;
     let parsed = parser.parse(output);
 
     assert!(parsed.has_tool_calls());
@@ -423,7 +429,11 @@ fn test_tool_conversation_builder() {
     builder.add_assistant_tool_calls(vec![tool_call]);
     assert_eq!(builder.messages().len(), 2);
 
-    builder.add_tool_result("call_123", r#"{"temp": 20}"#, Some("get_weather".to_string()));
+    builder.add_tool_result(
+        "call_123",
+        r#"{"temp": 20}"#,
+        Some("get_weather".to_string()),
+    );
     assert_eq!(builder.messages().len(), 3);
 
     builder.add_assistant_response("The temperature in Paris is 20°C.");
@@ -528,7 +538,10 @@ fn test_create_tool_call_delta() {
     assert_eq!(start.index, 0);
     assert_eq!(start.id, Some("call_123".to_string()));
     assert!(start.function.is_some());
-    assert_eq!(start.function.as_ref().unwrap().name, Some("search".to_string()));
+    assert_eq!(
+        start.function.as_ref().unwrap().name,
+        Some("search".to_string())
+    );
 
     let args = create_tool_call_delta_arguments(0, r#"{"query": "test"}"#.to_string());
     assert_eq!(args.index, 0);
@@ -554,23 +567,24 @@ models:
 "#;
     let temp_dir = std::env::temp_dir();
     let temp_file = temp_dir.join("test_models.yaml");
-    
+
     {
         let mut file = std::fs::File::create(&temp_file).expect("Failed to create temp file");
-        file.write_all(yaml_content.as_bytes()).expect("Failed to write temp file");
+        file.write_all(yaml_content.as_bytes())
+            .expect("Failed to write temp file");
     }
 
     // Load the registry
     let registry = ModelRegistry::load(&temp_file);
-    
+
     // Clean up
     let _ = std::fs::remove_file(&temp_file);
-    
+
     // If loading succeeded, verify the registry contents
     if let Some(reg) = registry {
         let names = reg.list_names();
         assert!(names.contains(&"test-model".to_string()));
-        
+
         let model = reg.find("test-model");
         assert!(model.is_some());
         if let Some(m) = model {
@@ -600,9 +614,7 @@ mod with_model {
     use std::path::PathBuf;
 
     fn get_test_model_path() -> Option<PathBuf> {
-        env::var("CANDLE_VLLM_TEST_MODEL")
-            .ok()
-            .map(PathBuf::from)
+        env::var("CANDLE_VLLM_TEST_MODEL").ok().map(PathBuf::from)
     }
 
     macro_rules! skip_if_no_model {

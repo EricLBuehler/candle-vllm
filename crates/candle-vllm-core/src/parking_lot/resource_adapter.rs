@@ -108,7 +108,7 @@ impl Default for ResourceAdapter {
     fn default() -> Self {
         Self {
             block_size: DEFAULT_BLOCK_SIZE,
-            total_gpu_blocks: 1024, // Default fallback
+            total_gpu_blocks: 1024,                      // Default fallback
             bytes_per_block: DEFAULT_BLOCK_SIZE * 2 * 2, // Assuming f16, k+v
         }
     }

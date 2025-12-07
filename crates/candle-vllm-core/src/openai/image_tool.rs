@@ -1,5 +1,5 @@
 use crate::openai::requests::ImageUrl;
-use crate::vision::{VisionResult, VisionError};
+use crate::vision::{VisionError, VisionResult};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -245,10 +245,7 @@ fn extract_data_url_format(url: &str) -> Option<String> {
         return None;
     }
 
-    let format_part = url
-        .strip_prefix("data:image/")?
-        .split(';')
-        .next()?;
+    let format_part = url.strip_prefix("data:image/")?.split(';').next()?;
 
     Some(format_part.to_lowercase())
 }
@@ -301,7 +298,10 @@ mod tests {
         assert_eq!(config.max_image_size, Some((2048, 2048)));
         assert_eq!(config.timeout_secs, 30);
         assert!(!config.include_metadata);
-        assert_eq!(config.prompt_template, Some("Describe this image in detail.".to_string()));
+        assert_eq!(
+            config.prompt_template,
+            Some("Describe this image in detail.".to_string())
+        );
         assert!(config.model_params.is_empty());
     }
 
@@ -366,7 +366,10 @@ mod tests {
             Some("webp".to_string())
         );
         assert_eq!(extract_data_url_format("not a data url"), None);
-        assert_eq!(extract_data_url_format("data:text/plain;base64,SGVs..."), None);
+        assert_eq!(
+            extract_data_url_format("data:text/plain;base64,SGVs..."),
+            None
+        );
     }
 
     #[test]

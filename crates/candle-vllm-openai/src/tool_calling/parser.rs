@@ -38,7 +38,11 @@ impl ParsedToolCall {
 
     /// Create a new ParsedToolCall with a specific ID
     pub fn with_id(id: String, name: String, arguments: String) -> Self {
-        Self { id, name, arguments }
+        Self {
+            id,
+            name,
+            arguments,
+        }
     }
 
     /// Convert to the API ToolCall type
@@ -829,4 +833,3 @@ mod tests {
         assert_eq!(api_calls[1].function.name, "func2");
     }
 }
-

@@ -29,6 +29,7 @@ serde = { workspace = true }
 futures = { workspace = true }
 flume = { workspace = true }
 dirs = { workspace = true }
+num_cpus = "1.16"
 
 [dev-dependencies]
 tokio-test = "0.4"

@@ -10,7 +10,7 @@ use axum::response::{IntoResponse, Sse};
 use candle_vllm_openai::streaming::{ChatResponse, StreamingStatus};
 use candle_vllm_openai::types::responses::{APIError, ChatCompletionChunk, ChatCompletionResponse};
 use flume::Receiver;
-use futures::Stream;
+use futures::{FutureExt, Stream};
 use serde::Serialize;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -70,13 +70,15 @@ impl HttpStreamer {
 impl Stream for HttpStreamer {
     type Item = Result<Event, axum::Error>;
 
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.status == StreamingStatus::Stopped {
             return Poll::Ready(None);
         }
 
-        match self.rx.try_recv() {
-            Ok(resp) => match resp {
+        let recv_result = self.rx.recv_async().poll_unpin(cx);
+
+        match recv_result {
+            Poll::Ready(Ok(resp)) => match resp {
                 ChatResponse::InternalError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
                 ChatResponse::ValidationError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
                 ChatResponse::ModelError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
@@ -91,15 +93,13 @@ impl Stream for HttpStreamer {
                     Poll::Ready(Some(Ok(Event::default().data("[DONE]"))))
                 }
             },
-            Err(e) => {
-                if self.status == StreamingStatus::Started && e == flume::TryRecvError::Disconnected
-                {
+            Poll::Ready(Err(flume::RecvError::Disconnected)) => {
+                if self.status == StreamingStatus::Started {
                     self.status = StreamingStatus::Interrupted;
-                    Poll::Ready(None)
-                } else {
-                    Poll::Pending
                 }
+                Poll::Ready(None)
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -190,6 +190,8 @@ pub fn create_completion_response(response: ChatCompletionResponse) -> ChatRespo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use tokio::time::{timeout, Duration};
 
     #[test]
     fn test_json_error() {
@@ -225,5 +227,27 @@ mod tests {
             _ => panic!("Expected Completion variant"),
         }
     }
-}
 
+    #[tokio::test]
+    async fn http_streamer_wakes_on_new_messages() {
+        let (tx, rx) = flume::unbounded();
+
+        let streamer = HttpStreamer::new(rx);
+
+        let handle = tokio::spawn(async move {
+            futures::pin_mut!(streamer);
+            streamer.next().await
+        });
+
+        tokio::task::yield_now().await;
+
+        tx.send(ChatResponse::Done).expect("send done marker");
+
+        let event = timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("stream task timed out")
+            .expect("join stream task");
+
+        assert!(event.is_some(), "stream did not yield an event");
+    }
+}

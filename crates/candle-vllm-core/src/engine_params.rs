@@ -99,7 +99,7 @@ impl EngineParams {
             quantization: None,
             block_size: Some(16),
             max_num_seqs: Some(4), // Lower for vision models due to memory
-            mem: Some(8192), // 8GB for vision models
+            mem: Some(8192),       // 8GB for vision models
             kvcache_mem_cpu: None,
             prefill_chunk_size: Some(4096), // Smaller chunks for images
             multithread: Some(true),

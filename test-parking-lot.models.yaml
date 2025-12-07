@@ -1,0 +1,34 @@
+idle_unload_secs: 3600
+
+# Parking lot configuration
+parking_lot:
+  pool:
+    worker_threads: 4
+    max_blocking_threads: 512
+    thread_stack_size: 2097152
+  limits:
+    max_units: null  # Auto from cache
+    max_queue_depth: 100
+    timeout_secs: 120
+  queue:
+    backend: "memory"
+    persistence: false
+  mailbox:
+    backend: "memory"
+    retention_secs: 3600
+
+default_model: test-ministral
+
+models:
+  - name: test-ministral
+    hf_id: mistralai/Ministral-3-3B-Reasoning-2512
+    params:
+      dtype: f16
+      temperature: 0.3
+      top_p: 0.9
+      top_k: 40
+      kvcache_mem_gpu: 8192
+      max_num_seqs: 128
+      block_size: 64
+      device_ids: [0]
+    notes: "Test model with parking lot config"

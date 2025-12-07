@@ -14,7 +14,8 @@ use crate::openai::conversation::Conversation;
 use crate::openai::requests::{FunctionCallDelta, MessageContent, Messages, Tool, ToolCallDelta};
 use crate::openai::tool_parser::get_tool_parser;
 use crate::parking_lot::{
-    InferenceJob, InferenceResult, LlmExecutor, ResourceAdapter, ResourceCost, ResourceCostExt,
+    InferenceJob, InferenceResult, InferenceWorkerPool, InferenceWorkerPoolConfig, LlmExecutor,
+    ResourceAdapter, ResourceCost, ResourceCostExt, SerializableInferenceResult, StreamingRegistry,
     StreamingTokenResult, TaskExecutor, TaskMetadata,
 };
 use crate::scheduler::Scheduler;
@@ -32,7 +33,7 @@ use parking_lot::RwLock;
 use std::{collections::HashMap, sync::Arc};
 use tokenizers::Tokenizer;
 use tokio::sync::Notify;
-use tracing::info;
+use tracing::{error, info, warn};
 
 /// Configuration for the parking-lot scheduler.
 #[derive(Debug, Clone)]
@@ -48,8 +49,8 @@ pub struct SchedulerPoolConfig {
 impl Default for SchedulerPoolConfig {
     fn default() -> Self {
         Self {
-            max_units: 16384,        // ~256K tokens with 16-token blocks
-            max_queue_depth: 1000,   // Allow 1000 queued requests
+            max_units: 16384,          // ~256K tokens with 16-token blocks
+            max_queue_depth: 1000,     // Allow 1000 queued requests
             default_timeout_secs: 120, // 2 minute timeout
         }
     }
@@ -72,6 +73,10 @@ impl SchedulerPoolConfig {
 /// - Queues requests when resources are exhausted
 /// - Automatically dispatches queued work when resources free up
 pub struct LLMEngine {
+    /// Worker pool with dedicated OS threads for CPU/GPU-bound inference work
+    /// Uses prometheus-parking-lot's WorkerPool for proper thread isolation
+    worker_pool: Option<Arc<InferenceWorkerPool>>,
+
     /// LLM executor for processing inference jobs
     executor: Arc<LlmExecutor>,
 
@@ -171,7 +176,7 @@ impl LLMEngine {
         let roles = conversation.get_roles().clone();
 
         // Create the executor
-        let executor = Arc::new(LlmExecutor::new(rank, pipeline, cache_engine));
+        let executor = LlmExecutor::new(rank, pipeline, cache_engine);
 
         // Create resource adapter from cache config
         let resource_adapter = ResourceAdapter::from_cache_config(cache_config);
@@ -185,6 +190,29 @@ impl LLMEngine {
             pool_config.max_units, pool_config.max_queue_depth, pool_config.default_timeout_secs
         );
 
+        // Create thread pool for CPU-bound inference work
+        let streaming_registry = StreamingRegistry::with_default_retention();
+        let worker_pool_config = InferenceWorkerPoolConfig {
+            worker_count: num_cpus::get(),
+            max_units: pool_config.max_units as u32,
+            max_queue_depth: pool_config.max_queue_depth,
+            timeout_secs: pool_config.default_timeout_secs,
+        };
+
+        let worker_pool = InferenceWorkerPool::new(
+            executor.clone(),
+            streaming_registry.clone(),
+            worker_pool_config,
+        )
+        .map_err(|e| candle_core::Error::Msg(format!("Failed to create worker pool: {:?}", e)))?;
+
+        info!(
+            "🧵 ENGINE: Worker pool created with {} worker threads",
+            worker_pool.available_permits()
+        );
+
+        let executor = Arc::new(executor);
+
         // Create scheduler for compatibility
         let scheduler = Arc::new(parking_lot::Mutex::new(Scheduler::new(
             scheduler_config,
@@ -192,6 +220,7 @@ impl LLMEngine {
         )));
 
         let engine = Self {
+            worker_pool: Some(Arc::new(worker_pool)),
             executor,
             resource_adapter,
             pool_config,
@@ -259,22 +288,24 @@ impl LLMEngine {
     pub fn get_available_kv_tokens(&self) -> usize {
         let total = self.resource_adapter.max_units();
         let used = self.used_units.load(std::sync::atomic::Ordering::Relaxed);
-        self.resource_adapter.blocks_to_tokens(total.saturating_sub(used))
+        self.resource_adapter
+            .blocks_to_tokens(total.saturating_sub(used))
     }
 
     /// Get current queue depth.
     pub fn queue_depth(&self) -> usize {
-        // In the parking-lot model, this would come from the TaskQueue
-        // For now, track in-flight requests
-        self.in_flight_requests
-            .load(std::sync::atomic::Ordering::Relaxed)
+        if let Some(ref pool) = self.worker_pool {
+            pool.queue_depth()
+        } else {
+            // Fallback: track in-flight requests
+            self.in_flight_requests
+                .load(std::sync::atomic::Ordering::Relaxed)
+        }
     }
 
     /// Check if the engine can accept a new request.
     pub fn can_accept_request(&self, prompt_len: usize, max_tokens: usize) -> bool {
-        let cost = self
-            .resource_adapter
-            .calculate_cost(prompt_len, max_tokens);
+        let cost = self.resource_adapter.calculate_cost(prompt_len, max_tokens);
         let used = self.used_units.load(std::sync::atomic::Ordering::Relaxed);
         let available = self.pool_config.max_units.saturating_sub(used);
 
@@ -312,24 +343,65 @@ impl LLMEngine {
         let prompt_len = tokens.len();
         let max_tokens = sampling_params.max_tokens;
 
+        info!(
+            "🏗️ ENGINE: add_request (completion) called - request_id={}, prompt_len={}, max_tokens={}",
+            request_id, prompt_len, max_tokens
+        );
+
         // Calculate resource cost
         let cost = self.resource_adapter.calculate_cost(prompt_len, max_tokens);
+        info!(
+            "💰 ENGINE: Resource cost calculated - request_id={}, cost_units={}, used_units={}/{}, in_flight={}/{}",
+            request_id,
+            cost.units,
+            self.used_units.load(std::sync::atomic::Ordering::Relaxed),
+            self.pool_config.max_units,
+            self.in_flight_requests.load(std::sync::atomic::Ordering::Relaxed),
+            self.pool_config.max_queue_depth
+        );
 
         // Check capacity
         if !self.can_accept_request(prompt_len, max_tokens) {
+            error!(
+                "🚫 ENGINE: CAPACITY CHECK FAILED - request_id={}, need {} units, have {}/{} used",
+                request_id,
+                cost.units,
+                self.used_units.load(std::sync::atomic::Ordering::Relaxed),
+                self.pool_config.max_units
+            );
             return Err(candle_core::Error::Msg(format!(
                 "Request {} rejected: insufficient capacity (need {} units)",
                 request_id, cost.units
             )));
         }
+        info!(
+            "✅ ENGINE: Capacity check passed - request_id={}",
+            request_id
+        );
 
         // Reserve resources
+        info!(
+            "📊 ENGINE: Reserving resources - request_id={}, adding {} units",
+            request_id, cost.units
+        );
         self.used_units
             .fetch_add(cost.units as usize, std::sync::atomic::Ordering::Relaxed);
         self.in_flight_requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        info!(
+            "📊 ENGINE: Resources reserved - request_id={}, used_units={}/{}, in_flight={}",
+            request_id,
+            self.used_units.load(std::sync::atomic::Ordering::Relaxed),
+            self.pool_config.max_units,
+            self.in_flight_requests
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
 
         // Create the inference job
+        info!(
+            "🎨 ENGINE: Creating completion inference job - request_id={}",
+            request_id
+        );
         let job = InferenceJob::new_completion(
             request_id.clone(),
             tokens,
@@ -341,32 +413,108 @@ impl LLMEngine {
         // Create response channel
         let (tx, rx) = tokio::sync::oneshot::channel();
 
-        // Clone refs for the spawned task
-        let executor = Arc::clone(&self.executor);
-        let used_units = Arc::clone(&self.used_units);
-        let in_flight = Arc::clone(&self.in_flight_requests);
-        let cost_units = cost.units;
-        let cost_units_usize = cost.units as usize;
-
-        // Spawn async task to execute the job
-        tokio::spawn(async move {
-            let meta = TaskMetadata::new(
-                rand::random::<u64>(),
-                ResourceCost::gpu_vram(cost_units),
+        // Use worker pool if available, otherwise fall back to direct execution
+        if let Some(ref pool) = self.worker_pool {
+            info!(
+                "🏊 ENGINE: Using worker pool for completion request - request_id={}",
+                request_id
             );
 
-            let result = executor.execute(job, meta).await;
+            let pool = Arc::clone(pool);
+            let used_units = Arc::clone(&self.used_units);
+            let in_flight = Arc::clone(&self.in_flight_requests);
+            let cost_units_usize = cost.units as usize;
+            let request_id_task = request_id.clone();
 
-            // Release resources
-            used_units.fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
-            in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            tokio::spawn(async move {
+                let meta =
+                    TaskMetadata::new(rand::random::<u64>(), ResourceCost::gpu_vram(cost.units));
 
-            // Send result (ignore error if receiver dropped)
-            let _ = tx.send(result);
-        });
+                // Submit to worker pool - this will run in a dedicated worker thread
+                match pool.submit(job, meta).await {
+                    Ok(serializable_result) => {
+                        info!(
+                            "✅ ENGINE: Worker pool returned result - request_id={}",
+                            request_id_task
+                        );
 
-        info!("Queued completion request {request_id} (cost: {} units)", cost.units);
-        Ok(rx)
+                        // Convert back to InferenceResult
+                        let result = match serializable_result {
+                            SerializableInferenceResult::Completion { choices, usage } => {
+                                InferenceResult::Completion { choices, usage }
+                            }
+                            SerializableInferenceResult::StreamingChannel {
+                                request_id,
+                                channel_key: _,
+                            } => {
+                                // This shouldn't happen for completion requests
+                                InferenceResult::Error {
+                                    message: format!(
+                                        "Unexpected streaming result for completion request: {}",
+                                        request_id
+                                    ),
+                                }
+                            }
+                            SerializableInferenceResult::Error { message } => {
+                                InferenceResult::Error { message }
+                            }
+                        };
+
+                        // Release resources
+                        used_units
+                            .fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
+                        in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+
+                        let _ = tx.send(result);
+                    }
+                    Err(e) => {
+                        error!(
+                            "❌ ENGINE: Worker pool submission failed - request_id={}, error={:?}",
+                            request_id_task, e
+                        );
+                        used_units
+                            .fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
+                        in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        let _ = tx.send(InferenceResult::Error {
+                            message: format!("{:?}", e),
+                        });
+                    }
+                }
+            });
+
+            info!(
+                "🎊 ENGINE: Completion request submitted to worker pool - request_id={}",
+                request_id
+            );
+            Ok(rx)
+        } else {
+            // Fallback: direct execution (old path)
+            warn!(
+                "⚠️ ENGINE: No worker pool, using direct execution (may block!) - request_id={}",
+                request_id
+            );
+
+            let executor = Arc::clone(&self.executor);
+            let used_units = Arc::clone(&self.used_units);
+            let in_flight = Arc::clone(&self.in_flight_requests);
+            let cost_units = cost.units;
+            let cost_units_usize = cost.units as usize;
+
+            let _request_id_task = request_id.clone();
+            tokio::spawn(async move {
+                let meta =
+                    TaskMetadata::new(rand::random::<u64>(), ResourceCost::gpu_vram(cost_units));
+
+                let result = executor.execute(job, meta).await;
+
+                used_units.fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
+                in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+
+                let _ = tx.send(result);
+            });
+
+            Ok(rx)
+        }
     }
 
     /// Add a streaming request using the parking-lot scheduler.
@@ -384,24 +532,65 @@ impl LLMEngine {
         let prompt_len = tokens.len();
         let max_tokens = sampling_params.max_tokens;
 
+        info!(
+            "🏗️ ENGINE: add_streaming_request called - request_id={}, prompt_len={}, max_tokens={}",
+            request_id, prompt_len, max_tokens
+        );
+
         // Calculate resource cost
         let cost = self.resource_adapter.calculate_cost(prompt_len, max_tokens);
+        info!(
+            "💰 ENGINE: Resource cost calculated - request_id={}, cost_units={}, used_units={}/{}, in_flight={}/{}",
+            request_id,
+            cost.units,
+            self.used_units.load(std::sync::atomic::Ordering::Relaxed),
+            self.pool_config.max_units,
+            self.in_flight_requests.load(std::sync::atomic::Ordering::Relaxed),
+            self.pool_config.max_queue_depth
+        );
 
         // Check capacity
         if !self.can_accept_request(prompt_len, max_tokens) {
+            error!(
+                "🚫 ENGINE: CAPACITY CHECK FAILED - request_id={}, need {} units, have {}/{} used",
+                request_id,
+                cost.units,
+                self.used_units.load(std::sync::atomic::Ordering::Relaxed),
+                self.pool_config.max_units
+            );
             return Err(candle_core::Error::Msg(format!(
                 "Streaming request {} rejected: insufficient capacity (need {} units)",
                 request_id, cost.units
             )));
         }
+        info!(
+            "✅ ENGINE: Capacity check passed - request_id={}",
+            request_id
+        );
 
         // Reserve resources
+        info!(
+            "📊 ENGINE: Reserving resources - request_id={}, adding {} units",
+            request_id, cost.units
+        );
         self.used_units
             .fetch_add(cost.units as usize, std::sync::atomic::Ordering::Relaxed);
         self.in_flight_requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        info!(
+            "📊 ENGINE: Resources reserved - request_id={}, used_units={}/{}, in_flight={}",
+            request_id,
+            self.used_units.load(std::sync::atomic::Ordering::Relaxed),
+            self.pool_config.max_units,
+            self.in_flight_requests
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
 
         // Create the inference job
+        info!(
+            "🎨 ENGINE: Creating streaming inference job - request_id={}",
+            request_id
+        );
         let job = InferenceJob::new_streaming(
             request_id.clone(),
             tokens,
@@ -411,59 +600,146 @@ impl LLMEngine {
             max_context_len,
         );
 
-        // Clone refs for the spawned task
-        let executor = Arc::clone(&self.executor);
-        let used_units = Arc::clone(&self.used_units);
-        let in_flight = Arc::clone(&self.in_flight_requests);
-        let cost_units = cost.units;
-        let cost_units_usize = cost.units as usize;
+        // Use worker pool if available
+        if let Some(ref pool) = self.worker_pool {
+            info!(
+                "🏊 ENGINE: Using worker pool for streaming request - request_id={}",
+                request_id
+            );
 
-        // Execute the job and get the streaming receiver
-        let meta = TaskMetadata::new(
-            rand::random::<u64>(),
-            ResourceCost::gpu_vram(cost_units),
-        );
+            let pool = Arc::clone(pool);
+            let used_units = Arc::clone(&self.used_units);
+            let in_flight = Arc::clone(&self.in_flight_requests);
+            let cost_units_usize = cost.units as usize;
 
-        let result = executor.execute(job, meta).await;
+            let meta = TaskMetadata::new(rand::random::<u64>(), ResourceCost::gpu_vram(cost.units));
 
-        match result {
-            InferenceResult::Streaming { token_rx, .. } => {
-                // Spawn a task to release resources when streaming completes
-                let token_rx_clone = token_rx.clone();
-                tokio::spawn(async move {
-                    // Wait for streaming to complete
-                    while let Ok(token_result) = token_rx_clone.recv_async().await {
-                        if let Ok(token) = token_result {
-                            if token.is_finished {
-                                break;
+            // Submit to worker pool
+            match pool.submit(job, meta).await {
+                Ok(SerializableInferenceResult::StreamingChannel { channel_key, .. }) => {
+                    info!("✅ ENGINE: Got streaming channel key from worker pool - request_id={}, key={}", request_id, channel_key);
+
+                    // Retrieve the channel from the registry
+                    let token_rx = pool
+                        .streaming_registry()
+                        .retrieve(&channel_key)
+                        .ok_or_else(|| {
+                            error!("❌ ENGINE: Streaming channel not found in registry - request_id={}, key={}", request_id, channel_key);
+                            candle_core::Error::Msg(format!(
+                                "Streaming channel not found: {}",
+                                channel_key
+                            ))
+                        })?;
+
+                    // Spawn cleanup task
+                    let token_rx_clone = token_rx.clone();
+                    let request_id_cleanup = request_id.clone();
+                    let channel_key_cleanup = channel_key.clone();
+                    let streaming_registry = Arc::clone(pool.streaming_registry());
+
+                    tokio::spawn(async move {
+                        while let Ok(token_result) = token_rx_clone.recv_async().await {
+                            if let Ok(token) = token_result {
+                                if token.is_finished {
+                                    info!("🏁 ENGINE: Streaming complete, cleaning up - request_id={}", request_id_cleanup);
+                                    break;
+                                }
                             }
                         }
-                    }
-                    // Release resources
-                    used_units.fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
-                    in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                });
+                        // Release resources and cleanup channel
+                        used_units
+                            .fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
+                        in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                        streaming_registry.remove(&channel_key_cleanup);
+                        info!(
+                            "♻️ ENGINE: Resources released and channel cleaned - request_id={}",
+                            request_id_cleanup
+                        );
+                    });
 
-                info!("Queued streaming request {request_id} (cost: {} units)", cost.units);
-                Ok(token_rx)
+                    info!(
+                        "🎊 ENGINE: Streaming request queued successfully - request_id={}",
+                        request_id
+                    );
+                    Ok(token_rx)
+                }
+                Ok(other) => {
+                    error!(
+                        "❌ ENGINE: Unexpected result type for streaming - request_id={}, got={:?}",
+                        request_id, other
+                    );
+                    self.used_units
+                        .fetch_sub(cost.units as usize, std::sync::atomic::Ordering::Relaxed);
+                    self.in_flight_requests
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    Err(candle_core::Error::Msg(
+                        "Expected streaming channel, got different result type".to_string(),
+                    ))
+                }
+                Err(e) => {
+                    error!(
+                        "❌ ENGINE: Worker pool submission failed - request_id={}, error={:?}",
+                        request_id, e
+                    );
+                    self.used_units
+                        .fetch_sub(cost.units as usize, std::sync::atomic::Ordering::Relaxed);
+                    self.in_flight_requests
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    Err(candle_core::Error::Msg(format!("{:?}", e)))
+                }
             }
-            InferenceResult::Error { message } => {
-                // Release resources on error
-                self.used_units
-                    .fetch_sub(cost.units as usize, std::sync::atomic::Ordering::Relaxed);
-                self.in_flight_requests
-                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                Err(candle_core::Error::Msg(message))
-            }
-            _ => {
-                // Unexpected result type
-                self.used_units
-                    .fetch_sub(cost.units as usize, std::sync::atomic::Ordering::Relaxed);
-                self.in_flight_requests
-                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-                Err(candle_core::Error::Msg(
-                    "Unexpected result type for streaming request".to_string(),
-                ))
+        } else {
+            // Fallback: direct executor call (old path - may block!)
+            warn!(
+                "⚠️ ENGINE: No thread pool, using direct execution (may block!) - request_id={}",
+                request_id
+            );
+
+            let executor = Arc::clone(&self.executor);
+            let used_units = Arc::clone(&self.used_units);
+            let in_flight = Arc::clone(&self.in_flight_requests);
+            let cost_units = cost.units;
+            let cost_units_usize = cost.units as usize;
+
+            let meta = TaskMetadata::new(rand::random::<u64>(), ResourceCost::gpu_vram(cost_units));
+
+            let result = executor.execute(job, meta).await;
+
+            match result {
+                InferenceResult::Streaming { token_rx, .. } => {
+                    let request_id_cleanup = request_id.clone();
+                    let token_rx_clone = token_rx.clone();
+                    tokio::spawn(async move {
+                        while let Ok(token_result) = token_rx_clone.recv_async().await {
+                            if let Ok(token) = token_result {
+                                if token.is_finished {
+                                    break;
+                                }
+                            }
+                        }
+                        used_units
+                            .fetch_sub(cost_units_usize, std::sync::atomic::Ordering::Relaxed);
+                        in_flight.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    });
+
+                    Ok(token_rx)
+                }
+                InferenceResult::Error { message } => {
+                    self.used_units
+                        .fetch_sub(cost.units as usize, std::sync::atomic::Ordering::Relaxed);
+                    self.in_flight_requests
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    Err(candle_core::Error::Msg(message))
+                }
+                _ => {
+                    self.used_units
+                        .fetch_sub(cost.units as usize, std::sync::atomic::Ordering::Relaxed);
+                    self.in_flight_requests
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    Err(candle_core::Error::Msg(
+                        "Unexpected result type for streaming request".to_string(),
+                    ))
+                }
             }
         }
     }
@@ -510,7 +786,8 @@ impl LLMEngine {
                         }
                     }
 
-                    let processed_content = message.content.as_ref().map(Self::extract_text_content);
+                    let processed_content =
+                        message.content.as_ref().map(Self::extract_text_content);
 
                     conversation.append_message_ext(
                         message.role.clone(),

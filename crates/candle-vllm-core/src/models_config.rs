@@ -120,12 +120,18 @@ impl ModelEntry {
     pub fn validate(&self) -> Result<(), String> {
         // Check that we have a source
         if !self.has_source() {
-            return Err(format!("Model '{}' must have either hf_id or local_path", self.name));
+            return Err(format!(
+                "Model '{}' must have either hf_id or local_path",
+                self.name
+            ));
         }
 
         // Validate both can't be set
         if self.hf_id.is_some() && self.local_path.is_some() {
-            return Err(format!("Model '{}' cannot have both hf_id and local_path", self.name));
+            return Err(format!(
+                "Model '{}' cannot have both hf_id and local_path",
+                self.name
+            ));
         }
 
         // Validate engine parameters
@@ -135,7 +141,10 @@ impl ModelEntry {
 
         // Validate capabilities
         if let Err(e) = self.capabilities.validate() {
-            return Err(format!("Model '{}' has invalid capabilities: {}", self.name, e));
+            return Err(format!(
+                "Model '{}' has invalid capabilities: {}",
+                self.name, e
+            ));
         }
 
         Ok(())
@@ -190,7 +199,8 @@ impl ModelsFile {
 
         // Validate global params if present
         if let Some(global_params) = &self.global_params {
-            global_params.validate()
+            global_params
+                .validate()
                 .map_err(|e| format!("Invalid global_params: {}", e))?;
         }
 
@@ -214,7 +224,8 @@ impl ModelsFile {
 
     /// Create a model name to entry mapping
     pub fn to_hashmap(&self) -> HashMap<String, ModelEntry> {
-        self.models.iter()
+        self.models
+            .iter()
             .map(|model| (model.name.clone(), model.clone()))
             .collect()
     }
@@ -264,8 +275,8 @@ impl Default for ModelEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_model_entry_creation() {
@@ -347,7 +358,9 @@ mod tests {
     #[test]
     fn test_yaml_serialization() {
         let mut models_file = ModelsFile::default();
-        models_file.add_model(ModelEntry::new("test-model", "test/model")).unwrap();
+        models_file
+            .add_model(ModelEntry::new("test-model", "test/model"))
+            .unwrap();
         models_file.idle_unload_secs = Some(600);
 
         let yaml = serde_yaml::to_string(&models_file).unwrap();

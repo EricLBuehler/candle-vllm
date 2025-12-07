@@ -1,4 +1,4 @@
-use crate::models_config::{ModelsState, ModelLifecycleStatus, ModelStatus};
+use crate::models_config::{ModelLifecycleStatus, ModelStatus, ModelsState};
 use crate::state::request_queue::{QueuedRequest, RequestQueue};
 use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
@@ -166,10 +166,10 @@ impl ModelManager {
         guard.last_error = None;
         guard.switch_requested_at = None;
         drop(guard);
-        
+
         // Also mark it in ModelsState
         self.models_state.set_active(model.clone()).await;
-        
+
         // Drain any queued requests for this model (they can now be processed)
         self.drain_model_queue(&model)
     }

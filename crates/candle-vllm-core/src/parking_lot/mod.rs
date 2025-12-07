@@ -23,7 +23,9 @@
 pub mod executor;
 pub mod job;
 pub mod resource_adapter;
+pub mod streaming_registry;
 pub mod types;
+pub mod worker_pool;
 
 #[cfg(test)]
 mod tests;
@@ -32,13 +34,22 @@ mod tests;
 pub use executor::LlmExecutor;
 
 // Re-export job types
-pub use job::{InferenceJob, InferenceResult, SerializableInferenceResult, StreamingTokenResult};
+pub use job::{
+    InferenceJob, InferenceResult, JobType, SerializableInferenceResult, StreamingTokenResult,
+};
+
+// Re-export streaming registry
+pub use streaming_registry::StreamingRegistry;
+
+// Re-export worker pool
+pub use worker_pool::{InferenceWorkerPool, InferenceWorkerPoolConfig, PoolStats};
 
 // Re-export resource adapter
 pub use resource_adapter::{calculate_resource_cost, ResourceAdapter};
 
 // Re-export types
 pub use types::{
+    now_ms,
     // prometheus_parking_lot primitives
     InMemoryMailbox,
     InMemoryQueue,
@@ -51,14 +62,13 @@ pub use types::{
     ResourceKind,
     ScheduledTask,
     Spawn,
-    TaskId,
-    TaskQueue,
-    TaskStatus,
-    TokioSpawner,
-    WakeState,
-    now_ms,
     // Local types
     TaskExecutor,
+    TaskId,
     TaskMetadata,
+    TaskQueue,
+    TaskStatus,
     TenantId,
+    TokioSpawner,
+    WakeState,
 };

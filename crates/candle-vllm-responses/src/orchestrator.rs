@@ -36,7 +36,7 @@ impl Orchestrator {
 
         for tool_call in tool_calls {
             let full_tool_name = tool_call.name();
-            
+
             // Check if tool is allowed
             if let Some(allowed) = allowed_tools {
                 if !allowed.iter().any(|a| full_tool_name.contains(a)) {
@@ -60,7 +60,10 @@ impl Orchestrator {
             let mcp_payload = tool_call.to_mcp_call();
 
             // Execute the tool call
-            debug!("Calling MCP tool {}::{} with payload: {:?}", server, tool_name, mcp_payload);
+            debug!(
+                "Calling MCP tool {}::{} with payload: {:?}",
+                server, tool_name, mcp_payload
+            );
             let result = client.call_tool(&tool_name, mcp_payload).await?;
             info!("Tool call {}::{} completed successfully", server, tool_name);
 

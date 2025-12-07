@@ -345,9 +345,7 @@ pub enum ContentPart {
 impl ContentPart {
     /// Create a text content part
     pub fn text(text: impl Into<String>) -> Self {
-        ContentPart::Text {
-            text: text.into(),
-        }
+        ContentPart::Text { text: text.into() }
     }
 
     /// Create an image content part
@@ -430,9 +428,7 @@ impl MessageContent {
     pub fn get_image_urls(&self) -> Vec<&ImageUrl> {
         match self {
             MessageContent::Text(_) => Vec::new(),
-            MessageContent::Parts(parts) => parts.iter()
-                .filter_map(|p| p.as_image_url())
-                .collect(),
+            MessageContent::Parts(parts) => parts.iter().filter_map(|p| p.as_image_url()).collect(),
         }
     }
 
@@ -440,7 +436,8 @@ impl MessageContent {
     pub fn get_text_content(&self) -> String {
         match self {
             MessageContent::Text(text) => text.clone(),
-            MessageContent::Parts(parts) => parts.iter()
+            MessageContent::Parts(parts) => parts
+                .iter()
                 .filter_map(|p| p.as_text())
                 .collect::<Vec<_>>()
                 .join("\n"),
@@ -647,12 +644,16 @@ impl ChatMessage {
 
     /// Get all image URLs from this message
     pub fn get_image_urls(&self) -> Vec<&ImageUrl> {
-        self.content.as_ref().map_or(Vec::new(), |c| c.get_image_urls())
+        self.content
+            .as_ref()
+            .map_or(Vec::new(), |c| c.get_image_urls())
     }
 
     /// Get the text content of this message (multimodal-aware)
     pub fn get_text_content(&self) -> String {
-        self.content.as_ref().map_or(String::new(), |c| c.get_text_content())
+        self.content
+            .as_ref()
+            .map_or(String::new(), |c| c.get_text_content())
     }
 
     /// Convert content to legacy string format for backward compatibility
@@ -719,9 +720,7 @@ impl Messages {
     /// Get all image URLs from all messages
     pub fn get_all_image_urls(&self) -> Vec<&ImageUrl> {
         match self {
-            Messages::Chat(messages) => messages.iter()
-                .flat_map(|m| m.get_image_urls())
-                .collect(),
+            Messages::Chat(messages) => messages.iter().flat_map(|m| m.get_image_urls()).collect(),
             _ => Vec::new(),
         }
     }
@@ -958,7 +957,10 @@ mod tests {
         let chat_messages = messages.to_chat_messages();
         assert_eq!(chat_messages.len(), 1);
         assert_eq!(chat_messages[0].role, "user");
-        assert_eq!(chat_messages[0].content, Some(MessageContent::Text("Hello".to_string())));
+        assert_eq!(
+            chat_messages[0].content,
+            Some(MessageContent::Text("Hello".to_string()))
+        );
     }
 
     #[test]
@@ -1080,8 +1082,18 @@ mod tests {
         assert_eq!(msg.role, "tool");
         assert_eq!(msg.tool_call_id, Some("call_123".to_string()));
         assert_eq!(msg.name, Some("get_weather".to_string()));
-        assert!(msg.content.as_ref().unwrap().get_text_content().contains("sunny"));
-        assert!(msg.content.as_ref().unwrap().get_text_content().contains("72°F"));
+        assert!(msg
+            .content
+            .as_ref()
+            .unwrap()
+            .get_text_content()
+            .contains("sunny"));
+        assert!(msg
+            .content
+            .as_ref()
+            .unwrap()
+            .get_text_content()
+            .contains("72°F"));
     }
 
     #[test]
@@ -1351,8 +1363,7 @@ mod tests {
 
     #[test]
     fn test_image_url_creation() {
-        let image_url = ImageUrl::new("https://example.com/image.jpg")
-            .with_detail("high");
+        let image_url = ImageUrl::new("https://example.com/image.jpg").with_detail("high");
 
         assert_eq!(image_url.url, "https://example.com/image.jpg");
         assert_eq!(image_url.detail, Some("high".to_string()));
@@ -1407,7 +1418,10 @@ mod tests {
     fn test_chat_message_multimodal() {
         let message = ChatMessage::user_multimodal(
             "What do you see in this image?",
-            vec!["https://example.com/image1.jpg".to_string(), "https://example.com/image2.jpg".to_string()]
+            vec![
+                "https://example.com/image1.jpg".to_string(),
+                "https://example.com/image2.jpg".to_string(),
+            ],
         );
 
         assert_eq!(message.role, "user");
@@ -1439,7 +1453,10 @@ mod tests {
         assert_eq!(message.role, "user");
         assert!(message.has_images());
         assert_eq!(message.get_image_urls().len(), 1);
-        assert_eq!(message.get_image_urls()[0].url, "https://example.com/image.jpg");
+        assert_eq!(
+            message.get_image_urls()[0].url,
+            "https://example.com/image.jpg"
+        );
         assert_eq!(message.get_image_urls()[0].detail, Some("high".to_string()));
     }
 
@@ -1464,7 +1481,7 @@ mod tests {
     fn test_messages_multimodal_detection() {
         let multimodal_message = ChatMessage::user_multimodal(
             "Analyze this image",
-            vec!["https://example.com/image.jpg".to_string()]
+            vec!["https://example.com/image.jpg".to_string()],
         );
 
         let text_message = ChatMessage::user("Just text");
@@ -1549,7 +1566,10 @@ mod tests {
         let image_part = ContentPart::image_url_with_detail("https://example.com/test.jpg", "high");
         let serialized = serde_json::to_value(&image_part).unwrap();
         assert_eq!(serialized["type"], "image_url");
-        assert_eq!(serialized["image_url"]["url"], "https://example.com/test.jpg");
+        assert_eq!(
+            serialized["image_url"]["url"],
+            "https://example.com/test.jpg"
+        );
         assert_eq!(serialized["image_url"]["detail"], "high");
     }
 }

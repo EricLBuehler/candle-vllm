@@ -230,7 +230,10 @@ impl ChoiceData {
 
     /// Check if this delta is empty
     pub fn is_empty(&self) -> bool {
-        self.content.is_none() && self.role.is_none() && self.tool_calls.is_none() && self.reasoning.is_none()
+        self.content.is_none()
+            && self.role.is_none()
+            && self.tool_calls.is_none()
+            && self.reasoning.is_none()
     }
 
     /// Check if this delta contains reasoning content
@@ -330,8 +333,19 @@ impl ChatCompletionChunk {
     }
 
     /// Create a reasoning chunk (for reasoning/thinking models)
-    pub fn reasoning(id: String, index: usize, reasoning: String, created: u64, model: String) -> Self {
-        Self::new(id, Choice::reasoning_chunk(index, reasoning), created, model)
+    pub fn reasoning(
+        id: String,
+        index: usize,
+        reasoning: String,
+        created: u64,
+        model: String,
+    ) -> Self {
+        Self::new(
+            id,
+            Choice::reasoning_chunk(index, reasoning),
+            created,
+            model,
+        )
     }
 
     /// Create a finish chunk
@@ -497,7 +511,10 @@ mod tests {
         let delta = ChoiceData::reasoning("Let me think about this...".to_string());
         assert!(!delta.is_empty());
         assert!(delta.has_reasoning());
-        assert_eq!(delta.reasoning, Some("Let me think about this...".to_string()));
+        assert_eq!(
+            delta.reasoning,
+            Some("Let me think about this...".to_string())
+        );
         assert!(delta.content.is_none());
     }
 

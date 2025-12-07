@@ -1,10 +1,10 @@
-use crate::api::{InferenceEngine, Result, Error};
+use crate::api::{Error, InferenceEngine, Result};
 use crate::engine_params::EngineParams;
-use crate::openai::local_vision_tool::{LocalVisionModelTool, LocalVisionConfig};
 use crate::openai::image_tool::ImageDescriptionConfig;
+use crate::openai::local_vision_tool::{LocalVisionConfig, LocalVisionModelTool};
 use crate::openai::models::Config as ModelConfig;
-use crate::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
 use crate::openai::pipelines::pipeline::{DefaultLoader, DefaultPipeline};
+use crate::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use crate::scheduler::SchedulerConfig;
 use candle_core::DType;
@@ -41,11 +41,13 @@ impl ExtendedEngineBuilder {
         info!("Starting concurrent model loading");
 
         // Validate parameters first
-        primary_params.validate()
+        primary_params
+            .validate()
             .map_err(|e| Error::Config(format!("Primary model params invalid: {}", e)))?;
 
         if let Some(ref vision_params) = vision_params {
-            vision_params.validate()
+            vision_params
+                .validate()
                 .map_err(|e| Error::Config(format!("Vision model params invalid: {}", e)))?;
         }
 
@@ -56,7 +58,8 @@ impl ExtendedEngineBuilder {
         ));
 
         let vision_handle = if let (Some(vision_path), Some(vision_params), Some(vision_config)) =
-            (vision_model_path, vision_params, vision_config) {
+            (vision_model_path, vision_params, vision_config)
+        {
             Some(tokio::spawn(Self::build_vision_tool(
                 vision_path,
                 vision_params,
@@ -68,7 +71,8 @@ impl ExtendedEngineBuilder {
         };
 
         // Wait for both to complete
-        let primary_result = primary_handle.await
+        let primary_result = primary_handle
+            .await
             .map_err(|e| Error::Other(format!("Primary model loading task failed: {}", e)))?;
         let primary_engine = primary_result?;
 
@@ -77,13 +81,19 @@ impl ExtendedEngineBuilder {
                 Ok(Ok(tool)) => {
                     info!("Vision model loaded successfully");
                     Some(Arc::new(tool))
-                },
+                }
                 Ok(Err(e)) => {
-                    warn!("Vision model failed to load: {}. Continuing without vision support.", e);
+                    warn!(
+                        "Vision model failed to load: {}. Continuing without vision support.",
+                        e
+                    );
                     None
-                },
+                }
                 Err(e) => {
-                    warn!("Vision model loading task failed: {}. Continuing without vision support.", e);
+                    warn!(
+                        "Vision model loading task failed: {}. Continuing without vision support.",
+                        e
+                    );
                     None
                 }
             }
@@ -91,8 +101,10 @@ impl ExtendedEngineBuilder {
             None
         };
 
-        info!("Model loading completed. Primary: ✓, Vision: {}",
-              if vision_tool.is_some() { "✓" } else { "✗" });
+        info!(
+            "Model loading completed. Primary: ✓, Vision: {}",
+            if vision_tool.is_some() { "✓" } else { "✗" }
+        );
 
         Ok(EngineBuilderResult {
             primary_engine,
@@ -108,11 +120,8 @@ impl ExtendedEngineBuilder {
         info!("Loading primary text model from: {}", model_path.display());
 
         // Create loader for the model
-        let loader = DefaultLoader::new(
-            None,
-            Some(model_path.to_string_lossy().into_owned()),
-            None,
-        );
+        let loader =
+            DefaultLoader::new(None, Some(model_path.to_string_lossy().into_owned()), None);
 
         // Prepare model weights
         let (paths, gguf) = loader
@@ -198,8 +207,8 @@ impl ExtendedEngineBuilder {
             })
             .collect::<Result<HashMap<_, _>>>()?;
 
-        let model_config = model_config
-            .ok_or_else(|| Error::ModelLoad("No model configuration found".into()))?;
+        let model_config =
+            model_config.ok_or_else(|| Error::ModelLoad("No model configuration found".into()))?;
 
         // Create the LLM engine with resource-aware scheduling
         let _engine = LLMEngine::new(
@@ -349,7 +358,8 @@ impl ExtendedEngineConfigBuilder {
 
     /// Build the engines asynchronously
     pub async fn build(self) -> Result<EngineBuilderResult> {
-        let primary_path = self.primary_model_path
+        let primary_path = self
+            .primary_model_path
             .ok_or_else(|| Error::Config("Primary model path is required".to_string()))?;
 
         ExtendedEngineBuilder::build_inference_engine_from_params_async(
@@ -358,7 +368,8 @@ impl ExtendedEngineConfigBuilder {
             self.vision_model_path,
             self.vision_params,
             self.vision_config,
-        ).await
+        )
+        .await
     }
 }
 
@@ -375,9 +386,18 @@ mod tests {
 
     #[test]
     fn test_parse_dtype() {
-        assert!(matches!(ExtendedEngineBuilder::parse_dtype("bf16"), Ok(DType::BF16)));
-        assert!(matches!(ExtendedEngineBuilder::parse_dtype("fp16"), Ok(DType::F16)));
-        assert!(matches!(ExtendedEngineBuilder::parse_dtype("fp32"), Ok(DType::F32)));
+        assert!(matches!(
+            ExtendedEngineBuilder::parse_dtype("bf16"),
+            Ok(DType::BF16)
+        ));
+        assert!(matches!(
+            ExtendedEngineBuilder::parse_dtype("fp16"),
+            Ok(DType::F16)
+        ));
+        assert!(matches!(
+            ExtendedEngineBuilder::parse_dtype("fp32"),
+            Ok(DType::F32)
+        ));
         assert!(ExtendedEngineBuilder::parse_dtype("invalid").is_err());
     }
 

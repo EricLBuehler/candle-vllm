@@ -12,8 +12,8 @@ pub use llm_engine::LLMEngine;
 pub use llm_engine::SchedulerPoolConfig;
 
 pub mod pipeline;
-pub mod worker;
 pub mod work_item;
+pub mod worker;
 
 type TokenOrFinishReason = Either<Logprobs, String>;
 use crate::openai::pipelines::pipeline::DefaultPipeline;

@@ -52,10 +52,15 @@ ahash = { workspace = true }
 utoipa = { workspace = true }
 crossbeam = { workspace = true }
 prometheus_parking_lot = { workspace = true }
+num_cpus = "1.16"
+async-stream = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = "3.8"
+proptest = "1.4"
+mockall = "0.12"
+criterion = "0.5"
 
 [dependencies.metal]
 version = "0.32.0"

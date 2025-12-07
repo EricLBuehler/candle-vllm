@@ -33,9 +33,9 @@
 
 // Local modules with additional functionality
 pub mod conversation;
+pub mod model_registry;
 pub mod streaming;
 pub mod tool_calling;
-pub mod model_registry;
 
 // Adapter module
 pub mod adapter;
@@ -49,8 +49,8 @@ pub mod adapter;
 #[doc(inline)]
 pub use candle_vllm_core::openai::requests::{
     ChatCompletionRequest, ChatMessage, ContentPart, FunctionCall, FunctionCallDelta,
-    FunctionDefinition, ImageUrl, MessageContent, Messages, StopTokens,
-    Tool, ToolCall, ToolCallDelta, ToolChoice, ToolChoiceFunction, ToolChoiceSpecific,
+    FunctionDefinition, ImageUrl, MessageContent, Messages, StopTokens, Tool, ToolCall,
+    ToolCallDelta, ToolChoice, ToolChoiceFunction, ToolChoiceSpecific,
 };
 
 // Type alias for backward compatibility
@@ -62,16 +62,16 @@ pub type StopCondition = StopTokens;
 // Re-export response types from core
 #[doc(inline)]
 pub use candle_vllm_core::openai::responses::{
-    APIError, ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionResponse,
+    create_tool_call, create_tool_call_delta_arguments, create_tool_call_delta_start, APIError,
+    ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionResponse,
     ChatCompletionUsageResponse, Choice, ChoiceData, WrapperLogprobs,
-    create_tool_call, create_tool_call_delta_arguments, create_tool_call_delta_start,
 };
 
 // Re-export sampling params logprobs type
 #[doc(inline)]
 pub use candle_vllm_core::openai::sampling_params::Logprobs;
 
-// Type aliases for naming consistency  
+// Type aliases for naming consistency
 pub type ChatCompletionChunkChoice = Choice;
 pub type ChunkChoiceData = ChoiceData;
 pub type TopLogprob = candle_vllm_core::openai::sampling_params::TopLogprob;
@@ -90,11 +90,11 @@ pub use tool_calling::{
 // Re-export conversation types
 #[doc(inline)]
 pub use conversation::{
-    ApplyChatTemplateError, Conversation, DefaultConversation, DefaultConversationSeparators,
-    ModelFamily, SeparatorStyle, ToolConversationBuilder,
     format_tool_result_for_model, format_tool_result_json, format_tool_result_llama,
     format_tool_result_mistral, format_tool_result_qwen, format_tool_results_mistral,
-    format_tools_for_template, format_tools_mistral,
+    format_tools_for_template, format_tools_mistral, ApplyChatTemplateError, Conversation,
+    DefaultConversation, DefaultConversationSeparators, ModelFamily, SeparatorStyle,
+    ToolConversationBuilder,
 };
 
 #[doc(inline)]

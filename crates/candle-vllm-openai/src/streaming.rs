@@ -117,4 +117,3 @@ mod tests {
         assert!(done.error_message().is_none());
     }
 }
-

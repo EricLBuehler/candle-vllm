@@ -1,0 +1,7 @@
+{
+  "model": "mistralai/Ministral-3-3B-Reasoning-2512",
+  "prompt": "The capital of France is",
+  "max_tokens": 10,
+  "temperature": 0.0,
+  "stop": ["\n"]
+}

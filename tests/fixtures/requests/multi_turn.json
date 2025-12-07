@@ -1,0 +1,19 @@
+{
+  "model": "mistralai/Ministral-3-3B-Reasoning-2512",
+  "messages": [
+    {
+      "role": "user",
+      "content": "My name is Alice."
+    },
+    {
+      "role": "assistant",
+      "content": "Hello Alice! Nice to meet you."
+    },
+    {
+      "role": "user",
+      "content": "What's my name?"
+    }
+  ],
+  "temperature": 0.7,
+  "max_tokens": 50
+}

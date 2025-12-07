@@ -28,7 +28,7 @@ pub fn get_test_device_ordinal() -> usize {
     if let Ok(device_str) = env::var("CANDLE_VLLM_TEST_DEVICE") {
         match device_str.as_str() {
             "cuda" | "metal" => 0, // Use device 0 for GPU
-            _ => 0, // Default to device 0
+            _ => 0,                // Default to device 0
         }
     } else {
         0 // Default to device 0 (CPU or first GPU)
@@ -65,4 +65,3 @@ macro_rules! skip_if_no_model {
         }
     };
 }
-

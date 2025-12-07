@@ -3,8 +3,8 @@
 //! These tests validate the responses crate types and functionality.
 //! Tests that require a model are gated behind conditions.
 
-use candle_vllm_responses::{ConversationOptions, ResponsesSessionBuilder};
 use candle_vllm_core::openai::requests::{ChatMessage, MessageContent};
+use candle_vllm_responses::{ConversationOptions, ResponsesSessionBuilder};
 use std::env;
 use std::path::PathBuf;
 
@@ -38,9 +38,7 @@ fn test_conversation_options_with_tools() {
 #[tokio::test]
 async fn test_session_builder_no_engine() {
     // Session without engine should be creatable (for MCP-only use cases)
-    let result = ResponsesSessionBuilder::new()
-        .build()
-        .await;
+    let result = ResponsesSessionBuilder::new().build().await;
 
     // Should succeed - session can exist without engine
     assert!(result.is_ok());
@@ -93,7 +91,9 @@ mod test_utils {
             .kv_cache_memory(512 * 1024 * 1024)
             .build()
             .ok()?;
-        candle_vllm_core::api::InferenceEngine::new(config).await.ok()
+        candle_vllm_core::api::InferenceEngine::new(config)
+            .await
+            .ok()
     }
 }
 
@@ -211,7 +211,10 @@ async fn test_conversation_basic() {
         .await
         .expect("Conversation should succeed");
 
-    assert!(!result.final_message.is_empty(), "Should have final message");
+    assert!(
+        !result.final_message.is_empty(),
+        "Should have final message"
+    );
     assert_eq!(result.turns_taken, 1, "Should have taken 1 turn");
     assert!(result.completed, "Should have completed");
 }

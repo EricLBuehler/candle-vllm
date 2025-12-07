@@ -73,10 +73,7 @@ impl LlmExecutor {
     /// Check GPU memory usage to prevent exhaustion.
     fn check_gpu_memory(&self) -> Result<(), String> {
         if self.pipeline.device().is_cuda() {
-            debug!(
-                rank = self.rank,
-                "GPU memory check enabled for CUDA device"
-            );
+            debug!(rank = self.rank, "GPU memory check enabled for CUDA device");
         }
         Ok(())
     }
@@ -112,6 +109,10 @@ impl LlmExecutor {
     }
 
     /// Process a completion (non-streaming) job.
+    ///
+    /// CRITICAL: This function performs CPU/GPU-bound inference work.
+    /// It MUST be called from a context that can handle blocking operations
+    /// (e.g., within tokio::task::spawn_blocking or a dedicated thread pool).
     fn process_completion(&self, job: &InferenceJob) -> InferenceResult {
         let start = std::time::Instant::now();
         let device = self.pipeline.device();
@@ -133,19 +134,19 @@ impl LlmExecutor {
 
         // Create positions tensor
         let positions_i64: Vec<i64> = job.positions.iter().map(|&pos| pos as i64).collect();
-        let positions_tensor =
-            match Tensor::from_vec(positions_i64, (job.positions.len(),), device) {
-                Ok(tensor) => tensor,
-                Err(e) => {
-                    error!(
-                        rank = self.rank,
-                        request_id = %job.request_id,
-                        error = %e,
-                        "Failed to create positions tensor"
-                    );
-                    return InferenceResult::error(e.to_string());
-                }
-            };
+        let positions_tensor = match Tensor::from_vec(positions_i64, (job.positions.len(),), device)
+        {
+            Ok(tensor) => tensor,
+            Err(e) => {
+                error!(
+                    rank = self.rank,
+                    request_id = %job.request_id,
+                    error = %e,
+                    "Failed to create positions tensor"
+                );
+                return InferenceResult::error(e.to_string());
+            }
+        };
 
         // Create input metadata
         let input_metadata = match job.to_input_metadata(device) {
@@ -252,23 +253,20 @@ impl LlmExecutor {
                     }
 
                     // Prepare for next step
-                    let all_tokens_tensor = match Tensor::from_vec(
-                        all_tokens.clone(),
-                        (all_tokens.len(),),
-                        device,
-                    ) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            error!(
-                                rank = self.rank,
-                                request_id = %job.request_id,
-                                step = step,
-                                error = %e,
-                                "Failed to create tokens tensor"
-                            );
-                            break;
-                        }
-                    };
+                    let all_tokens_tensor =
+                        match Tensor::from_vec(all_tokens.clone(), (all_tokens.len(),), device) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                error!(
+                                    rank = self.rank,
+                                    request_id = %job.request_id,
+                                    step = step,
+                                    error = %e,
+                                    "Failed to create tokens tensor"
+                                );
+                                break;
+                            }
+                        };
 
                     let positions: Vec<i64> = (0..all_tokens.len() as i64).collect();
                     let positions_tensor =
@@ -414,29 +412,29 @@ impl LlmExecutor {
         rank: usize,
         job: InferenceJob,
         pipeline: Arc<Box<DefaultPipeline>>,
-        _cache_engine: Arc<CacheEngine>,
+        cache_engine: Arc<CacheEngine>,
         token_tx: flume::Sender<Result<StreamingTokenResult, String>>,
     ) {
         let start = std::time::Instant::now();
         let device = pipeline.device();
 
-        debug!(
-            rank = rank,
-            request_id = %job.request_id,
-            prompt_tokens = job.tokens.len(),
-            max_tokens = job.sampling_params.max_tokens,
-            "Starting streaming generation"
+        info!(
+            "🎬 EXECUTOR: Streaming generation task started - rank={}, request_id={}, prompt_tokens={}, max_tokens={}",
+            rank,
+            job.request_id,
+            job.tokens.len(),
+            job.sampling_params.max_tokens
         );
 
         // Create tensors for initial prefill
-        let tokens_tensor =
-            match Tensor::from_vec(job.tokens.clone(), (job.tokens.len(),), device) {
-                Ok(tensor) => tensor,
-                Err(e) => {
-                    let _ = token_tx.send(Err(e.to_string()));
-                    return;
-                }
-            };
+        let tokens_tensor = match Tensor::from_vec(job.tokens.clone(), (job.tokens.len(),), device)
+        {
+            Ok(tensor) => tensor,
+            Err(e) => {
+                let _ = token_tx.send(Err(e.to_string()));
+                return;
+            }
+        };
 
         let positions: Vec<i64> = (0..job.tokens.len() as i64).collect();
         let positions_tensor = match Tensor::from_vec(positions, (job.tokens.len(),), device) {
@@ -457,10 +455,23 @@ impl LlmExecutor {
         };
 
         // Initial forward pass
-        let forward_result = pipeline.forward(tokens_tensor, &positions_tensor, None, &input_metadata);
+        info!(
+            "🔮 EXECUTOR: Starting initial forward pass (prefill) - request_id={}",
+            job.request_id
+        );
+        let forward_result = pipeline.forward(
+            tokens_tensor,
+            &positions_tensor,
+            Some(&cache_engine.get_kv_cache()),
+            &input_metadata,
+        );
 
         match forward_result {
             Ok(logits) => {
+                info!(
+                    "✅ EXECUTOR: Initial forward pass complete - request_id={}",
+                    job.request_id
+                );
                 let logits_processor = LogitsProcessor::new(
                     SAMPLING_SEED,
                     job.sampling_params.temperature,
@@ -480,7 +491,23 @@ impl LlmExecutor {
                 let mut generated_text = String::new();
 
                 // Autoregressive streaming generation loop
+                info!(
+                    "🔁 EXECUTOR: Starting generation loop - request_id={}, max_tokens={}",
+                    job.request_id, max_tokens
+                );
                 for step in 0..max_tokens {
+                    if step == 0 {
+                        info!(
+                            "🎯 EXECUTOR: Starting token generation - request_id={}",
+                            job.request_id
+                        );
+                    }
+                    if step % 10 == 0 && step > 0 {
+                        info!(
+                            "📊 EXECUTOR: Generation progress - request_id={}, step={}/{}",
+                            job.request_id, step, max_tokens
+                        );
+                    }
                     // Sample next token
                     let last_logits = Self::extract_last_logits(&current_logits);
 
@@ -515,8 +542,7 @@ impl LlmExecutor {
                         }
                     }
 
-                    let is_finished =
-                        is_eos || hit_stop_string || all_tokens.len() >= max_context;
+                    let is_finished = is_eos || hit_stop_string || all_tokens.len() >= max_context;
                     let finish_reason = if is_finished {
                         Some(
                             if is_eos || hit_stop_string {
@@ -541,30 +567,36 @@ impl LlmExecutor {
 
                     if token_tx.send(Ok(streaming_token)).is_err() {
                         warn!(
-                            rank = rank,
-                            request_id = %job.request_id,
-                            step = step,
-                            "Client disconnected during streaming"
+                            "⚠️ EXECUTOR: Client disconnected during streaming - rank={}, request_id={}, step={}",
+                            rank,
+                            job.request_id,
+                            step
                         );
                         return;
                     }
 
+                    if step == 0 {
+                        info!(
+                            "🎉 EXECUTOR: First token sent successfully - request_id={}",
+                            job.request_id
+                        );
+                    }
+
                     if is_finished {
+                        info!("🏁 EXECUTOR: Generation complete - request_id={}, total_steps={}, reason={:?}", 
+                            job.request_id, step + 1, finish_reason);
                         break;
                     }
 
                     // Prepare next step
-                    let all_tokens_tensor = match Tensor::from_vec(
-                        all_tokens.clone(),
-                        (all_tokens.len(),),
-                        device,
-                    ) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            let _ = token_tx.send(Err(e.to_string()));
-                            return;
-                        }
-                    };
+                    let all_tokens_tensor =
+                        match Tensor::from_vec(all_tokens.clone(), (all_tokens.len(),), device) {
+                            Ok(t) => t,
+                            Err(e) => {
+                                let _ = token_tx.send(Err(e.to_string()));
+                                return;
+                            }
+                        };
 
                     let positions: Vec<i64> = (0..all_tokens.len() as i64).collect();
                     let positions_tensor =
@@ -603,7 +635,7 @@ impl LlmExecutor {
                     current_logits = match pipeline.forward(
                         all_tokens_tensor,
                         &positions_tensor,
-                        None,
+                        Some(&cache_engine.get_kv_cache()),
                         &step_metadata,
                     ) {
                         Ok(logits) => logits,
@@ -635,39 +667,88 @@ impl LlmExecutor {
     }
 }
 
-// Note: We implement a local TaskExecutor variant since prometheus_parking_lot
-// expects Clone + 'static, and our InferenceResult contains non-serializable channels.
-// The executor is invoked directly by LLMEngine rather than through ResourcePool.submit().
+// Implement prometheus_parking_lot's WorkerExecutor trait.
+// This allows our executor to be used with the WorkerPool.
+#[async_trait]
+impl super::types::PrometheusWorkerExecutor<InferenceJob, InferenceResult> for LlmExecutor {
+    async fn execute(
+        &self,
+        payload: InferenceJob,
+        meta: super::types::ParkingLotTaskMetadata,
+    ) -> InferenceResult {
+        // Convert ParkingLotTaskMetadata to our local TaskMetadata
+        let local_meta = TaskMetadata {
+            id: meta.id,
+            priority: meta.priority,
+            cost: meta.cost,
+            created_at_ms: meta.created_at_ms,
+            deadline_ms: meta.deadline_ms,
+            mailbox: meta.mailbox,
+        };
+
+        self.execute_internal(payload, local_meta).await
+    }
+}
+
+// Local TaskExecutor trait implementation for backward compatibility
 #[async_trait]
 impl TaskExecutor<InferenceJob, InferenceResult> for LlmExecutor {
-    /// Execute an inference job and return the result.
-    ///
-    /// This is the main entry point called by the LLMEngine.
     async fn execute(&self, payload: InferenceJob, meta: TaskMetadata) -> InferenceResult {
-        debug!(
-            rank = self.rank,
-            request_id = %payload.request_id,
-            task_id = meta.id,
-            is_streaming = payload.is_streaming,
-            "Executing inference job"
+        self.execute_internal(payload, meta).await
+    }
+}
+
+impl LlmExecutor {
+    /// Internal execute implementation shared by both trait implementations.
+    async fn execute_internal(&self, payload: InferenceJob, meta: TaskMetadata) -> InferenceResult {
+        info!(
+            "⚙️ EXECUTOR: execute_internal called - rank={}, request_id={}, is_streaming={}",
+            self.rank, payload.request_id, payload.is_streaming
         );
 
         // Check GPU memory before processing
         if let Err(e) = self.check_gpu_memory() {
             error!(
-                rank = self.rank,
-                request_id = %payload.request_id,
-                error = %e,
-                "GPU memory check failed"
+                "❌ EXECUTOR: GPU memory check failed - rank={}, request_id={}, error={}",
+                self.rank, payload.request_id, e
             );
             return InferenceResult::error(format!("GPU memory exhaustion: {}", e));
         }
 
-        if payload.is_streaming {
+        info!(
+            "🔍 EXECUTOR: Processing inference job - rank={}, request_id={}, task_id={}, is_streaming={}",
+            self.rank,
+            payload.request_id,
+            meta.id,
+            payload.is_streaming
+        );
+
+        let result = if payload.is_streaming {
+            info!(
+                "📡 EXECUTOR: Processing STREAMING job - request_id={}",
+                payload.request_id
+            );
             self.process_streaming(&payload)
         } else {
+            info!(
+                "📝 EXECUTOR: Processing COMPLETION job - request_id={}",
+                payload.request_id
+            );
             self.process_completion(&payload)
-        }
+        };
+
+        info!(
+            "✅ EXECUTOR: Job processing complete - rank={}, request_id={}, result_type={:?}",
+            self.rank,
+            payload.request_id,
+            match &result {
+                InferenceResult::Completion { .. } => "Completion",
+                InferenceResult::Streaming { .. } => "Streaming",
+                InferenceResult::Error { .. } => "Error",
+            }
+        );
+
+        result
     }
 }
 

@@ -11,4 +11,3 @@ pub use parser::{
     get_tool_parser, get_tool_parser_by_name, AutoToolParser, JsonToolParser, LlamaToolParser,
     MistralToolParser, ParsedOutput, ParsedToolCall, QwenToolParser, ToolCallParser,
 };
-

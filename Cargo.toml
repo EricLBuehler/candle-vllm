@@ -21,6 +21,7 @@ rust-version = "1.83"
 [workspace.dependencies]
 anyhow = "1.0.75"
 async-trait = "0.1.77"
+async-stream = "0.3"
 attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version = "0.1.7", rev = "753f0a6" }
 axum = { version = "0.8.7", features = ["tokio"] }
 chrono = "0.4.41"

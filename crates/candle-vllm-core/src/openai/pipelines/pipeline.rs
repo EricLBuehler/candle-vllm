@@ -341,7 +341,7 @@ impl DefaultLoader {
         #[cfg(feature = "nccl")] global_world_size: Option<usize>, //must pass total number of devices used in multi-node mode
     ) -> Result<(Vec<Box<DefaultPipeline>>, PipelineConfig)> {
         let reporter = Arc::new(RwLock::new(ProgressReporter::new(local_rank.unwrap_or(0))));
-        let num_subprogress = local_world_size.map_or(0, |n| n - 1);
+        let num_subprogress = local_world_size.map_or(0, |n| n.saturating_sub(1));
 
         let (models, devices, config, sep_style) = if gguf {
             let device = crate::new_device(device_ids[0]).unwrap();

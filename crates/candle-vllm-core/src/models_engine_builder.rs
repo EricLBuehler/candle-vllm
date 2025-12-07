@@ -1,7 +1,7 @@
-use crate::api::{Error, Result, InferenceEngine};
+use crate::api::{Error, InferenceEngine, Result};
 use crate::engine_builder_ext::ExtendedEngineBuilder;
 use crate::engine_params::EngineParams;
-use crate::engine_state::{EngineStateManager, EngineStateManagerBuilder, EngineStateConfig};
+use crate::engine_state::{EngineStateConfig, EngineStateManager, EngineStateManagerBuilder};
 use crate::models_config::{ModelEntry, ModelsFile};
 use crate::openai::image_tool::ImageDescriptionConfig;
 use crate::openai::local_vision_tool::LocalVisionModelTool;
@@ -75,7 +75,10 @@ impl ModelsEngineBuilder {
         models_file_path: P,
         model_name: &str,
     ) -> Result<ModelsEngineBuilderResult> {
-        info!("Loading models configuration from: {}", models_file_path.as_ref().display());
+        info!(
+            "Loading models configuration from: {}",
+            models_file_path.as_ref().display()
+        );
 
         let models_file = ModelsFile::load(models_file_path.as_ref())
             .map_err(|e| Error::Config(format!("Failed to load models file: {}", e)))?;
@@ -96,7 +99,9 @@ impl ModelsEngineBuilder {
             .models
             .iter()
             .find(|m| m.name == model_name)
-            .ok_or_else(|| Error::Config(format!("Model '{}' not found in configuration", model_name)))?;
+            .ok_or_else(|| {
+                Error::Config(format!("Model '{}' not found in configuration", model_name))
+            })?;
 
         self.build_from_model_entry(model_entry.clone()).await
     }
@@ -110,15 +115,22 @@ impl ModelsEngineBuilder {
 
         // Validate and resolve model path
         let primary_model_path = self.resolve_model_path(&model_entry)?;
-        debug!("Resolved primary model path: {}", primary_model_path.display());
+        debug!(
+            "Resolved primary model path: {}",
+            primary_model_path.display()
+        );
 
         // Determine if we should load a vision model
-        let (vision_model_path, vision_params, vision_config) = if self.should_load_vision_model(&model_entry) {
-            self.prepare_vision_model_config(&model_entry).await?
-        } else {
-            debug!("Vision model not configured for model: {}", model_entry.name);
-            (None, None, None)
-        };
+        let (vision_model_path, vision_params, vision_config) =
+            if self.should_load_vision_model(&model_entry) {
+                self.prepare_vision_model_config(&model_entry).await?
+            } else {
+                debug!(
+                    "Vision model not configured for model: {}",
+                    model_entry.name
+                );
+                (None, None, None)
+            };
 
         // Use the extended engine builder for concurrent loading
         let primary_result = ExtendedEngineBuilder::build_inference_engine_from_params_async(
@@ -127,18 +139,27 @@ impl ModelsEngineBuilder {
             vision_model_path,
             vision_params,
             vision_config.clone(),
-        ).await?;
+        )
+        .await?;
 
         info!(
             "Successfully built engines for '{}'. Primary: ✓, Vision: {}",
             model_entry.name,
-            if primary_result.vision_tool.is_some() { "✓" } else { "✗" }
+            if primary_result.vision_tool.is_some() {
+                "✓"
+            } else {
+                "✗"
+            }
         );
 
         // Create state manager
         let primary_engine_arc = Arc::new(primary_result.primary_engine);
         let vision_tool_arc = primary_result.vision_tool.clone();
-        let state_manager = self.create_state_manager(primary_engine_arc.clone(), vision_tool_arc.clone(), vision_config)?;
+        let state_manager = self.create_state_manager(
+            primary_engine_arc.clone(),
+            vision_tool_arc.clone(),
+            vision_config,
+        )?;
 
         Ok(ModelsEngineBuilderResult {
             primary_engine: primary_engine_arc,
@@ -191,7 +212,11 @@ impl ModelsEngineBuilder {
             }
 
             // Check for duplicate names
-            let duplicate_count = models_file.models.iter().filter(|m| m.name == model.name).count();
+            let duplicate_count = models_file
+                .models
+                .iter()
+                .filter(|m| m.name == model.name)
+                .count();
             if duplicate_count > 1 {
                 issues.push(format!("Duplicate model name: '{}'", model.name));
             }
@@ -237,13 +262,18 @@ impl ModelsEngineBuilder {
         }
 
         // Check if the model has vision capabilities enabled
-        model_entry.capabilities.has_vision() && model_entry.capabilities.get_vision_model_id().is_some()
+        model_entry.capabilities.has_vision()
+            && model_entry.capabilities.get_vision_model_id().is_some()
     }
 
     async fn prepare_vision_model_config(
         &self,
         model_entry: &ModelEntry,
-    ) -> Result<(Option<PathBuf>, Option<EngineParams>, Option<ImageDescriptionConfig>)> {
+    ) -> Result<(
+        Option<PathBuf>,
+        Option<EngineParams>,
+        Option<ImageDescriptionConfig>,
+    )> {
         let vision_model_path = model_entry
             .capabilities
             .get_vision_model_id()
@@ -268,7 +298,10 @@ impl ModelsEngineBuilder {
         let vision_params = EngineParams::vision_model_defaults();
 
         // Use configured or default vision configuration
-        let vision_config = self.config.default_vision_config.clone()
+        let vision_config = self
+            .config
+            .default_vision_config
+            .clone()
             .unwrap_or_default();
 
         Ok((vision_model_path, Some(vision_params), Some(vision_config)))
@@ -296,7 +329,9 @@ impl ModelsEngineBuilder {
 
         builder.build().map_err(|e| match e {
             VisionError::InternalError { message } => Error::Other(message),
-            VisionError::ModelNotFound { model_path } => Error::ModelLoad(format!("Vision model not found: {}", model_path)),
+            VisionError::ModelNotFound { model_path } => {
+                Error::ModelLoad(format!("Vision model not found: {}", model_path))
+            }
             VisionError::InvalidImageData { message } => Error::Config(message),
             VisionError::ModelError { message } => Error::Generation(message),
             _ => Error::Other(format!("Vision error: {}", e)),
@@ -392,7 +427,7 @@ mod tests {
     #[test]
     fn test_should_load_vision_model() {
         use crate::config::{VisionMode, VisionProxyConfig};
-        
+
         let builder = ModelsEngineBuilder::new();
 
         // Model without vision support
@@ -416,12 +451,34 @@ mod tests {
     #[test]
     fn test_factory_configurations() {
         let prod_builder = ModelsEngineBuilderFactory::production();
-        assert_eq!(prod_builder.config.state_management_config.health_check_interval_secs, 30);
-        assert!(!prod_builder.config.state_management_config.include_detailed_stats);
+        assert_eq!(
+            prod_builder
+                .config
+                .state_management_config
+                .health_check_interval_secs,
+            30
+        );
+        assert!(
+            !prod_builder
+                .config
+                .state_management_config
+                .include_detailed_stats
+        );
 
         let dev_builder = ModelsEngineBuilderFactory::development();
-        assert_eq!(dev_builder.config.state_management_config.health_check_interval_secs, 10);
-        assert!(dev_builder.config.state_management_config.include_detailed_stats);
+        assert_eq!(
+            dev_builder
+                .config
+                .state_management_config
+                .health_check_interval_secs,
+            10
+        );
+        assert!(
+            dev_builder
+                .config
+                .state_management_config
+                .include_detailed_stats
+        );
 
         let text_only_builder = ModelsEngineBuilderFactory::text_only();
         assert!(!text_only_builder.config.enable_vision_auto_load);

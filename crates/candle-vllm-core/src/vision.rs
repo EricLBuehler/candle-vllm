@@ -91,10 +91,7 @@ impl VisionBackend {
     }
 
     /// Create an unavailable vision backend with reason and message
-    pub fn unavailable_with_message(
-        reason: UnavailableReason,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn unavailable_with_message(reason: UnavailableReason, message: impl Into<String>) -> Self {
         Self::Unavailable {
             reason,
             message: Some(message.into()),
@@ -146,7 +143,10 @@ impl VisionBackend {
     /// Check if the backend can handle the given image format
     pub fn supports_format(&self, format: &str) -> bool {
         match self.metadata() {
-            Some(meta) => meta.supported_formats.is_empty() || meta.supported_formats.contains(&format.to_lowercase()),
+            Some(meta) => {
+                meta.supported_formats.is_empty()
+                    || meta.supported_formats.contains(&format.to_lowercase())
+            }
             None => true, // Assume support if no metadata available
         }
     }
@@ -284,12 +284,15 @@ mod tests {
     fn test_vision_backend_unavailable() {
         let backend = VisionBackend::unavailable_with_message(
             UnavailableReason::ModelLoadFailed,
-            "CUDA out of memory"
+            "CUDA out of memory",
         );
         assert!(!backend.is_available());
         assert!(backend.is_unavailable());
         assert_eq!(backend.model_id(), None);
-        assert_eq!(backend.unavailable_reason(), Some(&UnavailableReason::ModelLoadFailed));
+        assert_eq!(
+            backend.unavailable_reason(),
+            Some(&UnavailableReason::ModelLoadFailed)
+        );
         assert_eq!(backend.error_message(), Some("CUDA out of memory"));
     }
 
@@ -348,9 +351,12 @@ mod tests {
 
         let backend = VisionBackend::unavailable_with_message(
             UnavailableReason::ModelLoadFailed,
-            "Error details"
+            "Error details",
         );
-        assert_eq!(backend.to_string(), "Unavailable (ModelLoadFailed): Error details");
+        assert_eq!(
+            backend.to_string(),
+            "Unavailable (ModelLoadFailed): Error details"
+        );
 
         let reason = UnavailableReason::Disabled;
         assert_eq!(reason.to_string(), "disabled");

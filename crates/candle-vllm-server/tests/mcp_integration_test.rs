@@ -21,7 +21,12 @@ static INIT: Once = Once::new();
 /// Get the workspace root directory
 fn get_workspace_root() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir.parent().unwrap().parent().unwrap().to_path_buf()
+    manifest_dir
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 /// Initialize the test environment by loading .test.env
@@ -29,7 +34,7 @@ fn init_test_env() {
     INIT.call_once(|| {
         let workspace_root = get_workspace_root();
         let test_env_path = workspace_root.join(".test.env");
-        
+
         if test_env_path.exists() {
             match dotenvy::from_path(&test_env_path) {
                 Ok(_) => {
@@ -46,7 +51,7 @@ fn init_test_env() {
 /// Get the MCP config path from environment or default
 fn get_mcp_config_path() -> PathBuf {
     init_test_env();
-    
+
     if let Ok(path) = std::env::var("CANDLE_VLLM_TEST_MCP_CONFIG") {
         let p = PathBuf::from(&path);
         if p.is_absolute() {
@@ -66,60 +71,59 @@ fn get_mcp_config_path() -> PathBuf {
 #[test]
 fn test_mcp_json_exists() {
     let mcp_path = get_mcp_config_path();
-    
+
     assert!(
         mcp_path.exists(),
         "mcp.json must exist at {:?}. Create the file or set CANDLE_VLLM_TEST_MCP_CONFIG",
         mcp_path
     );
-    
+
     eprintln!("Found mcp.json at {:?}", mcp_path);
 }
 
 #[test]
 fn test_mcp_json_valid_json() {
     let mcp_path = get_mcp_config_path();
-    
+
     if !mcp_path.exists() {
         eprintln!("Skipping: mcp.json not found at {:?}", mcp_path);
         return;
     }
-    
-    let content = fs::read_to_string(&mcp_path)
-        .expect("Failed to read mcp.json");
-    
+
+    let content = fs::read_to_string(&mcp_path).expect("Failed to read mcp.json");
+
     // Verify it's valid JSON
-    let json: serde_json::Value = serde_json::from_str(&content)
-        .expect("mcp.json contains invalid JSON syntax");
-    
+    let json: serde_json::Value =
+        serde_json::from_str(&content).expect("mcp.json contains invalid JSON syntax");
+
     // Verify it has the expected structure (either "servers" or "mcpServers")
     let has_servers = json.get("servers").is_some();
     let has_mcp_servers = json.get("mcpServers").is_some();
-    
+
     assert!(
         has_servers || has_mcp_servers,
         "mcp.json must contain either 'servers' array or 'mcpServers' object. Found keys: {:?}",
         json.as_object().map(|o| o.keys().collect::<Vec<_>>())
     );
-    
+
     eprintln!("mcp.json has valid JSON structure");
 }
 
 #[test]
 fn test_mcp_config_load() {
     let mcp_path = get_mcp_config_path();
-    
+
     if !mcp_path.exists() {
         eprintln!("Skipping: mcp.json not found at {:?}", mcp_path);
         return;
     }
-    
+
     let path_str = mcp_path.to_string_lossy();
-    let config = McpConfig::load(&path_str)
-        .expect("Failed to load mcp.json using McpConfig::load()");
-    
+    let config =
+        McpConfig::load(&path_str).expect("Failed to load mcp.json using McpConfig::load()");
+
     eprintln!("Loaded MCP config with {} server(s)", config.servers.len());
-    
+
     for server in &config.servers {
         eprintln!("  - Server: {} -> {}", server.name, server.url);
     }
@@ -128,16 +132,15 @@ fn test_mcp_config_load() {
 #[test]
 fn test_mcp_config_has_servers() {
     let mcp_path = get_mcp_config_path();
-    
+
     if !mcp_path.exists() {
         eprintln!("Skipping: mcp.json not found at {:?}", mcp_path);
         return;
     }
-    
+
     let path_str = mcp_path.to_string_lossy();
-    let config = McpConfig::load(&path_str)
-        .expect("Failed to load mcp.json");
-    
+    let config = McpConfig::load(&path_str).expect("Failed to load mcp.json");
+
     // At minimum, we expect at least one server configured
     assert!(
         !config.servers.is_empty(),
@@ -148,30 +151,26 @@ fn test_mcp_config_has_servers() {
 #[test]
 fn test_mcp_server_definitions_valid() {
     let mcp_path = get_mcp_config_path();
-    
+
     if !mcp_path.exists() {
         eprintln!("Skipping: mcp.json not found at {:?}", mcp_path);
         return;
     }
-    
+
     let path_str = mcp_path.to_string_lossy();
-    let config = McpConfig::load(&path_str)
-        .expect("Failed to load mcp.json");
-    
+    let config = McpConfig::load(&path_str).expect("Failed to load mcp.json");
+
     for server in &config.servers {
         // Validate server name
-        assert!(
-            !server.name.is_empty(),
-            "MCP server name cannot be empty"
-        );
-        
+        assert!(!server.name.is_empty(), "MCP server name cannot be empty");
+
         // Validate URL
         assert!(
             !server.url.is_empty(),
             "MCP server '{}' URL cannot be empty",
             server.name
         );
-        
+
         // URL should be valid format (http:// or https://)
         assert!(
             server.url.starts_with("http://") || server.url.starts_with("https://"),
@@ -179,7 +178,7 @@ fn test_mcp_server_definitions_valid() {
             server.name,
             server.url
         );
-        
+
         eprintln!("Validated MCP server: {} -> {}", server.name, server.url);
     }
 }
@@ -201,18 +200,18 @@ fn test_mcp_mcpservers_format_parsing() {
             }
         }
     }"#;
-    
+
     // Write to temp file
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join("test_mcp_servers_format.json");
     fs::write(&temp_path, json).expect("Failed to write temp file");
-    
-    let config = McpConfig::load(temp_path.to_str().unwrap())
-        .expect("Failed to load mcpServers format");
-    
+
+    let config =
+        McpConfig::load(temp_path.to_str().unwrap()).expect("Failed to load mcpServers format");
+
     assert_eq!(config.servers.len(), 1, "Should have one server");
     assert_eq!(config.servers[0].name, "test-server");
-    
+
     // Clean up
     let _ = fs::remove_file(&temp_path);
 }
@@ -229,20 +228,20 @@ fn test_mcp_servers_array_format_parsing() {
             }
         ]
     }"#;
-    
+
     // Write to temp file
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join("test_mcp_array_format.json");
     fs::write(&temp_path, json).expect("Failed to write temp file");
-    
-    let config = McpConfig::load(temp_path.to_str().unwrap())
-        .expect("Failed to load servers array format");
-    
+
+    let config =
+        McpConfig::load(temp_path.to_str().unwrap()).expect("Failed to load servers array format");
+
     assert_eq!(config.servers.len(), 1, "Should have one server");
     assert_eq!(config.servers[0].name, "test-server");
     assert_eq!(config.servers[0].url, "http://localhost:3000/test");
     assert_eq!(config.servers[0].timeout_secs, Some(30));
-    
+
     // Clean up
     let _ = fs::remove_file(&temp_path);
 }
@@ -259,20 +258,20 @@ fn test_mcp_http_server_format() {
             }
         }
     }"#;
-    
+
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join("test_mcp_http_format.json");
     fs::write(&temp_path, json).expect("Failed to write temp file");
-    
-    let config = McpConfig::load(temp_path.to_str().unwrap())
-        .expect("Failed to load HTTP server format");
-    
+
+    let config =
+        McpConfig::load(temp_path.to_str().unwrap()).expect("Failed to load HTTP server format");
+
     assert_eq!(config.servers.len(), 1);
     assert_eq!(config.servers[0].name, "http-server");
     assert_eq!(config.servers[0].url, "https://api.example.com/mcp");
     assert_eq!(config.servers[0].auth, Some("Bearer token123".to_string()));
     assert_eq!(config.servers[0].timeout_secs, Some(60));
-    
+
     // Clean up
     let _ = fs::remove_file(&temp_path);
 }
@@ -284,21 +283,21 @@ fn test_mcp_http_server_format() {
 #[test]
 fn test_mcp_command_executable_check() {
     let mcp_path = get_mcp_config_path();
-    
+
     if !mcp_path.exists() {
         eprintln!("Skipping: mcp.json not found at {:?}", mcp_path);
         return;
     }
-    
+
     let content = fs::read_to_string(&mcp_path).expect("Failed to read mcp.json");
     let json: serde_json::Value = serde_json::from_str(&content).expect("Invalid JSON");
-    
+
     // Check mcpServers format for command-based servers
     if let Some(mcp_servers) = json.get("mcpServers").and_then(|s| s.as_object()) {
         for (name, server) in mcp_servers {
             if let Some(command) = server.get("command").and_then(|c| c.as_str()) {
                 let cmd_path = PathBuf::from(command);
-                
+
                 if cmd_path.exists() {
                     eprintln!("✓ MCP server '{}' executable exists: {:?}", name, cmd_path);
                 } else {
@@ -337,17 +336,16 @@ fn test_mcp_config_serialization_roundtrip() {
             },
         ],
     };
-    
+
     // Serialize to JSON
-    let json = serde_json::to_string(&original)
-        .expect("Failed to serialize McpConfig");
-    
+    let json = serde_json::to_string(&original).expect("Failed to serialize McpConfig");
+
     // Deserialize back
-    let deserialized: McpConfig = serde_json::from_str(&json)
-        .expect("Failed to deserialize McpConfig");
-    
+    let deserialized: McpConfig =
+        serde_json::from_str(&json).expect("Failed to deserialize McpConfig");
+
     assert_eq!(deserialized.servers.len(), original.servers.len());
-    
+
     for (orig, deser) in original.servers.iter().zip(deserialized.servers.iter()) {
         assert_eq!(orig.name, deser.name);
         assert_eq!(orig.url, deser.url);
@@ -360,16 +358,15 @@ fn test_mcp_config_serialization_roundtrip() {
 #[test]
 fn test_mcp_empty_config() {
     let json = r#"{"servers": []}"#;
-    
+
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join("test_mcp_empty.json");
     fs::write(&temp_path, json).expect("Failed to write temp file");
-    
-    let config = McpConfig::load(temp_path.to_str().unwrap())
-        .expect("Failed to load empty config");
-    
+
+    let config = McpConfig::load(temp_path.to_str().unwrap()).expect("Failed to load empty config");
+
     assert!(config.servers.is_empty());
-    
+
     // Clean up
     let _ = fs::remove_file(&temp_path);
 }
@@ -377,15 +374,15 @@ fn test_mcp_empty_config() {
 #[test]
 fn test_mcp_invalid_json_fails() {
     let json = r#"{ invalid json }"#;
-    
+
     let temp_dir = std::env::temp_dir();
     let temp_path = temp_dir.join("test_mcp_invalid.json");
     fs::write(&temp_path, json).expect("Failed to write temp file");
-    
+
     let result = McpConfig::load(temp_path.to_str().unwrap());
-    
+
     assert!(result.is_err(), "Invalid JSON should fail to load");
-    
+
     // Clean up
     let _ = fs::remove_file(&temp_path);
 }
@@ -397,27 +394,27 @@ fn test_mcp_invalid_json_fails() {
 #[test]
 fn test_workspace_mcp_json_production_ready() {
     let mcp_path = get_mcp_config_path();
-    
+
     if !mcp_path.exists() {
         eprintln!("Skipping: mcp.json not found at {:?}", mcp_path);
         return;
     }
-    
+
     let path_str = mcp_path.to_string_lossy();
-    
+
     // 1. Load the config
-    let config = McpConfig::load(&path_str)
-        .expect("mcp.json failed to load - this would break production!");
-    
+    let config =
+        McpConfig::load(&path_str).expect("mcp.json failed to load - this would break production!");
+
     // 2. Verify at least one server
     assert!(
         !config.servers.is_empty(),
         "mcp.json must define at least one server for production use"
     );
-    
+
     // 3. Validate each server
     let mut warnings = Vec::new();
-    
+
     for server in &config.servers {
         // Check URL format
         if !server.url.starts_with("http://") && !server.url.starts_with("https://") {
@@ -426,7 +423,7 @@ fn test_workspace_mcp_json_production_ready() {
                 server.name, server.url
             ));
         }
-        
+
         // Check for localhost URLs in production scenarios
         if server.url.contains("localhost") || server.url.contains("127.0.0.1") {
             eprintln!(
@@ -435,14 +432,16 @@ fn test_workspace_mcp_json_production_ready() {
             );
         }
     }
-    
+
     if !warnings.is_empty() {
         eprintln!("Warnings for mcp.json:");
         for w in &warnings {
             eprintln!("  - {}", w);
         }
     }
-    
-    eprintln!("✓ mcp.json is production-ready with {} server(s)", config.servers.len());
-}
 
+    eprintln!(
+        "✓ mcp.json is production-ready with {} server(s)",
+        config.servers.len()
+    );
+}

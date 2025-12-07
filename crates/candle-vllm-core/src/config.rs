@@ -77,7 +77,9 @@ impl ModelCapabilities {
     /// Get the prompt template for vision model
     pub fn get_vision_prompt_template(&self) -> &str {
         match &self.vision_proxy {
-            Some(config) => config.prompt_template.as_deref()
+            Some(config) => config
+                .prompt_template
+                .as_deref()
                 .unwrap_or("Describe this image in detail:"),
             None => "Describe this image in detail:",
         }
@@ -95,7 +97,10 @@ impl ModelCapabilities {
             }
             VisionMode::Disabled => {
                 if self.vision_proxy.is_some() {
-                    return Err("Disabled vision mode should not have vision_proxy configuration".to_string());
+                    return Err(
+                        "Disabled vision mode should not have vision_proxy configuration"
+                            .to_string(),
+                    );
                 }
             }
             VisionMode::Native => {
@@ -123,8 +128,14 @@ mod tests {
         let caps = ModelCapabilities::with_proxy_vision("Qwen/Qwen2-VL-7B-Instruct");
         assert_eq!(caps.vision_mode, VisionMode::Proxy);
         assert!(caps.has_vision());
-        assert_eq!(caps.get_vision_model_id(), Some("Qwen/Qwen2-VL-7B-Instruct"));
-        assert_eq!(caps.get_vision_prompt_template(), "Describe this image in detail:");
+        assert_eq!(
+            caps.get_vision_model_id(),
+            Some("Qwen/Qwen2-VL-7B-Instruct")
+        );
+        assert_eq!(
+            caps.get_vision_prompt_template(),
+            "Describe this image in detail:"
+        );
     }
 
     #[test]
@@ -160,6 +171,9 @@ mod tests {
         let deserialized: ModelCapabilities = serde_yaml::from_str(&serialized).unwrap();
 
         assert_eq!(caps.vision_mode, deserialized.vision_mode);
-        assert_eq!(caps.get_vision_model_id(), deserialized.get_vision_model_id());
+        assert_eq!(
+            caps.get_vision_model_id(),
+            deserialized.get_vision_model_id()
+        );
     }
 }

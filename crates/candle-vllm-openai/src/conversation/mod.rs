@@ -355,7 +355,9 @@ impl ToolConversationBuilder {
 }
 
 // Re-export commonly used types
-pub use default_conversation::{DefaultConversation, DefaultConversationSeparators, SeparatorStyle};
+pub use default_conversation::{
+    DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
+};
 
 #[cfg(test)]
 mod tests {
@@ -488,4 +490,3 @@ mod tests {
         assert!(formatted.contains("function"));
     }
 }
-

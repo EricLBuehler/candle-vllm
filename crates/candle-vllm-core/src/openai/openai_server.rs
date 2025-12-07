@@ -13,7 +13,7 @@ use std::env;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 #[utoipa::path(
@@ -27,6 +27,7 @@ pub async fn chat_completions(
     State(data): State<Arc<OpenAIServerData>>,
     request: Json<ChatCompletionRequest>,
 ) -> ChatResponder {
+    info!("➡️ CHAT: received chat completion request");
     chat_completions_with_data(data, request.0).await
 }
 
@@ -85,6 +86,13 @@ fn get_gen_prompt(
     data: &OpenAIServerData,
     request: &ChatCompletionRequest,
 ) -> Result<String, APIError> {
+    info!(
+        model = %request.model,
+        message_count = request.messages.len(),
+        tools = request.tools.as_ref().map(|t| t.len()).unwrap_or(0),
+        "✏️ CHAT: building prompt"
+    );
+
     // Use the engine's stateless prompt builder
     data.model
         .build_prompt(
@@ -93,6 +101,14 @@ fn get_gen_prompt(
             request.thinking.unwrap_or(false),
         )
         .map_err(|e| APIError::new(e))
+        .map(|prompt| {
+            info!(
+                model = %request.model,
+                prompt_chars = prompt.chars().count(),
+                "✅ CHAT: prompt built"
+            );
+            prompt
+        })
 }
 
 /// Parse the model output for tool calls
@@ -121,7 +137,7 @@ fn build_choice_data(parsed: ParsedOutput) -> ChatChoiceData {
 }
 
 /// Check if a model supports reasoning/thinking output
-/// 
+///
 /// This function checks if a model is known to emit reasoning tokens
 /// when thinking mode is enabled. Detection is based on model name patterns.
 fn is_reasoning_model(model_name: &str) -> bool {
@@ -136,7 +152,7 @@ fn is_reasoning_model(model_name: &str) -> bool {
 }
 
 /// Check if a token is part of reasoning/thinking output
-/// 
+///
 /// Reasoning tokens are detected by:
 /// 1. The thinking_enabled flag from the request
 /// 2. Model type (must be a reasoning model)
@@ -153,12 +169,12 @@ fn is_reasoning_token(
     if token_is_reasoning {
         return true;
     }
-    
+
     // Must have thinking enabled and be a reasoning model
     if !thinking_enabled || !is_reasoning_model(model_name) {
         return false;
     }
-    
+
     // Check for common reasoning token patterns
     let text = token_text.to_lowercase();
     text.contains("<think>")
@@ -188,6 +204,12 @@ fn check_length(
     prompt: String,
     data: &OpenAIServerData,
 ) -> Result<(Vec<u32>, usize), APIError> {
+    info!(
+        model = %request.model,
+        prompt_chars = prompt.chars().count(),
+        "📏 CHAT: checking prompt length"
+    );
+
     // Get available KV tokens from cache config (no lock needed)
     let available_kv_tokens = data.model.get_available_kv_tokens();
 
@@ -199,6 +221,14 @@ fn check_length(
         .map_err(|e| APIError::new(format!("Tokenization failed: {}", e)))?
         .get_ids()
         .to_vec();
+
+    info!(
+        model = %request.model,
+        prompt_tokens = token_ids.len(),
+        available_kv_tokens,
+        max_model_len = data.pipeline_config.max_model_len,
+        "🔢 CHAT: tokenization complete"
+    );
 
     let max_gen_tokens = request
         .max_tokens
@@ -226,6 +256,11 @@ fn check_length(
     } else {
         let max_valid_request_tokens =
             std::cmp::min(available_kv_tokens, data.pipeline_config.max_model_len) - 10;
+        info!(
+            model = %request.model,
+            max_request_tokens = max_valid_request_tokens,
+            "✅ CHAT: prompt length accepted"
+        );
         Ok((token_ids, max_valid_request_tokens))
     }
 }
@@ -251,6 +286,20 @@ pub async fn chat_completions_with_data(
         ));
     }
 
+    let request_id = if let Some(conv_id) = request.conversation_id.clone() {
+        conv_id
+    } else {
+        Uuid::new_v4().to_string()
+    };
+
+    info!(
+        %request_id,
+        model = %request.model,
+        stream = request.stream.unwrap_or(false),
+        logprobs = ?request.logprobs,
+        "🚦 CHAT: begin prompt processing"
+    );
+
     // Build prompt using stateless conversation handler (no lock needed)
     let prompt = match get_gen_prompt(&data, &request) {
         Ok(p) => p,
@@ -266,15 +315,12 @@ pub async fn chat_completions_with_data(
 
     let created = get_created_time_secs();
 
-    let request_id = if let Some(conv_id) = request.conversation_id.clone() {
-        conv_id
-    } else {
-        Uuid::new_v4().to_string()
-    };
-
-    debug!(
-        "New ChatCompletionRequest: request_id={}, model={}, logprobs={:?}",
-        request_id, request.model, request.logprobs
+    info!(
+        %request_id,
+        model = %request.model,
+        prompt_tokens = token_ids.len(),
+        max_request_tokens = available_tokens,
+        "🧮 CHAT: prompt ready with token budget"
     );
 
     let max_request_tokens = available_tokens;
@@ -323,7 +369,13 @@ pub async fn chat_completions_with_data(
 
     // Create flume channel for ChatResponse (matches Streamer expectation)
     let (response_tx, rx) = flume::unbounded::<ChatResponse>();
-    info!("sampling_params prepared for request {}", request_id);
+    info!(
+        "🎯 CORE: sampling_params prepared for request {} - stream={}, max_tokens={}, prompt_tokens={}",
+        request_id,
+        request.stream.is_some_and(|x| x),
+        sampling_params.max_tokens,
+        token_ids.len()
+    );
 
     let data_clone = data.clone();
     let request_id_clone = request_id.clone();
@@ -336,11 +388,19 @@ pub async fn chat_completions_with_data(
 
     // Spawn blocking task to submit work to the engine
     let sampling_params_clone = sampling_params.clone();
+    info!(
+        "🚀 CORE: Spawning blocking task to submit work to engine - request_id={}",
+        request_id_clone
+    );
     let _ = tokio::task::spawn_blocking(move || {
         let positions: Vec<usize> = (0..token_ids.len()).collect();
         let max_context_len = data.pipeline_config.max_model_len;
 
         if stream_request {
+            info!(
+                "📡 CORE: Submitting STREAMING request to engine - request_id={}",
+                request_id
+            );
             // Submit streaming request (engine is async, use block_on)
             let rt = tokio::runtime::Handle::current();
             let stream_rx = match rt.block_on(data.model.add_streaming_request(
@@ -351,8 +411,18 @@ pub async fn chat_completions_with_data(
                 created,
                 max_context_len,
             )) {
-                Ok(rx) => rx,
+                Ok(rx) => {
+                    info!(
+                        "✅ CORE: Streaming request accepted by engine - request_id={}",
+                        request_id
+                    );
+                    rx
+                }
                 Err(e) => {
+                    error!(
+                        "❌ CORE: Streaming request rejected by engine - request_id={}, error={}",
+                        request_id, e
+                    );
                     let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));
                     return;
                 }
@@ -361,14 +431,33 @@ pub async fn chat_completions_with_data(
             // Bridge streaming tokens to ChatResponse chunks
             // Clone model_name for use in the spawned thread
             let model_name_for_stream = model_name.clone();
+            info!(
+                "🔗 CORE: Spawning thread to bridge streaming tokens - request_id={}",
+                request_id
+            );
             std::thread::spawn(move || {
                 let mut full_content = String::new();
                 let mut full_reasoning = String::new();
                 let mut is_first_chunk = true;
-                
+                let mut token_count = 0;
+
+                info!(
+                    "👂 CORE: Streaming bridge thread started, waiting for tokens - request_id={}",
+                    request_id
+                );
                 while let Ok(result) = stream_rx.recv() {
+                    token_count += 1;
                     match result {
                         Ok(token) => {
+                            if token_count == 1 {
+                                info!(
+                                    "🎉 CORE: Received FIRST streaming token - request_id={}",
+                                    request_id
+                                );
+                            }
+                            if token_count % 10 == 0 {
+                                info!("📊 CORE: Streaming progress - request_id={}, tokens_received={}", request_id, token_count);
+                            }
                             // Detect if this token is a reasoning token
                             let token_is_reasoning = is_reasoning_token(
                                 &token.text,
@@ -377,7 +466,7 @@ pub async fn chat_completions_with_data(
                                 thinking_enabled,
                                 token.is_reasoning,
                             );
-                            
+
                             // Track content separately for reasoning vs regular content
                             if token_is_reasoning {
                                 full_reasoning.push_str(&token.text);
@@ -389,7 +478,11 @@ pub async fn chat_completions_with_data(
                             let delta = if token_is_reasoning {
                                 // Reasoning token - use reasoning field
                                 crate::openai::responses::ChoiceData {
-                                    role: if is_first_chunk { Some("assistant".to_string()) } else { None },
+                                    role: if is_first_chunk {
+                                        Some("assistant".to_string())
+                                    } else {
+                                        None
+                                    },
                                     content: None,
                                     tool_calls: None,
                                     reasoning: Some(token.text.clone()),
@@ -397,15 +490,19 @@ pub async fn chat_completions_with_data(
                             } else {
                                 // Regular content token
                                 crate::openai::responses::ChoiceData {
-                                    role: if is_first_chunk { Some("assistant".to_string()) } else { None },
+                                    role: if is_first_chunk {
+                                        Some("assistant".to_string())
+                                    } else {
+                                        None
+                                    },
                                     content: Some(token.text.clone()),
                                     tool_calls: None,
                                     reasoning: None,
                                 }
                             };
-                            
+
                             is_first_chunk = false;
-                            
+
                             let chunk = crate::openai::responses::ChatCompletionChunk {
                                 id: request_id.clone(),
                                 choices: vec![crate::openai::responses::Choice {
@@ -425,23 +522,40 @@ pub async fn chat_completions_with_data(
                                 resource_id: None,
                             };
 
-                            let _ = response_tx.send(ChatResponse::Chunk(chunk));
+                            if response_tx.send(ChatResponse::Chunk(chunk)).is_err() {
+                                error!("❌ CORE: Failed to send chunk, client disconnected - request_id={}", request_id);
+                                break;
+                            }
 
                             if token.is_finished {
+                                info!("🏁 CORE: Streaming finished - request_id={}, total_tokens={}, finish_reason={:?}", 
+                                    request_id, token_count, token.finish_reason);
                                 let _ = response_tx.send(ChatResponse::Done);
                                 sync_notify_clone.notify_one();
                                 break;
                             }
                         }
                         Err(err) => {
+                            error!(
+                                "❌ CORE: Streaming error - request_id={}, error={}",
+                                request_id, err
+                            );
                             let _ = response_tx.send(ChatResponse::ModelError(err));
                             sync_notify_clone.notify_one();
                             break;
                         }
                     }
                 }
+                info!(
+                    "🔚 CORE: Streaming bridge thread exiting - request_id={}, total_tokens={}",
+                    request_id, token_count
+                );
             });
         } else {
+            info!(
+                "📝 CORE: Submitting NON-STREAMING (completion) request to engine - request_id={}",
+                request_id
+            );
             // Submit completion request (engine is async, use block_on)
             let rt = tokio::runtime::Handle::current();
             let response_rx = match rt.block_on(data.model.add_request(
@@ -451,8 +565,18 @@ pub async fn chat_completions_with_data(
                 sampling_params_clone,
                 max_context_len,
             )) {
-                Ok(rx) => rx,
+                Ok(rx) => {
+                    info!(
+                        "✅ CORE: Completion request accepted by engine - request_id={}",
+                        request_id
+                    );
+                    rx
+                }
                 Err(e) => {
+                    error!(
+                        "❌ CORE: Completion request rejected by engine - request_id={}, error={}",
+                        request_id, e
+                    );
                     let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));
                     sync_notify_clone.notify_one();
                     return;
@@ -460,10 +584,20 @@ pub async fn chat_completions_with_data(
             };
 
             // Bridge the engine's response channel to ChatResponse
+            info!(
+                "🔗 CORE: Spawning thread to wait for completion response - request_id={}",
+                request_id
+            );
             std::thread::spawn(move || {
                 use crate::parking_lot::InferenceResult;
+                info!(
+                    "👂 CORE: Waiting for completion result from engine - request_id={}",
+                    request_id
+                );
                 match response_rx.blocking_recv() {
                     Ok(InferenceResult::Completion { choices, usage }) => {
+                        info!("✅ CORE: Received completion result - request_id={}, choices={}, tokens={}", 
+                            request_id, choices.len(), usage.total_tokens);
                         // For non-streaming, we still need to send via the response channel
                         // but we'll handle the final response differently
                         let response = ChatCompletionResponse {
@@ -507,27 +641,55 @@ pub async fn chat_completions_with_data(
                             conversation_id: None,
                             resource_id: None,
                         };
-                        let _ = response_tx.send(ChatResponse::Chunk(chunk));
-                        let _ = response_tx.send(ChatResponse::Done);
+                        if response_tx.send(ChatResponse::Chunk(chunk)).is_err() {
+                            error!(
+                                "❌ CORE: Failed to send completion chunk - request_id={}",
+                                request_id
+                            );
+                        }
+                        if response_tx.send(ChatResponse::Done).is_err() {
+                            error!(
+                                "❌ CORE: Failed to send completion done signal - request_id={}",
+                                request_id
+                            );
+                        }
+                        info!(
+                            "🏁 CORE: Completion response sent successfully - request_id={}",
+                            request_id
+                        );
                     }
                     Ok(InferenceResult::Error { message }) => {
+                        error!(
+                            "❌ CORE: Received error result - request_id={}, error={}",
+                            request_id, message
+                        );
                         let _ = response_tx.send(ChatResponse::ModelError(message));
                     }
                     Ok(InferenceResult::Streaming { .. }) => {
+                        error!("❌ CORE: Unexpected streaming result for completion request - request_id={}", request_id);
                         let _ = response_tx.send(ChatResponse::ModelError(
-                            "Unexpected streaming result for completion request".to_string()
+                            "Unexpected streaming result for completion request".to_string(),
                         ));
                     }
                     Err(e) => {
+                        error!(
+                            "❌ CORE: Failed to receive from engine - request_id={}, error={}",
+                            request_id, e
+                        );
                         let _ = response_tx.send(ChatResponse::ModelError(e.to_string()));
                     }
                 }
+                info!("📢 CORE: Notifying sync waiter - request_id={}", request_id);
                 sync_notify_clone.notify_one();
             });
         }
     });
 
     if stream_request {
+        info!(
+            "🌊 CORE: Returning SSE streamer for request {}",
+            request_id_clone
+        );
         ChatResponder::Streamer(
             Sse::new(Streamer {
                 rx,
@@ -545,8 +707,15 @@ pub async fn chat_completions_with_data(
         )
     } else {
         // Wait until current response finished
-        debug!("Waiting for sync response for request {}", request_id_clone);
+        info!(
+            "⏳ CORE: Waiting for sync response for request {}",
+            request_id_clone
+        );
         sync_notify.notified().await;
+        info!(
+            "✅ CORE: Sync notify received for request {}",
+            request_id_clone
+        );
 
         // Get response from completion_records
         let records = data_clone.model.completion_records.read();

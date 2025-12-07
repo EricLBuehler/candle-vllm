@@ -12,7 +12,7 @@ use async_trait::async_trait;
 // Re-export core types from prometheus_parking_lot
 pub use prometheus_parking_lot::core::{
     Mailbox, PoolLimits, ScheduledTask, Spawn, TaskMetadata as ParkingLotTaskMetadata, TaskQueue,
-    TaskStatus, WakeState,
+    TaskStatus, WakeState, WorkerExecutor as PrometheusWorkerExecutor,
 };
 pub use prometheus_parking_lot::infra::mailbox::memory::InMemoryMailbox;
 pub use prometheus_parking_lot::infra::queue::memory::InMemoryQueue;

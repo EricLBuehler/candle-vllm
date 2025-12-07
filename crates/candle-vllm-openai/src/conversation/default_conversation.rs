@@ -529,4 +529,3 @@ impl Conversation for DefaultConversation {
         }
     }
 }
-

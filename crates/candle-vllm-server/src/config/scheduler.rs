@@ -30,17 +30,28 @@ impl Default for SchedulerConfig {
 }
 
 impl SchedulerConfig {
-    /// Load configuration from a JSON file.
+    /// Load configuration from a JSON or YAML file.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        let content = std::fs::read_to_string(path.as_ref()).map_err(|e| ConfigError::Io {
-            path: path.as_ref().to_string_lossy().to_string(),
+        let path_ref = path.as_ref();
+        let content = std::fs::read_to_string(path_ref).map_err(|e| ConfigError::Io {
+            path: path_ref.to_string_lossy().to_string(),
             source: e,
         })?;
 
-        serde_json::from_str(&content).map_err(|e| ConfigError::Parse {
-            path: path.as_ref().to_string_lossy().to_string(),
-            source: e,
-        })
+        // Try to determine format from extension
+        let path_str = path_ref.to_string_lossy();
+        if path_str.ends_with(".yaml") || path_str.ends_with(".yml") {
+            serde_yaml::from_str(&content).map_err(|e| ConfigError::ParseYaml {
+                path: path_str.to_string(),
+                source: e,
+            })
+        } else {
+            // Assume JSON
+            serde_json::from_str(&content).map_err(|e| ConfigError::ParseJson {
+                path: path_str.to_string(),
+                source: e,
+            })
+        }
     }
 
     /// Load configuration from environment variable or file path.
@@ -138,20 +149,13 @@ pub enum QueueConfig {
     InMemory,
 
     /// Yaque file-backed queue (for desktop/Tauri apps)
-    Yaque {
-        path: String,
-        stream: String,
-    },
+    Yaque { path: String, stream: String },
 
     /// PostgreSQL with pgmq extension
-    PostgresPgmq {
-        queue_name: String,
-    },
+    PostgresPgmq { queue_name: String },
 
     /// PostgreSQL custom table
-    Postgres {
-        table: String,
-    },
+    Postgres { table: String },
 }
 
 impl Default for QueueConfig {
@@ -189,9 +193,7 @@ pub enum MailboxStorageConfig {
     InMemory,
 
     /// PostgreSQL storage
-    Postgres {
-        table: String,
-    },
+    Postgres { table: String },
 }
 
 impl Default for MailboxStorageConfig {
@@ -249,9 +251,7 @@ pub enum CostModel {
     VramBytes,
 
     /// Fixed cost per request
-    FixedPerRequest {
-        units: usize,
-    },
+    FixedPerRequest { units: usize },
 }
 
 /// Configuration errors.
@@ -263,10 +263,16 @@ pub enum ConfigError {
         source: std::io::Error,
     },
 
-    /// Parse error in config file
-    Parse {
+    /// Parse error in JSON config file
+    ParseJson {
         path: String,
         source: serde_json::Error,
+    },
+
+    /// Parse error in YAML config file
+    ParseYaml {
+        path: String,
+        source: serde_yaml::Error,
     },
 }
 
@@ -276,8 +282,11 @@ impl std::fmt::Display for ConfigError {
             Self::Io { path, source } => {
                 write!(f, "failed to read config file '{}': {}", path, source)
             }
-            Self::Parse { path, source } => {
-                write!(f, "failed to parse config file '{}': {}", path, source)
+            Self::ParseJson { path, source } => {
+                write!(f, "failed to parse JSON config file '{}': {}", path, source)
+            }
+            Self::ParseYaml { path, source } => {
+                write!(f, "failed to parse YAML config file '{}': {}", path, source)
             }
         }
     }
@@ -287,7 +296,8 @@ impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::Parse { source, .. } => Some(source),
+            Self::ParseJson { source, .. } => Some(source),
+            Self::ParseYaml { source, .. } => Some(source),
         }
     }
 }

@@ -2,9 +2,9 @@ use crate::config::ModelRegistryConfig;
 use candle_vllm_openai::model_registry::{ModelAlias, ModelRegistry};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use std::sync::Arc;
 
 // Temporary placeholder types to replace candle_vllm_responses dependencies
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -98,9 +98,7 @@ impl ModelsState {
 
     pub async fn set_active(&self, name: String) {
         let mut active = self.active.lock().await;
-        *active = Some(LoadedModel {
-            name,
-        });
+        *active = Some(LoadedModel { name });
     }
 
     pub async fn status(&self) -> ModelStatus {

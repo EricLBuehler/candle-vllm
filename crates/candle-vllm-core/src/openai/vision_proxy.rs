@@ -1,13 +1,13 @@
-use crate::openai::image_tool::{ImageDescriptionTool, ImageDescription};
+use crate::openai::image_tool::{ImageDescription, ImageDescriptionTool};
 use crate::openai::requests::{
-    ChatCompletionRequest, ChatMessage, MessageContent, ContentPart, ImageUrl, Messages,
+    ChatCompletionRequest, ChatMessage, ContentPart, ImageUrl, MessageContent, Messages,
 };
-use crate::vision::{VisionResult, VisionError};
+use crate::vision::{VisionError, VisionResult};
 use async_trait::async_trait;
-use std::sync::Arc;
-use tracing::{debug, info, warn};
-use std::time::Instant;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Instant;
+use tracing::{debug, info, warn};
 
 /// Configuration for vision proxy preprocessing
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -195,7 +195,10 @@ impl<T: ImageDescriptionTool> VisionProxyPreprocessor<T> {
         // Convert messages to chat format for processing
         let mut chat_messages = request.messages.to_chat_messages();
 
-        info!("Starting vision proxy preprocessing for {} messages", chat_messages.len());
+        info!(
+            "Starting vision proxy preprocessing for {} messages",
+            chat_messages.len()
+        );
 
         // Count total images first for validation
         let total_images = self.count_images_in_chat_messages(&chat_messages);
@@ -314,8 +317,13 @@ impl<T: ImageDescriptionTool> VisionProxyPreprocessor<T> {
     }
 
     /// Format an image description according to the configured template
-    fn format_image_description(&self, description_result: Result<ImageDescription, VisionError>) -> String {
-        let template = self.config.image_description_template
+    fn format_image_description(
+        &self,
+        description_result: Result<ImageDescription, VisionError>,
+    ) -> String {
+        let template = self
+            .config
+            .image_description_template
             .as_deref()
             .unwrap_or("[Image: {description}]");
 
@@ -327,7 +335,11 @@ impl<T: ImageDescriptionTool> VisionProxyPreprocessor<T> {
                     if let Some(confidence) = description.confidence {
                         formatted = formatted.replace(
                             "{description}",
-                            &format!("{} (confidence: {:.1}%)", description.description, confidence * 100.0)
+                            &format!(
+                                "{} (confidence: {:.1}%)",
+                                description.description,
+                                confidence * 100.0
+                            ),
                         );
                     }
                 }
@@ -351,16 +363,18 @@ impl<T: ImageDescriptionTool> VisionProxyPreprocessor<T> {
     fn count_images_in_message(&self, message: &ChatMessage) -> usize {
         match &message.content {
             Some(MessageContent::Text(_)) => 0,
-            Some(MessageContent::Parts(parts)) => {
-                parts.iter().filter(|part| matches!(part, ContentPart::ImageUrl { .. })).count()
-            }
+            Some(MessageContent::Parts(parts)) => parts
+                .iter()
+                .filter(|part| matches!(part, ContentPart::ImageUrl { .. }))
+                .count(),
             None => 0,
         }
     }
 
     /// Count total images in a list of chat messages
     fn count_images_in_chat_messages(&self, messages: &[ChatMessage]) -> usize {
-        messages.iter()
+        messages
+            .iter()
             .map(|msg| self.count_images_in_message(msg))
             .sum()
     }
@@ -421,7 +435,7 @@ pub trait VisionProxyPreprocessorFactory: Send + Sync {
 mod tests {
     use super::*;
     use crate::openai::image_tool::ImageDescriptionConfig;
-    use crate::openai::requests::{ChatMessage, Messages, MessageContent, ContentPart, ImageUrl};
+    use crate::openai::requests::{ChatMessage, ContentPart, ImageUrl, MessageContent, Messages};
     use std::collections::HashMap;
 
     // Mock vision tool for testing
@@ -432,7 +446,10 @@ mod tests {
 
     impl MockVisionTool {
         fn new(available: bool, description: String) -> Self {
-            Self { available, description }
+            Self {
+                available,
+                description,
+            }
         }
     }
 
@@ -476,7 +493,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_preprocessor_with_available_tool() {
-        let tool = Arc::new(MockVisionTool::new(true, "A beautiful landscape".to_string()));
+        let tool = Arc::new(MockVisionTool::new(
+            true,
+            "A beautiful landscape".to_string(),
+        ));
         let preprocessor = VisionProxyPreprocessor::with_defaults(tool);
 
         assert!(preprocessor.is_available().await);
@@ -492,7 +512,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_text_only_message_unchanged() {
-        let tool = Arc::new(MockVisionTool::new(true, "A beautiful landscape".to_string()));
+        let tool = Arc::new(MockVisionTool::new(
+            true,
+            "A beautiful landscape".to_string(),
+        ));
         let preprocessor = VisionProxyPreprocessor::with_defaults(tool);
 
         let request = ChatCompletionRequest {
@@ -531,7 +554,10 @@ mod tests {
             resource_id: None,
         };
 
-        let result = preprocessor.preprocess_request(request.clone()).await.unwrap();
+        let result = preprocessor
+            .preprocess_request(request.clone())
+            .await
+            .unwrap();
         assert!(!result.has_images);
         assert_eq!(result.stats.images_processed, 0);
 
@@ -546,16 +572,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_multimodal_message_conversion() {
-        let tool = Arc::new(MockVisionTool::new(true, "A beautiful landscape".to_string()));
+        let tool = Arc::new(MockVisionTool::new(
+            true,
+            "A beautiful landscape".to_string(),
+        ));
         let preprocessor = VisionProxyPreprocessor::with_defaults(tool);
 
         let request = ChatCompletionRequest {
             messages: Messages::Chat(vec![ChatMessage {
                 role: "user".to_string(),
                 content: Some(MessageContent::Parts(vec![
-                    ContentPart::Text { text: "What's in this image?".to_string() },
+                    ContentPart::Text {
+                        text: "What's in this image?".to_string(),
+                    },
                     ContentPart::ImageUrl {
-                        image_url: ImageUrl::new("data:image/jpeg;base64,/9j/4AAQ...")
+                        image_url: ImageUrl::new("data:image/jpeg;base64,/9j/4AAQ..."),
                     },
                 ])),
                 tool_calls: None,
@@ -689,10 +720,19 @@ mod tests {
         let deserialized: VisionProxyConfig = serde_json::from_str(&json).unwrap();
 
         assert_eq!(config.enabled, deserialized.enabled);
-        assert_eq!(config.image_description_template, deserialized.image_description_template);
+        assert_eq!(
+            config.image_description_template,
+            deserialized.image_description_template
+        );
         assert_eq!(config.include_confidence, deserialized.include_confidence);
         assert_eq!(config.include_timing, deserialized.include_timing);
-        assert_eq!(config.max_images_per_message, deserialized.max_images_per_message);
-        assert_eq!(config.max_images_per_request, deserialized.max_images_per_request);
+        assert_eq!(
+            config.max_images_per_message,
+            deserialized.max_images_per_message
+        );
+        assert_eq!(
+            config.max_images_per_request,
+            deserialized.max_images_per_request
+        );
     }
 }

@@ -3,7 +3,7 @@
 //! These tests validate the core types and API. Tests that require a model
 //! are gated behind the integration_tests feature and require CANDLE_VLLM_TEST_MODEL.
 
-use candle_vllm_core::api::{EngineConfig, Error, GenerationParams, FinishReason};
+use candle_vllm_core::api::{EngineConfig, Error, FinishReason, GenerationParams};
 use candle_vllm_core::openai::requests::{
     ChatCompletionRequest, ChatMessage, FunctionDefinition, MessageContent, Messages, Tool,
     ToolCall,
@@ -75,9 +75,7 @@ fn test_engine_config_builder() {
 
 #[test]
 fn test_engine_config_builder_missing_path() {
-    let result = EngineConfig::builder()
-        .device(0)
-        .build();
+    let result = EngineConfig::builder().device(0).build();
 
     assert!(result.is_err());
     if let Err(Error::Config(msg)) = result {
@@ -454,29 +452,30 @@ fn test_streaming_choice() {
 #[test]
 fn test_sampling_params_new() {
     use candle_vllm_core::openai::sampling_params::EarlyStoppingCondition;
-    
+
     let params = SamplingParams::new(
-        1,                                              // n
-        None,                                           // best_of
-        0.0,                                            // presence_penalty
-        0.0,                                            // frequency_penalty
-        None,                                           // repeat_last_n
-        Some(0.7),                                      // temperature
-        None,                                           // top_p
-        None,                                           // min_p
-        None,                                           // top_k
-        false,                                          // use_beam_search
-        1.0,                                            // length_penalty
+        1,                                                // n
+        None,                                             // best_of
+        0.0,                                              // presence_penalty
+        0.0,                                              // frequency_penalty
+        None,                                             // repeat_last_n
+        Some(0.7),                                        // temperature
+        None,                                             // top_p
+        None,                                             // min_p
+        None,                                             // top_k
+        false,                                            // use_beam_search
+        1.0,                                              // length_penalty
         EarlyStoppingCondition::UnlikelyBetterCandidates, // early_stopping
-        None,                                           // stop
-        vec![],                                         // stop_token_ids
-        false,                                          // ignore_eos
-        256,                                            // max_tokens
-        None,                                           // logprobs
-        None,                                           // prompt_logprobs
-        true,                                           // skip_special_tokens
-        None,                                           // thinking
-    ).expect("SamplingParams should be created");
+        None,                                             // stop
+        vec![],                                           // stop_token_ids
+        false,                                            // ignore_eos
+        256,                                              // max_tokens
+        None,                                             // logprobs
+        None,                                             // prompt_logprobs
+        true,                                             // skip_special_tokens
+        None,                                             // thinking
+    )
+    .expect("SamplingParams should be created");
 
     assert_eq!(params.temperature, Some(0.7));
     assert_eq!(params.max_tokens, 256);
@@ -486,7 +485,7 @@ fn test_sampling_params_new() {
 #[test]
 fn test_sampling_params_temperature() {
     use candle_vllm_core::openai::sampling_params::EarlyStoppingCondition;
-    
+
     let params = SamplingParams::new(
         1,
         None,
@@ -508,7 +507,8 @@ fn test_sampling_params_temperature() {
         None,
         true,
         None,
-    ).expect("SamplingParams should be created");
+    )
+    .expect("SamplingParams should be created");
 
     assert_eq!(params.temperature, Some(0.5));
 }
