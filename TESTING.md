@@ -101,6 +101,11 @@ Tests that require model access:
 - ✅ Max tokens limits
 - ✅ Model information retrieval
 - ✅ Generation statistics
+- ✅ **Prompt caching (37 tests)**
+  - Storage backend tests (memory, sled, redis)
+  - Cache manager tests (hashing, prefix matching)
+  - Integration tests (end-to-end flows)
+  - See [Prompt Cache Testing Documentation](docs/PROMPT_CACHE_TESTING.md) for details
 
 ### OpenAI Adapter (`candle-vllm-openai`)
 
@@ -121,6 +126,7 @@ Tests that require model access:
 ### Server (`candle-vllm-server`)
 
 - ✅ Status structure serialization
+- ✅ Prompt cache integration tests (3 tests, require models)
 - ⏳ Full HTTP endpoint tests (require running server)
 
 ## Writing New Tests
@@ -183,6 +189,29 @@ In CI environments:
 - Use smaller models for faster tests
 - Consider running tests in parallel: `cargo test -- --test-threads=4`
 
+## Prompt Cache Testing
+
+The prompt caching feature has comprehensive test coverage:
+
+- **37 unit tests** covering all caching functionality
+- **3 integration tests** for real inference scenarios (require models)
+- **Multiple backend tests** (memory, sled, redis)
+
+See [Prompt Cache Testing Documentation](docs/PROMPT_CACHE_TESTING.md) for complete test definitions and coverage details.
+
+### Quick Test Commands
+
+```bash
+# All prompt cache tests
+cargo test --package candle-vllm-core --lib prompt_cache
+
+# With persistent backends
+cargo test --package candle-vllm-core --lib --features prompt-cache prompt_cache
+
+# Integration tests with real inference
+cargo test --package candle-vllm-server --test prompt_cache_integration_test -- --ignored
+```
+
 ## Future Test Enhancements
 
 - [ ] Streaming tests
@@ -191,4 +220,6 @@ In CI environments:
 - [ ] Performance benchmarks
 - [ ] Memory leak tests
 - [ ] Concurrent request tests
+- [ ] Prompt cache performance benchmarks
+- [ ] Prompt cache stress tests
 

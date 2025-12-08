@@ -51,13 +51,27 @@ async fn create_test_server_data_with_cache(
 
     let model_profile = config.models.iter().find(|m| m.name == model_name)?;
     
+    let hf_token = get_test_env_var("HF_TOKEN");
+    let model_id = model_profile.hf_id.clone();
+    let weight_path = model_profile.local_path.clone();
+    let weight_file = None; // DefaultLoader expects Option<String> for weight_file
     let loader = DefaultLoader::new(
-        get_test_env_var("HF_TOKEN").as_deref(),
-        model_profile.local_path.as_deref(),
-        model_profile.hf_id.as_deref(),
+        model_id,
+        weight_path,
+        weight_file,
     );
 
-    let (paths, gguf) = match loader.prepare_model_weights(None, None) {
+    // Set HF_TOKEN env var if we have a token
+    if let Some(ref token) = hf_token {
+        std::env::set_var("HF_TOKEN", token);
+    }
+    let hf_token_param = if hf_token.is_some() {
+        Some("HF_TOKEN".to_string())
+    } else {
+        None
+    };
+
+    let (paths, gguf) = match loader.prepare_model_weights(hf_token_param, None) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("Failed to prepare model weights: {}", e);
@@ -73,6 +87,8 @@ async fn create_test_server_data_with_cache(
         .clone()
         .unwrap_or_else(|| vec![0]);
 
+    let block_size = 64;
+    let max_num_seqs = model_profile.params.max_num_seqs.unwrap_or(16);
     let (pipelines, pipeline_cfg) = match loader
         .load_model(
             paths,
@@ -80,14 +96,17 @@ async fn create_test_server_data_with_cache(
             kv_cache_dtype,
             gguf,
             model_profile.params.isq.clone(),
-            64,
-            model_profile.params.max_num_seqs.unwrap_or(16),
+            block_size,
+            max_num_seqs,
             device_ids.clone(),
-            None,
-            None,
-            None,
-            None,
-            None,
+            #[cfg(feature = "nccl")]
+            None, // comm_id
+            Some(0), // local_rank
+            Some(1), // local_world_size
+            #[cfg(feature = "nccl")]
+            None, // global_rank
+            #[cfg(feature = "nccl")]
+            None, // global_world_size
         )
         .await
     {
