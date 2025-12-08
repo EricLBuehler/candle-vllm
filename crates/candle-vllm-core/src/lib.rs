@@ -14,6 +14,7 @@ pub mod models_config;
 pub mod models_engine_builder;
 pub mod openai;
 pub mod parking_lot;
+pub mod prompt_cache;
 pub mod scheduler;
 pub mod vision;
 pub use attention_rs::{InputMetadata, PagedAttention};

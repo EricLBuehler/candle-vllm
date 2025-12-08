@@ -603,9 +603,13 @@ pub async fn chat_completions_with_data(
                     request_id
                 );
                 match response_rx.blocking_recv() {
-                    Ok(InferenceResult::Completion { choices, usage }) => {
+                    Ok(InferenceResult::Completion { choices, mut usage }) => {
                         info!("✅ CORE: Received completion result - request_id={}, choices={}, tokens={}", 
                             request_id, choices.len(), usage.total_tokens);
+                        
+                        // Update usage with cached token information
+                        data.model.update_usage_with_cache(&mut usage, &request_id);
+                        
                         // For non-streaming, we still need to send via the response channel
                         // but we'll handle the final response differently
                         let response = ChatCompletionResponse {
@@ -617,6 +621,7 @@ pub async fn chat_completions_with_data(
                             usage,
                             conversation_id: None,
                             resource_id: None,
+                            system_fingerprint: Some(data.model.config.system_fingerprint()),
                         };
                         // Store in completion_records for non-streaming retrieval
                         // Always persist completion results for sync retrieval
@@ -738,6 +743,7 @@ pub async fn chat_completions_with_data(
                 usage: usage.clone(),
                 conversation_id: None,
                 resource_id: None,
+                system_fingerprint: Some(data_clone.model.config.system_fingerprint()),
             })
         } else {
             ChatResponder::ModelError(APIError::new(format!(

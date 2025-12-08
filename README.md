@@ -16,6 +16,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Highly extensible trait-based system to allow rapid implementation of new module pipelines,
 - Streaming support in generation, **including incremental tool-call deltas** so consumers can react to tool invocations in real time.
 - Efficient management of key-value cache with PagedAttention.
+- **Prompt Caching** support with multiple backends (memory, sled, redis) for caching and reusing KV cache across requests.
 - Continuous batching (batched decoding for incoming requests over time).
 - `In-situ` quantization (and `In-situ` marlin format conversion)
 - `GPTQ/Marlin` format quantization (4-bit)
@@ -163,9 +164,11 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 - Copy `.example.env` to `.env` (or export variables manually) to discover every supported knob. Key variables include:
   - `CANDLE_VLLM_MCP_CONFIG` – location of your `mcp.json`
   - `CANDLE_VLLM_MODELS_CONFIG` – location of your `models.yaml`
+  - `CANDLE_VLLM_PROMPT_CACHE_ENABLED`, `CANDLE_VLLM_PROMPT_CACHE_BACKEND` – prompt caching configuration
   - `RUST_LOG`, `KEEP_ALIVE_INTERVAL`, `HF_TOKEN`, `CANDLE_VLLM_TEST_*`, etc.
 - See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) for details plus example files (`.example.env`, `example.models.yaml`).
 - MCP tools defined in `mcp.json` are auto-injected into requests when available; set `tools: []` in a request to opt out.
+- Prompt caching can significantly speed up inference for repeated prompts (system prompts, RAG contexts, etc.).
 
 ### Build/Run Parameters
 
@@ -187,11 +190,11 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507 (or `--m` specify model-id)
 
-    `CACHE CONFIG`: --fp8-kvcache
+    `CACHE CONFIG`: --fp8-kvcache --prompt-cache --prompt-cache-backend sled
 
     `WEB UI`: --ui-server
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); `--fp8-kvcache` used to enable fp8 kvcache; `--ui-server` start with a built-in ChatGPT-like Web UI sever.
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); `--fp8-kvcache` used to enable fp8 kvcache; `--prompt-cache` enable prompt prefix caching; `--prompt-cache-backend` select cache backend (memory, sled, redis); `--ui-server` start with a built-in ChatGPT-like Web UI sever.
   </details>
 
 

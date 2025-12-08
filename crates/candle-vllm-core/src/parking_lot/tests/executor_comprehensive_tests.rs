@@ -14,7 +14,7 @@ use super::{MockInferenceJob, MockLlmExecutor};
 use crate::openai::sampling_params::SamplingParams;
 use crate::parking_lot::{
     job::InferenceResult,
-    types::{TaskExecutor, TaskMetadata},
+    types::{Priority, ResourceCost, ResourceKind, TaskExecutor, TaskMetadata},
 };
 
 #[tokio::test]
@@ -43,10 +43,10 @@ async fn test_executor_process_completion() {
     let mock_executor = MockLlmExecutor::new();
     let job = MockInferenceJob::completion("test-request-1".to_string());
     let meta = TaskMetadata {
-        id: "task-1".to_string(),
-        priority: 1,
-        cost: prometheus_parking_lot::util::serde::ResourceCost {
-            kind: prometheus_parking_lot::util::serde::ResourceKind::GpuVram,
+        id: 1,
+        priority: Priority::Normal,
+        cost: ResourceCost {
+            kind: ResourceKind::GpuVram,
             units: 100,
         },
         created_at_ms: 1000,
@@ -68,10 +68,10 @@ async fn test_executor_process_streaming() {
     let mock_executor = MockLlmExecutor::new();
     let job = MockInferenceJob::streaming("test-request-2".to_string());
     let meta = TaskMetadata {
-        id: "task-2".to_string(),
-        priority: 1,
-        cost: prometheus_parking_lot::util::serde::ResourceCost {
-            kind: prometheus_parking_lot::util::serde::ResourceKind::GpuVram,
+        id: 2,
+        priority: Priority::Normal,
+        cost: ResourceCost {
+            kind: ResourceKind::GpuVram,
             units: 100,
         },
         created_at_ms: 1000,
@@ -93,10 +93,10 @@ async fn test_executor_error_path() {
     let mock_executor = MockLlmExecutor::new().with_failures();
     let job = MockInferenceJob::completion("test-request-3".to_string());
     let meta = TaskMetadata {
-        id: "task-3".to_string(),
-        priority: 1,
-        cost: prometheus_parking_lot::util::serde::ResourceCost {
-            kind: prometheus_parking_lot::util::serde::ResourceKind::GpuVram,
+        id: 3,
+        priority: Priority::Normal,
+        cost: ResourceCost {
+            kind: ResourceKind::GpuVram,
             units: 100,
         },
         created_at_ms: 1000,

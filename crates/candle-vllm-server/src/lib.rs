@@ -30,6 +30,7 @@ use candle_vllm_core::openai::pipelines::pipeline::DefaultLoader;
 use candle_vllm_core::openai::pipelines::{LLMEngine, SchedulerPoolConfig};
 use candle_vllm_core::openai::sampling_params::GenerationConfig;
 use candle_vllm_core::openai::OpenAIServerData;
+use candle_vllm_core::prompt_cache::{CacheBackend, PromptCacheConfig, PromptCacheManager};
 use candle_vllm_core::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm_core::scheduler::SchedulerConfig;
 use candle_vllm_openai::model_registry::ModelAlias;
@@ -185,6 +186,34 @@ struct Args {
     /// Vision model dtype (optional, overrides models config)
     #[arg(long)]
     vision_dtype: Option<String>,
+
+    /// Enable prompt caching
+    #[arg(long, default_value_t = false)]
+    prompt_cache: bool,
+
+    /// Prompt cache backend (memory, sled, redis)
+    #[arg(long)]
+    prompt_cache_backend: Option<String>,
+
+    /// Prompt cache storage path (for sled backend)
+    #[arg(long)]
+    prompt_cache_path: Option<String>,
+
+    /// Redis URL for prompt cache (for redis backend)
+    #[arg(long)]
+    prompt_cache_redis_url: Option<String>,
+
+    /// TTL in seconds for prompt cache (for redis backend)
+    #[arg(long)]
+    prompt_cache_ttl: Option<u64>,
+
+    /// Maximum cached prefixes (for memory backend)
+    #[arg(long)]
+    prompt_cache_max_prefixes: Option<usize>,
+
+    /// Minimum prefix length to cache (in tokens)
+    #[arg(long, default_value_t = 16)]
+    prompt_cache_min_length: usize,
 }
 
 // TODO: Re-enable when ModelsEngineBuilder API is stable
@@ -903,7 +932,7 @@ pub async fn run() -> Result<()> {
     let mut config: Option<Config> = None;
     let mut cache_config: Option<CacheConfig> = None;
 
-    let pipelines = default_pipelines
+    let pipelines: HashMap<_, _> = default_pipelines
         .into_iter()
         .map(|pipeline| {
             let cfg = pipeline.get_model_config();
@@ -943,8 +972,102 @@ pub async fn run() -> Result<()> {
         mailbox: mailbox_backend_config,
     } = build_resolved_parking_lot(&cache_config, resolved_parking_lot);
 
+    // Initialize prompt cache manager if enabled
+    // Check CLI args, environment variables, and models.yaml config
+    let prompt_cache_enabled = args.prompt_cache
+        || std::env::var("CANDLE_VLLM_PROMPT_CACHE_ENABLED")
+            .ok()
+            .and_then(|v| v.parse::<bool>().ok())
+            .unwrap_or(false);
+
+    let prompt_cache = if prompt_cache_enabled {
+        // Get tokenizer from first pipeline
+        let tokenizer = pipelines
+            .values()
+            .next()
+            .map(|(p, _)| p.tokenizer().clone())
+            .ok_or_else(|| {
+                candle_core::Error::Msg("No pipeline available for tokenizer".to_string())
+            })?;
+
+        // Build cache config: CLI args > env vars > models.yaml > defaults
+        let cache_backend = args
+            .prompt_cache_backend
+            .as_ref()
+            .and_then(|s| s.parse::<CacheBackend>().ok())
+            .or_else(|| {
+                std::env::var("CANDLE_VLLM_PROMPT_CACHE_BACKEND")
+                    .ok()
+                    .and_then(|s| s.parse::<CacheBackend>().ok())
+            })
+            .unwrap_or(CacheBackend::Memory);
+
+        let cache_path = args
+            .prompt_cache_path
+            .clone()
+            .or_else(|| std::env::var("CANDLE_VLLM_PROMPT_CACHE_PATH").ok());
+
+        let redis_url = args
+            .prompt_cache_redis_url
+            .clone()
+            .or_else(|| std::env::var("CANDLE_VLLM_PROMPT_CACHE_REDIS_URL").ok());
+
+        let ttl_seconds = args.prompt_cache_ttl.or_else(|| {
+            std::env::var("CANDLE_VLLM_PROMPT_CACHE_TTL")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+        });
+
+        let max_prefixes = args.prompt_cache_max_prefixes.or_else(|| {
+            std::env::var("CANDLE_VLLM_PROMPT_CACHE_MAX_PREFIXES")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+        });
+
+        let min_length = std::env::var("CANDLE_VLLM_PROMPT_CACHE_MIN_LENGTH")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(args.prompt_cache_min_length);
+
+        let cache_config = PromptCacheConfig {
+            enabled: true,
+            backend: cache_backend,
+            max_cached_prefixes: max_prefixes,
+            cache_path,
+            redis_url,
+            ttl_seconds,
+            min_prefix_length: min_length,
+            model_fingerprint: config
+                .architectures
+                .as_ref()
+                .and_then(|archs| archs.first())
+                .map(|arch| arch.clone()),
+        };
+
+        info!(
+            "Initializing prompt cache manager: backend={:?}, enabled=true",
+            cache_config.backend
+        );
+
+        match PromptCacheManager::new(cache_config, tokenizer) {
+            Ok(manager) => {
+                info!("Prompt cache manager initialized successfully");
+                Some(Arc::new(manager))
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to initialize prompt cache manager: {}, continuing without cache",
+                    e
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Create the inference engine with resource-aware scheduling
-    let llm_engine = LLMEngine::new(
+    let llm_engine = LLMEngine::new_with_cache(
         pipelines,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
@@ -953,6 +1076,7 @@ pub async fn run() -> Result<()> {
         &config,
         Arc::new(Notify::new()),
         Some(scheduler_pool_config),
+        prompt_cache,
         #[cfg(feature = "nccl")]
         daemon_manager,
     )?;

@@ -839,6 +839,25 @@ pub struct ChatCompletionRequest {
     /// Used for tracking and analytics purposes
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
+
+    // ========================================================================
+    // Prompt Caching Control
+    // ========================================================================
+    /// Control prompt caching behavior for this request
+    /// - "ephemeral": Don't cache this request
+    /// - "ephemeral_user": Don't cache user messages in this request
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+/// Cache control options for prompt caching.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheControl {
+    /// Don't cache this request
+    Ephemeral,
+    /// Don't cache user messages in this request
+    EphemeralUser,
 }
 
 impl ChatCompletionRequest {

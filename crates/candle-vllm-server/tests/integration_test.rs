@@ -338,6 +338,7 @@ fn create_test_chat_request(model: &str) -> ChatCompletionRequest {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     }
 }
 
@@ -933,6 +934,7 @@ async fn test_vision_model_image_description() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     // Verify the request has image content
@@ -1110,6 +1112,7 @@ async fn test_vision_proxy_with_reasoning_question() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     // Verify initial request structure
@@ -1649,6 +1652,7 @@ async fn test_real_inference_basic() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     // Run actual inference using server's inference path
@@ -1799,6 +1803,7 @@ async fn test_real_vision_model_image_description() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     // Run actual vision inference
@@ -1936,6 +1941,7 @@ async fn test_real_proxy_vision_with_reasoning() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     // Get image description from vision model
@@ -1998,6 +2004,7 @@ async fn test_real_proxy_vision_with_reasoning() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     // Run reasoning inference
@@ -2166,6 +2173,7 @@ async fn test_real_inference_reasoning_non_streaming() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     // Run inference
@@ -2265,6 +2273,7 @@ async fn test_real_inference_non_reasoning_non_streaming() {
         parallel_tool_calls: None,
         conversation_id: None,
         resource_id: None,
+        cache_control: None,
     };
 
     // Run inference

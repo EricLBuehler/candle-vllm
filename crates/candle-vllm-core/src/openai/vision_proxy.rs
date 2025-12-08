@@ -552,6 +552,7 @@ mod tests {
             parallel_tool_calls: None,
             conversation_id: None,
             resource_id: None,
+            cache_control: None,
         };
 
         let result = preprocessor
@@ -619,6 +620,7 @@ mod tests {
             parallel_tool_calls: None,
             conversation_id: None,
             resource_id: None,
+            cache_control: None,
         };
 
         let result = preprocessor.preprocess_request(request).await.unwrap();

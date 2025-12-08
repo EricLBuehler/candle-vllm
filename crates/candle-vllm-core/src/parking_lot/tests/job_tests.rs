@@ -132,6 +132,7 @@ fn test_inference_result_completion() {
         created: 1234567890,
         prompt_time_costs: 50,
         completion_time_costs: 100,
+        prompt_tokens_details: None,
     };
 
     let result = InferenceResult::completion(choices.clone(), usage.clone());

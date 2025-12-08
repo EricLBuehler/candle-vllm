@@ -18,12 +18,14 @@ use crate::parking_lot::{
     ResourceAdapter, ResourceCost, ResourceCostExt, SerializableInferenceResult, StreamingRegistry,
     StreamingTokenResult, TaskExecutor, TaskMetadata,
 };
+use crate::prompt_cache::PromptCacheManager;
 use crate::scheduler::Scheduler;
 use crate::{
     openai::{
         models::Config,
         responses::{
             ChatChoice, ChatCompletionChunk, ChatCompletionUsageResponse, Choice, ChoiceData,
+            PromptTokensDetails,
         },
     },
     scheduler::cache_engine::{CacheConfig, CacheEngine},
@@ -186,6 +188,12 @@ pub struct LLMEngine {
 
     /// Current resource units in use
     used_units: Arc<std::sync::atomic::AtomicUsize>,
+
+    /// Optional prompt cache manager for prefix caching
+    prompt_cache: Option<Arc<PromptCacheManager>>,
+
+    /// Track cached tokens per request for usage reporting
+    cached_tokens: RwLock<HashMap<String, usize>>,
 }
 
 impl LLMEngine {
@@ -201,6 +209,31 @@ impl LLMEngine {
         config: &Config,
         notify: Arc<Notify>,
         pool_config: Option<SchedulerPoolConfig>,
+        #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
+    ) -> Result<Self> {
+        Self::new_with_cache(
+            pipelines,
+            scheduler_config,
+            cache_config,
+            config,
+            notify,
+            pool_config,
+            None,
+            #[cfg(feature = "nccl")]
+            daemon_manager,
+        )
+    }
+
+    /// Create a new `LLMEngine` with optional prompt cache.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_cache(
+        pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
+        scheduler_config: crate::scheduler::SchedulerConfig,
+        cache_config: &CacheConfig,
+        config: &Config,
+        notify: Arc<Notify>,
+        pool_config: Option<SchedulerPoolConfig>,
+        prompt_cache: Option<Arc<PromptCacheManager>>,
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
     ) -> Result<Self> {
         info!(
@@ -292,9 +325,15 @@ impl LLMEngine {
             daemon_manager: RwLock::new(daemon_manager),
             in_flight_requests: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             used_units: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            prompt_cache: prompt_cache.clone(),
+            cached_tokens: RwLock::new(HashMap::new()),
         };
 
-        info!("LLMEngine initialized with parking-lot scheduler");
+        if prompt_cache.is_some() {
+            info!("LLMEngine initialized with prompt caching enabled");
+        } else {
+            info!("LLMEngine initialized with parking-lot scheduler");
+        }
 
         Ok(engine)
     }
@@ -427,6 +466,24 @@ impl LLMEngine {
             "✅ ENGINE: Capacity check passed - request_id={}",
             request_id
         );
+
+        // Check prompt cache for prefix match
+        let _cached_tokens = if let Some(ref cache_manager) = self.prompt_cache {
+            if let Ok(Some(cached_match)) = cache_manager.find_cached_prefix(&tokens).await {
+                let cached_count = cached_match.cached_tokens;
+                info!(
+                    "💾 CACHE: Found cached prefix - request_id={}, cached_tokens={}",
+                    request_id, cached_count
+                );
+                // Store cached token count for usage reporting
+                self.cached_tokens.write().insert(request_id.clone(), cached_count);
+                cached_count
+            } else {
+                0
+            }
+        } else {
+            0
+        };
 
         // Reserve resources
         info!(
@@ -616,6 +673,24 @@ impl LLMEngine {
             "✅ ENGINE: Capacity check passed - request_id={}",
             request_id
         );
+
+        // Check prompt cache for prefix match
+        let _cached_tokens = if let Some(ref cache_manager) = self.prompt_cache {
+            if let Ok(Some(cached_match)) = cache_manager.find_cached_prefix(&tokens).await {
+                let cached_count = cached_match.cached_tokens;
+                info!(
+                    "💾 CACHE: Found cached prefix - request_id={}, cached_tokens={}",
+                    request_id, cached_count
+                );
+                // Store cached token count for usage reporting
+                self.cached_tokens.write().insert(request_id.clone(), cached_count);
+                cached_count
+            } else {
+                0
+            }
+        } else {
+            0
+        };
 
         // Reserve resources
         info!(
@@ -1041,7 +1116,7 @@ impl LLMEngine {
             created,
             model: self.model_name.clone(),
             object: "chat.completion.chunk",
-            system_fingerprint: None,
+            system_fingerprint: Some(self.config.system_fingerprint()),
             conversation_id,
             resource_id,
         }
@@ -1059,5 +1134,30 @@ impl LLMEngine {
     /// Legacy method stub for scheduler step processing.
     pub fn process_scheduler_step(&mut self) -> Result<usize> {
         Ok(0)
+    }
+
+    /// Get cached token count for a request.
+    pub fn get_cached_tokens(&self, request_id: &str) -> Option<usize> {
+        self.cached_tokens.read().get(request_id).copied()
+    }
+
+    /// Update usage response with cached token information.
+    pub fn update_usage_with_cache(
+        &self,
+        usage: &mut ChatCompletionUsageResponse,
+        request_id: &str,
+    ) {
+        if let Some(cached_count) = self.get_cached_tokens(request_id) {
+            if cached_count > 0 {
+                usage.prompt_tokens_details = Some(PromptTokensDetails {
+                    cached_tokens: Some(cached_count),
+                });
+            }
+        }
+    }
+
+    /// Clean up cached token tracking for a completed request.
+    pub fn cleanup_cached_tokens(&self, request_id: &str) {
+        self.cached_tokens.write().remove(request_id);
     }
 }

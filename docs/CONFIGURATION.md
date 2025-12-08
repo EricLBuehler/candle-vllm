@@ -146,6 +146,214 @@ models:
 - **`frequency_penalty`**: Frequency penalty (-2.0 to 2.0)
 - **`presence_penalty`**: Presence penalty (-2.0 to 2.0)
 - **`isq`**: In-situ quantization (`q4k`, `q8_0`, etc.)
+- **`prompt_cache`**: Prompt cache configuration (see below)
+
+## Prompt Caching Configuration
+
+Prompt caching allows the system to reuse computed KV cache blocks for shared prompt prefixes, significantly reducing latency and computational costs for repeated or similar prompts.
+
+### Overview
+
+When prompt caching is enabled, the system:
+- Detects shared prompt prefixes across requests
+- Reuses pre-computed KV cache blocks for matching prefixes
+- Skips redundant prefill computation for cached tokens
+- Reports cache usage in API responses via `usage.prompt_tokens_details.cached_tokens`
+
+### Configuration Methods
+
+Prompt caching can be configured via:
+1. **CLI arguments** (highest priority)
+2. **Environment variables**
+3. **`models.yaml`** (per-model configuration)
+
+### CLI Arguments
+
+```bash
+# Enable prompt caching
+--prompt-cache
+
+# Select backend (memory, sled, redis)
+--prompt-cache-backend sled
+
+# Storage path (for sled backend)
+--prompt-cache-path ~/.candle-vllm/cache
+
+# Redis URL (for redis backend)
+--prompt-cache-redis-url redis://localhost:6379
+
+# TTL in seconds (for redis backend)
+--prompt-cache-ttl 3600
+
+# Maximum cached prefixes (for memory backend)
+--prompt-cache-max-prefixes 10000
+
+# Minimum prefix length to cache (tokens)
+--prompt-cache-min-length 16
+```
+
+### Environment Variables
+
+```bash
+# Enable prompt caching
+export CANDLE_VLLM_PROMPT_CACHE_ENABLED=true
+
+# Backend selection
+export CANDLE_VLLM_PROMPT_CACHE_BACKEND=sled
+
+# Storage path (sled)
+export CANDLE_VLLM_PROMPT_CACHE_PATH=~/.candle-vllm/cache
+
+# Redis URL (redis backend)
+export CANDLE_VLLM_PROMPT_CACHE_REDIS_URL=redis://localhost:6379
+
+# TTL in seconds (redis backend)
+export CANDLE_VLLM_PROMPT_CACHE_TTL=3600
+
+# Maximum prefixes (memory backend)
+export CANDLE_VLLM_PROMPT_CACHE_MAX_PREFIXES=10000
+
+# Minimum prefix length (tokens)
+export CANDLE_VLLM_PROMPT_CACHE_MIN_LENGTH=16
+```
+
+### Models.yaml Configuration
+
+```yaml
+models:
+  - name: mistral-7b
+    hf_id: mistralai/Mistral-7B-Instruct-v0.3
+    params:
+      prompt_cache:
+        enabled: true
+        backend: sled
+        cache_path: ~/.candle-vllm/cache/mistral
+        min_prefix_length: 16
+        max_cached_prefixes: 10000
+```
+
+### Cache Backends
+
+#### Memory Backend (Default)
+
+- **Fastest** for single-instance deployments
+- **Not persistent** - cache is lost on restart
+- **LRU eviction** when `max_cached_prefixes` is reached
+- **Best for**: Development, testing, single-instance production
+
+```yaml
+prompt_cache:
+  enabled: true
+  backend: memory
+  max_cached_prefixes: 10000
+```
+
+#### Sled Backend (Recommended for Production)
+
+- **Persistent** - survives process restarts
+- **File-based** storage with ACID transactions
+- **High performance** for read-heavy workloads
+- **Best for**: Single-instance production deployments
+
+```yaml
+prompt_cache:
+  enabled: true
+  backend: sled
+  cache_path: ~/.candle-vllm/cache
+  min_prefix_length: 16
+```
+
+**Note**: Requires `--features prompt-cache-sled` or `--features prompt-cache` build flag.
+
+#### Redis Backend
+
+- **Distributed** - share cache across multiple instances
+- **TTL-based expiration** for automatic cleanup
+- **Network-based** - requires Redis server
+- **Best for**: Multi-instance deployments, horizontal scaling
+
+```yaml
+prompt_cache:
+  enabled: true
+  backend: redis
+  redis_url: redis://localhost:6379
+  ttl_seconds: 3600
+```
+
+**Note**: Requires `--features prompt-cache-redis` or `--features prompt-cache` build flag.
+
+### API Response Fields
+
+When prompt caching is used, responses include cache information:
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 100,
+    "completion_tokens": 50,
+    "total_tokens": 150,
+    "prompt_tokens_details": {
+      "cached_tokens": 75
+    }
+  },
+  "system_fingerprint": "fp_abc123"
+}
+```
+
+- **`prompt_tokens_details.cached_tokens`**: Number of prompt tokens retrieved from cache
+- **`system_fingerprint`**: Model configuration fingerprint for cache validation
+
+### Request-Level Cache Control
+
+Clients can control caching per-request:
+
+```json
+{
+  "model": "mistral",
+  "messages": [...],
+  "cache_control": "ephemeral"  // Don't cache this request
+}
+```
+
+Options:
+- **`"ephemeral"`**: Don't cache this request
+- **`"ephemeral_user"`**: Don't cache user messages in this request
+
+### Configuration Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `enabled` | `false` | Enable prompt caching |
+| `backend` | `memory` | Backend type: `memory`, `sled`, `redis` |
+| `cache_path` | `~/.candle-vllm/cache` | Storage path (sled backend) |
+| `redis_url` | `None` | Redis connection URL (redis backend) |
+| `ttl_seconds` | `None` | TTL in seconds (redis backend, no expiration if None) |
+| `max_cached_prefixes` | `None` | Maximum cached prefixes (memory backend, unlimited if None) |
+| `min_prefix_length` | `16` | Minimum prefix length to cache (in tokens) |
+| `model_fingerprint` | Auto | Model config hash for cache invalidation (auto-generated) |
+
+### Best Practices
+
+1. **Use sled backend for production**: Provides persistence and good performance
+2. **Set appropriate `min_prefix_length`**: Too low wastes memory, too high reduces hit rate
+3. **Monitor cache hit rates**: Use cache statistics to tune configuration
+4. **Use model fingerprints**: Ensures cache invalidation when model config changes
+5. **Consider TTL for Redis**: Prevents stale cache entries in long-running deployments
+
+### Example: Full Configuration
+
+```yaml
+models:
+  - name: mistral-7b
+    hf_id: mistralai/Mistral-7B-Instruct-v0.3
+    params:
+      prompt_cache:
+        enabled: true
+        backend: sled
+        cache_path: ~/.candle-vllm/cache/mistral-7b
+        min_prefix_length: 32
+        max_cached_prefixes: 50000
+```
 
 ## Scheduler Pool Configuration
 

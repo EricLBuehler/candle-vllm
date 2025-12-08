@@ -401,6 +401,7 @@ impl InferenceWorker {
                     total_tokens: work.tokens.len() + generated_tokens.len(),
                     prompt_time_costs: prefill_elapsed.as_millis() as usize,
                     completion_time_costs: decode_elapsed.as_millis() as usize,
+                    prompt_tokens_details: None,
                 };
 
                 if work.response_tx.send(Ok((choices, usage))).is_err() {

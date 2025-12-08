@@ -42,6 +42,14 @@ macro_rules! try_api {
     };
 }
 
+/// Details about prompt token usage, including caching information.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PromptTokensDetails {
+    /// Number of tokens in the prompt that were retrieved from cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cached_tokens: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionUsageResponse {
     pub request_id: String,
@@ -51,6 +59,9 @@ pub struct ChatCompletionUsageResponse {
     pub total_tokens: usize,
     pub prompt_time_costs: usize,     //milliseconds
     pub completion_time_costs: usize, //milliseconds
+    /// Details about prompt token usage, including cache information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
 // ============================================================================
@@ -152,6 +163,11 @@ pub struct ChatCompletionResponse {
     /// Resource ID from the request (if provided)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_id: Option<String>,
+    /// System fingerprint for cache invalidation and reproducibility
+    /// This is a hash of the model configuration that can be used to detect
+    /// when the backend configuration changes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_fingerprint: Option<String>,
 }
 
 // ============================================================================

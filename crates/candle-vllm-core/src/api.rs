@@ -427,6 +427,7 @@ impl InferenceEngine {
             parallel_tool_calls: None,
             conversation_id: None,
             resource_id: None,
+            cache_control: None,
         };
 
         let pipeline_config = crate::openai::PipelineConfig {
@@ -506,6 +507,7 @@ impl InferenceEngine {
             parallel_tool_calls: None,
             conversation_id: None,
             resource_id: None,
+            cache_control: None,
         };
 
         let pipeline_config = crate::openai::PipelineConfig {

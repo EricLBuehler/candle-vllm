@@ -279,6 +279,31 @@ impl Config {
         }
     }
 
+    /// Generate a system fingerprint for cache invalidation.
+    ///
+    /// This creates a hash of key model configuration parameters
+    /// that affect inference behavior, allowing cache invalidation
+    /// when the model configuration changes.
+    pub fn system_fingerprint(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        
+        // Hash key configuration parameters
+        hasher.update(self.hidden_size.to_le_bytes());
+        hasher.update(self.num_hidden_layers.to_le_bytes());
+        hasher.update(self.num_attention_heads.to_le_bytes());
+        if let Some(ref archs) = self.architectures {
+            for arch in archs {
+                hasher.update(arch.as_bytes());
+            }
+        }
+        hasher.update(self.vocab_size.to_le_bytes());
+        hasher.update(self.max_seq_len.to_le_bytes());
+        
+        let hash = hasher.finalize();
+        format!("fp_{:x}", hash.iter().take(8).fold(0u64, |acc, &b| (acc << 8) | b as u64))
+    }
+
     pub fn v_head_dim(&self) -> usize {
         match &self.moe_config {
             Some(MoEConfig::DeepSeekMoE(cfg)) => {

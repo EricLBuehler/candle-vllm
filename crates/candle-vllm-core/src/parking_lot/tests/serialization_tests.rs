@@ -41,11 +41,14 @@ fn test_serializable_result_completion() {
     }];
 
     let usage = ChatCompletionUsageResponse {
+        request_id: "test-request".to_string(),
         prompt_tokens: 10,
         completion_tokens: 5,
         total_tokens: 15,
         created: 1234567890,
+        prompt_time_costs: 0,
         completion_time_costs: 100,
+        prompt_tokens_details: None,
     };
 
     let result = SerializableInferenceResult::completion(choices.clone(), usage.clone());

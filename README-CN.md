@@ -16,6 +16,7 @@
 - 高度可扩展的基于trait的系统，支持快速实现新的模型服务。
 - 生成过程中支持流式（stream）传输。
 - 使用Paged Attention高效管理KV缓存。
+- **提示词缓存（Prompt Caching）** 支持多种后端（内存、sled、redis），可跨请求缓存和重用KV缓存。
 - 持续批处理（continuous batching，不同时间段的请求decoding阶段聚合为批量处理）。
 - 原位（In-situ）量化（及原位Marlin格式转换）。
 - 支持`GPTQ/Marlin`格式量化（4位）。

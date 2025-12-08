@@ -297,6 +297,7 @@ impl ResponsesSession {
                 stop: None,
                 stream: None,
                 n: None,
+                cache_control: None,
                 presence_penalty: None,
                 frequency_penalty: None,
                 repeat_last_n: None,

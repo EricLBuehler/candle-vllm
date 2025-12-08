@@ -1,3 +1,4 @@
+use candle_vllm_core::prompt_cache::PromptCacheConfig;
 use serde::{Deserialize, Serialize};
 use serde_yaml;
 use std::collections::HashMap;
@@ -371,6 +372,10 @@ pub struct ModelParams {
 
     /// Per-model parking lot overrides
     pub parking_lot: Option<ParkingLotConfig>,
+
+    /// Per-model prompt cache configuration
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<PromptCacheConfig>,
 }
 
 /// A friendly model definition from `models.yaml`.

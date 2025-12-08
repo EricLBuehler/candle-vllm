@@ -14,10 +14,14 @@
 # Optional: Auto-unload models after being idle for this many seconds
 # Set to null or omit to disable auto-unloading
 # Models will be automatically unloaded if no requests are received for this duration
-idle_unload_secs: 3600  # 1 hour
+idle_unload_secs: 3600 # 1 hour
+
+# Optional: Default model if none is specified on the CLI or in API requests
+# This allows using "default" as the model name in API calls
+default_model: qwen2.5-0.5b-instruct-gguf
 
 # ============================================================================
-# Parking Lot Scheduler Configuration (Optional)
+# Parking Lot Scheduler Configuration (Global Defaults - Optional)
 # ============================================================================
 # Configure the thread pool and resource scheduler for inference.
 # If omitted, sensible defaults are used based on system resources.
@@ -28,29 +32,22 @@ parking_lot:
     # Number of worker threads for model inference (default: num_cpus)
     # Each worker thread can process one inference request at a time
     worker_threads: 4
-    
-    # Maximum blocking threads for tokio runtime (default: 512)
-    # Used for I/O operations and async tasks
-    max_blocking_threads: 512
-    
-    # Stack size per worker thread in bytes (default: 2MB)
-    thread_stack_size: 2097152
-    
+
   # Resource limits and queue configuration
   limits:
     # Maximum resource units (GPU KV-cache blocks)
-    # Set to null to auto-derive from kvcache_mem_gpu configuration
+    # Set to null to auto-derive from mem configuration
     # This determines how many requests can run concurrently
-    max_units: null
-    
+    max_units: 4096
+
     # Maximum number of queued requests before rejection
     # Requests beyond this limit will be rejected with 503 error
-    max_queue_depth: 1000
-    
+    max_queue_depth: 100
+
     # Request timeout in seconds
     # Requests that don't complete within this time are cancelled
-    timeout_secs: 120
-    
+    timeout_secs: 300
+
   # Queue backend configuration
   queue:
     # Backend type for task queue
@@ -58,117 +55,378 @@ parking_lot:
     #          "postgres" (persistent, requires postgres_url)
     #          "yaque" (persistent file-based, requires yaque_dir)
     backend: "memory"
-    
+
     # Enable persistent queue (survives server restarts)
     # Only works with postgres or yaque backends
     persistence: false
-    
+
     # PostgreSQL connection string (required if backend = "postgres")
     # postgres_url: "postgresql://user:password@localhost:5432/candle_vllm"
-    
+
     # Directory for Yaque file-based queue (required if backend = "yaque")
     # yaque_dir: "./queue_data"
-    
+
   # Result mailbox configuration
   mailbox:
     # Backend type for storing completed results
     # Options: "memory" (default, non-persistent)
     #          "postgres" (persistent, requires postgres_url)
     backend: "memory"
-    
+
     # How long to retain completed results in seconds
     # After this time, results are purged from the mailbox
-    retention_secs: 3600  # 1 hour
-    
+    retention_secs: 3600
+
     # PostgreSQL connection string (required if backend = "postgres")
     # postgres_url: "postgresql://user:password@localhost:5432/candle_vllm"
 
 models:
-  # Example: Hugging Face model with basic parameters
+  # ============================================================================
+  # Example: Mistral 3B Reasoning Model (Safetensors)
+  # ============================================================================
+  - name: mistral-3-ministral-3B-reasoning
+    hf_id: mistralai/Ministral-3-3B-Reasoning-2512
+    params:
+      dtype: f16
+      mem: 8192 # KV cache memory in MB (replaces kvcache_mem_gpu)
+      max_num_seqs: 64
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.3
+      top_p: 0.9
+      top_k: 40
+      prefill_chunk_size: 2048
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      # Per-model overrides for parking lot configuration
+      pool:
+        worker_threads: 4
+      limits:
+        max_units: 2048
+        max_queue_depth: 50
+        timeout_secs: 240
+      queue:
+        backend: "memory"
+        persistence: false
+      mailbox:
+        backend: "memory"
+        retention_secs: 3600
+    notes: "Mistral 3B reasoning model, f16 precision on unified memory"
+
+  # ============================================================================
+  # Example: Llama 3.2 1B Instruct (GGUF Quantized)
+  # ============================================================================
+  - name: llama-3.2-1b-instruct
+    hf_id: bartowski/Llama-SmolTalk-3.2-1B-Instruct-GGUF
+    weight_file: Llama-SmolTalk-3.2-1B-Instruct-Q4_K_M.gguf
+    params:
+      dtype: f16
+      mem: 4096
+      max_num_seqs: 8
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      prefill_chunk_size: 2048
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      pool:
+        worker_threads: 4
+      limits:
+        max_units: 4096
+        max_queue_depth: 25
+        timeout_secs: 180
+      queue:
+        backend: "memory"
+        persistence: false
+      mailbox:
+        backend: "memory"
+        retention_secs: 3600
+    notes: "Llama 3.2 1B GGUF (Q4_K_M quantization)"
+
+  # ============================================================================
+  # Example: Qwen2.5 0.5B Instruct (GGUF - Default Model)
+  # ============================================================================
+  - name: qwen2.5-0.5b-instruct-gguf
+    hf_id: bartowski/Qwen2.5-0.5B-Instruct-GGUF
+    weight_file: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+    params:
+      dtype: f16
+      mem: 2048
+      max_num_seqs: 16
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      pool:
+        worker_threads: 4
+      limits:
+        max_units: 1024
+        max_queue_depth: 50
+        timeout_secs: 180
+      queue:
+        backend: "memory"
+        persistence: false
+      mailbox:
+        backend: "memory"
+        retention_secs: 3600
+    notes: "0.5B Qwen2.5 instruct GGUF, set as default model"
+
+  # ============================================================================
+  # Example: Mistral Small 0.5B (GGUF Quantized)
+  # ============================================================================
+  - name: mistral-small-0.5b-gguf
+    hf_id: bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF
+    weight_file: Mistral-Small-3.1-DRAFT-0.5B-Q4_K_M.gguf
+    params:
+      dtype: f16
+      mem: 2048
+      max_num_seqs: 16
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      pool:
+        worker_threads: 4
+      limits:
+        max_units: 1024
+        max_queue_depth: 50
+        timeout_secs: 180
+      queue:
+        backend: "memory"
+        persistence: false
+      mailbox:
+        backend: "memory"
+        retention_secs: 3600
+    notes: "Mistral Small 0.5B GGUF quantized model"
+
+  # ============================================================================
+  # Example: Phi-3.5 Vision Instruct (Vision Proxy Mode)
+  # ============================================================================
+  - name: phi-3.5-vision-instruct
+    hf_id: microsoft/Phi-3.5-vision-instruct
+    params:
+      dtype: f16
+      mem: 6144
+      max_num_seqs: 16
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 50
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: proxy
+      vision_proxy:
+        hf_id: microsoft/Phi-3.5-vision-instruct
+        prompt_template: "Describe this image in detail:"
+    parking_lot:
+      pool:
+        worker_threads: 4
+      limits:
+        max_units: 2048
+        max_queue_depth: 25
+        timeout_secs: 600 # Longer timeout for vision processing
+      queue:
+        backend: "memory"
+        persistence: false
+      mailbox:
+        backend: "memory"
+        retention_secs: 3600
+    notes: "Phi-3.5 vision model with proxy mode; includes text+vision tokenizer"
+
+  # ============================================================================
+  # Example: Mistral 7B (Safetensors)
+  # ============================================================================
   - name: mistral-7b
     hf_id: mistralai/Mistral-7B-Instruct-v0.3
     params:
       dtype: f16
+      mem: 8192
+      max_num_seqs: 256
+      block_size: 64
+      device_ids: [0]
       temperature: 0.7
       top_p: 0.9
       top_k: 40
       frequency_penalty: 0.0
       presence_penalty: 0.0
-      kvcache_mem_gpu: 8192  # MB
-      max_num_seqs: 256
+      prefill_chunk_size: 8192
+    capabilities:
+      vision_mode: disabled
     notes: "Mistral 7B Instruct model from Hugging Face"
 
-  # Example: Local model path
+  # ============================================================================
+  # Example: Local Model Path
+  # ============================================================================
   - name: local-mistral
     local_path: ./models/mistral-7b-instruct
     params:
       dtype: f16
       quantization: q4k
-      kvcache_mem_gpu: 4096
+      mem: 4096
       max_num_seqs: 128
-    notes: "Local Mistral model with quantization"
+    capabilities:
+      vision_mode: disabled
+    notes: "Local Mistral model with quantization applied at load time"
 
-  # Example: Model with specific weight file
+  # ============================================================================
+  # Example: Model with Specific Weight File (Safetensors)
+  # ============================================================================
   - name: custom-model
     hf_id: microsoft/phi-2
     weight_file: model.safetensors
     params:
       dtype: f16
       block_size: 16
-      kvcache_mem_gpu: 2048
-      device_ids: [0]  # Use GPU 0
-    notes: "Custom model configuration"
+      mem: 2048
+      device_ids: [0]
+    capabilities:
+      vision_mode: disabled
+    notes: "Custom model configuration with specific weight file"
 
-  # Example: Multi-GPU model with custom parking lot settings
+  # ============================================================================
+  # Example: Multi-GPU Model with Custom Parking Lot
+  # ============================================================================
   - name: large-model
     hf_id: mistralai/Mixtral-8x7B-Instruct-v0.1
     params:
       dtype: f16
-      device_ids: [0, 1, 2, 3]  # Use GPUs 0-3
-      kvcache_mem_gpu: 16384
+      device_ids: [0, 1, 2, 3] # Use GPUs 0-3
+      mem: 16384
       max_num_seqs: 512
       multithread: true
-    # Per-model parking lot overrides (optional)
-    # These override the global parking_lot settings for this specific model
+    capabilities:
+      vision_mode: disabled
+    # Per-model parking lot overrides
     parking_lot:
       limits:
-        max_units: 4096         # Higher limit for large model
-        max_queue_depth: 2000   # Larger queue
-        timeout_secs: 300       # Longer timeout for complex requests
+        max_units: 4096
+        max_queue_depth: 2000
+        timeout_secs: 300
     notes: "Large model distributed across multiple GPUs with custom resource limits"
 
-  # Example: CPU-only model
+  # ============================================================================
+  # Example: CPU-Only Model
+  # ============================================================================
   - name: cpu-model
     hf_id: microsoft/phi-2
     params:
       dtype: f32
-      kvcache_mem_cpu: 4096
-      device_ids: []  # Empty = CPU
-    notes: "Model running on CPU"
+      kvcache_mem_cpu: 4096 # Use CPU memory for KV cache
+      device_ids: [] # Empty array = CPU
+    capabilities:
+      vision_mode: disabled
+    notes: "Model running on CPU only"
 
-  # Example: Model with in-situ quantization
+  # ============================================================================
+  # Example: Model with In-Situ Quantization
+  # ============================================================================
   - name: quantized-model
     hf_id: mistralai/Mistral-7B-Instruct-v0.3
     params:
       dtype: f16
-      isq: q4k  # In-situ quantization
-      kvcache_mem_gpu: 4096
+      isq: q4k # In-situ quantization during inference
+      mem: 4096
       max_num_seqs: 128
-    notes: "Model with in-situ quantization enabled"
+    capabilities:
+      vision_mode: disabled
+    notes: "Model with in-situ quantization (applied during inference)"
 
-  # Example: Model with prefill chunking
+  # ============================================================================
+  # Example: Model with Chunked Prefill
+  # ============================================================================
   - name: chunked-model
     hf_id: mistralai/Mistral-7B-Instruct-v0.3
     params:
       dtype: f16
       prefill_chunk_size: 512
-      kvcache_mem_gpu: 8192
+      mem: 8192
       max_num_seqs: 256
-    notes: "Model with chunked prefill for better throughput"
+    capabilities:
+      vision_mode: disabled
+    notes: "Model with chunked prefill for better throughput on long contexts"
 
+  # ============================================================================
+  # Example: Model with Prompt Caching (Sled Backend)
+  # ============================================================================
+  - name: cached-model-sled
+    hf_id: mistralai/Mistral-7B-Instruct-v0.3
+    params:
+      dtype: f16
+      mem: 8192
+      max_num_seqs: 256
+      prompt_cache:
+        enabled: true
+        backend: sled
+        cache_path: ~/.candle-vllm/cache/mistral-7b
+        min_prefix_length: 16
+        max_cached_prefixes: 10000
+    capabilities:
+      vision_mode: disabled
+    notes: "Model with persistent prompt caching using sled backend"
+
+  # ============================================================================
+  # Example: Model with Prompt Caching (Memory Backend)
+  # ============================================================================
+  - name: cached-model-memory
+    hf_id: microsoft/phi-2
+    params:
+      dtype: f16
+      mem: 4096
+      prompt_cache:
+        enabled: true
+        backend: memory
+        max_cached_prefixes: 5000
+        min_prefix_length: 8
+    capabilities:
+      vision_mode: disabled
+    notes: "Model with in-memory prompt caching for development"
+
+  # ============================================================================
+  # Example: Model with Prompt Caching (Redis Backend)
+  # ============================================================================
+  - name: cached-model-redis
+    hf_id: mistralai/Mistral-7B-Instruct-v0.3
+    params:
+      dtype: f16
+      mem: 8192
+      prompt_cache:
+        enabled: true
+        backend: redis
+        redis_url: redis://localhost:6379
+        ttl_seconds: 3600
+        min_prefix_length: 16
+    capabilities:
+      vision_mode: disabled
+    notes: "Model with redis-backed prompt caching for distributed deployments"
 # ============================================================================
 # Parameter Reference
 # ============================================================================
+#
+# Top-level fields:
+#   idle_unload_secs:  Auto-unload models after being idle (optional)
+#   default_model:     Default model name when none specified (optional)
+#   parking_lot:       Global parking lot configuration (optional)
+#   models:            List of model configurations (required)
 #
 # Model-level fields:
 #   name:          Alias name for the model (used with --m <name>)
@@ -176,30 +434,46 @@ models:
 #   local_path:    Local path to model files (alternative to hf_id)
 #   weight_file:   Specific weight file to load (optional, for hf_id or local_path)
 #   params:        Model execution parameters (see below)
+#   capabilities:  Model capabilities including vision support (optional)
+#   parking_lot:   Per-model parking lot overrides (optional)
 #   notes:         Optional description/notes about the model
 #
 # Parameters (under "params" key):
 #   dtype:              Data type (f32, f16, bf16)
 #   quantization:       Quantization method (q4k, q8_0, etc.) - applied at load time
 #   isq:                In-situ quantization (q4k, q8_0, etc.) - applied during inference
-#   block_size:         KV cache block size (default: 64)
-#   max_num_seqs:       Maximum number of sequences in batch
-#   kvcache_mem_gpu:    KV cache memory in MB (GPU)
-#   kvcache_mem_cpu:    KV cache memory in MB (CPU)
+#   block_size:         KV cache block size (default: 16)
+#   max_num_seqs:       Maximum number of sequences in batch (default: 16)
+#   mem:                KV cache memory in MB for GPU (replaces kvcache_mem_gpu)
+#   kvcache_mem_cpu:    KV cache memory in MB for CPU
 #   prefill_chunk_size: Chunk size for prefill (optional, improves throughput)
 #   multithread:        Enable multi-threading (true/false)
 #   device_ids:         List of GPU device IDs to use (empty [] = CPU)
-#   temperature:        Sampling temperature (0.0-2.0, default: 0.7)
-#   top_p:              Nucleus sampling parameter (0.0-1.0)
+#   temperature:        Sampling temperature (0.0-2.0, default: 1.0)
+#   top_p:              Nucleus sampling parameter (0.0-1.0, default: 1.0)
 #   top_k:              Top-k sampling parameter (positive integer or -1 for disabled)
-#   frequency_penalty:  Frequency penalty (-2.0 to 2.0)
-#   presence_penalty:   Presence penalty (-2.0 to 2.0)
+#   frequency_penalty:  Frequency penalty (-2.0 to 2.0, default: 0.0)
+#   presence_penalty:   Presence penalty (-2.0 to 2.0, default: 0.0)
+#   prompt_cache:       Prompt caching configuration (optional, see below)
 #
-# Parking Lot Configuration Reference:
+# Prompt Cache Configuration (under "params.prompt_cache" key):
+#   enabled:            Enable prompt caching (true/false)
+#   backend:            Cache backend type ("memory", "sled", or "redis")
+#   cache_path:         Storage path for sled backend (e.g., ~/.candle-vllm/cache)
+#   redis_url:          Redis connection URL for redis backend (e.g., redis://localhost:6379)
+#   ttl_seconds:        TTL in seconds for redis backend (optional)
+#   max_cached_prefixes: Maximum cached prefixes for memory backend (optional)
+#   min_prefix_length:  Minimum prefix length in tokens to cache (default: 16)
+#
+# Capabilities (under "capabilities" key):
+#   vision_mode:        Vision support mode ("disabled", "proxy", or "native")
+#   vision_proxy:       Vision proxy configuration (required if vision_mode = "proxy")
+#     hf_id:            HuggingFace ID of the vision model
+#     prompt_template:  Template for vision prompts (optional)
+#
+# Parking Lot Configuration (global or per-model):
 #   pool.worker_threads:      Number of threads for CPU-bound inference (default: num_cpus)
-#   pool.max_blocking_threads: Max tokio blocking threads (default: 512)
-#   pool.thread_stack_size:   Stack size per thread in bytes (default: 2MB)
-#   limits.max_units:         Max KV-cache blocks (null = auto from config)
+#   limits.max_units:         Max KV-cache blocks (null = auto from mem config)
 #   limits.max_queue_depth:   Max queued requests before rejection
 #   limits.timeout_secs:      Request timeout in seconds
 #   queue.backend:            "memory" | "postgres" | "yaque"
@@ -211,9 +485,10 @@ models:
 #   - Either "hf_id" or "local_path" must be specified (not both)
 #   - "weight_file" is optional and used to specify a specific file when multiple exist
 #   - All sampling parameters (temperature, top_p, etc.) are optional and have defaults
-#   - Memory parameters (kvcache_mem_gpu, kvcache_mem_cpu) are in megabytes
+#   - Memory parameter "mem" is in megabytes and replaces the old "kvcache_mem_gpu"
 #   - For CPU-only models, set device_ids to [] and use kvcache_mem_cpu
 #   - For multi-GPU models, specify multiple device_ids and enable multithread
-#   - quantization and isq are different: quantization is applied at load time,
-#     while isq (in-situ quantization) is applied during inference
+#   - "quantization" is applied at load time, "isq" is applied during inference
 #   - Per-model "parking_lot" section overrides global parking_lot settings
+#   - "default_model" allows using "default" as model name in API requests
+#   - Vision models require capabilities.vision_mode to be set appropriately

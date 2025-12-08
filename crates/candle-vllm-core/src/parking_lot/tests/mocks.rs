@@ -1,6 +1,9 @@
 //! Mock implementations for parking_lot tests.
 
-use crate::parking_lot::{InferenceJob, InferenceResult, TaskExecutor, TaskMetadata};
+use crate::parking_lot::{
+    InferenceJob, InferenceResult, TaskExecutor, TaskMetadata,
+    types::{PrometheusWorkerExecutor, ParkingLotTaskMetadata},
+};
 use async_trait::async_trait;
 use std::time::Duration;
 
@@ -38,9 +41,38 @@ impl Default for MockLlmExecutor {
     }
 }
 
+// Implement PrometheusWorkerExecutor for use with WorkerPool
+#[async_trait]
+impl PrometheusWorkerExecutor<InferenceJob, InferenceResult> for MockLlmExecutor {
+    async fn execute(
+        &self,
+        payload: InferenceJob,
+        meta: ParkingLotTaskMetadata,
+    ) -> InferenceResult {
+        // Convert ParkingLotTaskMetadata to TaskMetadata
+        let local_meta = TaskMetadata {
+            id: meta.id,
+            priority: meta.priority,
+            cost: meta.cost,
+            created_at_ms: meta.created_at_ms,
+            deadline_ms: meta.deadline_ms,
+            mailbox: meta.mailbox,
+        };
+        self.execute_internal(payload, local_meta).await
+    }
+}
+
+// Also implement TaskExecutor for backward compatibility
 #[async_trait]
 impl TaskExecutor<InferenceJob, InferenceResult> for MockLlmExecutor {
-    async fn execute(&self, payload: InferenceJob, _meta: TaskMetadata) -> InferenceResult {
+    async fn execute(&self, payload: InferenceJob, meta: TaskMetadata) -> InferenceResult {
+        self.execute_internal(payload, meta).await
+    }
+}
+
+impl MockLlmExecutor {
+    /// Internal execute implementation shared by both trait implementations.
+    async fn execute_internal(&self, payload: InferenceJob, _meta: TaskMetadata) -> InferenceResult {
         // Simulate processing time
         if self.delay_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
@@ -102,6 +134,7 @@ impl TaskExecutor<InferenceJob, InferenceResult> for MockLlmExecutor {
                     created: 1234567890,
                     prompt_time_costs: 50,
                     completion_time_costs: 100,
+                    prompt_tokens_details: None,
                 },
             }
         }
