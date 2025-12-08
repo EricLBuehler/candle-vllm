@@ -43,6 +43,8 @@ The candle-vllm inference engine provides:
 
 ```rust
 pub struct SchedulerPoolConfig {
+    /// Number of dedicated worker threads
+    pub worker_threads: usize,
     /// Maximum resource units (GPU blocks) the pool can use
     pub max_units: usize,
     /// Maximum queue depth before rejecting requests
@@ -53,9 +55,12 @@ pub struct SchedulerPoolConfig {
 ```
 
 Default values:
+- `worker_threads`: `num_cpus::get()` (one worker per CPU by default)
 - `max_units`: Derived from cache config (`num_gpu_blocks`)
 - `max_queue_depth`: 1000
 - `default_timeout_secs`: 120
+
+When `models.yaml` provides a `parking_lot` section (global or per-model), those settings override the defaults. If no override is provided, the configuration falls back to values derived from the KV-cache.
 
 ### Environment Variables
 
@@ -91,6 +96,7 @@ let engine = LLMEngine::new(
     &model_config,
     notify,
     Some(SchedulerPoolConfig {
+        worker_threads: num_cpus::get(),
         max_units: 16384,
         max_queue_depth: 1000,
         default_timeout_secs: 120,

@@ -32,3 +32,5 @@ models:
       block_size: 64
       device_ids: [0]
     notes: "Test model with parking lot config"
+
+

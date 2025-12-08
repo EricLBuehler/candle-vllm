@@ -3,14 +3,8 @@
 //! These tests verify that the worker pool properly handles concurrent requests
 //! without hanging or blocking the async runtime.
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
 use candle_vllm_core::openai::requests::ChatCompletionRequest;
 use serde_json::json;
-use std::time::Duration;
-use tower::ServiceExt;
 
 /// Helper to create a test chat request
 fn create_test_request(stream: bool, message: &str) -> ChatCompletionRequest {

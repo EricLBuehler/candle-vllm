@@ -3,8 +3,8 @@
 //! This module handles merging parking lot configurations from multiple sources
 //! with proper priority: CLI > models.yaml > scheduler-config.json > defaults.
 
-use super::models::ParkingLotConfig;
-use super::scheduler::{MailboxConfig, PoolConfig, QueueConfig, SchedulerConfig};
+use super::models::{MailboxBackendConfig, ParkingLotConfig, QueueBackendConfig};
+use super::scheduler::SchedulerConfig;
 use tracing::info;
 
 /// Merged parking lot configuration from all sources.
@@ -14,6 +14,8 @@ pub struct MergedParkingLotConfig {
     pub max_units: Option<usize>,
     pub max_queue_depth: usize,
     pub timeout_secs: u64,
+    pub queue: QueueBackendConfig,
+    pub mailbox: MailboxBackendConfig,
 }
 
 impl Default for MergedParkingLotConfig {
@@ -23,6 +25,8 @@ impl Default for MergedParkingLotConfig {
             max_units: None,
             max_queue_depth: 1000,
             timeout_secs: 120,
+            queue: QueueBackendConfig::default(),
+            mailbox: MailboxBackendConfig::default(),
         }
     }
 }
@@ -55,8 +59,10 @@ pub fn merge_parking_lot_config(
     if let Some(yaml_cfg) = global_yaml {
         info!("📋 CONFIG: Applying models.yaml global parking_lot settings");
         config.worker_threads = yaml_cfg.pool.worker_threads;
-        config.max_queue_depth = yaml_cfg.pool.max_queue_depth;
-        config.timeout_secs = yaml_cfg.pool.timeout_secs;
+        config.max_queue_depth = yaml_cfg.limits.max_queue_depth;
+        config.timeout_secs = yaml_cfg.limits.timeout_secs;
+        config.queue = yaml_cfg.queue.clone();
+        config.mailbox = yaml_cfg.mailbox.clone();
 
         if yaml_cfg.limits.max_units.is_some() {
             config.max_units = yaml_cfg.limits.max_units;
@@ -67,8 +73,10 @@ pub fn merge_parking_lot_config(
     if let Some(model_cfg) = per_model {
         info!("📋 CONFIG: Applying per-model parking_lot overrides");
         config.worker_threads = model_cfg.pool.worker_threads;
-        config.max_queue_depth = model_cfg.pool.max_queue_depth;
-        config.timeout_secs = model_cfg.pool.timeout_secs;
+        config.max_queue_depth = model_cfg.limits.max_queue_depth;
+        config.timeout_secs = model_cfg.limits.timeout_secs;
+        config.queue = model_cfg.queue.clone();
+        config.mailbox = model_cfg.mailbox.clone();
 
         if model_cfg.limits.max_units.is_some() {
             config.max_units = model_cfg.limits.max_units;
@@ -83,23 +91,11 @@ pub fn merge_parking_lot_config(
     config
 }
 
-/// Convert models.yaml ParkingLotConfig to scheduler PoolConfig format.
-pub fn parking_lot_to_pool_config(
-    parking_lot: &ParkingLotConfig,
-    default_max_units: usize,
-) -> PoolConfig {
-    PoolConfig {
-        max_units: parking_lot.limits.max_units.unwrap_or(default_max_units),
-        max_queue_depth: parking_lot.limits.max_queue_depth,
-        default_timeout_secs: parking_lot.limits.timeout_secs,
-        queue: QueueConfig::InMemory, // Default to in-memory for now
-        mailbox: MailboxConfig::default(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::models::{LimitsConfig, MailboxBackendConfig, QueueBackendConfig, WorkerPoolConfig};
+    use super::super::models::{
+        LimitsConfig, MailboxBackendConfig, QueueBackendConfig, WorkerPoolConfig,
+    };
     use super::*;
 
     #[test]
@@ -116,16 +112,24 @@ mod tests {
         let global = ParkingLotConfig {
             pool: WorkerPoolConfig {
                 worker_threads: 4,
-                max_queue_depth: 500,
+                max_queue_depth: 250,
                 timeout_secs: 60,
             },
             limits: LimitsConfig {
                 max_units: Some(2000),
                 max_queue_depth: 500,
-                timeout_secs: 60,
+                timeout_secs: 90,
             },
-            queue: QueueBackendConfig::default(),
-            mailbox: MailboxBackendConfig::default(),
+            queue: QueueBackendConfig {
+                backend: "memory".to_string(),
+                persistence: true,
+                ..QueueBackendConfig::default()
+            },
+            mailbox: MailboxBackendConfig {
+                backend: "postgres".to_string(),
+                retention_secs: 1800,
+                postgres_url: Some("postgresql://example".to_string()),
+            },
         };
 
         // Create a per-model override
@@ -138,6 +142,17 @@ mod tests {
                 max_units: Some(4000), // Override
                 ..global.limits.clone()
             },
+            queue: QueueBackendConfig {
+                backend: "postgres".to_string(),
+                persistence: true,
+                postgres_url: Some("postgresql://model".to_string()),
+                ..QueueBackendConfig::default()
+            },
+            mailbox: MailboxBackendConfig {
+                backend: "memory".to_string(),
+                retention_secs: 900,
+                postgres_url: None,
+            },
             ..global.clone()
         };
 
@@ -146,6 +161,42 @@ mod tests {
         // Per-model overrides should win
         assert_eq!(merged.worker_threads, 8);
         assert_eq!(merged.max_units, Some(4000));
-        assert_eq!(merged.max_queue_depth, 500); // From per_model (which inherited from global)
+        assert_eq!(merged.max_queue_depth, 500); // From per_model (which inherited from global limits)
+        assert_eq!(merged.timeout_secs, 90);
+        assert_eq!(merged.queue.backend, "postgres");
+        assert!(merged.queue.persistence);
+        assert_eq!(
+            merged.queue.postgres_url.as_deref(),
+            Some("postgresql://model")
+        );
+        assert_eq!(merged.mailbox.backend, "memory");
+        assert_eq!(merged.mailbox.retention_secs, 900);
+    }
+
+    #[test]
+    fn test_limits_are_preferred_for_queue_and_timeout() {
+        let global = ParkingLotConfig {
+            pool: WorkerPoolConfig {
+                worker_threads: 2,
+                max_queue_depth: 100,
+                timeout_secs: 30,
+            },
+            limits: LimitsConfig {
+                max_units: Some(256),
+                max_queue_depth: 10,
+                timeout_secs: 5,
+            },
+            queue: QueueBackendConfig::default(),
+            mailbox: MailboxBackendConfig::default(),
+        };
+
+        let merged = merge_parking_lot_config(None, Some(&global), None);
+
+        assert_eq!(merged.worker_threads, 2);
+        assert_eq!(merged.max_units, Some(256));
+        assert_eq!(merged.max_queue_depth, 10);
+        assert_eq!(merged.timeout_secs, 5);
+        assert_eq!(merged.queue.backend, "memory");
+        assert_eq!(merged.mailbox.backend, "memory");
     }
 }

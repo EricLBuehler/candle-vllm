@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_yaml;
+use std::collections::HashMap;
 use std::fs;
 
 /// Worker pool configuration for parking-lot scheduler.
@@ -73,19 +74,198 @@ impl Default for LimitsConfig {
     }
 }
 
+// =============================================================================
+// Webhook Configuration
+// =============================================================================
+
+/// Authentication method for webhook calls.
+///
+/// Supports multiple authentication patterns for flexibility:
+/// - Bearer tokens (OAuth 2.0 / Supabase Edge Functions)
+/// - API keys in custom headers
+/// - HMAC signatures for payload verification
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WebhookAuth {
+    /// Bearer token in Authorization header (OAuth 2.0 / Supabase Edge Functions)
+    /// Token value supports ${ENV_VAR} interpolation.
+    Bearer {
+        /// The bearer token value (supports ${ENV_VAR} syntax)
+        token: String,
+    },
+
+    /// API key in a custom header (e.g., X-API-Key, X-Finlight-Key)
+    ApiKey {
+        /// The header name to use (e.g., "X-API-Key")
+        header: String,
+        /// The API key value (supports ${ENV_VAR} syntax)
+        key: String,
+    },
+
+    /// HMAC signature for payload verification.
+    /// The signature is computed over the JSON payload and included in a header.
+    Hmac {
+        /// The shared secret for HMAC (supports ${ENV_VAR} syntax)
+        secret: String,
+        /// Hash algorithm: "sha256" or "sha512" (default: "sha256")
+        #[serde(default = "default_hmac_algorithm")]
+        algorithm: String,
+        /// Header name for the signature (default: "X-Signature-256")
+        #[serde(default = "default_hmac_header")]
+        header: String,
+    },
+
+    /// No authentication
+    None,
+}
+
+fn default_hmac_algorithm() -> String {
+    "sha256".to_string()
+}
+
+fn default_hmac_header() -> String {
+    "X-Signature-256".to_string()
+}
+
+impl Default for WebhookAuth {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// Webhook configuration for callback notifications.
+///
+/// Webhooks can be triggered when:
+/// - A client disconnects before receiving a response (on_disconnect)
+/// - Any request completes (on_complete)
+///
+/// Example configurations:
+///
+/// ```yaml
+/// # Simple Bearer token (Supabase Edge Functions)
+/// webhook:
+///   url: "https://your-project.supabase.co/functions/v1/callback"
+///   enabled: true
+///   on_disconnect: true
+///   auth:
+///     type: bearer
+///     token: "${SUPABASE_SERVICE_ROLE_KEY}"
+///
+/// # HMAC signature (highest security)
+/// webhook:
+///   url: "https://secure.example.com/webhook"
+///   auth:
+///     type: hmac
+///     secret: "${WEBHOOK_SECRET}"
+///     algorithm: "sha256"
+///     header: "X-Signature-256"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebhookConfig {
+    /// The webhook endpoint URL (supports ${ENV_VAR} syntax)
+    pub url: Option<String>,
+
+    /// Master switch to enable/disable webhooks
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Fire webhook when client disconnects before receiving response
+    #[serde(default = "default_on_disconnect")]
+    pub on_disconnect: bool,
+
+    /// Fire webhook on every completion (in addition to normal response)
+    #[serde(default)]
+    pub on_complete: bool,
+
+    /// HTTP timeout in seconds (default: 30)
+    #[serde(default = "default_webhook_timeout")]
+    pub timeout_secs: u64,
+
+    /// Number of retry attempts on failure (default: 3)
+    #[serde(default = "default_retry_count")]
+    pub retry_count: u32,
+
+    /// Delay between retries in milliseconds (default: 1000)
+    /// Uses exponential backoff: delay * 2^(attempt-1)
+    #[serde(default = "default_retry_delay")]
+    pub retry_delay_ms: u64,
+
+    /// Authentication configuration
+    #[serde(default)]
+    pub auth: Option<WebhookAuth>,
+
+    /// Additional custom headers to include in webhook requests.
+    /// Values support ${ENV_VAR} syntax.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+
+    /// Include HMAC signature even when using other auth methods.
+    /// Useful for adding an extra layer of payload verification.
+    #[serde(default)]
+    pub sign_payload: bool,
+
+    /// Secret for payload signing (if sign_payload=true and auth != Hmac)
+    /// Supports ${ENV_VAR} syntax.
+    pub signing_secret: Option<String>,
+}
+
+fn default_on_disconnect() -> bool {
+    true
+}
+
+fn default_webhook_timeout() -> u64 {
+    30
+}
+
+fn default_retry_count() -> u32 {
+    3
+}
+
+fn default_retry_delay() -> u64 {
+    1000
+}
+
+impl Default for WebhookConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            enabled: false,
+            on_disconnect: true,
+            on_complete: false,
+            timeout_secs: default_webhook_timeout(),
+            retry_count: default_retry_count(),
+            retry_delay_ms: default_retry_delay(),
+            auth: None,
+            headers: HashMap::new(),
+            sign_payload: false,
+            signing_secret: None,
+        }
+    }
+}
+
+// =============================================================================
+// Backend Configuration
+// =============================================================================
+
 /// Queue backend configuration for models.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueueBackendConfig {
-    /// Backend type: "memory", "postgres", "yaque"
+    /// Backend type: "memory", "postgres", "sqlite", "surrealdb", "yaque"
     #[serde(default = "default_queue_backend")]
     pub backend: String,
 
-    /// Enable persistence
+    /// Enable persistence (where supported)
     #[serde(default)]
     pub persistence: bool,
 
     /// PostgreSQL connection URL (if backend = "postgres")
     pub postgres_url: Option<String>,
+
+    /// SQLite database path (if backend = "sqlite")
+    pub sqlite_path: Option<String>,
+
+    /// SurrealDB database path (if backend = "surrealdb")
+    pub surreal_path: Option<String>,
 
     /// Yaque directory path (if backend = "yaque")
     pub yaque_dir: Option<String>,
@@ -101,6 +281,8 @@ impl Default for QueueBackendConfig {
             backend: default_queue_backend(),
             persistence: false,
             postgres_url: None,
+            sqlite_path: None,
+            surreal_path: None,
             yaque_dir: None,
         }
     }
@@ -109,16 +291,26 @@ impl Default for QueueBackendConfig {
 /// Mailbox backend configuration for models.yaml.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MailboxBackendConfig {
-    /// Backend type: "memory", "postgres"
+    /// Backend type: "memory", "postgres", "sqlite", "surrealdb"
     #[serde(default = "default_mailbox_backend")]
     pub backend: String,
 
-    /// Result retention time in seconds
+    /// Result retention time in seconds (default: 3600 = 1 hour)
     #[serde(default = "default_retention_secs")]
     pub retention_secs: u64,
 
     /// PostgreSQL connection URL (if backend = "postgres")
     pub postgres_url: Option<String>,
+
+    /// SQLite database path (if backend = "sqlite")
+    pub sqlite_path: Option<String>,
+
+    /// SurrealDB database path (if backend = "surrealdb")
+    pub surreal_path: Option<String>,
+
+    /// Webhook configuration for this mailbox
+    #[serde(default)]
+    pub webhook: Option<WebhookConfig>,
 }
 
 fn default_mailbox_backend() -> String {
@@ -135,6 +327,9 @@ impl Default for MailboxBackendConfig {
             backend: default_mailbox_backend(),
             retention_secs: default_retention_secs(),
             postgres_url: None,
+            sqlite_path: None,
+            surreal_path: None,
+            webhook: None,
         }
     }
 }
@@ -186,6 +381,8 @@ pub struct ModelProfile {
     pub local_path: Option<String>,
     pub weight_file: Option<String>,
     #[serde(default)]
+    pub parking_lot: Option<ParkingLotConfig>,
+    #[serde(default)]
     pub params: ModelParams,
     pub notes: Option<String>,
 }
@@ -205,6 +402,12 @@ pub struct ModelRegistryConfig {
 impl ModelProfile {
     pub fn has_source(&self) -> bool {
         self.hf_id.is_some() || self.local_path.is_some()
+    }
+
+    pub fn parking_lot_config(&self) -> Option<&ParkingLotConfig> {
+        self.parking_lot
+            .as_ref()
+            .or_else(|| self.params.parking_lot.as_ref())
     }
 }
 

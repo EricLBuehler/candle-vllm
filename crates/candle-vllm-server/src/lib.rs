@@ -1,8 +1,14 @@
 use crate::config::validation::{validate_mcp, validate_models};
-use crate::config::{McpConfig, ModelRegistryConfig};
+use crate::config::{
+    merge_parking_lot_config, MailboxBackendConfig, McpConfig, MergedParkingLotConfig,
+    ModelRegistryConfig, QueueBackendConfig,
+};
 use crate::models_config::{to_model_registry, ModelsState};
 use crate::routes::build_router;
+use crate::state::mailbox_service::MailboxService;
 use crate::state::model_manager::ModelManager;
+use crate::state::queue_backends::{build_mailbox_backend, build_queue_backend};
+use crate::state::queue_service::QueueService;
 use candle_vllm_openai::model_registry::ModelRegistry;
 use candle_vllm_responses::session::ResponsesSession;
 // TODO: Re-enable when vision path is restored
@@ -371,15 +377,86 @@ fn apply_model_alias(args: &mut Args, alias: &ModelAlias) {
     }
 }
 
-fn load_model_registry() -> (
-    Option<ModelRegistry>,
-    HashMap<String, String>,
-    Option<Duration>,
-    Option<String>, // default_model
-) {
+struct LoadedModelRegistry {
+    registry: Option<ModelRegistry>,
+    raw_config: Option<ModelRegistryConfig>,
+    validation: HashMap<String, String>,
+    idle_unload: Option<Duration>,
+    default_model: Option<String>,
+}
+
+impl LoadedModelRegistry {
+    fn merged_parking_lot_config(
+        &self,
+        model_name: Option<&str>,
+    ) -> Option<MergedParkingLotConfig> {
+        let raw_config = self.raw_config.as_ref()?;
+        let per_model = model_name
+            .and_then(|name| raw_config.models.iter().find(|m| m.name == name))
+            .and_then(|profile| profile.parking_lot_config());
+        let global = raw_config.parking_lot.as_ref();
+
+        if per_model.is_none() && global.is_none() {
+            return None;
+        }
+
+        Some(merge_parking_lot_config(per_model, global, None))
+    }
+}
+
+struct ResolvedParkingLot {
+    pool: SchedulerPoolConfig,
+    queue: QueueBackendConfig,
+    mailbox: MailboxBackendConfig,
+}
+
+/// Resolve the active model and its parking_lot configuration in a single pass.
+fn resolve_model_and_scheduler_config(
+    args: &mut Args,
+    loaded_registry: &LoadedModelRegistry,
+) -> Result<(Option<String>, Option<MergedParkingLotConfig>)> {
+    let default_model = loaded_registry.default_model.clone();
+    let model_name = args.model_id.clone().or_else(|| {
+        default_model.clone().map(|default| {
+            info!(
+                "No model specified via CLI, using default model '{}' from config",
+                default
+            );
+            default
+        })
+    });
+
+    // Apply model alias if we have a model name (from CLI or default)
+    if let (Some(registry_ref), Some(name)) =
+        (loaded_registry.registry.as_ref(), model_name.clone())
+    {
+        if let Some(alias) = registry_ref.find(&name) {
+            info!("Using model alias '{}' from models.yaml", name);
+            apply_model_alias(args, &alias);
+            // model_name remains the logical alias name for config lookup
+        } else if args.model_id.is_none() && args.weight_path.is_none() {
+            // If default_model was specified but not found, and no model was provided via CLI
+            return Err(candle_core::Error::Msg(format!(
+                "Default model '{}' not found in registry and no model specified via CLI.\n\
+                Please either:\n\
+                \t1. Fix the default_model in models.yaml\n\
+                \t2. Specify a model via --m <model_id> or --w <weight_path>",
+                name
+            )));
+        }
+    }
+
+    let merged_parking_lot = loaded_registry.merged_parking_lot_config(model_name.as_deref());
+
+    Ok((model_name, merged_parking_lot))
+}
+
+fn load_model_registry() -> LoadedModelRegistry {
     let mut validation = HashMap::new();
     let mut idle_unload = None;
     let mut default_model = None;
+    let mut registry = None;
+    let mut raw_config = None;
 
     // Load models config: env var > ~/.candle-vllm/models.yaml > current dir
     let models_config_path = std::env::var("CANDLE_VLLM_MODELS_CONFIG")
@@ -431,8 +508,15 @@ fn load_model_registry() -> (
                             }
                         }
                     }
-                    let registry = to_model_registry(&cfg);
-                    return (Some(registry), validation, idle_unload, default_model);
+                    registry = Some(to_model_registry(&cfg));
+                    raw_config = Some(cfg);
+                    return LoadedModelRegistry {
+                        registry,
+                        raw_config,
+                        validation,
+                        idle_unload,
+                        default_model,
+                    };
                 }
                 Err(err) => {
                     warn!("Failed to load models registry {candidate}: {err}");
@@ -440,7 +524,13 @@ fn load_model_registry() -> (
             }
         }
     }
-    (None, validation, idle_unload, default_model)
+    LoadedModelRegistry {
+        registry,
+        raw_config,
+        validation,
+        idle_unload,
+        default_model,
+    }
 }
 
 fn get_cache_config(
@@ -473,6 +563,43 @@ fn get_cache_config(
         fully_init: true,
         dtype: kv_dtype,
         kvcache_mem_gpu,
+    }
+}
+
+fn build_resolved_parking_lot(
+    cache_config: &CacheConfig,
+    merged_config: Option<MergedParkingLotConfig>,
+) -> ResolvedParkingLot {
+    let mut scheduler_pool_config = SchedulerPoolConfig::from_cache_config(cache_config);
+    let mut queue = QueueBackendConfig::default();
+    let mut mailbox = MailboxBackendConfig::default();
+
+    if let Some(config) = merged_config {
+        scheduler_pool_config.worker_threads = config.worker_threads;
+        scheduler_pool_config.max_units =
+            config.max_units.unwrap_or(scheduler_pool_config.max_units);
+        scheduler_pool_config.max_queue_depth = config.max_queue_depth;
+        scheduler_pool_config.default_timeout_secs = config.timeout_secs;
+        queue = config.queue;
+        mailbox = config.mailbox;
+    }
+
+    info!(
+        event = "parking_lot_config_resolved",
+        worker_threads = scheduler_pool_config.worker_threads,
+        max_units = scheduler_pool_config.max_units,
+        queue_depth = scheduler_pool_config.max_queue_depth,
+        timeout_secs = scheduler_pool_config.default_timeout_secs,
+        queue_backend = %queue.backend,
+        queue_persistence = queue.persistence,
+        mailbox_backend = %mailbox.backend,
+        mailbox_retention_secs = mailbox.retention_secs
+    );
+
+    ResolvedParkingLot {
+        pool: scheduler_pool_config,
+        queue,
+        mailbox,
     }
 }
 
@@ -568,43 +695,13 @@ pub async fn run() -> Result<()> {
     }
 
     // Apply model alias before using args fields
-    let (registry, validation, idle_unload, default_model) = load_model_registry();
+    let loaded_registry = load_model_registry();
 
-    // If no model specified via CLI, use default_model from config
-    let model_name = args.model_id.clone().or_else(|| {
-        if let Some(ref default) = default_model {
-            info!(
-                "No model specified via CLI, using default model '{}' from config",
-                default
-            );
-            Some(default.clone())
-        } else {
-            None
-        }
-    });
-
+    // Resolve model choice and parking_lot config in one pass
+    let (model_name, resolved_parking_lot) =
+        resolve_model_and_scheduler_config(&mut args, &loaded_registry)?;
     // Store model name for later use (before it gets moved)
     let startup_model_name = model_name.clone();
-
-    // Apply model alias if we have a model name (from CLI or default)
-    if let (Some(registry_ref), Some(name)) = (registry.as_ref(), model_name) {
-        if let Some(alias) = registry_ref.find(&name) {
-            info!("Using model alias '{}' from models.yaml", name);
-            apply_model_alias(&mut args, &alias);
-            // apply_model_alias already sets args.model_id from alias.model_id (hf_id)
-            // or args.weight_path from alias.weight_path (local_path)
-            // So we don't need to set args.model_id here
-        } else if args.model_id.is_none() && args.weight_path.is_none() {
-            // If default_model was specified but not found, and no model was provided via CLI
-            return Err(candle_core::Error::Msg(format!(
-                "Default model '{}' not found in registry and no model specified via CLI.\n\
-                Please either:\n\
-                \t1. Fix the default_model in models.yaml\n\
-                \t2. Specify a model via --m <model_id> or --w <weight_path>",
-                name
-            )));
-        }
-    }
 
     // Load models configuration (vision-enabled approach)
     let models_config = load_models_config(&args)?;
@@ -840,6 +937,12 @@ pub async fn run() -> Result<()> {
     let config = config.as_ref().unwrap().clone();
     info!("Cache config {:?}", cache_config);
 
+    let ResolvedParkingLot {
+        pool: scheduler_pool_config,
+        queue: queue_backend_config,
+        mailbox: mailbox_backend_config,
+    } = build_resolved_parking_lot(&cache_config, resolved_parking_lot);
+
     // Create the inference engine with resource-aware scheduling
     let llm_engine = LLMEngine::new(
         pipelines,
@@ -849,10 +952,36 @@ pub async fn run() -> Result<()> {
         &cache_config,
         &config,
         Arc::new(Notify::new()),
-        Some(SchedulerPoolConfig::from_cache_config(&cache_config)),
+        Some(scheduler_pool_config),
         #[cfg(feature = "nccl")]
         daemon_manager,
     )?;
+
+    info!(
+        event = "queue_mailbox_backend_selected",
+        queue_backend = %queue_backend_config.backend,
+        queue_persistence = queue_backend_config.persistence,
+        mailbox_backend = %mailbox_backend_config.backend,
+        mailbox_retention_secs = mailbox_backend_config.retention_secs
+    );
+
+    let queue_backend =
+        build_queue_backend(&queue_backend_config).map_err(candle_core::Error::wrap)?;
+    let mailbox_backend =
+        build_mailbox_backend(&mailbox_backend_config).map_err(candle_core::Error::wrap)?;
+    let queue_service = Arc::new(QueueService::new(&queue_backend_config)?);
+    let mailbox_service = Arc::new(MailboxService::new(&mailbox_backend_config)?);
+
+    // Create webhook service from mailbox config
+    let webhook_config = mailbox_backend_config.webhook.clone();
+    let webhook_service = Arc::new(state::webhook_service::WebhookService::new(webhook_config));
+    if webhook_service.is_enabled() {
+        info!(
+            event = "webhook_service_enabled",
+            mode = ?webhook_service.default_mode(),
+            "Webhook service initialized"
+        );
+    }
 
     if args.temperature.is_some() || pipeline_config.generation_cfg.is_none() {
         //overwrite the generation config when temperature (and others) specified in arguments
@@ -887,13 +1016,13 @@ pub async fn run() -> Result<()> {
     // Wrap LLMEngine in Arc for shared ownership (no RwLock needed - engine uses internal synchronization)
     let llm_engine = Arc::new(llm_engine);
 
-    let server_data = OpenAIServerData {
+    let server_data = Arc::new(OpenAIServerData {
         pipeline_config,
         model: llm_engine.clone(),
         record_conversation: args.record_conversation,
         device: Device::Cpu,
         vision_tool: None,
-    };
+    });
 
     if global_rank != 0 {
         info!("\nDaemon service started at rank {}.", global_rank);
@@ -930,7 +1059,12 @@ pub async fn run() -> Result<()> {
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let models = ModelsState::new(registry, validation, idle_unload, default_model.clone());
+    let models = ModelsState::new(
+        loaded_registry.registry.clone(),
+        loaded_registry.validation.clone(),
+        loaded_registry.idle_unload,
+        loaded_registry.default_model.clone(),
+    );
 
     // Load MCP config: CLI arg > env var > ~/.candle-vllm/mcp.json > current dir
     let mcp_config_path = args
@@ -1012,19 +1146,76 @@ pub async fn run() -> Result<()> {
             );
             let queued_requests = model_manager.mark_model_active(alias.name.clone()).await;
             if !queued_requests.is_empty() {
-                warn!("Found {} queued requests for model '{}' - these should be processed by a background task", 
-                    queued_requests.len(), alias.name);
-                // TODO: Process queued requests in a background task
-                // For now, these requests will timeout, but future requests won't be queued
+                warn!(
+                    "Found {} queued requests for model '{}' - processing queued tasks",
+                    queued_requests.len(),
+                    alias.name
+                );
+                for queued in queued_requests {
+                    let data = Arc::clone(&server_data);
+                    let mailbox = Arc::clone(&mailbox_service);
+                    tokio::spawn(async move {
+                        let request_id = uuid::Uuid::new_v4().to_string();
+                        let responder =
+                            candle_vllm_core::openai::openai_server::chat_completions_with_data(
+                                data,
+                                queued.request.clone(),
+                            )
+                            .await;
+
+                        let status = match &responder {
+                            candle_vllm_core::openai::responses::ChatResponder::Completion(_) => {
+                                "completed"
+                            }
+                            candle_vllm_core::openai::responses::ChatResponder::Streamer(_) => {
+                                "streaming"
+                            }
+                            candle_vllm_core::openai::responses::ChatResponder::ValidationError(
+                                _,
+                            ) => "validation_error",
+                            candle_vllm_core::openai::responses::ChatResponder::ModelError(_) => {
+                                "model_error"
+                            }
+                            candle_vllm_core::openai::responses::ChatResponder::InternalError(
+                                _,
+                            ) => "internal_error",
+                        };
+                        let response_value = match &responder {
+                            candle_vllm_core::openai::responses::ChatResponder::Completion(c) => {
+                                serde_json::to_value(c).ok()
+                            }
+                            _ => None,
+                        };
+                        let record = crate::state::mailbox_service::MailboxRecord {
+                            request_id: request_id.clone(),
+                            model: queued.model.clone(),
+                            created: crate::state::mailbox_service::now_secs(),
+                            status: status.to_string(),
+                            response: response_value,
+                        };
+                        if let Err(err) = mailbox.store(record) {
+                            warn!("Failed to store mailbox record: {}", err);
+                        }
+
+                        if let Some(tx) = queued.response_tx {
+                            let _ = tx.send(responder);
+                        }
+                    });
+                }
             }
         }
     }
 
     let app_state = routes::AppState {
         models,
-        data: Arc::new(server_data),
+        data: server_data.clone(),
         mcp: mcp_session,
         model_manager: Some(model_manager),
+        queue_backend,
+        mailbox_backend,
+        queue_service,
+        mailbox_service,
+        webhook_service,
     };
 
     let app = build_router(app_state).layer(cors_layer);

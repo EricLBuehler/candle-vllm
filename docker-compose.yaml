@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: ghcr.io/ruxwez/postgres:17
+    container_name: candle_vllm_postgres
+    environment:
+      POSTGRES_USER: candle
+      POSTGRES_PASSWORD: candle
+      POSTGRES_DB: candle
+    ports:
+      - "6932:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U candle -d candle"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

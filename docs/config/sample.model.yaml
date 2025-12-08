@@ -1,0 +1,140 @@
+idle_unload_secs: 3600  # 1 hour
+
+# Default model if none is specified on the CLI
+default_model: llama-3.2-1b-instruct
+
+# ============================================================================
+# Parking Lot Scheduler (global defaults)
+# ============================================================================
+parking_lot:
+  pool:
+    worker_threads: 4          # Good default for M1/M2 performance cores
+    max_blocking_threads: 512
+    thread_stack_size: 2097152 # 2MB
+  limits:
+    max_units: 4096            # KV-cache unit budget (derived from mem)
+    max_queue_depth: 100
+    timeout_secs: 300
+  queue:
+    backend: "memory"
+    persistence: false
+  mailbox:
+    backend: "memory"
+    retention_secs: 3600
+
+models:
+  - name: mistral-3-ministral-3B-reasoning
+    hf_id: mistralai/Ministral-3-3B-Reasoning-2512
+    params:
+      dtype: f16
+      mem: 8192                 # MB
+      max_num_seqs: 64
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.3
+      top_p: 0.9
+      top_k: 40
+      prefill_chunk_size: 2048
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 2048
+        max_queue_depth: 50
+        timeout_secs: 240
+    notes: "Mistral 3B reasoning; f16 on unified memory"
+
+  - name: llama-3.2-1b-instruct
+    hf_id: bartowski/Llama-SmolTalk-3.2-1B-Instruct-GGUF
+    weight_file: Llama-SmolTalk-3.2-1B-Instruct-Q4_K_M.gguf
+    params:
+      dtype: f16                # keep parser happy; GGUF is quantized
+      mem: 4096
+      max_num_seqs: 8
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      prefill_chunk_size: 2048
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 4096
+        max_queue_depth: 25
+        timeout_secs: 180
+    notes: "Llama 3.2 1B GGUF (Q4_K_M) with tokenizer + configs in repo"
+
+  - name: qwen2.5-0.5b-instruct-gguf
+    hf_id: bartowski/Qwen2.5-0.5B-Instruct-GGUF
+    weight_file: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+    params:
+      dtype: f16
+      mem: 2048
+      max_num_seqs: 16
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 1024
+        max_queue_depth: 50
+        timeout_secs: 180
+    notes: "0.5B Qwen2.5 instruct GGUF; repo ships tokenizer.json"
+
+  - name: mistral-small-0.5b-gguf
+    hf_id: bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF
+    weight_file: Mistral-Small-3.1-DRAFT-0.5B-Q4_K_M.gguf
+    params:
+      dtype: f16
+      mem: 2048
+      max_num_seqs: 16
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 1024
+        max_queue_depth: 50
+        timeout_secs: 180
+    notes: "Mistral Small 0.5B GGUF; repo includes tokenizer/config"
+
+  - name: phi-3.5-vision-instruct
+    hf_id: microsoft/Phi-3.5-vision-instruct
+    params:
+      dtype: f16
+      mem: 6144
+      max_num_seqs: 16
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 50
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: proxy
+      vision_proxy:
+        hf_id: microsoft/Phi-3.5-vision-instruct
+        prompt_template: "Describe this image in detail:"
+    parking_lot:
+      limits:
+        max_units: 2048
+        max_queue_depth: 25
+        timeout_secs: 600
+    notes: "Phi-3.5 vision; text+vision tokenizer present in HF repo"

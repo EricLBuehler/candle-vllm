@@ -7,7 +7,7 @@ pub mod validation;
 pub use mcp::{McpConfig, McpServerDefinition};
 pub use models::{
     LimitsConfig, MailboxBackendConfig, ModelParams, ModelProfile, ModelRegistryConfig,
-    ParkingLotConfig, QueueBackendConfig, WorkerPoolConfig,
+    ParkingLotConfig, QueueBackendConfig, WebhookAuth, WebhookConfig, WorkerPoolConfig,
 };
 pub use parking_lot_merge::{merge_parking_lot_config, MergedParkingLotConfig};
 pub use scheduler::{MailboxConfig, PoolConfig, QueueConfig, SchedulerConfig};
