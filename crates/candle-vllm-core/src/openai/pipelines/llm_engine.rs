@@ -707,7 +707,6 @@ impl LLMEngine {
 
             match result {
                 InferenceResult::Streaming { token_rx, .. } => {
-                    let request_id_cleanup = request_id.clone();
                     let token_rx_clone = token_rx.clone();
                     tokio::spawn(async move {
                         while let Ok(token_result) = token_rx_clone.recv_async().await {

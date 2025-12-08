@@ -1,4 +1,4 @@
-use super::requests::{ChatCompletionRequest, ToolCall};
+use super::requests::{ChatCompletionRequest, Messages, ToolCall};
 use super::responses::{APIError, ChatChoiceData, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{ChatResponse, Streamer, StreamingStatus};
@@ -13,7 +13,7 @@ use std::env;
 use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio::time::Duration;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use uuid::Uuid;
 
 #[utoipa::path(
@@ -88,7 +88,7 @@ fn get_gen_prompt(
 ) -> Result<String, APIError> {
     info!(
         model = %request.model,
-        message_count = request.messages.len(),
+        message_count = messages_len(&request.messages),
         tools = request.tools.as_ref().map(|t| t.len()).unwrap_or(0),
         "✏️ CHAT: building prompt"
     );
@@ -109,6 +109,14 @@ fn get_gen_prompt(
             );
             prompt
         })
+}
+
+fn messages_len(messages: &Messages) -> usize {
+    match messages {
+        Messages::Literal(_) => 1,
+        Messages::Chat(list) => list.len(),
+        Messages::Map(list) => list.len(),
+    }
 }
 
 /// Parse the model output for tool calls
@@ -611,12 +619,13 @@ pub async fn chat_completions_with_data(
                             resource_id: None,
                         };
                         // Store in completion_records for non-streaming retrieval
-                        if let Some(mut records) = data.model.completion_records.try_write() {
-                            records.insert(
-                                request_id.clone(),
-                                (response.choices.clone(), response.usage.clone()),
-                            );
-                        }
+                        // Always persist completion results for sync retrieval
+                        let mut records = data.model.completion_records.write();
+
+                        records.insert(
+                            request_id.clone(),
+                            (response.choices.clone(), response.usage.clone()),
+                        );
                         // Also send as chunk for consistency
                         let chunk = crate::openai::responses::ChatCompletionChunk {
                             id: request_id.clone(),

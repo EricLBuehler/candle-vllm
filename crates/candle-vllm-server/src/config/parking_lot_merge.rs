@@ -3,9 +3,7 @@
 //! This module handles merging parking lot configurations from multiple sources
 //! with proper priority: CLI > models.yaml > scheduler-config.json > defaults.
 
-use super::models::{
-    LimitsConfig, MailboxBackendConfig, ParkingLotConfig, QueueBackendConfig, WorkerPoolConfig,
-};
+use super::models::ParkingLotConfig;
 use super::scheduler::{MailboxConfig, PoolConfig, QueueConfig, SchedulerConfig};
 use tracing::info;
 
@@ -101,6 +99,7 @@ pub fn parking_lot_to_pool_config(
 
 #[cfg(test)]
 mod tests {
+    use super::models::{LimitsConfig, MailboxBackendConfig, QueueBackendConfig, WorkerPoolConfig};
     use super::*;
 
     #[test]
