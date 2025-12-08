@@ -320,14 +320,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/models/select", post(models_select_handler))
         .route("/v1/usage", get(usage_handler))
         .route("/v1/queues", get(queue_list_handler))
-        .route("/v1/queues/:model", get(queue_model_handler))
+        .route("/v1/queues/{model}", get(queue_model_handler))
         .route("/v1/mailbox", get(mailbox_list_handler))
         .route(
-            "/v1/mailbox/:request_id",
+            "/v1/mailbox/{request_id}",
             get(mailbox_get_handler).delete(mailbox_delete_handler),
         )
         .route(
-            "/v1/mailbox/:request_id/webhook",
+            "/v1/mailbox/{request_id}/webhook",
             post(mailbox_trigger_webhook_handler),
         )
         .with_state(state)
@@ -401,9 +401,9 @@ pub struct MailboxGetParams {
 }
 
 /// GET /v1/mailbox/:request_id
-/// 
+///
 /// Retrieve a mailbox record by request_id.
-/// 
+///
 /// Query parameters:
 /// - `auto_delete`: If true, atomically retrieve and delete the record.
 ///   This is useful for one-time retrieval patterns where the client
@@ -460,14 +460,14 @@ pub struct TriggerWebhookRequest {
 }
 
 /// POST /v1/mailbox/:request_id/webhook
-/// 
+///
 /// Manually trigger a webhook for a mailbox record.
-/// 
+///
 /// This endpoint allows you to:
 /// - Re-send a webhook that may have failed
 /// - Send a webhook to a different URL than configured
 /// - Test webhook integrations
-/// 
+///
 /// The mailbox record must exist; this does not delete the record.
 async fn mailbox_trigger_webhook_handler(
     State(state): State<AppState>,
