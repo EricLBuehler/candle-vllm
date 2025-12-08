@@ -53,7 +53,7 @@ itertools = "0.13.0"
 chrono = "0.4.41"
 which = "5"
 ahash = "0.8.11"
-rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", version="0.1.16" }
+rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", rev="e5feeb0" }
 
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]
