@@ -9,3 +9,10 @@ kernels/src/lib.rs
 *.log
 /Cargo.lock
 *.lock
+debug/
+release/
+*.rlib
+*.prof*
+.DS_Store
+Thumbs.db
+.env*

@@ -1,0 +1,53 @@
+[package]
+name = "candle-vllm-server"
+version = "0.4.5"
+edition = "2021"
+license = "MIT"
+description = "HTTP server for candle-vllm with OpenAI-compatible API"
+
+[dependencies]
+candle-vllm-core = { path = "../candle-vllm-core" }
+candle-vllm-openai = { path = "../candle-vllm-openai" }
+candle-vllm-responses = { path = "../candle-vllm-responses" }
+axum = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+clap = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+utoipa = { workspace = true }
+hyper = { workspace = true }
+ftail = { workspace = true }
+parking_lot = { workspace = true }
+rustchatui = { workspace = true }
+candle-core = { workspace = true }
+serde = { workspace = true }
+futures = { workspace = true }
+flume = { workspace = true }
+dirs = { workspace = true }
+num_cpus = "1.16"
+
+[dev-dependencies]
+tokio-test = "0.4"
+axum-test = "18.4.1"
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }
+base64 = "0.22"
+dotenvy = "0.15"
+dirs = "6.0.0"
+
+[features]
+accelerate = ["candle-vllm-core/accelerate", "candle-vllm-openai/accelerate"]
+cuda = ["candle-vllm-core/cuda", "candle-vllm-openai/cuda"]
+metal = ["candle-vllm-core/metal", "candle-vllm-openai/metal"]
+cudnn = ["candle-vllm-core/cudnn"]
+flash-attn = ["candle-vllm-core/flash-attn", "candle-vllm-openai/flash-attn"]
+flash-decoding = ["candle-vllm-core/flash-decoding", "candle-vllm-openai/flash-decoding"]
+mkl = ["candle-vllm-core/mkl"]
+nccl = ["candle-vllm-core/nccl"]
+mpi = ["candle-vllm-core/mpi"]
+graph = ["candle-vllm-core/graph"]

@@ -1,0 +1,34 @@
+{
+  "pools": {
+    "default": {
+      "max_units": 16384,
+      "max_queue_depth": 1000,
+      "default_timeout_secs": 120,
+      "queue": {
+        "type": "in_memory"
+      },
+      "mailbox": {
+        "storage": {
+          "type": "in_memory"
+        }
+      }
+    },
+    "high_priority": {
+      "max_units": 8192,
+      "max_queue_depth": 100,
+      "default_timeout_secs": 60,
+      "queue": {
+        "type": "in_memory"
+      },
+      "mailbox": {
+        "storage": {
+          "type": "in_memory"
+        }
+      }
+    }
+  },
+  "resource_config": {
+    "block_size": 16,
+    "cost_model": "kv_cache_blocks"
+  }
+}

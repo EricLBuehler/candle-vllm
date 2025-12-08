@@ -1,0 +1,458 @@
+openapi: 3.1.0
+info:
+  title: candle-vllm OpenAI-Compatible API
+  description: |
+    OpenAI-compatible API for candle-vllm inference server.
+    Supports chat completions with tool calling and streaming.
+  version: 0.5.0
+  license:
+    name: MIT OR Apache-2.0
+
+servers:
+  - url: http://localhost:2000
+    description: Local development server
+
+paths:
+  /v1/chat/completions:
+    post:
+      operationId: createChatCompletion
+      summary: Create a chat completion
+      description: |
+        Creates a completion for the provided messages.
+        Supports streaming, tool calling, and various sampling parameters.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatCompletionRequest'
+      responses:
+        '200':
+          description: Successful completion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionResponse'
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/ChatCompletionChunk'
+        '503':
+          description: Server busy (queue full or timeout)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/models:
+    get:
+      operationId: listModels
+      summary: List available models
+      responses:
+        '200':
+          description: List of models
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+
+  /v1/models/status:
+    get:
+      operationId: getModelStatus
+      summary: Get model lifecycle status
+      description: |
+        Returns the current status of the model manager FSM,
+        including active model, queue lengths, and any errors.
+      responses:
+        '200':
+          description: Model status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelStatus'
+
+  /v1/models/select:
+    post:
+      operationId: selectModel
+      summary: Request model switch
+      description: |
+        Requests switching to a different model.
+        Returns immediately with switch status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - model
+              properties:
+                model:
+                  type: string
+                  description: Model name to switch to
+      responses:
+        '202':
+          description: Switch initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwitchResponse'
+        '404':
+          description: Model not found
+        '409':
+          description: Switch already in progress
+
+components:
+  schemas:
+    ChatCompletionRequest:
+      type: object
+      required:
+        - model
+        - messages
+      properties:
+        model:
+          type: string
+          description: Model identifier
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/Message'
+          description: Conversation messages
+        temperature:
+          type: number
+          minimum: 0
+          maximum: 2
+          default: 1.0
+          description: Sampling temperature
+        top_p:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 1.0
+          description: Nucleus sampling threshold
+        max_tokens:
+          type: integer
+          minimum: 1
+          description: Maximum tokens to generate
+        stream:
+          type: boolean
+          default: false
+          description: Enable streaming
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/Tool'
+          description: Available tools
+        tool_choice:
+          oneOf:
+            - type: string
+              enum: [none, auto, required]
+            - type: object
+              properties:
+                type:
+                  type: string
+                  enum: [function]
+                function:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+          description: Tool selection mode
+        stop:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: Stop sequences
+        frequency_penalty:
+          type: number
+          minimum: -2
+          maximum: 2
+          default: 0
+        presence_penalty:
+          type: number
+          minimum: -2
+          maximum: 2
+          default: 0
+        seed:
+          type: integer
+          description: Random seed for reproducibility
+
+    Message:
+      type: object
+      required:
+        - role
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+          nullable: true
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCall'
+        tool_call_id:
+          type: string
+          description: Required for tool role
+        name:
+          type: string
+          description: Tool name for tool role
+
+    Tool:
+      type: object
+      required:
+        - type
+        - function
+      properties:
+        type:
+          type: string
+          enum: [function]
+        function:
+          $ref: '#/components/schemas/FunctionDefinition'
+
+    FunctionDefinition:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        parameters:
+          type: object
+          description: JSON Schema for parameters
+
+    ToolCall:
+      type: object
+      required:
+        - id
+        - type
+        - function
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [function]
+        function:
+          $ref: '#/components/schemas/FunctionCall'
+
+    FunctionCall:
+      type: object
+      required:
+        - name
+        - arguments
+      properties:
+        name:
+          type: string
+        arguments:
+          type: string
+          description: JSON string of arguments
+
+    ChatCompletionResponse:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion]
+        created:
+          type: integer
+          description: Unix timestamp
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatChoice'
+        usage:
+          $ref: '#/components/schemas/Usage'
+
+    ChatChoice:
+      type: object
+      required:
+        - index
+        - message
+        - finish_reason
+      properties:
+        index:
+          type: integer
+        message:
+          $ref: '#/components/schemas/Message'
+        finish_reason:
+          type: string
+          enum: [stop, length, tool_calls, content_filter]
+          nullable: true
+
+    Usage:
+      type: object
+      properties:
+        prompt_tokens:
+          type: integer
+        completion_tokens:
+          type: integer
+        total_tokens:
+          type: integer
+
+    ChatCompletionChunk:
+      type: object
+      required:
+        - id
+        - object
+        - created
+        - model
+        - choices
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [chat.completion.chunk]
+        created:
+          type: integer
+        model:
+          type: string
+        choices:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChunkChoice'
+        candle_metadata:
+          $ref: '#/components/schemas/QueueStatus'
+          description: Extension field for queue status
+
+    ChunkChoice:
+      type: object
+      required:
+        - index
+        - delta
+      properties:
+        index:
+          type: integer
+        delta:
+          $ref: '#/components/schemas/Delta'
+        finish_reason:
+          type: string
+          nullable: true
+
+    Delta:
+      type: object
+      properties:
+        role:
+          type: string
+        content:
+          type: string
+          nullable: true
+        tool_calls:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolCallDelta'
+
+    ToolCallDelta:
+      type: object
+      properties:
+        index:
+          type: integer
+        id:
+          type: string
+        type:
+          type: string
+        function:
+          type: object
+          properties:
+            name:
+              type: string
+            arguments:
+              type: string
+
+    QueueStatus:
+      type: object
+      description: Extension for queue status in streaming
+      properties:
+        status:
+          type: string
+          enum: [queued, waiting_for_model, loading, processing]
+        position:
+          type: integer
+        model:
+          type: string
+        eta_ms:
+          type: integer
+
+    ModelList:
+      type: object
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+
+    Model:
+      type: object
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [model]
+        created:
+          type: integer
+        owned_by:
+          type: string
+
+    ModelStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [idle, ready, switching, loading, error]
+        active_model:
+          type: string
+          nullable: true
+        last_error:
+          type: string
+          nullable: true
+        queue_lengths:
+          type: object
+          additionalProperties:
+            type: integer
+        switch_requested_at:
+          type: integer
+          description: Milliseconds since switch started
+
+    SwitchResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [initiated, already_active]
+        model:
+          type: string
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+              enum: [server_busy, invalid_request, model_not_found]
+            queued:
+              type: boolean
+              description: Whether the request was queued before timeout
+

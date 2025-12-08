@@ -1,0 +1,173 @@
+idle_unload_secs: 3600  # 1 hour
+
+# Default model to use if no model is specified via CLI arguments
+default_model: llama-3.2-1b-instruct
+
+# ============================================================================
+# Parking Lot Scheduler Configuration (Optimized for Performance)
+# ============================================================================
+parking_lot:
+  # Thread pool for CPU-bound inference work
+  pool:
+    # Reduced worker threads for M1 Mac (4 performance cores)
+    worker_threads: 4
+    
+    # Maximum blocking threads for tokio runtime
+    max_blocking_threads: 512
+    
+    # Stack size per worker thread in bytes (2MB)
+    thread_stack_size: 2097152
+    
+  # Resource limits and queue configuration
+  limits:
+    # Set global headroom to align with 4GB KV cache for small models
+    max_units: 4096
+    
+    # Maximum number of queued requests before rejection
+    max_queue_depth: 100  # Reduced for M1 Mac
+    
+    # Increased timeout for complex inference
+    timeout_secs: 300  # 5 minutes instead of 2
+    
+  # Queue backend configuration
+  queue:
+    backend: "memory"
+    persistence: false
+    
+  # Result mailbox configuration
+  mailbox:
+    backend: "memory"
+    retention_secs: 3600  # 1 hour
+
+models:
+  - name: mistral-3-ministral-3B-reasoning
+    hf_id: mistralai/Ministral-3-3B-Reasoning-2512
+    params:
+      dtype: f16
+      temperature: 0.3
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 8192  # MB - Use GPU memory for Metal acceleration
+      max_num_seqs: 64  # Reduced from 128 to allow multiple concurrent requests
+      block_size: 64  # Default block size, optimal for Metal
+      device_ids: [0]  # Use Metal GPU (M1 unified memory)
+      multithread: false  # Single-threaded is optimal for Metal on M1
+      # Add reasonable prefill chunking for better throughput
+      prefill_chunk_size: 2048  # Chunk size for prefill to avoid memory spikes
+    # Model capabilities configuration (text-only model)
+    capabilities:
+      vision_mode: disabled
+    # Per-model parking lot overrides for text model
+    parking_lot:
+      limits:
+        max_units: 630  # Allow multiple concurrent requests
+        max_queue_depth: 50
+        timeout_secs: 240  # 4 minutes for text generation
+    notes: "Mistral 3 Ministral-3-3B-Reasoning-2512 optimized for M1 Mac with concurrent request support"
+
+  - name: phi-3.5-vision-instruct
+    hf_id: microsoft/Phi-3.5-vision-instruct
+    params:
+      dtype: f16
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 50
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 6144  # MB - Smaller KV cache for vision model on M1
+      max_num_seqs: 32  # Further reduced for vision processing
+      block_size: 64  # Default block size, optimal for Metal
+      device_ids: [0]  # Use Metal GPU (M1 unified memory)
+      multithread: false  # Single-threaded is optimal for Metal on M1
+      # Vision models need smaller prefill chunks
+      prefill_chunk_size: 1024  # Smaller chunks for vision processing
+    # Model capabilities configuration (vision model with proxy)
+    capabilities:
+      vision_mode: proxy
+      vision_proxy:
+        hf_id: microsoft/Phi-3.5-vision-instruct
+        prompt_template: "Describe this image in detail:"
+    # Per-model parking lot overrides for vision model
+    parking_lot:
+      limits:
+        max_units: 400  # Lower limit for vision model (more resource intensive)
+        max_queue_depth: 25  # Smaller queue for vision processing
+        timeout_secs: 600   # 10 minutes for vision processing (can be slower)
+    notes: "Phi-3.5 Vision Instruct model for vision tasks, optimized for M1 Mac with reasonable resource usage"
+
+  - name: qwen2.5-0.5b-instruct-gguf
+    hf_id: bartowski/Qwen2.5-0.5B-Instruct-GGUF
+    weight_file: Qwen2.5-0.5B-Instruct-Q4_K_M.gguf
+    params:
+      dtype: f16
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 2048  # MB - tiny model, keep cache lean
+      max_num_seqs: 32
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 300
+        max_queue_depth: 50
+        timeout_secs: 180
+    notes: "0.5B Qwen2.5 instruct GGUF (Q4_K_M ~0.40GB) for fast, low-memory text generation"
+
+  - name: llama-3.2-1b-instruct
+    hf_id: bartowski/Llama-SmolTalk-3.2-1B-Instruct-GGUF
+    weight_file: Llama-SmolTalk-3.2-1B-Instruct-Q4_K_M.gguf
+    params:
+      dtype: f16
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 4096  # MB - larger cache to allow higher max_tokens
+      max_num_seqs: 8  # keep batch small to reduce per-request cost
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 4096
+        max_queue_depth: 25
+        timeout_secs: 180
+    notes: "Llama 3.2 1B Instruct GGUF (Q4_K_M) for small, fast text workloads"
+
+  - name: mistral-small-0.5b-gguf
+    hf_id: bartowski/alamios_Mistral-Small-3.1-DRAFT-0.5B-GGUF
+    weight_file: Mistral-Small-3.1-DRAFT-0.5B-Q4_K_M.gguf
+    params:
+      dtype: f16
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 2048  # MB - compact cache for tiny model
+      max_num_seqs: 32
+      block_size: 64
+      device_ids: [0]
+      multithread: false
+      prefill_chunk_size: 1024
+    capabilities:
+      vision_mode: disabled
+    parking_lot:
+      limits:
+        max_units: 280
+        max_queue_depth: 50
+        timeout_secs: 180
+    notes: "Mistral Small 0.5B GGUF Q4_K_M (~0.46GB) for fast startup and low memory use"

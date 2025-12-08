@@ -1,0 +1,107 @@
+idle_unload_secs: 3600  # 1 hour
+
+# Default model to use if no model is specified via CLI arguments
+default_model: mistral-3-ministral-3B-reasoning
+
+# ============================================================================
+# Parking Lot Scheduler Configuration (Recommended)
+# ============================================================================
+# Configure the thread pool and resource scheduler for inference.
+# If omitted, sensible defaults are used based on system resources.
+parking_lot:
+  # Thread pool for CPU-bound inference work
+  pool:
+    # Number of worker threads for model inference (default: num_cpus)
+    # Each worker thread can process one inference request at a time
+    worker_threads: 4
+    
+    # Maximum blocking threads for tokio runtime (default: 512)
+    # Used for I/O operations and async tasks
+    max_blocking_threads: 512
+    
+    # Stack size per worker thread in bytes (default: 2MB)
+    thread_stack_size: 2097152
+    
+  # Resource limits and queue configuration
+  limits:
+    # Maximum resource units (GPU KV-cache blocks)
+    # Set to null to auto-derive from kvcache_mem_gpu configuration
+    # This determines how many requests can run concurrently
+    max_units: null
+    
+    # Maximum number of queued requests before rejection
+    # Requests beyond this limit will be rejected with 503 error
+    max_queue_depth: 1000
+    
+    # Request timeout in seconds
+    # Requests that don't complete within this time are cancelled
+    timeout_secs: 120
+    
+  # Queue backend configuration
+  queue:
+    # Backend type for task queue
+    # Options: "memory" (default, non-persistent)
+    backend: "memory"
+    
+    # Enable persistent queue (survives server restarts)
+    # Only works with postgres or yaque backends
+    persistence: false
+    
+  # Result mailbox configuration
+  mailbox:
+    # Backend type for storing completed results
+    # Options: "memory" (default, non-persistent)
+    backend: "memory"
+    
+    # How long to retain completed results in seconds
+    # After this time, results are purged from the mailbox
+    retention_secs: 3600  # 1 hour
+
+models:
+  - name: mistral-3-ministral-3B-reasoning
+    hf_id: mistralai/Ministral-3-3B-Reasoning-2512
+    params:
+      dtype: f16
+      temperature: 0.3
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 8192  # MB - Use GPU memory for Metal acceleration
+      max_num_seqs: 128  # Increased batch size for better throughput with 64GB RAM
+      block_size: 64  # Default block size, optimal for Metal
+      device_ids: [0]  # Use Metal GPU (M1 unified memory)
+      multithread: false  # Single-threaded is optimal for Metal on M1
+    # Model capabilities configuration (text-only model)
+    capabilities:
+      vision_mode: disabled
+    notes: "Mistral 3 Ministral-3-3B-Reasoning-2512 optimized for M1 Mac with 64GB RAM and Metal GPU acceleration"
+
+  - name: phi-3.5-vision-instruct
+    hf_id: microsoft/Phi-3.5-vision-instruct
+    params:
+      dtype: f16
+      temperature: 0.7
+      top_p: 0.9
+      top_k: 50
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 6144  # MB - Smaller KV cache for vision model on M1
+      max_num_seqs: 64  # Reduced batch size for vision processing
+      block_size: 64  # Default block size, optimal for Metal
+      device_ids: [0]  # Use Metal GPU (M1 unified memory)
+      multithread: false  # Single-threaded is optimal for Metal on M1
+    # Model capabilities configuration (vision model with proxy)
+    capabilities:
+      vision_mode: proxy
+      vision_proxy:
+        hf_id: microsoft/Phi-3.5-vision-instruct
+        prompt_template: "Describe this image in detail:"
+    # Per-model parking lot overrides (optional)
+    # These override the global parking_lot settings for this specific model
+    parking_lot:
+      limits:
+        max_units: 2048         # Lower limit for vision model
+        max_queue_depth: 500    # Smaller queue for vision processing
+        timeout_secs: 180       # Longer timeout for vision processing
+    notes: "Phi-3.5 Vision Instruct model for vision tasks, optimized for M1 Mac with 64GB RAM"

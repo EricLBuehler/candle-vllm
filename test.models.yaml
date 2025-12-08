@@ -1,0 +1,27 @@
+idle_unload_secs: 3600  # 1 hour
+
+# Default model to use if no model is specified via CLI arguments or when "default" is requested
+default_model: mistral-3-ministral-3B-reasoning
+
+models:
+  - name: mistral-3-ministral-3B-reasoning
+    hf_id: mistralai/Ministral-3-3B-Reasoning-2512
+    params:
+      dtype: f16
+      temperature: 0.3
+      top_p: 0.9
+      top_k: 40
+      frequency_penalty: 0.0
+      presence_penalty: 0.0
+      kvcache_mem_gpu: 8192  # MB - Use GPU memory for Metal acceleration
+      max_num_seqs: 128  # Increased batch size for better throughput with 64GB RAM
+      block_size: 64  # Default block size, optimal for Metal
+      device_ids: [0]  # Use Metal GPU (M1 unified memory)
+      multithread: false  # Single-threaded is optimal for Metal on M1
+    notes: "Mistral 3 Ministral-3-3B-Reasoning-2512 optimized for M1 Mac with 64GB RAM and Metal GPU acceleration"
+
+# Vision models are not currently supported by candle-vllm pipeline
+# The following architectures would need to be implemented:
+# - LLaVA, Qwen-VL, or other multimodal architectures
+#
+# Removing phi-3.5-vision-instruct as it's not supported
