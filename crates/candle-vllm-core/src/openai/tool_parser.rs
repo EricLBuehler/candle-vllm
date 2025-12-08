@@ -112,6 +112,48 @@ impl ParsedOutput {
 }
 
 // ============================================================================
+// Incremental Parsing Types
+// ============================================================================
+
+/// State of incremental tool call parsing
+#[derive(Debug, Clone)]
+pub enum ToolParseState {
+    /// Not a tool call (regular content)
+    NotToolCall,
+    /// Tool call in progress (partial data)
+    InProgress(PartialToolCall),
+    /// Tool call complete
+    Complete(ParsedToolCall),
+}
+
+/// Partial tool call being built incrementally
+#[derive(Debug, Clone)]
+pub struct PartialToolCall {
+    /// Tool name (if detected)
+    pub name: Option<String>,
+    /// Partial arguments accumulated so far
+    pub arguments: String,
+    /// Format detected
+    pub format: ToolCallFormat,
+}
+
+/// Format of tool call detected
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolCallFormat {
+    Mistral,
+    Llama,
+    Qwen,
+    Json,
+    Unknown,
+}
+
+/// Trait for incremental tool call parsing
+pub trait IncrementalToolParser {
+    /// Parse incrementally as tokens arrive
+    fn parse_incremental(&self, buffer: &str) -> ToolParseState;
+}
+
+// ============================================================================
 // Tool Call Parser Trait
 // ============================================================================
 
@@ -634,6 +676,253 @@ pub fn get_tool_parser_by_name(name: &str) -> Option<Box<dyn ToolCallParser>> {
         "json" => Some(Box::new(JsonToolParser::new())),
         "auto" => Some(Box::new(AutoToolParser::new())),
         _ => None,
+    }
+}
+
+// ============================================================================
+// Incremental Parsing Implementations
+// ============================================================================
+
+impl IncrementalToolParser for MistralToolParser {
+    fn parse_incremental(&self, buffer: &str) -> ToolParseState {
+        // Look for [TOOL_CALLS] marker
+        if !buffer.contains("[TOOL_CALLS]") {
+            return ToolParseState::NotToolCall;
+        }
+
+        // Find the start of the JSON array
+        if let Some(marker_pos) = buffer.find("[TOOL_CALLS]") {
+            let after_marker = &buffer[marker_pos + 12..]; // Skip "[TOOL_CALLS]"
+
+            // Look for opening bracket of JSON array
+            if let Some(json_start) = after_marker.trim_start().find('[') {
+                let json_part = &after_marker.trim_start()[json_start..];
+
+                // Try to parse complete JSON
+                if let Ok(calls) = serde_json::from_str::<Vec<serde_json::Value>>(json_part) {
+                    // Complete! Extract first tool call
+                    if let Some(call) = calls.first() {
+                        if let (Some(name), Some(args)) = (
+                            call.get("name").and_then(|n| n.as_str()),
+                            call.get("arguments"),
+                        ) {
+                            let arguments = if args.is_string() {
+                                args.as_str().unwrap_or("{}").to_string()
+                            } else {
+                                serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
+                            };
+
+                            return ToolParseState::Complete(ParsedToolCall::new(
+                                name.to_string(),
+                                arguments,
+                            ));
+                        }
+                    }
+                }
+
+                // Partial JSON, try to extract what we can
+                // Look for "name" field
+                let name = if let Some(name_start) = json_part.find(r#""name""#) {
+                    let after_name = &json_part[name_start + 6..];
+                    if let Some(colon) = after_name.find(':') {
+                        let value_part = &after_name[colon + 1..].trim_start();
+                        if value_part.starts_with('"') {
+                            // Extract quoted string
+                            if let Some(end_quote) = value_part[1..].find('"') {
+                                Some(value_part[1..end_quote + 1].to_string())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                // Accumulate arguments
+                let arguments = if let Some(args_start) = json_part.find(r#""arguments""#) {
+                    let after_args = &json_part[args_start + 11..];
+                    if let Some(colon) = after_args.find(':') {
+                        after_args[colon + 1..].trim_start().to_string()
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
+                return ToolParseState::InProgress(PartialToolCall {
+                    name,
+                    arguments,
+                    format: ToolCallFormat::Mistral,
+                });
+            }
+        }
+
+        ToolParseState::NotToolCall
+    }
+}
+
+impl IncrementalToolParser for LlamaToolParser {
+    fn parse_incremental(&self, buffer: &str) -> ToolParseState {
+        // Look for <function= pattern
+        if !buffer.contains("<function=") {
+            return ToolParseState::NotToolCall;
+        }
+
+        if let Some(start) = buffer.find("<function=") {
+            let after_start = &buffer[start + 10..];
+
+            // Extract function name
+            if let Some(close) = after_start.find('>') {
+                let name = after_start[..close].to_string();
+                let json_part = &after_start[close + 1..];
+
+                // Check for closing tag
+                if json_part.contains("</function>") {
+                    // Complete!
+                    if let Some(end) = json_part.find("</function>") {
+                        let arguments = json_part[..end].to_string();
+                        return ToolParseState::Complete(ParsedToolCall::new(name, arguments));
+                    }
+                }
+
+                // In progress
+                return ToolParseState::InProgress(PartialToolCall {
+                    name: Some(name),
+                    arguments: json_part.to_string(),
+                    format: ToolCallFormat::Llama,
+                });
+            }
+        }
+
+        ToolParseState::NotToolCall
+    }
+}
+
+impl IncrementalToolParser for QwenToolParser {
+    fn parse_incremental(&self, buffer: &str) -> ToolParseState {
+        // Look for <tool_call> pattern
+        if !buffer.contains("<tool_call>") {
+            return ToolParseState::NotToolCall;
+        }
+
+        if let Some(start) = buffer.find("<tool_call>") {
+            let json_part = &buffer[start + 11..];
+
+            // Check for closing tag
+            if json_part.contains("</tool_call>") {
+                // Complete!
+                if let Some(end) = json_part.find("</tool_call>") {
+                    let json_str = &json_part[..end];
+                    if let Ok(call) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        if let (Some(name), Some(args)) = (
+                            call.get("name").and_then(|n| n.as_str()),
+                            call.get("arguments"),
+                        ) {
+                            let arguments = if args.is_string() {
+                                args.as_str().unwrap_or("{}").to_string()
+                            } else {
+                                serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
+                            };
+
+                            return ToolParseState::Complete(ParsedToolCall::new(
+                                name.to_string(),
+                                arguments,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            // In progress - try to extract partial info
+            let name = if let Some(name_start) = json_part.find(r#""name""#) {
+                let after_name = &json_part[name_start + 6..];
+                if let Some(colon) = after_name.find(':') {
+                    let value_part = &after_name[colon + 1..].trim_start();
+                    if value_part.starts_with('"') {
+                        if let Some(end_quote) = value_part[1..].find('"') {
+                            Some(value_part[1..end_quote + 1].to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            return ToolParseState::InProgress(PartialToolCall {
+                name,
+                arguments: json_part.to_string(),
+                format: ToolCallFormat::Qwen,
+            });
+        }
+
+        ToolParseState::NotToolCall
+    }
+}
+
+impl IncrementalToolParser for JsonToolParser {
+    fn parse_incremental(&self, buffer: &str) -> ToolParseState {
+        // Simple JSON tool call detection
+        let trimmed = buffer.trim();
+        if !trimmed.starts_with('{') {
+            return ToolParseState::NotToolCall;
+        }
+
+        // Try to parse as complete JSON
+        if let Ok(call) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            if let (Some(name), Some(args)) = (
+                call.get("name").and_then(|n| n.as_str()),
+                call.get("arguments"),
+            ) {
+                let arguments = if args.is_string() {
+                    args.as_str().unwrap_or("{}").to_string()
+                } else {
+                    serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string())
+                };
+
+                return ToolParseState::Complete(ParsedToolCall::new(name.to_string(), arguments));
+            }
+        }
+
+        // In progress
+        ToolParseState::InProgress(PartialToolCall {
+            name: None,
+            arguments: trimmed.to_string(),
+            format: ToolCallFormat::Json,
+        })
+    }
+}
+
+impl IncrementalToolParser for AutoToolParser {
+    fn parse_incremental(&self, buffer: &str) -> ToolParseState {
+        // Try each parser in order
+        for parser in &self.parsers {
+            let result = match parser.name() {
+                "mistral" => MistralToolParser::new().parse_incremental(buffer),
+                "llama" => LlamaToolParser::new().parse_incremental(buffer),
+                "qwen" => QwenToolParser::new().parse_incremental(buffer),
+                "json" => JsonToolParser::new().parse_incremental(buffer),
+                _ => ToolParseState::NotToolCall,
+            };
+
+            match result {
+                ToolParseState::NotToolCall => continue,
+                other => return other,
+            }
+        }
+
+        ToolParseState::NotToolCall
     }
 }
 

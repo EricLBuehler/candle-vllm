@@ -389,38 +389,45 @@ impl LlmExecutor {
     }
 
     /// Process a streaming job, returning a receiver for tokens.
+    /// The worker thread spawns a separate thread for generation so it can return immediately.
     fn process_streaming(&self, job: &InferenceJob) -> InferenceResult {
         let (token_tx, token_rx) = flume::unbounded();
         let request_id = job.request_id.clone();
 
-        // Clone necessary data for the spawned task
+        // Clone necessary data for the generation thread
         let job_clone = job.clone();
         let pipeline = Arc::clone(&self.pipeline);
         let cache_engine = Arc::clone(&self.cache_engine);
         let rank = self.rank;
 
-        // Spawn async task for streaming generation
-        tokio::spawn(async move {
-            Self::streaming_generation_task(rank, job_clone, pipeline, cache_engine, token_tx)
-                .await;
+        // Spawn a separate std::thread for generation so worker thread can return immediately
+        std::thread::spawn(move || {
+            Self::streaming_generation_sync_static(
+                rank,
+                &job_clone,
+                &pipeline,
+                &cache_engine,
+                token_tx,
+            );
         });
 
         InferenceResult::streaming(request_id, token_rx)
     }
 
-    /// Async task that performs streaming token generation.
-    async fn streaming_generation_task(
+    /// Synchronous streaming token generation.
+    /// CRITICAL: This runs in a separate thread spawned by the worker.
+    fn streaming_generation_sync_static(
         rank: usize,
-        job: InferenceJob,
-        pipeline: Arc<Box<DefaultPipeline>>,
-        cache_engine: Arc<CacheEngine>,
+        job: &InferenceJob,
+        pipeline: &Arc<Box<DefaultPipeline>>,
+        cache_engine: &Arc<CacheEngine>,
         token_tx: flume::Sender<Result<StreamingTokenResult, String>>,
     ) {
         let start = std::time::Instant::now();
         let device = pipeline.device();
 
         info!(
-            "🎬 EXECUTOR: Streaming generation task started - rank={}, request_id={}, prompt_tokens={}, max_tokens={}",
+            "🎬 EXECUTOR: Streaming generation started (sync) - rank={}, request_id={}, prompt_tokens={}, max_tokens={}",
             rank,
             job.request_id,
             job.tokens.len(),
@@ -532,6 +539,14 @@ impl LlmExecutor {
                     let token_text = pipeline.decode(&[next_token]).unwrap_or_default();
                     generated_text.push_str(&token_text);
 
+                    // Log token for debugging
+                    if step < 5 || step % 10 == 0 {
+                        info!(
+                            "🔤 EXECUTOR: Token generated - request_id={}, step={}, token_id={}, text={:?}",
+                            job.request_id, step, next_token, token_text
+                        );
+                    }
+
                     // Check for custom stop strings
                     let mut hit_stop_string = false;
                     if let Some(ref stop_strs) = job.sampling_params.stop {
@@ -584,7 +599,7 @@ impl LlmExecutor {
                     }
 
                     if is_finished {
-                        info!("🏁 EXECUTOR: Generation complete - request_id={}, total_steps={}, reason={:?}", 
+                        info!("🏁 EXECUTOR: Generation complete - request_id={}, total_steps={}, reason={:?}",
                             job.request_id, step + 1, finish_reason);
                         break;
                     }

@@ -20,6 +20,7 @@ use tokenizers::{EncodeInput, Encoding, Tokenizer};
 // ============================================================================
 
 // Inference-related modules
+pub mod chunk_collector;
 #[cfg(feature = "nccl")]
 pub mod communicator;
 pub mod conversation;
@@ -35,6 +36,7 @@ pub mod responses;
 pub mod sampling_params;
 pub mod streaming;
 pub mod tool_parser;
+pub mod tool_streaming;
 pub mod utils;
 pub mod vision_proxy;
 

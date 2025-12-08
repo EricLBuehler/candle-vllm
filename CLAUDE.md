@@ -6,6 +6,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 When touching configuration or SDK docs, cross-reference `.example.env`, `example.models.yaml`, and the guides in `docs/`.
 
+## Platform-Specific Build Instructions
+
+**IMPORTANT**: This project is being developed on **macOS** with Apple Silicon (M-series chips).
+
+### macOS / Metal Requirements
+
+All build and test commands on macOS MUST include the `--features metal` flag:
+
+```bash
+# Building
+cargo build --release --features metal
+
+# Testing
+cargo test --features metal
+
+# Running tests for specific package
+cargo test --package candle-vllm-core --lib --features metal
+
+# Running the server
+cargo run --release --features metal -- --p 2000 --ui-server
+```
+
+**Never run cargo commands without `--features metal` on macOS!**
+
 ## Coding Standards & Code Generation Rules
 
 Claude Code MUST:
@@ -117,14 +141,22 @@ candle-vllm/
 
 ### Building the Project
 
-Basic build:
+**On macOS (THIS PROJECT):**
 ```bash
-cargo build --release
+# Always use Metal feature flag on Mac
+cargo build --release --features metal
+
+# For development (faster, unoptimized)
+cargo build --features metal
+
+# Testing
+cargo test --features metal
+cargo test --package candle-vllm-core --lib --features metal
 ```
 
-Platform-specific builds:
+**Platform-specific builds (for reference):**
 ```bash
-# Mac/Metal (single-node only)
+# Mac/Metal (single-node only) - DEFAULT FOR THIS PROJECT
 cargo build --release --features metal
 
 # CUDA (single GPU or multi-GPU single machine)
@@ -142,22 +174,31 @@ cargo build --release --features cuda,nccl,mpi
 
 ### Running the Server
 
-Run with uncompressed models:
+**On macOS (THIS PROJECT):**
 ```bash
-# Local model path
-target/release/candle-vllm --p 2000 --d 0,1 --w /path/to/model/ --isq q4k --ui-server
+# Run directly with cargo (recommended for development)
+cargo run --release --features metal -- --p 2000 --ui-server --m your-model-name
 
-# HuggingFace model ID
-target/release/candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --ui-server
+# Or run the built binary
+target/release/candle-vllm --p 2000 --ui-server --m your-model-name
 ```
 
-Run with GGUF models:
+**Run with uncompressed models:**
 ```bash
-# Local GGUF file
-target/release/candle-vllm --f /path/to/model.gguf --ui-server
+# Local model path (Mac)
+cargo run --release --features metal -- --p 2000 --d 0 --w /path/to/model/ --isq q4k --ui-server
 
-# HuggingFace GGUF model
-target/release/candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
+# HuggingFace model ID (Mac)
+cargo run --release --features metal -- --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --ui-server
+```
+
+**Run with GGUF models:**
+```bash
+# Local GGUF file (Mac)
+cargo run --release --features metal -- --f /path/to/model.gguf --ui-server
+
+# HuggingFace GGUF model (Mac)
+cargo run --release --features metal -- --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
 ```
 
 ### Key Parameters
@@ -177,12 +218,19 @@ target/release/candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen
 
 Run tests:
 ```bash
-cargo test
+# ALWAYS use metal feature on macOS
+cargo test --features metal
+
+# Run specific tests
+cargo test --package candle-vllm-core --lib --features metal
+cargo test --package candle-vllm-core --lib --features metal tool_streaming
+cargo test --package candle-vllm-core --lib --features metal chunk_collector
 ```
 
 Run with debug logging:
 ```bash
-RUST_LOG=debug cargo run --release --features cuda,nccl -- --log --p 2000
+# On macOS
+RUST_LOG=debug cargo run --release --features metal -- --log --p 2000 --ui-server
 ```
 
 ## Supported Model Architectures

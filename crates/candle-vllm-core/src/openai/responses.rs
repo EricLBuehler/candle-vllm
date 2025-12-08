@@ -168,6 +168,10 @@ pub struct ChatCompletionResponse {
     /// when the backend configuration changes
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system_fingerprint: Option<String>,
+    /// Extended metadata (reasoning chunks, tool call events)
+    /// Only present in non-streaming mode when chunks are collected
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<serde_json::Value>,
 }
 
 // ============================================================================

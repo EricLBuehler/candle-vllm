@@ -1,5 +1,29 @@
 # Repository Guidelines
 
+## Platform-Specific Build Instructions
+
+**IMPORTANT**: This project is being developed on **macOS** with Apple Silicon (M-series chips).
+
+### macOS / Metal Requirements
+
+All build and test commands on macOS MUST include the `--features metal` flag:
+
+```bash
+# Building
+cargo build --release --features metal
+
+# Testing
+cargo test --features metal
+
+# Running tests for specific package
+cargo test --package candle-vllm-core --lib --features metal
+
+# Running the server
+cargo run --release --features metal -- --p 2000 --ui-server
+```
+
+**Never run cargo commands without `--features metal` on macOS!**
+
 ## Coding Standards & Source of Truth
 
 - All automated and AI-assisted code changes MUST strictly follow the coding standards documented in `docs/coding-standards/README.md`.
@@ -72,12 +96,18 @@ Agents SHOULD skim the relevant sections of `docs/coding-standards/README.md` be
 - Streaming responses now include incremental tool-call deltas; keep this in mind when documenting new streaming features or SDK integrations.
 
 ## Build, Test, and Development Commands
-- Install Rust 1.83+; ensure CUDA toolkit is on `PATH` for NVIDIA or Metal toolchain for Apple.
-- Fast debug build: `cargo build`.
-- Release build (Metal): `cargo build --release --features metal`.
+
+**On macOS (THIS PROJECT):**
+- Install Rust 1.83+; run `install_metal_toolchain.sh` to set up Metal development.
+- Fast debug build: `cargo build --features metal`.
+- Release build: `cargo build --release --features metal`.
+- Run server with a model id: `cargo run --release --features metal -- --m <huggingface-id> --ui-server` (add `--isq q4k` for in-situ quantization).
+- Lint/format: `cargo fmt --all` and `cargo clippy --all-targets --features metal -D warnings`.
+- Tests: `cargo test --features metal`; for specific packages: `cargo test --package candle-vllm-core --lib --features metal`.
+
+**Other Platforms (for reference):**
 - Release build (CUDA, single node): `cargo build --release --features cuda,nccl`.
-- Run server with a model id: `cargo run --release --features cuda,nccl -- --m <huggingface-id> --ui-server` (add `--isq q4k` for in-situ quantization).
-- Lint/format: `cargo fmt --all` and `cargo clippy --all-targets --all-features -D warnings`.
+- Run server (CUDA): `cargo run --release --features cuda,nccl -- --m <huggingface-id> --ui-server`.
 - Tests (CPU-only): `cargo test --all --all-features`; GPU-dependent code should be guarded behind feature flags.
 
 ### Inference Engine Architecture
