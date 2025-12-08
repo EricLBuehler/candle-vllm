@@ -358,7 +358,12 @@ pub struct ModelParams {
     pub quantization: Option<String>,
     pub block_size: Option<usize>,
     pub max_num_seqs: Option<usize>,
+
+    /// GPU memory allocation for KV cache (in MB)
+    /// Can be specified as either 'mem' or 'kvcache_mem_gpu' in YAML
+    #[serde(alias = "mem")]
     pub kvcache_mem_gpu: Option<usize>,
+
     pub kvcache_mem_cpu: Option<usize>,
     pub prefill_chunk_size: Option<usize>,
     pub multithread: Option<bool>,
