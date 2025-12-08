@@ -354,8 +354,9 @@ impl LLMEngine {
         let mut choices = Vec::new();
         let choice = Choice {
             delta: ChoiceData {
-                role: pipeline.get_past_conversation().get_roles().0.clone(),
+                role: Some(pipeline.get_past_conversation().get_roles().0.clone()),
                 content,
+                tool_calls: None,
             },
             finish_reason,
             index: 0,
@@ -771,6 +772,7 @@ impl LLMEngine {
                                 message: ChatChoiceData {
                                     role: pipeline.get_past_conversation().get_roles().0.clone(),
                                     content: Some(data),
+                                    tool_calls: None,
                                 },
                                 finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
                                 index,

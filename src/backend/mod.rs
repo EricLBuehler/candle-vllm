@@ -1,3 +1,4 @@
+#[cfg(any(feature = "cuda", feature = "metal"))]
 mod cache;
 pub mod gguf;
 pub mod gptq;
@@ -33,6 +34,7 @@ pub fn get_or_load_func(
 
 #[allow(unused_imports)]
 use crate::openai::responses::APIError;
+#[cfg(any(feature = "cuda", feature = "metal"))]
 pub use cache::*;
 #[cfg(feature = "cuda")]
 use candle_core::{cuda_backend::cudarc::driver::CudaFunction, CudaDevice};
