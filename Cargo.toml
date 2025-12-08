@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 axum = { version = "0.7.4", features = ["tokio"] }
 utoipa = { version = "4.2", features = ["axum_extras"] }
-tower-http = { version = "0.5.1", features = ["cors"]}
+tower-http = { version = "0.6.6", features = ["cors"]}
 flume = "0.10.14"
 #actix-web = "4.8.0"
 anyhow = "1.0.75"
