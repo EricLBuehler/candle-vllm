@@ -488,3 +488,21 @@ pub fn swap_blocks(src: Tensor, dst: &Tensor, block_mapping: HashMap<usize, usiz
 
     Ok(())
 }
+
+#[cfg(not(any(feature = "cuda", feature = "metal")))]
+pub unsafe fn copy_blocks(
+    _: Vec<&mut candle_core::Tensor>,
+    _: Vec<&mut candle_core::Tensor>,
+    _: HashMap<usize, Vec<usize>>,
+) -> candle_core::Result<()> {
+    candle_core::bail!("copy_blocks not implemented for CPU")
+}
+
+#[cfg(not(any(feature = "cuda", feature = "metal")))]
+pub fn swap_blocks(
+    _: candle_core::Tensor,
+    _: &mut candle_core::Tensor,
+    _: HashMap<usize, usize>,
+) -> candle_core::Result<()> {
+    candle_core::bail!("swap_blocks not implemented for CPU")
+}

@@ -368,37 +368,8 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     Note: The exact NUMA binding sequence may vary depending on your hardware configuration.
   </details>
 
-- Run **Qwen3-Reranker**
-  <details>
-    <summary>Show command</summary>
-
-    1) Start the backend service for `Qwen3-Reranker` model
-    ```shell
-    target/release/candle-vllm --p 2000 --f /home/data/Qwen3-Reranker-4B-q4_k_m.gguf
-    ```
-
-    2) Start the chatbot with `system prompt` for qwen3-reranker
-    ```shell
-    python3 examples/chat.py --thinking True --system_prompt "Judge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be \"yes\" or \"no\"."
-    ```
-
-    3) Chat with chatbot for any query/doc pairs, for example,
-    ```shell
-    <Query>: What is the capital of China?\n\n<Document>: The capital of China is Beijing.
-    ```
-
-    Observe the answer:
-    
-    ```shell
-    🙋 Please Input (Ctrl+C to start a new chat or exit): <Query>: What is the capital of China?\n\n<Document>: The capital of China is Beijing.
-    Candle-vLLM: ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-    <think>
-    Okay, the user is asking for the capital of China. The document provided is a direct answer: "The capital of China is Beijing." I need to check if this is correct. From my knowledge, Beijing is indeed the capital of China. The answer is correct and straightforward. The document meets the requirement as it provides the accurate information. So the answer is yes.
-    </think>
-
-    yes
-    ```
-  </details>
+## 📚 Work as a Rust crate
+- [Crate Usage](docs/rust_crate.md)
 
 ## How to send request(s) to the backend?
 

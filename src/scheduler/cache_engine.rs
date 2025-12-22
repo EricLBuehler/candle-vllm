@@ -117,10 +117,12 @@ impl CacheEngine {
             Ok(cache)
         } else {
             let fp8_kvcache = matches!(dtype, DType::U8);
-            println!(
-                "Using FP8 KV Cache? {}, cache dtype {:?}",
-                fp8_kvcache, dtype
-            );
+            if !device.is_cpu() {
+                println!(
+                    "Using FP8 KV Cache? {}, cache dtype {:?}",
+                    fp8_kvcache, dtype
+                );
+            }
 
             let kshape = Self::calculate_key_block_shape(
                 model_config,

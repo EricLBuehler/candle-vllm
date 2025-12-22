@@ -36,6 +36,7 @@ pub enum SeparatorStyle {
 
 /// A struct for managing prompt templates and conversation history.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct DefaultConversation {
     name: String,
     system_message: Option<String>,

@@ -31,6 +31,7 @@ use parking_lot::RwLock;
 use rayon::iter::IntoParallelRefIterator;
 #[cfg(feature = "nccl")]
 use rayon::iter::ParallelIterator;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::SystemTime;
 use std::{
     collections::{HashMap, VecDeque},
@@ -52,15 +53,15 @@ const PREFILL_CHUNK_SIZE: usize = 8192;
 
 #[allow(unused)]
 pub struct LLMEngine {
-    pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
+    pub pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
     pub scheduler: Scheduler,
     seq_id: usize,
     cache_config: CacheConfig,
-    config: Config,
+    pub config: Config,
     group_id: usize,
     pub notify: Arc<Notify>,
-    sync_notifies: HashMap<String, Option<Arc<Notify>>>,
-    senders: HashMap<String, Option<Arc<Sender<ChatResponse>>>>,
+    pub sync_notifies: HashMap<String, Option<Arc<Notify>>>,
+    pub senders: HashMap<String, Option<Arc<Sender<ChatResponse>>>>,
     pub completion_records: HashMap<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>,
     sequence_groups: RwLock<VecDeque<Arc<SequenceGroup>>>,
     multi_process: bool,
@@ -69,6 +70,7 @@ pub struct LLMEngine {
     #[cfg(feature = "nccl")]
     pub daemon_manager: RwLock<Option<DaemonManager>>,
     prefill_chunk_size: Option<usize>,
+    pub exit_flag: Arc<AtomicBool>,
 }
 
 impl LLMEngine {
@@ -132,6 +134,7 @@ impl LLMEngine {
             sync_notifies: HashMap::new(),
             senders: HashMap::new(),
             prefill_chunk_size,
+            exit_flag: Arc::new(AtomicBool::new(false)),
         }));
         let engine_clone = engine.clone();
 
@@ -148,8 +151,14 @@ impl LLMEngine {
         let _ = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
                 loop {
+                    if engine.read().exit_flag.load(Ordering::Relaxed) {
+                        break;
+                    }
                     if is_master_rank {
                         notify.notified().await;
+                        if engine.read().exit_flag.load(Ordering::Relaxed) {
+                            break;
+                        }
                         let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
                     }
                     {

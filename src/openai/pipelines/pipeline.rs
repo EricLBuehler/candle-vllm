@@ -69,15 +69,15 @@ pub enum LLMModel {
 
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
-    model: LLMModel,
-    tokenizer: Tokenizer,
-    logits_processor: LogitsProcessor,
-    conversation: DefaultConversation,
-    name: String,
-    dtype: DType,
-    device: Device,
-    stop_token_ids: Vec<u32>,
-    rank: usize,
+    pub model: LLMModel,
+    pub tokenizer: Tokenizer,
+    pub logits_processor: LogitsProcessor,
+    pub conversation: DefaultConversation,
+    pub name: String,
+    pub dtype: DType,
+    pub device: Device,
+    pub stop_token_ids: Vec<u32>,
+    pub rank: usize,
     pub stream_decoders: RwLock<super::StreamDecoderMap>,
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
@@ -761,11 +761,6 @@ impl DefaultLoader {
             (models, devices, config, sep_style[0].clone())
         };
 
-        info!(
-            "Using FP8 KV Cache? {}, cache dtype {:?}",
-            kv_cache_dtype == DType::U8,
-            kv_cache_dtype
-        );
         warn!("Done loading.");
 
         //max and min number of tokens generated per request
