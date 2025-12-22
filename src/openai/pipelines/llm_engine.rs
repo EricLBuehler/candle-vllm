@@ -11,7 +11,8 @@ use crate::{
         models::Config,
         responses::{
             ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionUsageResponse, Choice,
-            ChoiceData, WrapperLogprobs,
+            ChoiceData, EmbeddingData, EmbeddingOutput, EmbeddingResponse, EmbeddingUsage,
+            WrapperLogprobs,
         },
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
@@ -263,6 +264,9 @@ impl LLMEngine {
                             task.created,
                             &task.sampling_params,
                             task.use_logprobs,
+                            task.is_embedding,
+                            task.encoding_format,
+                            task.embedding_type,
                             None,
                         );
                         tracing::debug!("Daemon process: add_sequence to group {}", task.group_id);
@@ -303,6 +307,9 @@ impl LLMEngine {
                     task.created,
                     &task.sampling_params,
                     task.use_logprobs,
+                    task.is_embedding,
+                    task.encoding_format.clone(),
+                    task.embedding_type.clone(),
                     sender,
                 );
                 tracing::debug!("Main process: add_sequence to group {}", task.group_id);
@@ -479,7 +486,16 @@ impl LLMEngine {
                 let mut e = engine.write();
                 let scheduler_outputs = e.scheduler.schedule();
                 if !scheduler_outputs.ignored_seq_groups.is_empty() {
-                    todo!();
+                    for group in scheduler_outputs.ignored_seq_groups.iter() {
+                        if let Some(sender) = &group.sender {
+                            let _ = sender.send(ChatResponse::ModelError(
+                                candle_core::Error::msg(
+                                    "Ignored sequence group: allocation impossible",
+                                )
+                                .to_string(),
+                            ));
+                        }
+                    }
                 }
                 e.execute_scheduler_ops(&scheduler_outputs, 0).unwrap();
                 let mut groups = e.sequence_groups.write();
@@ -500,11 +516,13 @@ impl LLMEngine {
             }
 
             let seqs = scheduled[0].get_seqs();
+            let is_embedding = scheduled[0].is_embedding;
             //run partial models in parallel
-            let (mut logits, is_prompt) = {
+            let (mut logits, is_prompt, model_name) = {
                 let e = engine.read();
                 let (pipeline, cache_engine) = e.get_pipeline(rank).unwrap();
                 let device = pipeline.device();
+                let model_name = pipeline.name().to_string();
                 let PreparedInputs {
                     tokens,
                     positions,
@@ -515,15 +533,95 @@ impl LLMEngine {
                     e.prepare_decode(&scheduled, device)
                 }?;
 
-                let x = pipeline.forward(
-                    tokens,
-                    &positions,
-                    Some(&cache_engine.get_kv_cache()),
-                    &metadata,
-                )?;
+                let x = if is_embedding {
+                    pipeline.forward_embedding(
+                        tokens,
+                        &positions,
+                        Some(&cache_engine.get_kv_cache()),
+                        &metadata,
+                    )?
+                } else {
+                    pipeline.forward(
+                        tokens,
+                        &positions,
+                        Some(&cache_engine.get_kv_cache()),
+                        &metadata,
+                    )?
+                };
 
-                (x, metadata.is_prefill)
+                (x, metadata.is_prefill, model_name)
             };
+
+            if is_embedding {
+                if is_prompt {
+                    let mut e = engine.write();
+                    //Process embedding response
+                    let mut start_idx = 0;
+                    for group in &scheduled {
+                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        let prompt_len = seq.deref().get_prompt_len();
+                        let end_idx = start_idx + prompt_len;
+
+                        //extract sequence embedding
+                        let seq_embedding = logits.narrow(0, start_idx, prompt_len)?;
+
+                        //Pooling
+                        let pooled_embedding = match group.embedding_type {
+                            crate::openai::requests::EmbeddingType::Last => {
+                                seq_embedding.narrow(0, prompt_len - 1, 1)?.squeeze(0)?
+                            }
+                            crate::openai::requests::EmbeddingType::Mean => {
+                                seq_embedding.mean(0)?
+                            }
+                        };
+                        info!("Resulting embedding shape: {:?}", pooled_embedding.shape());
+
+                        let vec_embedding = pooled_embedding
+                            .to_dtype(candle_core::DType::F32)?
+                            .to_vec1::<f32>()?;
+
+                        let output = match group.encoding_format {
+                            crate::openai::requests::EncodingFormat::Float => {
+                                EmbeddingOutput::Vector(vec_embedding)
+                            }
+                            crate::openai::requests::EncodingFormat::Base64 => {
+                                use base64::{engine::general_purpose::STANDARD, Engine as _};
+                                let bytes = unsafe {
+                                    std::slice::from_raw_parts(
+                                        vec_embedding.as_ptr() as *const u8,
+                                        vec_embedding.len() * 4,
+                                    )
+                                };
+                                EmbeddingOutput::Base64(STANDARD.encode(bytes))
+                            }
+                        };
+
+                        if let Some(sender) = &group.sender {
+                            let response = EmbeddingResponse {
+                                object: "list",
+                                data: vec![EmbeddingData {
+                                    object: "embedding",
+                                    embedding: output,
+                                    index: 0,
+                                }],
+                                model: model_name.clone(),
+                                usage: EmbeddingUsage {
+                                    prompt_tokens: prompt_len,
+                                    total_tokens: prompt_len,
+                                },
+                            };
+                            let _ = sender.send(ChatResponse::Embedding(response));
+                        } else {
+                            tracing::error!("No sender for embedding group!");
+                        }
+                        seq.deref_mut().set_finish_reason("stop".to_string());
+                        start_idx = end_idx;
+                    }
+
+                    e.scheduler.free_finished_sequence_groups();
+                }
+                continue;
+            }
 
             if is_prompt {
                 let mut e = engine.write();
@@ -1222,6 +1320,9 @@ impl LLMEngine {
         created: SystemTime,
         sampling_params: &SamplingParams,
         use_logprobs: bool,
+        is_embedding: bool,
+        encoding_format: crate::openai::requests::EncodingFormat,
+        embedding_type: crate::openai::requests::EmbeddingType,
         sender: Option<Sender<ChatResponse>>,
     ) -> SequenceGroup {
         let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
@@ -1237,6 +1338,9 @@ impl LLMEngine {
             created,
             sampling_params.clone(),
             use_logprobs,
+            is_embedding,
+            encoding_format,
+            embedding_type,
             sender,
         )
     }
@@ -1248,6 +1352,9 @@ impl LLMEngine {
         created: SystemTime,
         sampling_params: SamplingParams,
         use_logprobs: bool,
+        is_embedding: bool,
+        encoding_format: crate::openai::requests::EncodingFormat,
+        embedding_type: crate::openai::requests::EmbeddingType,
         sender: Option<Arc<Sender<ChatResponse>>>,
         sync_notify: Option<Arc<Notify>>,
     ) {
@@ -1282,6 +1389,9 @@ impl LLMEngine {
             created,
             sampling_params,
             use_logprobs,
+            is_embedding,
+            encoding_format,
+            embedding_type,
         };
         let mut waiting_tasks = self.waiting_tasks.write();
         waiting_tasks.push(task);

@@ -87,6 +87,9 @@ pub struct TaskData {
     pub created: SystemTime,
     pub sampling_params: SamplingParams,
     pub use_logprobs: bool,
+    pub is_embedding: bool,
+    pub encoding_format: requests::EncodingFormat,
+    pub embedding_type: requests::EmbeddingType,
 }
 
 pub mod conversation;

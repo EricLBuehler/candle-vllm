@@ -318,10 +318,51 @@ pub struct Engine {
     _runtime: Option<Arc<tokio::runtime::Runtime>>,
 }
 
-use crate::openai::requests::ChatCompletionRequest;
-use crate::openai::responses::ChatCompletionResponse;
+use crate::openai::requests::{ChatCompletionRequest, EmbeddingRequest};
+use crate::openai::responses::{ChatCompletionResponse, EmbeddingResponse};
+use crate::openai::streaming::ChatResponse;
+use tracing::{info, warn};
 
 impl Engine {
+    /// Validates prompt length against model limits and available KV cache.
+    fn validate_prompt(&self, token_ids: &[u32], request_type: &str) -> Result<()> {
+        let prompt_len = token_ids.len();
+        let max_model_len = self.pipeline_config.max_model_len;
+
+        if prompt_len > max_model_len {
+            warn!(
+                "[{}] Prompt length {} exceeds maximum model length {}",
+                request_type, prompt_len, max_model_len
+            );
+            return Err(candle_core::Error::msg(format!(
+                "Prompt length {} exceeds maximum model length {}",
+                prompt_len, max_model_len
+            )));
+        }
+
+        let available = {
+            let e = self.engine.read();
+            e.get_available_kv_tokens()
+        };
+
+        if prompt_len > available {
+            warn!(
+                "[{}] Prompt length {} exceeds available KV cache capacity {}",
+                request_type, prompt_len, available
+            );
+            return Err(candle_core::Error::msg(format!(
+                "Prompt length {} exceeds available KV cache capacity {}",
+                prompt_len, available
+            )));
+        }
+
+        info!(
+            "[{}] Validated prompt with {} tokens (max: {}, available: {})",
+            request_type, prompt_len, max_model_len, available
+        );
+        Ok(())
+    }
+
     pub fn generate(&self, messages: Vec<ChatCompletionRequest>) -> Result<ChatCompletionResponse> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -374,10 +415,18 @@ impl Engine {
         let request_id = format!("cmpl-{}", uuid::Uuid::new_v4());
 
         let token_ids = tokenizer
-            .encode(prompt, false)
+            .encode(prompt.clone(), false)
             .map_err(candle_core::Error::msg)?
             .get_ids()
             .to_vec();
+
+        info!(
+            "[generate_request] Processing request with prompt length {}",
+            token_ids.len()
+        );
+
+        // Validate prompt length
+        self.validate_prompt(&token_ids, "generate_request")?;
 
         // Let's create a local notify for this request.
         let req_notify = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -412,11 +461,13 @@ impl Engine {
                     request.thinking,
                 ).map_err(candle_core::Error::msg)?,
                 request.logprobs.unwrap_or(false),
+                false, // is_embedding
+                crate::openai::requests::EncodingFormat::default(),
+                crate::openai::requests::EmbeddingType::default(),
                 None, // streamer
                 Some(req_notify.clone()), // Use the local notify
             );
             self.notify.notify_one();
-            // ...
         }
 
         // The loop below handles the wait.
@@ -441,6 +492,112 @@ impl Engine {
             })
         } else {
             Err(candle_core::Error::msg("Failed to get response"))
+        }
+    }
+
+    pub fn embed(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(self.embed_async(request))
+    }
+
+    pub async fn embed_async(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse> {
+        let prompt_tokens = {
+            let e = self.engine.read();
+            let (pipeline, _) = e.get_pipeline(0).unwrap();
+
+            let prompt_str = match &request.input {
+                crate::openai::requests::EmbeddingInput::String(s) => s.clone(),
+                crate::openai::requests::EmbeddingInput::MultiString(vec) => {
+                    // Just take the first one for now, or join?
+                    // The logic in openai_server handle list
+                    if vec.is_empty() {
+                        return Err(candle_core::Error::msg("Empty input"));
+                    }
+                    vec[0].clone()
+                }
+                _ => {
+                    return Err(candle_core::Error::msg(
+                        "Unsupported input type for internal API",
+                    ))
+                }
+            };
+
+            pipeline
+                .tokenizer
+                .encode(prompt_str, false)
+                .map_err(candle_core::Error::msg)?
+                .get_ids()
+                .to_vec()
+        };
+
+        info!(
+            "[embed_async] Processing embedding request with {} tokens",
+            prompt_tokens.len()
+        );
+
+        // Validate prompt length
+        self.validate_prompt(&prompt_tokens, "embed_async")?;
+
+        let request_id = format!("embd-{}", uuid::Uuid::new_v4());
+
+        let (tx, rx) = flume::unbounded();
+
+        {
+            let mut e = self.engine.write();
+            e.add_request(
+                prompt_tokens,
+                request_id.clone(),
+                 std::time::SystemTime::now(),
+                 // Dummy sampling params
+                 SamplingParams::new(
+                    1, None, 0.0, 0.0, None, None, None, None, None, false, 1.0,
+                    crate::openai::sampling_params::EarlyStoppingCondition::UnlikelyBetterCandidates,
+                    None, Vec::new(), false, 1, None, None, true, None
+                ).map_err(candle_core::Error::msg).unwrap(),
+                false,
+                true, // is_embedding
+                request.encoding_format.clone(),
+                request.embedding_type.clone(),
+                Some(std::sync::Arc::new(tx)),
+                None,
+            );
+            self.notify.notify_one();
+        }
+
+        info!(
+            "[embed_async] Request {} submitted, awaiting response",
+            request_id
+        );
+
+        match rx.recv_async().await {
+            Ok(ChatResponse::Embedding(resp)) => {
+                info!(
+                    "[embed_async] Request {} completed successfully",
+                    request_id
+                );
+                Ok(resp)
+            }
+            Ok(ChatResponse::ModelError(e)) => {
+                warn!(
+                    "[embed_async] Request {} failed with model error: {}",
+                    request_id, e
+                );
+                Err(candle_core::Error::msg(e.to_string()))
+            }
+            Ok(_) => {
+                warn!(
+                    "[embed_async] Request {} received unexpected response type",
+                    request_id
+                );
+                Err(candle_core::Error::msg("Unexpected response type"))
+            }
+            Err(e) => {
+                warn!("[embed_async] Request {} channel error: {}", request_id, e);
+                Err(candle_core::Error::msg(e.to_string()))
+            }
         }
     }
 

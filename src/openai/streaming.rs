@@ -1,4 +1,4 @@
-use super::responses::ChatCompletionChunk;
+use super::responses::{ChatCompletionChunk, EmbeddingResponse};
 use axum::response::sse::Event;
 use flume::Receiver;
 use futures::Stream;
@@ -19,6 +19,7 @@ pub enum ChatResponse {
     ValidationError(String),
     ModelError(String),
     Chunk(ChatCompletionChunk),
+    Embedding(EmbeddingResponse),
     Done, //finish flag
 }
 
@@ -40,6 +41,12 @@ impl Stream for Streamer {
                 ChatResponse::ValidationError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
                 ChatResponse::ModelError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
                 ChatResponse::Chunk(response) => {
+                    if self.status != StreamingStatus::Started {
+                        self.status = StreamingStatus::Started;
+                    }
+                    Poll::Ready(Some(Event::default().json_data(response)))
+                }
+                ChatResponse::Embedding(response) => {
                     if self.status != StreamingStatus::Started {
                         self.status = StreamingStatus::Started;
                     }

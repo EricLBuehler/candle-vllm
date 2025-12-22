@@ -1,8 +1,8 @@
-use super::requests::ChatCompletionRequest;
 use super::requests::Messages;
+use super::requests::{ChatCompletionRequest, EmbeddingRequest, EmbeddingType, EncodingFormat};
 use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
-use super::streaming::{Streamer, StreamingStatus};
+use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
 use axum::response::sse::KeepAlive;
 use axum::{
@@ -235,6 +235,9 @@ pub async fn chat_completions(
                     SystemTime::now(),
                     sampling_params,
                     request.logprobs.unwrap_or(false),
+                    false,
+                    EncodingFormat::default(),
+                    EmbeddingType::default(),
                     if stream_request {
                         Some(Arc::new(response_tx))
                     } else {
@@ -285,5 +288,115 @@ pub async fn chat_completions(
             object: "chat.completion",
             usage: usage.clone(),
         })
+    }
+}
+
+#[utoipa::path(
+    post,
+    tag = "candle-vllm",
+    path = "/v1/embeddings",
+    request_body = EmbeddingRequest,
+    responses((status = 200, description = "Embeddings"))
+)]
+pub async fn create_embeddings(
+    State(data): State<Arc<OpenAIServerData>>,
+    request: Json<EmbeddingRequest>,
+) -> ChatResponder {
+    let input = request.input.clone();
+    let prompts = input.into_vec();
+
+    //For now only support single prompt for simplicity, loop if multiple
+    if prompts.len() != 1 {
+        return ChatResponder::ValidationError(APIError::new_str(
+            "Currently only support single string or token array input.",
+        ));
+    }
+
+    let prompt_str = prompts[0].clone();
+
+    //TODO: Reuse check_length or similar logic. For now simplified.
+    let (token_ids, available_tokens) = {
+        let model = data.model.read();
+        let available_kv_tokens = model.get_available_kv_tokens();
+        let pipeline = model
+            .get_pipeline(0)
+            .ok_or(APIError::new("Missing pipeline".to_string()));
+
+        match pipeline {
+            Ok(pipeline) => match pipeline.0.tokenizer().encode_fast(prompt_str, false) {
+                Ok(encoding) => (encoding.get_ids().to_vec(), available_kv_tokens),
+                Err(e) => return ChatResponder::ValidationError(APIError::from(e)),
+            },
+            Err(e) => return ChatResponder::ModelError(e),
+        }
+    };
+
+    if token_ids.len() >= available_tokens {
+        return ChatResponder::ValidationError(APIError::new_str("Prompt too long."));
+    }
+
+    let request_id = format!("embd-{}", Uuid::new_v4());
+
+    // Create sampling params for embedding (max_tokens=0, etc)
+    // We reuse SamplingParams but most fields irrelevant.
+    let _generation_cfg = data.pipeline_config.generation_cfg.as_ref().unwrap();
+    let sampling_params = match SamplingParams::new(
+        1,
+        None,
+        0.0,
+        0.0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        1.0,
+        EarlyStoppingCondition::UnlikelyBetterCandidates,
+        None,
+        Vec::new(),
+        false,
+        1,
+        None,
+        None,
+        true,
+        None,
+    ) {
+        Ok(params) => params,
+        Err(e) => return ChatResponder::ValidationError(e),
+    };
+
+    let (response_tx, rx) = flume::unbounded();
+
+    let request_id_clone = request_id.clone();
+
+    let _ = tokio::task::spawn_blocking(move || {
+        tokio::runtime::Handle::current().block_on(async move {
+            {
+                let mut model = data.model.write();
+                model.add_request(
+                    token_ids,
+                    request_id_clone,
+                    SystemTime::now(),
+                    sampling_params,
+                    false,
+                    true, //is_embedding
+                    request.encoding_format.clone(),
+                    request.embedding_type.clone(),
+                    Some(Arc::new(response_tx)),
+                    None,
+                );
+                model.notify.notify_one();
+            }
+        });
+    });
+
+    // Wait for response from channel
+    // Embedding is strictly one response.
+    match rx.recv_async().await {
+        Ok(ChatResponse::Embedding(resp)) => ChatResponder::Embedding(resp),
+        Ok(ChatResponse::ModelError(e)) => ChatResponder::ModelError(APIError::new_str(&e)),
+        Ok(_) => ChatResponder::InternalError(APIError::new(format!("Unexpected response type"))),
+        Err(_) => ChatResponder::InternalError(APIError::new("Channel closed".to_string())),
     }
 }

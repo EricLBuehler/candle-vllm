@@ -365,6 +365,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
 ## 📚 作为 Rust crate 使用
 - [Crate Usage](docs/rust_crate.md)
+- [Embedding模型使用](docs/embedding.md)
 
 ## 如何向后端发送请求？
 

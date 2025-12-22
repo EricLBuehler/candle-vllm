@@ -369,7 +369,8 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
   </details>
 
 ## 📚 Work as a Rust crate
-- [Crate Usage](docs/rust_crate.md)
+- [Rust Crate Usage](docs/rust_crate.md)
+- [Embedding Model Usage](docs/embedding.md)
 
 ## How to send request(s) to the backend?
 
