@@ -83,3 +83,59 @@ impl Default for ChatCompletionRequest {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EncodingFormat {
+    Float,
+    Base64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EmbeddingInput {
+    String(String),
+    MultiString(Vec<String>),
+    Tokens(Vec<u32>),
+    MultiTokens(Vec<Vec<u32>>),
+}
+
+impl EmbeddingInput {
+    pub fn into_vec(self) -> Vec<String> {
+        match self {
+            EmbeddingInput::String(s) => vec![s],
+            EmbeddingInput::MultiString(s) => s,
+            EmbeddingInput::Tokens(_) => unimplemented!("Token input not supported yet"),
+            EmbeddingInput::MultiTokens(_) => unimplemented!("Token input not supported yet"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmbeddingType {
+    Last,
+    Mean, //default
+}
+
+impl Default for EmbeddingType {
+    fn default() -> Self {
+        Self::Mean
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingRequest {
+    pub model: Option<String>,
+    pub input: EmbeddingInput,
+    #[serde(default)]
+    pub encoding_format: EncodingFormat,
+    #[serde(default)]
+    pub embedding_type: EmbeddingType,
+}
+
+impl Default for EncodingFormat {
+    fn default() -> Self {
+        Self::Float
+    }
+}

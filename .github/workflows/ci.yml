@@ -14,7 +14,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macOS-latest]
+        os: [ubuntu-latest, windows-latest]
         rust: [stable]
     steps:
       - uses: actions/checkout@v2
@@ -43,65 +43,6 @@ jobs:
         with:
           command: fmt
           args: --all -- --check
-
-  #build:
-  #  name: Build
-  #  runs-on: ${{ matrix.os }}
-  #  strategy:
-  #    matrix:
-  #      os: [ubuntu-latest]
-  #      rust: [stable]
-  #  steps:
-  #    - uses: actions/checkout@v2
-  #    - uses: actions-rs/toolchain@v1
-  #      with:
-  #        profile: minimal
-  #        toolchain: ${{ matrix.rust }}
-  #        override: true
-  #    - uses: Swatinem/rust-cache@v2
-  #    - run: sudo apt-get update -y && sudo apt-get install -y libssl-dev pkg-config
-  #    - uses: Jimver/cuda-toolkit@v0.2.14
-  #      id: cuda-toolkit
-  #      with:
-  #        cuda: '12.2.2'
-  #    # - run: echo "Installed cuda version is: ${{steps.cuda-toolkit.outputs.cuda}}"
-  #    # - run: echo "Cuda install location: ${{steps.cuda-toolkit.outputs.CUDA_PATH}}"
-  #    - run: CUDA_COMPUTE_CAP=86 cargo build --features cuda,cudnn,flash-attn,nccl
-  
-  #clippy:
-  #  name: Clippy
-  #  runs-on: ${{ matrix.os }}
-  #  strategy:
-  #    matrix:
-  #      os: [ubuntu-latest, windows-latest, macOS-latest]
-  #      rust: [stable]
-  #  steps:
-  #    - uses: actions/checkout@v2
-  #    - uses: actions-rs/toolchain@v1
-  #      with:
-  #        profile: minimal
-  #        toolchain: ${{ matrix.rust }}
-  #        override: true
-  #    - run: rustup component add clippy
-  #    - uses: actions-rs/cargo@v1
-  #      with:
-  #        command: clippy
-  #        args: --workspace --tests --examples -- -D warnings
-  
-  #docs:
-  #  name: Docs
-  #  runs-on: ubuntu-latest
-  #  steps:
-  #    - uses: actions/checkout@v2
-  #    - uses: actions-rs/toolchain@v1
-  #      with:
-  #        profile: minimal
-  #        toolchain: stable
-  #        override: true
-  #    - uses: actions-rs/cargo@v1
-  #      with:
-  #        command: doc
-  #        args: --workspace
   
   typos:
     name: Typos

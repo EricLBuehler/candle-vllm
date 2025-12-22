@@ -329,6 +329,27 @@ impl GGUFPhi3 {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
+        self.forward_inner(xs, input_positions, kv_caches, input_metadata, false)
+    }
+
+    pub fn forward_embedding(
+        &self,
+        xs: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        self.forward_inner(xs, input_positions, kv_caches, input_metadata, true)
+    }
+
+    fn forward_inner(
+        &self,
+        xs: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        return_hidden: bool,
+    ) -> Result<Tensor> {
         let seqlens = if input_metadata.cu_seqlens_q.is_some() {
             input_metadata
                 .cu_seqlens_q
@@ -384,12 +405,16 @@ impl GGUFPhi3 {
                 xs = (ys + residual)?
             }
         }
-        if !seqlens.is_empty() {
+        if !seqlens.is_empty() && !return_hidden {
             let indices: Vec<_> = seqlens.iter().map(|x| x - 1 as u32).collect();
             let batch = indices.len();
             xs = xs.index_select(&Tensor::from_vec(indices, (batch,), xs.device())?, 0)?;
         }
         let xs = self.output_norm.forward(&xs)?;
+
+        if return_hidden {
+            return Ok(xs);
+        }
         self.output.forward(&xs)?.to_dtype(DType::F32)
     }
 

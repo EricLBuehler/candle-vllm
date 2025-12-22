@@ -7,7 +7,7 @@ use candle_core::{DType, Device, Result};
 #[cfg(feature = "nccl")]
 use candle_vllm::backend::heartbeat;
 use candle_vllm::openai::models::Config;
-use candle_vllm::openai::openai_server::chat_completions;
+use candle_vllm::openai::openai_server::{chat_completions, create_embeddings};
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::pipelines::pipeline::DefaultLoader;
 use candle_vllm::openai::sampling_params::GenerationConfig;
@@ -489,6 +489,7 @@ async fn main() -> Result<()> {
             }),
         )
         .route("/v1/chat/completions", post(chat_completions))
+        .route("/v1/embeddings", post(create_embeddings))
         .layer(cors_layer)
         .with_state(Arc::new(server_data));
 

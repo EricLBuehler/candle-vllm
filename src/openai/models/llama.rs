@@ -116,6 +116,27 @@ impl Llama {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
+        self.forward_inner(x, input_positions, kv_caches, input_metadata, false)
+    }
+
+    pub fn forward_embedding(
+        &self,
+        x: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        self.forward_inner(x, input_positions, kv_caches, input_metadata, true)
+    }
+
+    fn forward_inner(
+        &self,
+        x: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        return_hidden: bool,
+    ) -> Result<Tensor> {
         let seqlens = if input_metadata.cu_seqlens_q.is_some() {
             input_metadata
                 .cu_seqlens_q
@@ -156,13 +177,17 @@ impl Llama {
                 )?;
             }
         }
-        if !seqlens.is_empty() {
+        if !seqlens.is_empty() && !return_hidden {
             let indices: Vec<_> = seqlens.iter().map(|x| x - 1 as u32).collect();
             let batch = indices.len();
             xs = xs.index_select(&Tensor::from_vec(indices, (batch,), xs.device())?, 0)?;
         }
         let xs = self.norm.forward(&xs)?;
-        self.lm_head.forward(&xs)?.to_dtype(DType::F32)
+        if return_hidden {
+            xs.to_dtype(DType::F32)
+        } else {
+            self.lm_head.forward(&xs)?.to_dtype(DType::F32)
+        }
     }
 
     pub fn load(

@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.4.5"
+version = "0.4.6"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -63,6 +63,7 @@ chrono = "0.4.41"
 which = "5"
 ahash = "0.8.11"
 rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", rev="e5feeb0" }
+base64 = "0.22.1"
 
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]

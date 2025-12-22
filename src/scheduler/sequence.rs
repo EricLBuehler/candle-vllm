@@ -253,6 +253,9 @@ pub struct SequenceGroup {
     pub created_time: SystemTime,
     pub sampling_params: SamplingParams,
     pub use_logprobs: bool,
+    pub is_embedding: bool,
+    pub encoding_format: crate::openai::requests::EncodingFormat,
+    pub embedding_type: crate::openai::requests::EmbeddingType,
     pub sender: Option<Sender<ChatResponse>>,
 }
 
@@ -266,6 +269,9 @@ impl SequenceGroup {
         created_time: SystemTime,
         sampling_params: SamplingParams,
         use_logprobs: bool,
+        is_embedding: bool,
+        encoding_format: crate::openai::requests::EncodingFormat,
+        embedding_type: crate::openai::requests::EmbeddingType,
         sender: Option<Sender<ChatResponse>>,
     ) -> Self {
         let mut seq_map = HashMap::new();
@@ -280,6 +286,9 @@ impl SequenceGroup {
             created_time,
             sampling_params,
             use_logprobs,
+            is_embedding,
+            encoding_format,
+            embedding_type,
             sender,
         }
     }

@@ -1098,6 +1098,60 @@ impl DefaultPipeline {
         }
     }
 
+    pub fn forward_embedding(
+        &self,
+        input_tokens: Tensor,
+        input_positions: &Tensor,
+        kv_cache: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        match &self.model {
+            LLMModel::Llama(llama) => {
+                llama.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Mistral(mistral) => {
+                mistral.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Phi3(phi) => {
+                phi.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Gemma(gemma) => {
+                gemma.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Gemma3(gemma3) => {
+                gemma3.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Qwen(qwen) => {
+                qwen.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Qwen3MoE(qwen3_moe) => qwen3_moe.forward_embedding(
+                &input_tokens,
+                input_positions,
+                kv_cache,
+                input_metadata,
+            ),
+            LLMModel::LlamaGGUF(llama) => {
+                llama.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Phi3GGUF(phi3) => {
+                phi3.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::QWenGGUF(qwen) => {
+                qwen.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::QWenGGUFMoE(qwen_moe) => {
+                qwen_moe.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::GLM4GGUF(glm4) => {
+                glm4.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Yi(yi) => {
+                yi.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            _ => candle_core::bail!("Model not supported for embedding!"),
+        }
+    }
+
     pub fn sample(
         &mut self,
         logits: &Tensor,
