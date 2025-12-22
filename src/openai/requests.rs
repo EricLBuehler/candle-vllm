@@ -54,3 +54,32 @@ pub struct ChatCompletionRequest {
     pub logprobs: Option<bool>, //false
     pub thinking: Option<bool>,       //false
 }
+
+impl Default for ChatCompletionRequest {
+    fn default() -> Self {
+        Self {
+            model: "default".to_string(),
+            messages: Messages::Literal("".to_string()),
+            temperature: None,
+            top_p: None,
+            min_p: None,
+            n: None,
+            max_tokens: None,
+            stop: None,
+            stream: None,
+            presence_penalty: None,
+            repeat_last_n: None,
+            frequency_penalty: None,
+            logit_bias: None,
+            user: None,
+            top_k: None,
+            best_of: None,
+            use_beam_search: None,
+            ignore_eos: None,
+            skip_special_tokens: None,
+            stop_token_ids: None,
+            logprobs: None,
+            thinking: None,
+        }
+    }
+}

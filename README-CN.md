@@ -363,37 +363,8 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     注意： 绑定顺序可能会根据你的硬件配置有所不同。
   </details>
 
-- 使用**Qwen3-Reranker**进行知识检索
-  <details>
-    <summary>显示命令</summary>
-
-    1) 启动`Qwen3-Reranker`模型服务
-    ```shell
-    target/release/candle-vllm --f /home/data/Qwen3-Reranker-4B-q4_k_m.gguf
-    ```
-
-    2) 启动迷你聊天机器人并传入`system prompt`
-    ```shell
-    python3 examples/chat.py --thinking True --system_prompt "Judge whether the Document meets the requirements based on the Query and the Instruct provided. Note that the answer can only be \"yes\" or \"no\"."
-    ```
-
-    3) 使用query/doc对进行知识检查，例如：
-    ```shell
-    <Query>: What is the capital of China?\n\n<Document>: The capital of China is Beijing.
-    ```
-
-    观察输出结果：
-    
-    ```shell
-    🙋 Please Input (Ctrl+C to start a new chat or exit): <Query>: What is the capital of China?\n\n<Document>: The capital of China is Beijing.
-    Candle-vLLM: ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-    <think>
-    Okay, the user is asking for the capital of China. The document provided is a direct answer: "The capital of China is Beijing." I need to check if this is correct. From my knowledge, Beijing is indeed the capital of China. The answer is correct and straightforward. The document meets the requirement as it provides the accurate information. So the answer is yes.
-    </think>
-
-    yes
-    ```
-  </details>
+## 📚 作为 Rust crate 使用
+- [Crate Usage](docs/rust_crate.md)
 
 ## 如何向后端发送请求？
 

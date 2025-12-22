@@ -6,6 +6,7 @@ use axum::{
 use candle_core::{DType, Device, Result};
 #[cfg(feature = "nccl")]
 use candle_vllm::backend::heartbeat;
+use candle_vllm::openai::models::Config;
 use candle_vllm::openai::openai_server::chat_completions;
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::pipelines::pipeline::DefaultLoader;
@@ -14,14 +15,12 @@ use candle_vllm::openai::OpenAIServerData;
 use candle_vllm::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm::scheduler::SchedulerConfig;
 use clap::Parser;
-use std::sync::Arc;
-use tracing::{info, warn};
-const SIZE_IN_MB: usize = 1024 * 1024;
-use candle_vllm::openai::models::Config;
 use rustchatui::start_ui_server;
 use serde_json::json;
+use std::sync::Arc;
 use tokio::sync::Notify;
 use tower_http::cors::{Any, CorsLayer};
+use tracing::{info, warn};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
@@ -131,39 +130,6 @@ struct Args {
     ui_server: bool, //start candle-vllm with built-in web server
 }
 
-fn get_cache_config(
-    kvcache_mem_gpu: usize,
-    kvcache_mem_cpu: usize,
-    block_size: usize,
-    config: &Config,
-    kv_dtype: DType,
-    num_shards: usize,
-) -> CacheConfig {
-    let dsize = kv_dtype.size_in_bytes();
-    let num_gpu_blocks = kvcache_mem_gpu * SIZE_IN_MB
-        / dsize
-        / block_size
-        / (config.num_key_value_heads.unwrap() / num_shards)
-        / config.k_head_dim()
-        / config.num_hidden_layers
-        / 2;
-    let num_cpu_blocks = kvcache_mem_cpu * SIZE_IN_MB
-        / dsize
-        / block_size
-        / (config.num_key_value_heads.unwrap() / num_shards)
-        / config.k_head_dim()
-        / config.num_hidden_layers
-        / 2;
-    CacheConfig {
-        block_size,
-        num_gpu_blocks: Some(num_gpu_blocks),
-        num_cpu_blocks: Some(num_cpu_blocks),
-        fully_init: true,
-        dtype: kv_dtype,
-        kvcache_mem_gpu,
-    }
-}
-
 fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Result<()> {
     if !log_enable {
         return Ok(());
@@ -197,55 +163,6 @@ fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Resul
         .map_err(candle_core::Error::wrap)
 }
 
-fn get_dtype(dtype: Option<String>) -> DType {
-    let dtype = match dtype.as_deref() {
-        Some("f16") => DType::F16,
-        Some("bf16") => DType::BF16,
-        Some("f32") => DType::F32,
-        Some(dtype) => panic!("Unsupported dtype {dtype}"),
-        None => DType::BF16,
-    };
-
-    #[cfg(feature = "cuda")]
-    let dtype = {
-        use candle_core::cuda_backend::cudarc::driver::result::{device, init};
-        use candle_core::cuda_backend::cudarc::driver::sys::CUdevice_attribute;
-        match (init(), device::get(0)) {
-            (Ok(_), Ok(d)) => {
-                let (compute_major, compute_minor) = unsafe {
-                    (
-                        device::get_attribute(
-                            d,
-                            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR,
-                        )
-                        .unwrap_or(8),
-                        device::get_attribute(
-                            d,
-                            CUdevice_attribute::CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR,
-                        )
-                        .unwrap_or(8),
-                    )
-                };
-                info!(
-                    "CUDA compute capability: {}.{}",
-                    compute_major, compute_minor,
-                );
-                if dtype != DType::F32 && compute_major < 8 {
-                    warn!(
-                        "CUDA compute capability: {} (<8), switched to F16 cause no BF16 support.",
-                        compute_major
-                    );
-                    DType::F16
-                } else {
-                    dtype
-                }
-            }
-            _ => dtype,
-        }
-    };
-    dtype
-}
-
 #[tokio::main]
 #[allow(unused_mut)]
 async fn main() -> Result<()> {
@@ -264,7 +181,7 @@ async fn main() -> Result<()> {
 
     let (paths, gguf) = loader.prepare_model_weights(args.hf_token, args.hf_token_path)?;
 
-    let dtype = get_dtype(args.dtype);
+    let dtype = candle_vllm::get_dtype(args.dtype);
     let kv_cache_dtype = if args.fp8_kvcache { DType::U8 } else { dtype };
 
     if cfg!(feature = "flash-decoding") {
@@ -433,7 +350,7 @@ async fn main() -> Result<()> {
         .into_iter()
         .map(|pipeline| {
             let cfg = pipeline.get_model_config();
-            let cache_cfg = get_cache_config(
+            let cache_cfg = candle_vllm::get_cache_config(
                 args.kvcache_mem_gpu,
                 args.kvcache_mem_cpu, //dummy 512MB for cpu
                 args.block_size,
