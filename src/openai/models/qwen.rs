@@ -120,12 +120,12 @@ impl Qwen {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
-        let vb_m = if !vb.contains_tensor("model.embed_tokens.weight")
+        let (vb_m, tie_word_embeddings) = if !vb.contains_tensor("model.embed_tokens.weight")
             && vb.contains_tensor("embed_tokens.weight")
         {
-            vb.clone()
+            (vb.clone(), true) // in case there is no lm_head in embedding models
         } else {
-            vb.pp("model")
+            (vb.pp("model"), cfg.tie_word_embeddings)
         };
 
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
@@ -143,7 +143,7 @@ impl Qwen {
         let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
-            if cfg.tie_word_embeddings {
+            if tie_word_embeddings {
                 vb_m.pp("embed_tokens")
             } else {
                 vb.pp("lm_head")
