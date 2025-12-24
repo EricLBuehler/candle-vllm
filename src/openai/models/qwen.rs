@@ -120,7 +120,14 @@ impl Qwen {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
-        let vb_m = vb.pp("model");
+        let vb_m = if !vb.contains_tensor("model.embed_tokens.weight")
+            && vb.contains_tensor("embed_tokens.weight")
+        {
+            vb.clone()
+        } else {
+            vb.pp("model")
+        };
+
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, true)?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
