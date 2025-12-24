@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.4.7"
+version = "0.4.8"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -62,7 +62,7 @@ itertools = "0.13.0"
 chrono = "0.4.41"
 which = "5"
 ahash = "0.8.11"
-rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", rev="428c977" }
+rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", rev="5fa0d81" }
 base64 = "0.22.1"
 
 [features]
