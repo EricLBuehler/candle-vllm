@@ -42,8 +42,6 @@ ARG WITH_FEATURES="cuda,cudnn,nccl,mkl,mpi"
 RUN cargo build --release --workspace --features "${WITH_FEATURES}"
 
 FROM docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 AS base
-ENV HUGGINGFACE_HUB_CACHE=/data \
-    PORT=80
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -66,9 +64,7 @@ HEREDOC
 
 FROM base
 
-COPY --from=builder /candle-vllm/target/release/candle-vllm /usr/local/bin/candle-vllm
-RUN chmod +x /usr/local/bin/candle-vllm
+COPY --chmod=755 --from=builder /candle-vllm/target/release/candle-vllm /usr/local/bin/candle-vllm
 
-# Only the `devel` builder image provides symlinks, restore the `libnccl.so` symlink:
-RUN ln -s libnccl.so.2 /usr/lib/x86_64-linux-gnu/libnccl.so
-
+ENV HUGGINGFACE_HUB_CACHE=/data \
+    PORT=80
