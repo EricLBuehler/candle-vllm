@@ -6,6 +6,7 @@ use crate::openai::pipelines::TokenOrFinishReason;
 use crate::openai::streaming::ChatResponse;
 use crate::openai::TaskData;
 use crate::scheduler::Scheduler;
+use crate::tools::parser::ToolParser;
 use crate::{
     openai::{
         models::Config,
@@ -370,8 +371,9 @@ impl LLMEngine {
         let mut choices = Vec::new();
         let choice = Choice {
             delta: ChoiceData {
-                role: pipeline.get_past_conversation().get_roles().0.clone(),
+                role: "assistant".to_string(),
                 content,
+                tool_calls: None,
             },
             finish_reason,
             index: 0,
@@ -769,45 +771,169 @@ impl LLMEngine {
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
                             let (pipeline, _) = e.get_pipeline(rank).unwrap();
-                            let chunk = e.get_stream_response(
-                                group.request_id.clone(),
-                                group.arrival_time,
-                                Some(logprobs.bytes.clone()),
-                                None,
-                                pipeline,
-                            );
-                            let ret = sender.send(ChatResponse::Chunk(chunk));
-                            if ret.is_err() {
-                                warn!(
-                                    "Send stream response error! (sequence id {})",
-                                    seq.deref().get_id()
-                                );
-                                seq.deref_mut().set_finish_reason("abort".to_string());
+                            let token_str = &logprobs.bytes;
+
+                            // Handle buffering
+                            let mut should_buffer = false;
+                            {
+                                let outer = seq.deref();
+                                let mut data = outer.deref_mut();
+
+                                data.accumulated_output.push_str(token_str);
+
+                                // Reasoning Logic
+                                let markers = [
+                                    ("<think>", "</think>"),
+                                    ("<|think|>", "<|/think|>"),
+                                    ("[THINK]", "[/THINK]"),
+                                    ("<thought>", "</thought>"),
+                                ];
+
+                                if data.active_reasoning_end.is_none() {
+                                    for (start, end) in markers {
+                                        if token_str.contains(start)
+                                            || data.accumulated_output.ends_with(start)
+                                        {
+                                            data.active_reasoning_end = Some(end.to_string());
+                                            tracing::info!(
+                                                "Reasoning block started, end marker: {}",
+                                                end
+                                            );
+                                            break;
+                                        }
+                                    }
+                                } else if let Some(end_marker) = &data.active_reasoning_end.clone()
+                                {
+                                    if token_str.contains(end_marker)
+                                        || data.accumulated_output.ends_with(end_marker)
+                                    {
+                                        tracing::info!(
+                                            "Reasoning block ended with marker: {}",
+                                            end_marker
+                                        );
+                                        data.active_reasoning_end = None;
+                                    }
+                                }
+
+                                if data.active_reasoning_end.is_none() {
+                                    if !data.in_tool_call {
+                                        if token_str.contains("<tool_call>")
+                                            || data.accumulated_output.ends_with("<tool_call>")
+                                        {
+                                            tracing::info!(
+                                                "Detected <tool_call>, buffering started"
+                                            );
+                                            data.in_tool_call = true;
+                                        }
+                                    }
+                                    if data.in_tool_call {
+                                        // tracing::info!("Buffering tool call token: {:?}", token_str);
+                                        should_buffer = true;
+                                    }
+                                }
                             }
-                            if seq.deref_mut().get_len() % 1000 == 0 {
-                                e.scheduler.print_free_blocks();
+
+                            if !should_buffer {
+                                let chunk = e.get_stream_response(
+                                    group.request_id.clone(),
+                                    group.arrival_time,
+                                    Some(logprobs.bytes.clone()),
+                                    None,
+                                    pipeline,
+                                );
+                                let ret = sender.send(ChatResponse::Chunk(chunk));
+                                if ret.is_err() {
+                                    warn!(
+                                        "Send stream response error! (sequence id {})",
+                                        seq.deref().get_id()
+                                    );
+                                    seq.deref_mut().set_finish_reason("abort".to_string());
+                                }
+                                if seq.deref_mut().get_len() % 1000 == 0 {
+                                    e.scheduler.print_free_blocks();
+                                }
                             }
                         };
                         seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
                         let seq = group.get_seqs().values().nth(0).unwrap();
+
+                        // Check for tool calls in accumulated output
+                        let mut final_tool_calls = None;
+                        {
+                            let outer = seq.deref();
+                            let data = outer.deref(); // Read lock
+                            let parser = ToolParser::new();
+                            if !data.accumulated_output.is_empty() {
+                                let calls = parser.parse(&data.accumulated_output);
+                                if !calls.is_empty() {
+                                    tracing::info!(
+                                        "Parsed {} tool calls from accumulated output",
+                                        calls.len()
+                                    );
+                                    final_tool_calls = Some(calls);
+                                } else {
+                                    tracing::info!("No tool calls found in accumulated output");
+                                }
+                            }
+                        }
+
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
                             let (pipeline, _) = e.get_pipeline(rank).unwrap();
-                            let chunk = e.get_stream_response(
-                                group.request_id.clone(),
-                                group.arrival_time,
-                                None,
-                                Some(finish_reason.clone()),
-                                pipeline,
-                            );
-                            let ret = sender.send(ChatResponse::Chunk(chunk));
-                            if ret.is_err() {
-                                warn!("Send stream finish response error!");
+
+                            if let Some(tool_calls) = final_tool_calls {
+                                let mut choices = Vec::new();
+                                let choice = Choice {
+                                    delta: ChoiceData {
+                                        role: "assistant".to_string(),
+                                        content: None,
+                                        tool_calls: Some(tool_calls),
+                                    },
+                                    finish_reason: Some("tool_calls".to_string()),
+                                    index: 0,
+                                };
+                                choices.push(choice);
+
+                                let chunk = ChatCompletionChunk {
+                                    id: group.request_id.clone(),
+                                    choices,
+                                    created: get_created_time_secs(),
+                                    model: pipeline.name().to_string(),
+                                    object: "chat.completion.chunk",
+                                    system_fingerprint: None,
+                                };
+
+                                tracing::info!("Sending tool call chunk: {:?}", chunk);
+
+                                let ret = sender.send(ChatResponse::Chunk(chunk));
+                                if ret.is_err() {
+                                    warn!(
+                                        "Send stream response error! (sequence id {})",
+                                        seq.deref().get_id()
+                                    );
+                                    seq.deref_mut().set_finish_reason("abort".to_string());
+                                }
+                            } else {
+                                let chunk = e.get_stream_response(
+                                    group.request_id.clone(),
+                                    group.arrival_time,
+                                    None,
+                                    Some(finish_reason.clone()),
+                                    pipeline,
+                                );
+                                let ret = sender.send(ChatResponse::Chunk(chunk));
+                                if ret.is_err() {
+                                    warn!(
+                                        "Send stream response error! (sequence id {})",
+                                        seq.deref().get_id()
+                                    );
+                                    seq.deref_mut().set_finish_reason("abort".to_string());
+                                }
                             }
                         };
-                        seq.deref_mut().set_finish_reason(finish_reason)
+                        seq.deref_mut().set_finish_reason(finish_reason);
                     }
                 }
             }
@@ -876,8 +1002,9 @@ impl LLMEngine {
                             let data = pipeline.tokenizer().decode(&data, false).unwrap();
                             let choice = ChatChoice {
                                 message: ChatChoiceData {
-                                    role: pipeline.get_past_conversation().get_roles().0.clone(),
+                                    role: "assistant".to_string(),
                                     content: Some(data),
+                                    tool_calls: None,
                                 },
                                 finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
                                 index,

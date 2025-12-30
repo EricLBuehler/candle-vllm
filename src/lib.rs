@@ -136,3 +136,5 @@ pub fn get_cache_config(
         kvcache_mem_gpu,
     }
 }
+pub mod mcp;
+pub mod tools;

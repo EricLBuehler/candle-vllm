@@ -50,11 +50,12 @@ pub struct ChatCompletionUsageResponse {
     pub completion_time_costs: usize, //milliseconds
 }
 
-// tool_calls, function_call not supported!
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChoiceData {
     pub content: Option<String>,
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<crate::tools::ToolCall>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,11 +81,12 @@ pub struct ChatCompletionResponse {
     pub usage: ChatCompletionUsageResponse,
 }
 
-// tool_calls, function_call not supported!
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChoiceData {
     pub content: Option<String>,
     pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<crate::tools::ToolCall>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

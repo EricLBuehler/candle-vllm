@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
-use crate::openai::conversation::Conversation;
 #[derive(Clone, Debug)]
 pub enum ModelRepo {
     /// (model_id, filename) -- when filename is None, treat as safetensor model id.
@@ -486,7 +485,7 @@ impl Engine {
                 id: request_id,
                 choices: record.0.clone(),
                 created: record.1.created,
-                model: request.model.clone(),
+                model: request.model.clone().unwrap_or("default".to_string()),
                 object: "chat.completion",
                 usage: record.1.clone(),
             })

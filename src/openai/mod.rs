@@ -76,6 +76,7 @@ pub struct OpenAIServerData {
     pub pipeline_config: PipelineConfig,
     pub record_conversation: bool,
     pub device: Device,
+    pub mcp_manager: Option<Arc<crate::mcp::McpClientManager>>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

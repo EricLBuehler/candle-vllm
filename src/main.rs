@@ -1,4 +1,5 @@
 use axum::{
+    extract::State,
     http::{self, Method},
     routing::{get, post},
     Json, Router,
@@ -128,6 +129,18 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     ui_server: bool, //start candle-vllm with built-in web server
+
+    /// MCP server command (single server mode)
+    #[arg(long)]
+    mcp_command: Option<String>,
+
+    /// MCP server arguments (comma-separated)
+    #[arg(long, value_delimiter = ',')]
+    mcp_args: Option<Vec<String>>,
+
+    /// Path to MCP config file (multi-server mode)
+    #[arg(long)]
+    mcp_config: Option<String>,
 }
 
 fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Result<()> {
@@ -425,12 +438,55 @@ async fn main() -> Result<()> {
 
     let max_model_len = pipeline_config.max_model_len;
     let kvcached_tokens = cache_config.num_gpu_blocks.unwrap() * cache_config.block_size;
+
+    let mcp_manager_config = if let Some(path) = &args.mcp_config {
+        match candle_vllm::mcp::McpManagerConfig::from_file(path) {
+            Ok(cfg) => Some(cfg),
+            Err(err) => {
+                tracing::error!("Failed to load MCP config file: {:?}", err);
+                None
+            }
+        }
+    } else if let Some(command) = args.mcp_command.clone() {
+        Some(candle_vllm::mcp::McpManagerConfig::from_single(
+            candle_vllm::mcp::manager::McpToolConfig::new(
+                command,
+                args.mcp_args.clone().unwrap_or_default(),
+            ),
+        ))
+    } else {
+        None
+    };
+
+    // Initialize MCP Manager
+    let mcp_manager = if let Some(cfg) = mcp_manager_config {
+        match candle_vllm::mcp::McpClientManager::new(cfg) {
+            Ok(manager) => Some(Arc::new(manager)),
+            Err(err) => {
+                tracing::error!("Failed to start MCP client manager: {:?}", err);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let server_data = OpenAIServerData {
         pipeline_config,
         model: llm_engine,
         record_conversation: args.record_conversation,
         device: Device::Cpu,
+        mcp_manager: mcp_manager.clone(),
     };
+
+    if let Some(manager) = &mcp_manager {
+        info!("Waiting for MCP tools to be available...");
+        if manager.wait_for_available(std::time::Duration::from_secs(30)) {
+            info!("MCP tools available.");
+        } else {
+            warn!("MCP tools wait timed out.");
+        }
+    }
 
     if global_rank != 0 {
         info!("\nDaemon service started at rank {}.", global_rank);
@@ -470,12 +526,17 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route(
             "/v1/models",
-            get(|| async {
+            get(|State(data): State<Arc<OpenAIServerData>>| async move {
+                let model_name = {
+                    let engine = data.model.read();
+                    let (pipeline, _) = engine.get_pipeline(0).unwrap();
+                    pipeline.name().to_string()
+                };
                 Json(json!({
                     "object": "list",
                     "data": [
                         {
-                            "id": "default",
+                            "id": model_name,
                             "object": "model",
                             "created": std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)

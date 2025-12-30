@@ -630,3 +630,21 @@ pub fn get_arch_and_num_of_layers(ct: gguf_file::Content) -> Result<(String, usi
         md_get(format!("{}.block_count", architecture.as_str()).as_str())?.to_u32()? as usize;
     Ok((architecture.clone(), nlayers))
 }
+
+// Get model name from GGUF metadata if it exists
+pub fn get_gguf_name(path: &std::path::PathBuf) -> Result<Option<String>> {
+    let mut file = std::fs::File::open(path)?;
+    let content = gguf_file::Content::read(&mut file)?;
+    let md_get = |s: &str| match content.metadata.get(s) {
+        None => candle_core::bail!("cannot find {s} in metadata"),
+        Some(v) => Ok(v),
+    };
+
+    match md_get("general.name") {
+        Ok(v) => {
+            let name = v.to_string()?;
+            Ok(Some(name.clone()))
+        }
+        _ => Ok(None),
+    }
+}
