@@ -1,4 +1,4 @@
-use super::{ApplyChatTemplateError, Conversation, Message};
+use super::{ApplyChatTemplateError, Message};
 use minijinja::{context, value::Kwargs, Environment, Error, ErrorKind, Value};
 use serde::Serialize;
 
@@ -127,26 +127,43 @@ fn raise_exception(msg: String) -> Result<String, minijinja::Error> {
     Err(minijinja::Error::new(ErrorKind::InvalidOperation, msg))
 }
 
-impl Conversation for DefaultConversation {
+impl DefaultConversation {
     /// Set the system message.
-    fn set_system_message(&mut self, system_message: Option<String>) {
-        self.system_message = system_message;
+    pub fn set_system_message(&mut self, system_message: Option<String>) {
+        self.system_message = system_message.clone();
+        if let Some(msg) = system_message {
+            if let Some(m) = self.messages.iter_mut().find(|m| m.role == "system") {
+                m.content = msg;
+            } else {
+                self.messages.insert(
+                    0,
+                    Message {
+                        role: "system".to_string(),
+                        content: msg,
+                    },
+                );
+            }
+        }
+    }
+
+    pub fn get_system_message(&self) -> Option<String> {
+        self.system_message.clone()
     }
 
     /// Append a new message.
-    fn append_message(&mut self, role: String, content: String) {
+    pub fn append_message(&mut self, role: String, content: String) {
         self.messages.push(Message { role, content });
     }
 
-    fn get_roles(&self) -> &(String, String) {
+    pub fn get_roles(&self) -> &(String, String) {
         &self.roles
     }
 
-    fn clear_message(&mut self) {
+    pub fn clear_message(&mut self) {
         self.messages.clear()
     }
 
-    fn apply_chat_template(
+    pub fn apply_chat_template(
         &self,
         add_generation_prompt: bool,
         enable_thinking: bool,
@@ -191,7 +208,7 @@ impl Conversation for DefaultConversation {
             .map_err(ApplyChatTemplateError::RenderTemplateError)
     }
     /// Convert this conversation to a String prompt
-    fn get_prompt(&mut self, thinking: bool) -> String {
+    pub fn get_prompt(&mut self, thinking: bool) -> String {
         match self.apply_chat_template(true, thinking) {
             Ok(prompt) => prompt,
             Err(e) => {

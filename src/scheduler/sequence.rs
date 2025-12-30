@@ -25,6 +25,10 @@ pub struct SequenceData {
     cumulative_logprob: f32,
     status: SequenceStatus,
     num_cached_tokens: usize, //used for chunked prefill and context cache
+    // Tool call and reasoning tracking
+    pub accumulated_output: String,
+    pub in_tool_call: bool,
+    pub active_reasoning_end: Option<String>,
 }
 
 impl SequenceData {
@@ -35,6 +39,9 @@ impl SequenceData {
             cumulative_logprob: 0.,
             status: SequenceStatus::Waiting,
             num_cached_tokens: 0,
+            accumulated_output: String::new(),
+            in_tool_call: false,
+            active_reasoning_end: None,
         }
     }
 
@@ -257,6 +264,10 @@ pub struct SequenceGroup {
     pub encoding_format: crate::openai::requests::EncodingFormat,
     pub embedding_type: crate::openai::requests::EmbeddingType,
     pub sender: Option<Sender<ChatResponse>>,
+    // Tool call and reasoning tracking
+    pub accumulated_output: String,
+    pub in_tool_call: bool,
+    pub active_reasoning_end: Option<String>,
 }
 
 impl SequenceGroup {
@@ -290,6 +301,9 @@ impl SequenceGroup {
             encoding_format,
             embedding_type,
             sender,
+            accumulated_output: "".to_string(),
+            in_tool_call: false,
+            active_reasoning_end: None,
         }
     }
 

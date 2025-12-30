@@ -11,11 +11,8 @@ use crate::openai::{BosEosToken, TokenizerConfig};
 use crate::scheduler::sequence::SequenceGroup;
 use crate::{
     openai::{
-        conversation::{
-            default_conversation::{
-                DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
-            },
-            Conversation,
+        conversation::default_conversation::{
+            DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
         },
         models::{
             deepseek::DeepSeek, gemma::Gemma, gemma3::Gemma3, glm4::GLM4, llama::Llama,
@@ -958,6 +955,14 @@ impl DefaultLoader {
                         &devices[rank],
                         stop_token_ids,
                         rank,
+                        if gguf {
+                            match crate::backend::gguf::get_gguf_name(&paths.get_weight_filenames()[0]) {
+                                Ok(name) => name,
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        },
                         #[cfg(all(feature = "cuda", feature = "graph"))]
                         block_size,
                         #[cfg(all(feature = "cuda", feature = "graph"))]
@@ -982,6 +987,7 @@ impl DefaultPipeline {
         device: &Device,
         stop_token_ids: Vec<u32>,
         rank: usize,
+        model_name: Option<String>,
         #[cfg(all(feature = "cuda", feature = "graph"))] block_size: usize,
         #[cfg(all(feature = "cuda", feature = "graph"))] max_num_seqs: usize,
     ) -> Result<Self> {
@@ -1012,7 +1018,11 @@ impl DefaultPipeline {
             tokenizer,
             logits_processor,
             conversation,
-            name: config.architectures.as_ref().unwrap()[0].clone(),
+            name: if let Some(name) = model_name {
+                name
+            } else {
+                config.architectures.as_ref().unwrap()[0].clone()
+            },
             dtype,
             device: device.clone(),
             stop_token_ids,
@@ -1310,15 +1320,8 @@ impl DefaultPipeline {
         &self.tokenizer
     }
 
-    pub fn get_conversation(&mut self, with_history: bool) -> &mut dyn Conversation {
-        if !with_history {
-            self.conversation.clear_message();
-        }
-        &mut self.conversation
-    }
-
-    pub fn get_past_conversation(&self) -> &dyn Conversation {
-        &self.conversation
+    pub fn get_conversation(&self) -> DefaultConversation {
+        self.conversation.clone()
     }
 
     pub fn get_model_config(&self) -> Config {

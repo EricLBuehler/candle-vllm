@@ -24,6 +24,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support `Multi-node` inference with MPI runner
 - Support Chunked Prefilling (default chunk size 8K)
 - Support CUDA Graph
+- Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.
@@ -371,6 +372,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 ## 📚 Work as a Rust crate
 - [Rust Crate Usage](docs/rust_crate.md)
 - [Embedding Model Usage](docs/embedding.md)
+- [MCP & Tool Calling](docs/mcp_tool_calling.md)
 
 ## How to send request(s) to the backend?
 

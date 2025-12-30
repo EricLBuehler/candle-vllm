@@ -18,7 +18,7 @@ pub enum StopTokens {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
-    pub model: String,
+    pub model: Option<String>,
     pub messages: Messages,
     pub temperature: Option<f32>, //0.7
     pub top_p: Option<f32>,       //1.0
@@ -53,12 +53,16 @@ pub struct ChatCompletionRequest {
     #[serde(default)]
     pub logprobs: Option<bool>, //false
     pub thinking: Option<bool>,       //false
+    #[serde(default)]
+    pub tools: Option<Vec<crate::tools::Tool>>,
+    #[serde(default)]
+    pub tool_choice: Option<crate::tools::ToolChoice>,
 }
 
 impl Default for ChatCompletionRequest {
     fn default() -> Self {
         Self {
-            model: "default".to_string(),
+            model: Some("default".to_string()),
             messages: Messages::Literal("".to_string()),
             temperature: None,
             top_p: None,
@@ -80,6 +84,8 @@ impl Default for ChatCompletionRequest {
             stop_token_ids: None,
             logprobs: None,
             thinking: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 }

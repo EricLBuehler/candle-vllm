@@ -4,6 +4,7 @@ use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
+use crate::tools::ToolFormat;
 use axum::response::sse::KeepAlive;
 use axum::{
     extract::{Json, State},
@@ -27,7 +28,7 @@ async fn get_gen_prompt(
     let pipeline = model
         .get_mut_pipeline(0)
         .ok_or(APIError::new("Missing pipeline".to_string()))?;
-    let conversation = pipeline.0.get_conversation(data.record_conversation);
+    let mut conversation = pipeline.0.get_conversation().clone();
 
     match &request.messages {
         Messages::Literal(msg) => {
@@ -48,9 +49,37 @@ async fn get_gen_prompt(
                 if role == "system" {
                     tracing::info!("system prompt found: {}", content);
                     conversation.set_system_message(Some(content.clone()));
+                } else {
+                    conversation.append_message(role.to_string(), content)
                 }
-                conversation.append_message(role.to_string(), content)
             }
+        }
+    }
+
+    // Inject tools if present
+    if let Some(tools) = &request.tools {
+        if !tools.is_empty() {
+            let tools_prompt = ToolFormat::format_tools(tools);
+            let current_system = conversation.get_system_message().unwrap_or_default();
+            let new_system = if current_system.is_empty() {
+                tools_prompt
+            } else {
+                format!("{}\n\n{}", current_system, tools_prompt)
+            };
+            conversation.set_system_message(Some(new_system));
+        }
+    } else if let Some(mcp_manager) = &data.mcp_manager {
+        // Check for MCP tools if enabled and no manual tools provided
+        let mcp_tools = mcp_manager.cached_tools();
+        if !mcp_tools.is_empty() {
+            let tools_prompt = ToolFormat::format_tools(&mcp_tools);
+            let current_system = conversation.get_system_message().unwrap_or_default();
+            let new_system = if current_system.is_empty() {
+                tools_prompt
+            } else {
+                format!("{}\n\n{}", current_system, tools_prompt)
+            };
+            conversation.set_system_message(Some(new_system));
         }
     }
 
@@ -216,7 +245,7 @@ pub async fn chat_completions(
     let data_clone = data.clone();
     let request_id_clone = request_id.clone();
     let stream_request = request.stream.is_some_and(|x| x);
-    let model_name = request.model.clone();
+    let model_name = request.model.clone().unwrap_or("default".to_string());
     let sync_notify = Arc::new(Notify::new());
     let sync_completion_notify = if stream_request {
         None
@@ -270,23 +299,43 @@ pub async fn chat_completions(
         // wait until current response finished
         tracing::warn!("waiting response for sync request {}", request_id_clone);
         sync_notify.as_ref().notified().await;
-        let model = data_clone.model.read();
-        if !model.completion_records.contains_key(&request_id_clone) {
-            return ChatResponder::ModelError(APIError::from(format!(
-                "Unable to generate response for request {request_id_clone}"
-            )));
-        }
+        // Re-acquire read lock to get the response
+        // Note: we need to drop the lock later
+        let (choices, usage) = {
+            let model = data_clone.model.read();
+            if !model.completion_records.contains_key(&request_id_clone) {
+                return ChatResponder::ModelError(APIError::from(format!(
+                    "Unable to generate response for request {request_id_clone}"
+                )));
+            }
+            let record = &model.completion_records[&request_id_clone];
+            (record.0.clone(), record.1.clone())
+        };
 
-        let choices = &model.completion_records[&request_id_clone].0;
-        let usage = &model.completion_records[&request_id_clone].1;
+        // Check for tool calls in the output
+        let mut final_choices = choices.clone();
+
+        // We need to parse tool calls from the content if present
+        // Use the same tools format parsing based on what we injected
+        // For now Assuming Generic format
+        let parser = crate::tools::parser::ToolParser::new();
+
+        for choice in &mut final_choices {
+            if let Some(content) = &choice.message.content {
+                let calls = parser.parse(content);
+                if !calls.is_empty() {
+                    choice.message.tool_calls = Some(calls.clone());
+                }
+            }
+        }
 
         ChatResponder::Completion(ChatCompletionResponse {
             id: request_id_clone,
-            choices: choices.to_vec(),
+            choices: final_choices,
             created: usage.created,
             model: model_name,
             object: "chat.completion",
-            usage: usage.clone(),
+            usage: usage,
         })
     }
 }
