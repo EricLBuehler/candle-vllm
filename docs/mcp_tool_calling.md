@@ -9,46 +9,6 @@
 - **Multiple MCP Servers**: Configure multiple MCP servers via a configuration file or CLI arguments.
 - **Prompt Injection**: Automatically injects available tools into the system prompt.
 
-## Configuration
-
-### CLI Arguments
-
-You can connect to a local MCP server (stdio transport) using CLI arguments:
-
-```bash
-cargo run --release -- --port 2000 --mcp-command "npx" --mcp-args "-y @modelcontextprotocol/server-filesystem /path/to/allow"
-```
-
-- `--mcp-command`: The command to run the MCP server (e.g., `npx`, `uvx`, `python`).
-- `--mcp-args`: Arguments for the command.
-
-### Configuration File
-
-For more complex setups, use a configuration file (JSON):
-
-```json
-{
-  "mcpServers": {
-    "filesystem": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/workspace"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "your-token"
-      }
-    }
-  }
-}
-```
-
-Run with:
-```bash
-cargo run --release -- --port 2000 --mcp-config mcp_config.json
-```
-
 ## Usage
 
 ### 1. Enable Tool Calling in Requests
@@ -114,3 +74,43 @@ Tool calling relies on the model's ability to output structured calls. We suppor
 ## TODO
 
 Internal MCP tool call execution (like vLLM.rs)
+
+### Configuration
+
+#### CLI Arguments
+
+You can connect to a local MCP server (stdio transport) using CLI arguments:
+
+```bash
+cargo run --release -- --port 2000 --mcp-command "npx" --mcp-args "-y @modelcontextprotocol/server-filesystem /path/to/allow"
+```
+
+- `--mcp-command`: The command to run the MCP server (e.g., `npx`, `uvx`, `python`).
+- `--mcp-args`: Arguments for the command.
+
+#### Configuration File
+
+For more complex setups, use a configuration file (JSON):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/workspace"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "your-token"
+      }
+    }
+  }
+}
+```
+
+Run with:
+```bash
+cargo run --release -- --port 2000 --mcp-config mcp_config.json
+```
