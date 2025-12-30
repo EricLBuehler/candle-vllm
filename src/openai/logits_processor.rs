@@ -34,6 +34,8 @@ pub enum Sampling {
 pub struct LogitsProcessor {
     rng: Arc<Mutex<rand::rngs::StdRng>>,
     pub sampling: Sampling,
+    #[cfg(feature = "cuda")]
+    fast_sampler: Arc<std::sync::Mutex<attention_rs::sampler::Sampler>>,
 }
 
 impl LogitsProcessor {
@@ -42,6 +44,8 @@ impl LogitsProcessor {
         Self {
             rng: Arc::new(Mutex::new(rng)),
             sampling,
+            #[cfg(feature = "cuda")]
+            fast_sampler: Arc::new(std::sync::Mutex::new(attention_rs::sampler::Sampler::new())),
         }
     }
 
@@ -225,14 +229,6 @@ impl LogitsProcessor {
         logits: &Tensor,
         sampling_params: &Option<SamplingParams>,
     ) -> Result<Vec<u32>> {
-        let logits = logits.to_dtype(DType::F32)?;
-        let batch = logits.layout().dims()[0];
-        let prs = |temperature: f64| -> Result<Tensor> {
-            let logits = (&logits / temperature)?;
-            let prs = candle_nn::ops::softmax_last_dim(&logits)?;
-            Ok(prs)
-        };
-
         let sampling = sampling_params.as_ref().map_or_else(
             || self.sampling.to_owned(),
             |param| {
@@ -244,6 +240,45 @@ impl LogitsProcessor {
                 )
             },
         );
+
+        // CUDA fast path for supported sampling strategies
+        #[cfg(feature = "cuda")]
+        {
+            // Extract k, p, temperature based on sampling strategy
+            // TopK: use p=1.0 to disable top-p filtering
+            // TopP: use k=128 (kernel max) so top-p can consider enough candidates
+            let (k, p, t) = match &sampling {
+                Sampling::TopKThenTopP {
+                    k, p, temperature, ..
+                } => (*k, *p, *temperature),
+                Sampling::TopK { k, temperature } => (*k, 1.0, *temperature),
+                Sampling::TopP { p, temperature, .. } => (128, *p, *temperature),
+                _ => (0, 0.0, 0.0), // Marker for unsupported strategies
+            };
+
+            let should_run = matches!(
+                sampling,
+                Sampling::TopKThenTopP { .. } | Sampling::TopK { .. } | Sampling::TopP { .. }
+            );
+
+            if should_run && k > 0 {
+                let seed = {
+                    use rand::RngCore;
+                    self.rng.lock().unwrap().next_u64()
+                };
+                let sampler = self.fast_sampler.lock().unwrap();
+                return sampler.sample_cuda(logits, k, p, t, seed);
+            }
+        }
+
+        // CPU fallback
+        let logits = logits.to_dtype(DType::F32)?;
+        let batch = logits.layout().dims()[0];
+        let prs = |temperature: f64| -> Result<Tensor> {
+            let logits = (&logits / temperature)?;
+            let prs = candle_nn::ops::softmax_last_dim(&logits)?;
+            Ok(prs)
+        };
 
         let next_tokens = match &sampling {
             Sampling::ArgMax => self.sample_argmax(&logits)?,

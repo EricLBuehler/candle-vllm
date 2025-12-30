@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.4.8"
+version = "0.4.9"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -22,8 +22,8 @@ anyhow = "1.0.75"
 rand = "0.9.0"
 rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "27cfdef" }
+candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "8e43e56" }
+candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "8e43e56" }
 dyn-fmt = "0.4.0"
 serde = { version = "1.0.190", features = ["serde_derive"] }
 tokenizers = "0.21.2"
@@ -45,7 +45,7 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs", version="0.1.7", rev = "753f0a6" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.1.9", rev = "00b471c" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 lazy_static = {version = "1.4.0"}
 interprocess = "2.2.2"
