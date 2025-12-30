@@ -1204,6 +1204,8 @@ impl LLMEngine {
             max_seqlen_q,
             max_seqlen_k,
             max_context_len,
+            disable_flash_attn: None,
+            seqlens: None,
         };
 
         Ok(PreparedInputs {
@@ -1302,6 +1304,8 @@ impl LLMEngine {
             max_seqlen_q: 0,
             max_seqlen_k: 0,
             max_context_len: max_context_len as usize,
+            disable_flash_attn: None,
+            seqlens: None,
         };
 
         Ok(PreparedInputs {
