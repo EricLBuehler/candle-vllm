@@ -16,7 +16,7 @@ use crate::{
         },
         models::{
             deepseek::DeepSeek, gemma::Gemma, gemma3::Gemma3, glm4::GLM4, llama::Llama,
-            mistral::Mistral, phi2::Phi2, phi3::Phi, quantized_glm4::GGUFGLM4,
+            mistral::Mistral, phi2::Phi2, phi4::Phi4ForCausalLM as Phi4, quantized_glm4::GGUFGLM4,
             quantized_llama::GGUFLLaMa, quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen,
             quantized_qwen3_moe::GGUFQWenMoE, qwen::Qwen, qwen3_moe::Qwen3MoE, stable_lm::StableLM,
             yi::Yi, Config,
@@ -47,7 +47,7 @@ const MAX_GEN_TOKENS: usize = 16 * 1024;
 pub enum LLMModel {
     Llama(Arc<Llama>),
     Phi2(Arc<Phi2>),
-    Phi3(Arc<Phi>),
+    Phi4(Arc<Phi4>),
     Qwen(Arc<Qwen>),
     Qwen3MoE(Arc<Qwen3MoE>),
     Gemma(Arc<Gemma>),
@@ -502,8 +502,8 @@ impl DefaultLoader {
 
             let mut config = match arch.as_str() {
                 "LlamaForCausalLM" => Llama::load_config(&cfile, isq)?,
-                "PhiForCausalLM" => Phi2::load_config(&cfile, isq)?,
-                "Phi3ForCausalLM" => Phi::load_config(&cfile, isq)?,
+                "Phi2ForCausalLM" => Phi2::load_config(&cfile, isq)?,
+                "Phi3ForCausalLM" | "Phi4ForCausalLM" => Phi4::load_config(&cfile, isq)?,
                 "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => Qwen::load_config(&cfile, isq)?,
                 "Qwen2MoeForCausalLM" | "Qwen3MoeForCausalLM" => {
                     Qwen3MoE::load_config(&cfile, isq)?
@@ -618,9 +618,9 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Phi,
                         ),
-                        "Phi3ForCausalLM" => (
-                            LLMModel::Phi3(Arc::new(
-                                Phi::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
+                        "Phi3ForCausalLM" | "Phi4ForCausalLM" => (
+                            LLMModel::Phi4(Arc::new(
+                                Phi4::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
                                     .unwrap(),
                             )),
                             SeparatorStyle::Phi,
@@ -997,7 +997,7 @@ impl DefaultPipeline {
             device,
             Llama,
             Phi2,
-            Phi3,
+            Phi4,
             Qwen,
             Qwen3MoE,
             Gemma,
@@ -1060,7 +1060,7 @@ impl DefaultPipeline {
             LLMModel::Phi2(phi) => {
                 phi.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
-            LLMModel::Phi3(phi) => {
+            LLMModel::Phi4(phi) => {
                 phi.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Qwen(qwen) => {
@@ -1122,7 +1122,7 @@ impl DefaultPipeline {
             LLMModel::Mistral(mistral) => {
                 mistral.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
-            LLMModel::Phi3(phi) => {
+            LLMModel::Phi4(phi) => {
                 phi.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Gemma(gemma) => {
@@ -1328,7 +1328,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Llama(llama) => llama.get_config().clone(),
             LLMModel::Phi2(phi) => phi.get_config().clone(),
-            LLMModel::Phi3(phi) => phi.get_config().clone(),
+            LLMModel::Phi4(phi) => phi.get_config().clone(),
             LLMModel::Qwen(qwen) => qwen.get_config().clone(),
             LLMModel::Qwen3MoE(qwen) => qwen.get_config().clone(),
             LLMModel::Gemma(gemma) => gemma.get_config().clone(),
@@ -1365,7 +1365,11 @@ impl DefaultPipeline {
 
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub fn warmup_capture(&mut self, kv_caches: Option<&Vec<(Tensor, Tensor)>>) -> Result<()> {
-        self.capturer.capture(&self.device, kv_caches)
+        match &self.model {
+            LLMModel::Phi4(_) => Ok(()),
+            LLMModel::Phi3GGUF(_) => Ok(()),
+            _ => self.capturer.capture(&self.device, kv_caches),
+        }
     }
 }
 

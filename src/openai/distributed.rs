@@ -303,6 +303,66 @@ impl MergedParallelColumnLinear {
             biases: vec![None; chunk],
         })
     }
+
+    pub fn load_merged_chunks(
+        in_dim: usize,
+        out_dim: usize,
+        chunk_dim: usize,
+        chunks: Vec<usize>,
+        vb: VarBuilder,
+        comm: Rc<Comm>,
+        quant_cfg: &Option<QuantConfig>,
+        quant: &Option<String>,
+        dtype: DType,
+    ) -> Result<Self> {
+        if quant_cfg.is_some() {
+            candle_core::bail!(
+                "Merged quantized weight is not supported at the moment, using ISQ instead!"
+            );
+        }
+        let mut vec_linear = Vec::<TensorParallelColumnLinear>::new();
+        let weight = vb.get((out_dim, in_dim), "weight")?;
+        let weight = if weight.dtype() != dtype {
+            weight.to_dtype(dtype)?
+        } else {
+            weight
+        };
+        let mut chunk_start = 0;
+        use crate::openai::models::linear::{LinearX, QLinear};
+        for chunk_idx in 0..chunks.len() {
+            let chunk_size = chunks[chunk_idx];
+            let ws = weight.narrow(chunk_dim, chunk_start, chunk_size)?;
+            let c_chunk_size = ws.dim(0)? / comm.world_size();
+            let ws_chunk = ws
+                .narrow(0, comm.rank() * c_chunk_size, c_chunk_size)?
+                .contiguous()?;
+            chunk_start += chunk_size;
+
+            use either::Either;
+            let ln = crate::openai::models::linear::Linear::new(ws_chunk, None);
+            let linear = if let Some(quantized_type) = quant {
+                let quantized_type = if chunk_idx == chunks.len() - 1 {
+                    "q8_0".to_string()
+                } else {
+                    quantized_type.clone()
+                };
+                LinearX(Either::Right(QLinear::from_linear_x(
+                    ln,
+                    quantized_type,
+                    quant_cfg,
+                )))
+            } else {
+                LinearX(Either::Left(ln))
+            };
+            let ln = TensorParallelColumnLinear { linear, bias: None };
+            vec_linear.push(ln);
+        }
+
+        Ok(Self {
+            linears: vec_linear,
+            biases: vec![None; chunks.len()],
+        })
+    }
 }
 
 impl TensorParallelRowLinear {

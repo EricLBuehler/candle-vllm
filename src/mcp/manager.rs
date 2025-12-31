@@ -12,8 +12,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct McpToolConfig {
@@ -195,7 +194,6 @@ pub struct McpClientManager {
     routing_table: Arc<RwLock<HashMap<String, ToolRouting>>>,
     clients: Arc<RwLock<HashMap<String, Arc<Mutex<DynMcpClient>>>>>,
     available: Arc<AtomicBool>,
-    stop_flag: Arc<AtomicBool>,
 }
 
 impl McpClientManager {
@@ -211,7 +209,7 @@ impl McpClientManager {
         let clients: Arc<RwLock<HashMap<String, Arc<Mutex<DynMcpClient>>>>> =
             Arc::new(RwLock::new(HashMap::new()));
         let available = Arc::new(AtomicBool::new(false));
-        let stop_flag = Arc::new(AtomicBool::new(false));
+        // stop_flag removed
 
         let mut any_client = false;
         for server in &config.servers {
@@ -281,39 +279,14 @@ impl McpClientManager {
             ));
         }
 
-        let cache_clone = Arc::clone(&tool_cache);
-        let routing_clone = Arc::clone(&routing_table);
-        let clients_clone = Arc::clone(&clients);
-        let available_clone = Arc::clone(&available);
-        let stop_clone = Arc::clone(&stop_flag);
-        let refresh_interval = config.tool_refresh_interval;
-
-        thread::Builder::new()
-            .name("mcp-client-manager".to_string())
-            .spawn(move || {
-                if let Err(err) = run_manager_loop(
-                    refresh_interval,
-                    cache_clone,
-                    routing_clone,
-                    clients_clone,
-                    available_clone,
-                    stop_clone,
-                ) {
-                    tracing::error!("MCP manager loop failed: {:?}", err);
-                }
-            })
-            .map_err(|e| {
-                McpClientError::Transport(super::transport::TransportError::Process(format!(
-                    "Failed to spawn MCP manager thread: {e}"
-                )))
-            })?;
+        // Perform initial synchronous tool fetch to ensure tools are available immediately
+        refresh_tools(&clients.read(), &tool_cache, &routing_table, &available);
 
         Ok(Self {
             tool_cache,
             routing_table,
             clients,
             available,
-            stop_flag,
         })
     }
 
@@ -360,7 +333,7 @@ impl McpClientManager {
     }
 
     pub fn stop(&self) {
-        self.stop_flag.store(true, Ordering::Relaxed);
+        // No background thread to stop
     }
 }
 
@@ -370,52 +343,36 @@ struct ToolRouting {
     original_name: String,
 }
 
-fn run_manager_loop(
-    refresh_interval: Duration,
-    tool_cache: Arc<RwLock<ToolCache>>,
-    routing_table: Arc<RwLock<HashMap<String, ToolRouting>>>,
-    clients: Arc<RwLock<HashMap<String, Arc<Mutex<DynMcpClient>>>>>,
-    available: Arc<AtomicBool>,
-    stop_flag: Arc<AtomicBool>,
-) -> Result<(), McpClientError> {
-    let mut last_refresh = Instant::now() - refresh_interval;
+fn refresh_tools(
+    clients: &HashMap<String, Arc<Mutex<DynMcpClient>>>,
+    tool_cache: &RwLock<ToolCache>,
+    routing_table: &RwLock<HashMap<String, ToolRouting>>,
+    available: &AtomicBool,
+) {
+    let mut mapped_tools = Vec::new();
+    let mut routing = HashMap::new();
+    let mut any_success = false;
 
-    loop {
-        if stop_flag.load(Ordering::Relaxed) {
-            break;
-        }
-        if last_refresh.elapsed() >= refresh_interval {
-            let mut mapped_tools = Vec::new();
-            let mut routing = HashMap::new();
-            let mut any_success = false;
-
-            for (server_id, client) in clients.read().iter() {
-                let mut client = client.lock();
-                match client.list_tools() {
-                    Ok(tools) => {
-                        any_success = true;
-                        mapped_tools.extend(map_mcp_tools(server_id, tools, &mut routing));
-                    }
-                    Err(err) => {
-                        tracing::error!("Failed to refresh MCP tools for {}: {:?}", server_id, err);
-                        break;
-                    }
-                }
+    for (server_id, client) in clients.iter() {
+        let mut client = client.lock();
+        match client.list_tools() {
+            Ok(tools) => {
+                any_success = true;
+                mapped_tools.extend(map_mcp_tools(server_id, tools, &mut routing));
             }
-
-            if any_success {
-                tool_cache.write().set_tools(mapped_tools);
-                *routing_table.write() = routing;
-                available.store(true, Ordering::Relaxed);
-                last_refresh = Instant::now();
-            } else {
-                available.store(false, Ordering::Relaxed);
+            Err(err) => {
+                tracing::error!("Failed to refresh MCP tools for {}: {:?}", server_id, err);
             }
         }
-        thread::sleep(Duration::from_millis(200));
     }
 
-    Ok(())
+    if any_success {
+        tool_cache.write().set_tools(mapped_tools);
+        *routing_table.write() = routing;
+        available.store(true, Ordering::Relaxed);
+    } else {
+        available.store(false, Ordering::Relaxed);
+    }
 }
 
 fn map_mcp_tools(

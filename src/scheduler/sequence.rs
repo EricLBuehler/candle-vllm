@@ -19,6 +19,13 @@ pub enum SequenceStatus {
     Finished(String),
 }
 
+#[derive(Clone, PartialEq, Debug)]
+pub enum ToolCallState {
+    Normal,
+    MaybeToolCall,
+    InToolCall,
+}
+
 pub struct SequenceData {
     prompt_token_ids: Vec<u32>,
     output_token_ids: Vec<Logprobs>,
@@ -27,7 +34,8 @@ pub struct SequenceData {
     num_cached_tokens: usize, //used for chunked prefill and context cache
     // Tool call and reasoning tracking
     pub accumulated_output: String,
-    pub in_tool_call: bool,
+    pub tool_call_state: ToolCallState,
+    pub tool_call_buffer: String,
     pub active_reasoning_end: Option<String>,
 }
 
@@ -40,7 +48,8 @@ impl SequenceData {
             status: SequenceStatus::Waiting,
             num_cached_tokens: 0,
             accumulated_output: String::new(),
-            in_tool_call: false,
+            tool_call_state: ToolCallState::Normal,
+            tool_call_buffer: String::new(),
             active_reasoning_end: None,
         }
     }
@@ -266,7 +275,8 @@ pub struct SequenceGroup {
     pub sender: Option<Sender<ChatResponse>>,
     // Tool call and reasoning tracking
     pub accumulated_output: String,
-    pub in_tool_call: bool,
+    pub tool_call_state: ToolCallState,
+    pub tool_call_buffer: String,
     pub active_reasoning_end: Option<String>,
 }
 
@@ -302,7 +312,8 @@ impl SequenceGroup {
             embedding_type,
             sender,
             accumulated_output: "".to_string(),
-            in_tool_call: false,
+            tool_call_state: ToolCallState::Normal,
+            tool_call_buffer: String::new(),
             active_reasoning_end: None,
         }
     }

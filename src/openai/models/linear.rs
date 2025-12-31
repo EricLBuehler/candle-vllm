@@ -771,7 +771,7 @@ impl Module for QLinear {
 }
 
 #[derive(Debug, Clone)]
-pub struct LinearX(Either<Linear, QLinear>);
+pub struct LinearX(pub Either<Linear, QLinear>);
 
 impl Module for LinearX {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {

@@ -111,14 +111,25 @@ impl ToolParser {
         let mut calls = Vec::new();
 
         // Try both <tool_call> formats
-        for pattern in &[r"(?s)<tool_call>\s*(.*?)\s*</tool_call>"] {
-            if let Ok(re) = Regex::new(pattern) {
-                for cap in re.captures_iter(text) {
-                    if let Some(json_str) = cap.get(1) {
-                        if let Ok(parsed) = serde_json::from_str::<Value>(json_str.as_str()) {
-                            if let Some(call) = self.value_to_tool_call(&parsed, call_id) {
-                                calls.push(call);
-                            }
+        // Use a more flexible regex that allows for missing closing > if at end of string
+        // This handles cases where generation stops exactly on </tool_call
+        // Pattern: <tool_call> ... </tool_call>?
+        // Note: We use a single regex with optional > to avoid duplicate matches
+        let pattern = r"(?s)<tool_call>\s*(.*?)\s*</tool_call>?";
+
+        if let Ok(re) = Regex::new(pattern) {
+            for cap in re.captures_iter(text) {
+                if let Some(json_str) = cap.get(1) {
+                    // Validate that whatever we captured looks like JSON before parsing
+                    // This prevents matching random text if </tool_call> is missing entirely and we match to end of string
+                    let trimmed = json_str.as_str().trim();
+                    if !trimmed.starts_with('{') && !trimmed.starts_with('[') {
+                        continue;
+                    }
+
+                    if let Ok(parsed) = serde_json::from_str::<Value>(trimmed) {
+                        if let Some(call) = self.value_to_tool_call(&parsed, call_id) {
+                            calls.push(call);
                         }
                     }
                 }
@@ -229,6 +240,33 @@ impl ToolParser {
         // Only check for explicit XML-wrapped tool calls
         final_answer.contains("<tool_call>")
     }
+
+    /// Check if text contains a complete, parseable tool call
+    /// Returns true only if the tool call has valid structure with both tags and valid JSON
+    pub fn has_complete_tool_call(&self, text: &str) -> bool {
+        let final_answer = Self::extract_final_answer(text);
+
+        // Must have both opening and closing tags
+        if !final_answer.contains("<tool_call>") || !final_answer.contains("</tool_call>") {
+            return false;
+        }
+
+        // Try to parse - if successful, it's complete
+        !self.parse(&final_answer).is_empty()
+    }
+
+    /// Check if text could be a partial tool call tag (for lookback detection)
+    /// Used to detect when we might be in the middle of receiving "<tool_call>"
+    pub fn could_be_partial_tag(text: &str) -> bool {
+        const TAG: &str = "<tool_call>";
+        // Check if end of text matches any prefix of tag (length 1 to len-1)
+        for i in 1..TAG.len() {
+            if text.ends_with(&TAG[..i]) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 #[cfg(test)]
@@ -292,7 +330,36 @@ mod tests {
         let parser = ToolParser::new();
 
         assert!(parser.has_tool_calls("<tool_call>{}</tool_call>"));
-        assert!(parser.has_tool_calls(r#"{"name": "foo", "arguments": {}}"#));
+        // Note: has_tool_calls only checks for XML tags now
+        assert!(!parser.has_tool_calls(r#"{"name": "foo", "arguments": {}}"#));
         assert!(!parser.has_tool_calls("Just a normal response"));
+    }
+
+    #[test]
+    fn test_partial_and_complete_tags() {
+        let parser = ToolParser::new();
+
+        // Test complete tool call check
+        assert!(parser
+            .has_complete_tool_call("<tool_call>{\"name\":\"test\",\"arguments\":{}}</tool_call>"));
+        assert!(!parser.has_complete_tool_call("<tool_call>{\"name\":\"test\"}")); // Missing closing
+        assert!(!parser.has_complete_tool_call("{\"name\":\"test\"}</tool_call>")); // Missing opening
+
+        // Test partial tag detection
+        assert!(ToolParser::could_be_partial_tag("output <"));
+        assert!(ToolParser::could_be_partial_tag("output <tool"));
+        assert!(ToolParser::could_be_partial_tag("output <tool_call"));
+        assert!(!ToolParser::could_be_partial_tag("output <tool_call>")); // Complete tag is not partial
+        assert!(!ToolParser::could_be_partial_tag("output other"));
+    }
+
+    #[test]
+    fn test_optional_closing_tag() {
+        let parser = ToolParser::new();
+        // Test parsing with missing closing tag (common in streaming)
+        let text = r#"<tool_call>{"name": "test", "arguments": "args"}"#;
+        let calls = parser.parse(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "test");
     }
 }

@@ -229,8 +229,28 @@ pub struct ToolFormat {}
 
 impl ToolFormat {
     /// Format tools for inclusion in the system prompt
+    /// Uses explicit instructions to ensure models output tool calls in the expected format
     pub fn format_tools(tools: &[Tool]) -> String {
-        let mut output = String::from("# Tools\n\nYou may call one or more functions to assist with the user query.\n\nYou are provided with function signatures within <tools></tools> XML tags:\n<tools>\n");
+        let rule = String::from(
+            "IMPORTANT: For each function call, you MUST wrapped function name and arguments in <tool_call></tool_call> tags.\n\n\
+            Do NOT USE ANY code blocks. Required format:\n\
+            <tool_call>\n\
+            {\"name\": \"<function-name>\", \"arguments\": <args-json-object>}\n\
+            </tool_call>\n\n\
+            Rules:\n\
+            - Wrapper function name and arguments with <tool_call> and </tool_call> tags\n\
+            - Always use the exact <tool_call></tool_call> format shown above\n\
+            - Do NOT USE ANY code blocks\n\
+            - The \"name\" and \"arguments\" are necessary fields\n",
+        );
+
+        let mut output = String::from(
+            "# Tools\n\n\
+            You may call one or more functions to assist with the user query.\n\n\
+            You are provided with function signatures within <tools></tools> XML tags:\n\
+            <tools>\n",
+        );
+        output.push_str(&rule);
 
         for tool in tools {
             output.push_str(&serde_json::to_string(&tool.function).unwrap_or_default());
@@ -238,8 +258,7 @@ impl ToolFormat {
         }
 
         output.push_str("</tools>\n\n");
-        output.push_str("For each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\n");
-        output.push_str("<tool_call>\n{\"name\": \"<function-name>\", \"arguments\": <args-json-object>}\n</tool_call>");
+        output.push_str(&rule);
 
         output
     }
