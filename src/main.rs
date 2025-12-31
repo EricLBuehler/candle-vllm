@@ -14,6 +14,7 @@ use candle_vllm::openai::pipelines::pipeline::DefaultLoader;
 use candle_vllm::openai::sampling_params::GenerationConfig;
 use candle_vllm::openai::OpenAIServerData;
 use candle_vllm::scheduler::cache_engine::{CacheConfig, CacheEngine};
+use candle_vllm::scheduler::prefix_cache::PrefixCacheConfig;
 use candle_vllm::scheduler::SchedulerConfig;
 use clap::Parser;
 use rustchatui::start_ui_server;
@@ -126,6 +127,14 @@ struct Args {
 
     #[arg(long, default_value_t = false)]
     fp8_kvcache: bool,
+
+    /// Enable prefix cache to reuse KV cache for repeated prompt prefixes.
+    #[arg(long, default_value_t = false)]
+    prefix_cache: bool,
+
+    /// Prefix cache size limit in tokens (rounded down to block size).
+    #[arg(long)]
+    prefix_cache_max_tokens: Option<usize>,
 
     #[arg(long, default_value_t = false)]
     ui_server: bool, //start candle-vllm with built-in web server
@@ -393,10 +402,31 @@ async fn main() -> Result<()> {
     let config = config.as_ref().unwrap().clone();
     info!("Cache config {:?}", cache_config);
 
+    let total_gpu_blocks = cache_config.num_gpu_blocks.unwrap_or(0);
+    let default_prefix_cache_blocks = if total_gpu_blocks > 0 {
+        std::cmp::max(1, total_gpu_blocks / 4)
+    } else {
+        0
+    };
+    let prefix_cache_max_blocks = if args.prefix_cache {
+        let max_blocks = args
+            .prefix_cache_max_tokens
+            .map(|tokens| tokens / cache_config.block_size)
+            .unwrap_or(default_prefix_cache_blocks);
+        std::cmp::min(max_blocks, total_gpu_blocks)
+    } else {
+        0
+    };
+    let prefix_cache_config = PrefixCacheConfig {
+        enabled: args.prefix_cache,
+        max_cached_blocks: prefix_cache_max_blocks,
+    };
+
     let llm_engine = LLMEngine::new(
         pipelines,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
+            prefix_cache: prefix_cache_config,
         },
         &cache_config,
         &config,

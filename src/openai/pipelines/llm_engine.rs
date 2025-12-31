@@ -1308,7 +1308,9 @@ impl LLMEngine {
                 context_lens.push(seq_len as u32);
 
                 let seqlen_q = num_tokens;
-                let seqlen_k = if num_cached_tokens > 0 && cfg!(feature = "flash-decoding") {
+                let use_cached_kv = num_cached_tokens > 0
+                    && (cfg!(feature = "flash-decoding") || self.scheduler.prefix_cache_enabled());
+                let seqlen_k = if use_cached_kv {
                     num_cached_tokens + num_tokens
                 } else {
                     num_tokens

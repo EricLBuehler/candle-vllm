@@ -3,6 +3,7 @@ use crate::openai::pipelines::llm_engine::LLMEngine;
 use crate::openai::pipelines::pipeline::DefaultLoader;
 use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
+use crate::scheduler::prefix_cache::PrefixCacheConfig;
 use crate::scheduler::SchedulerConfig;
 
 use candle_core::{DType, Result};
@@ -250,6 +251,7 @@ impl EngineBuilder {
 
         let scheduler_config = SchedulerConfig {
             max_num_seqs: self.max_num_seqs,
+            prefix_cache: PrefixCacheConfig::default(),
         };
 
         let notify = Arc::new(Notify::new());

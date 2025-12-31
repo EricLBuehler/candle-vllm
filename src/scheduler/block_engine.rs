@@ -6,6 +6,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use super::prefix_cache::{PrefixCache, PrefixCacheConfig, PrefixMatch};
 use super::sequence::{Sequence, SequenceGroup};
 
 pub struct LogicalTokenBlock {
@@ -48,7 +49,7 @@ impl LogicalTokenBlock {
 pub struct _PhysicalTokenBlock {
     pub block_id: usize,
     block_size: usize,
-    refcount: usize,
+    pub refcount: usize,
     is_gpu: bool,
 }
 
@@ -197,6 +198,7 @@ pub struct BlockEngine {
     pub block_tables: HashMap<SeqID, BlockTable>,
     block_size: usize,
     kvcache_mem_gpu: usize,
+    prefix_cache: Option<PrefixCache>,
 }
 
 impl BlockEngine {
@@ -206,7 +208,13 @@ impl BlockEngine {
         num_gpu_blocks: usize,
         num_cpu_blocks: usize,
         kvcache_mem_gpu: usize,
+        prefix_cache: PrefixCacheConfig,
     ) -> Self {
+        let prefix_cache = if prefix_cache.enabled && prefix_cache.max_cached_blocks > 0 {
+            Some(PrefixCache::new(block_size, prefix_cache))
+        } else {
+            None
+        };
         Self {
             num_gpu_blocks,
             gpu_allocator: Allocator::<GPUAllocator>::new(block_size, num_gpu_blocks),
@@ -214,6 +222,7 @@ impl BlockEngine {
             block_tables: HashMap::new(),
             block_size,
             kvcache_mem_gpu,
+            prefix_cache,
         }
     }
 
@@ -233,8 +242,26 @@ impl BlockEngine {
         self.kvcache_mem_gpu
     }
 
-    pub fn can_allocate(&self, seq_group: &SequenceGroup) -> AllocStatus {
-        let num_required_blocks = seq_group.get_total_logical_token_blocks();
+    pub fn can_allocate(&mut self, seq_group: &SequenceGroup) -> AllocStatus {
+        let block_size = self.block_size;
+        let num_required_blocks = if let Some(prefix_cache) = self.prefix_cache.as_mut() {
+            let seq = seq_group.get_seqs().values().nth(0).unwrap();
+            let tokens = seq.deref().deref().get_token_ids();
+            let PrefixMatch { matched_blocks, .. } = prefix_cache.match_prefix(&tokens);
+            let full_blocks = tokens.len() / block_size;
+            let matched_blocks = if matched_blocks == full_blocks
+                && tokens.len() % block_size == 0
+                && matched_blocks > 0
+            {
+                matched_blocks - 1
+            } else {
+                matched_blocks
+            };
+            let logical_blocks = seq_group.get_total_logical_token_blocks();
+            logical_blocks.saturating_sub(matched_blocks)
+        } else {
+            seq_group.get_total_logical_token_blocks()
+        };
         let num_free_gpu_blocks = *self.gpu_allocator.get_num_free_blocks();
 
         if self.num_gpu_blocks < num_required_blocks {
@@ -246,13 +273,27 @@ impl BlockEngine {
         }
     }
 
-    pub fn allocate(&mut self, seq_group: &SequenceGroup) {
-        let mut block_table = VecDeque::new();
-        for _logcical_idx in 0..seq_group.get_total_logical_token_blocks() {
-            block_table.push_back(self.gpu_allocator.allocate());
-        }
-        for seq_id in seq_group.get_seqs().keys() {
-            self.block_tables.insert(*seq_id, block_table.clone());
+    pub fn allocate(
+        &mut self,
+        seq_group: &SequenceGroup,
+        _blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
+    ) {
+        if self.prefix_cache.is_some() {
+            self.allocate_with_prefix(seq_group);
+        } else {
+            let mut block_table = VecDeque::new();
+            for _logcical_idx in 0..seq_group.get_total_logical_token_blocks() {
+                block_table.push_back(self.gpu_allocator.allocate());
+            }
+            for (idx, seq_id) in seq_group.get_seqs().keys().enumerate() {
+                let table = block_table.clone();
+                if idx > 0 {
+                    for block in &table {
+                        block.deref_mut().refcount += 1;
+                    }
+                }
+                self.block_tables.insert(*seq_id, table);
+            }
         }
     }
 
@@ -278,6 +319,53 @@ impl BlockEngine {
         }
 
         self.block_tables.remove(&sequence.deref_mut().get_id());
+    }
+
+    pub fn cache_sequence(&mut self, sequence: &Sequence) {
+        let Some(prefix_cache) = self.prefix_cache.as_mut() else {
+            return;
+        };
+        if !prefix_cache.enabled() {
+            return;
+        }
+
+        let tokens = sequence.deref().get_token_ids();
+        let full_blocks = tokens.len() / self.block_size;
+        if full_blocks == 0 {
+            return;
+        }
+
+        let table = match self.block_tables.get(&sequence.deref().get_id()) {
+            Some(table) => table,
+            None => return,
+        };
+        if table.len() < full_blocks {
+            return;
+        }
+
+        let blocks: Vec<Arc<PhysicalTokenBlock>> =
+            table.iter().take(full_blocks).cloned().collect();
+        if blocks.iter().any(|block| !block.deref_mut().is_gpu) {
+            return;
+        }
+
+        tracing::info!(
+            "Prefix cache insert seq {} ({} tokens, {} blocks)",
+            sequence.deref().get_id(),
+            tokens.len(),
+            full_blocks
+        );
+        let evicted = prefix_cache.insert_prefix(&tokens, &blocks);
+        if !evicted.is_empty() {
+            tracing::info!("Prefix cache evicted {} blocks after insert", evicted.len());
+        }
+        for block in evicted {
+            self.release_block(block);
+        }
+    }
+
+    pub fn prefix_cache_enabled(&self) -> bool {
+        self.prefix_cache.is_some()
     }
 
     pub fn can_swap_out_seq_group(&self, seq_group: &SequenceGroup) -> bool {
@@ -406,5 +494,182 @@ impl BlockEngine {
             .iter()
             .map(|(k, v)| (*k, v.deref_mut().block_id))
             .collect::<HashMap<_, _>>()
+    }
+
+    fn allocate_with_prefix(&mut self, seq_group: &SequenceGroup) {
+        let block_size = self.block_size;
+        let seqs: Vec<_> = seq_group.get_seqs().values().cloned().collect();
+        let mut cached_tokens = 0usize;
+        let mut block_table = VecDeque::new();
+
+        if let Some(seq) = seqs.first() {
+            let tokens = seq.deref().deref().get_token_ids();
+            if let Some(prefix_cache) = self.prefix_cache.as_mut() {
+                let PrefixMatch {
+                    matched_blocks,
+                    last_hash,
+                } = prefix_cache.match_prefix(&tokens);
+                let full_blocks = tokens.len() / block_size;
+                let matched_blocks = if matched_blocks == full_blocks
+                    && tokens.len() % block_size == 0
+                    && matched_blocks > 0
+                {
+                    matched_blocks - 1
+                } else {
+                    matched_blocks
+                };
+                cached_tokens = matched_blocks * block_size;
+                if matched_blocks > 0 {
+                    tracing::info!(
+                        "Prefix cache hit seq {} ({} cached tokens, {} blocks)",
+                        seq.deref().deref().get_id(),
+                        cached_tokens,
+                        matched_blocks
+                    );
+                } else {
+                    tracing::debug!("Prefix cache miss seq {}", seq.deref().deref().get_id());
+                }
+                if matched_blocks > 0 {
+                    let mut blocks = prefix_cache.blocks_for_match(last_hash.unwrap());
+                    blocks.truncate(matched_blocks);
+                    for block in blocks {
+                        block.deref_mut().refcount += 1;
+                        block_table.push_back(block);
+                    }
+                }
+            }
+            seq.deref_mut().set_num_cached_tokens(cached_tokens);
+            let logical_blocks = seq.deref().deref().get_logical_token_blocks();
+            for _ in block_table.len()..logical_blocks {
+                block_table.push_back(self.gpu_allocator.allocate());
+            }
+        }
+
+        for (idx, seq) in seqs.iter().enumerate() {
+            seq.deref_mut().set_num_cached_tokens(cached_tokens);
+            let table = block_table.clone();
+            if idx > 0 {
+                for block in &table {
+                    block.deref_mut().refcount += 1;
+                }
+            }
+            self.block_tables
+                .insert(seq.deref().deref().get_id(), table);
+        }
+    }
+
+    fn release_block(&mut self, block: Arc<PhysicalTokenBlock>) {
+        if block.deref_mut().is_gpu {
+            self.gpu_allocator.free_block(block);
+        } else {
+            self.cpu_allocator.free_block(block);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BlockEngine, PrefixCacheConfig};
+    use crate::openai::requests::{EmbeddingType, EncodingFormat};
+    use crate::openai::sampling_params::{EarlyStoppingCondition, SamplingParams};
+    use crate::scheduler::sequence::{Sequence, SequenceGroup, _Sequence};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::SystemTime;
+
+    fn make_group(
+        seq_id: usize,
+        group_id: usize,
+        block_size: usize,
+        tokens: Vec<u32>,
+    ) -> (SequenceGroup, Arc<Sequence>) {
+        let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
+            &tokens, seq_id, block_size,
+        ))));
+        let sampling_params = SamplingParams::new(
+            1,
+            None,
+            0.0,
+            0.0,
+            None,
+            None,
+            None,
+            None,
+            None,
+            false,
+            1.0,
+            EarlyStoppingCondition::UnlikelyBetterCandidates,
+            None,
+            vec![],
+            false,
+            16,
+            None,
+            None,
+            true,
+            None,
+        )
+        .expect("sampling params");
+        let group = SequenceGroup::new(
+            &[seq.clone()],
+            0,
+            group_id,
+            "req".to_string(),
+            SystemTime::now(),
+            sampling_params,
+            false,
+            false,
+            EncodingFormat::Float,
+            EmbeddingType::Last,
+            None,
+        );
+        (group, seq)
+    }
+
+    #[test]
+    fn allocate_with_prefix_cache_reuses_blocks() {
+        let block_size = 4;
+        let mut engine = BlockEngine::new(
+            block_size,
+            8,
+            8,
+            0,
+            PrefixCacheConfig {
+                enabled: true,
+                max_cached_blocks: 4,
+            },
+        );
+
+        let (group1, seq1) = make_group(1, 1, block_size, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut blocks_to_copy = HashMap::new();
+        let free_before = engine.get_num_free_blocks();
+        engine.allocate(&group1, &mut blocks_to_copy);
+        let free_after_alloc = engine.get_num_free_blocks();
+        assert!(free_after_alloc < free_before);
+
+        let cached_block_ids: Vec<usize> = engine
+            .block_tables
+            .get(&seq1.deref().get_id())
+            .unwrap()
+            .iter()
+            .take(2)
+            .map(|block| block.deref_mut().block_id)
+            .collect();
+
+        engine.cache_sequence(&seq1);
+        engine.free_sequence(&seq1);
+        let free_after_free = engine.get_num_free_blocks();
+        assert_eq!(free_after_free, free_after_alloc + 1);
+
+        let (group2, seq2) = make_group(
+            2,
+            2,
+            block_size,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        engine.allocate(&group2, &mut blocks_to_copy);
+        assert_eq!(seq2.deref().get_num_cached_tokens(), 8);
+        let table = engine.block_tables.get(&seq2.deref().get_id()).unwrap();
+        assert_eq!(table[0].deref_mut().block_id, cached_block_ids[0]);
+        assert_eq!(table[1].deref_mut().block_id, cached_block_ids[1]);
     }
 }
