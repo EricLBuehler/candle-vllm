@@ -9,6 +9,7 @@ pub mod block_engine;
 /// actually allocates the KV cache for the CPU and GPU. It is used by the LLMEngine to execute
 /// operations issued by the scheduler.
 pub mod cache_engine;
+pub mod prefix_cache;
 pub mod sequence;
 use tracing::warn;
 type CPUBlockFrom = usize;
@@ -25,7 +26,10 @@ use std::{
 
 use crate::scheduler::{block_engine::AllocStatus, sequence::SequenceStatus};
 
-use self::{block_engine::BlockEngine, cache_engine::CacheConfig, sequence::SequenceGroup};
+use self::{
+    block_engine::BlockEngine, cache_engine::CacheConfig, prefix_cache::PrefixCacheConfig,
+    sequence::SequenceGroup,
+};
 
 pub struct SchedulerOutput {
     pub scheduled: Arc<VecDeque<Arc<SequenceGroup>>>,
@@ -37,6 +41,7 @@ pub struct SchedulerOutput {
 
 pub struct SchedulerConfig {
     pub max_num_seqs: usize,
+    pub prefix_cache: PrefixCacheConfig,
 }
 
 pub struct Scheduler {
@@ -51,6 +56,7 @@ pub struct Scheduler {
 impl Scheduler {
     pub fn new(config: SchedulerConfig, cache_config: &CacheConfig) -> Self {
         assert!(cache_config.fully_init);
+        let prefix_cache_cfg = config.prefix_cache.clone();
         Self {
             waiting: VecDeque::new(),
             running: VecDeque::new(),
@@ -61,6 +67,7 @@ impl Scheduler {
                 cache_config.num_gpu_blocks.unwrap(),
                 cache_config.num_cpu_blocks.unwrap(),
                 cache_config.kvcache_mem_gpu,
+                prefix_cache_cfg,
             ),
             is_last_prefill: false,
         }
@@ -76,6 +83,7 @@ impl Scheduler {
         if self.swapped_out.is_empty() {
             let mut scheduled = VecDeque::new();
             let mut ignored_seq_groups = VecDeque::new();
+            let mut blocks_to_copy = HashMap::new();
             while !self.waiting.is_empty() {
                 if self.is_last_prefill && self.running.len() > 0 {
                     break; // interleaved scheduling
@@ -110,7 +118,7 @@ impl Scheduler {
                         _ => {}
                     }
 
-                    self._allocate(&seq_group);
+                    self._allocate(&seq_group, &mut blocks_to_copy);
                 }
 
                 seq_group.set_status(SequenceStatus::Running);
@@ -126,7 +134,7 @@ impl Scheduler {
                 return SchedulerOutput {
                     scheduled: Arc::new(scheduled),
                     blocks_to_swap_in: HashMap::new(),
-                    blocks_to_copy: HashMap::new(),
+                    blocks_to_copy,
                     blocks_to_swap_out: HashMap::new(),
                     ignored_seq_groups: Arc::new(ignored_seq_groups),
                 };
@@ -230,8 +238,12 @@ impl Scheduler {
             .cloned()
             .collect::<VecDeque<_>>();
         for group in to_free {
-            self._free(&group);
+            self._free(&group, true);
         }
+    }
+
+    pub fn prefix_cache_enabled(&self) -> bool {
+        self.block_engine.prefix_cache_enabled()
     }
 
     pub fn print_free_blocks(&self) {
@@ -352,7 +364,7 @@ impl Scheduler {
     fn _abort_seq_group(&mut self, seq_group: &SequenceGroup) {
         self.remove_seq_group(seq_group);
         seq_group.set_status(SequenceStatus::FinishedAborted);
-        self._free(seq_group);
+        self._free(seq_group, false);
     }
 
     /// Preempt either by recomputation (for single sequence), or by swapping (for multiple).
@@ -369,7 +381,7 @@ impl Scheduler {
 
     fn _preempt_by_recompute(&mut self, seq_group: Arc<SequenceGroup>) {
         seq_group.set_status(SequenceStatus::Waiting);
-        self._free(&seq_group);
+        self._free(&seq_group, false);
         self.waiting.push_front(seq_group);
     }
 
@@ -390,12 +402,21 @@ impl Scheduler {
         self.swapped_out.push_back(seq_group);
     }
 
-    fn _allocate(&mut self, seq_group: &SequenceGroup) {
-        self.block_engine.allocate(seq_group)
+    fn _allocate(
+        &mut self,
+        seq_group: &SequenceGroup,
+        blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
+    ) {
+        self.block_engine.allocate(seq_group, blocks_to_copy)
     }
 
-    fn _free(&mut self, seq_group: &SequenceGroup) {
+    fn _free(&mut self, seq_group: &SequenceGroup, cache_prefix: bool) {
         for seq in seq_group.get_seqs().values() {
+            if cache_prefix {
+                if matches!(seq.deref().get_status(), SequenceStatus::Finished(_)) {
+                    self.block_engine.cache_sequence(seq);
+                }
+            }
             self.block_engine.free_sequence(seq);
         }
     }

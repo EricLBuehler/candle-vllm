@@ -502,7 +502,7 @@ impl DefaultLoader {
 
             let mut config = match arch.as_str() {
                 "LlamaForCausalLM" => Llama::load_config(&cfile, isq)?,
-                "Phi2ForCausalLM" => Phi2::load_config(&cfile, isq)?,
+                "PhiForCausalLM" | "Phi2ForCausalLM" => Phi2::load_config(&cfile, isq)?,
                 "Phi3ForCausalLM" | "Phi4ForCausalLM" => Phi4::load_config(&cfile, isq)?,
                 "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => Qwen::load_config(&cfile, isq)?,
                 "Qwen2MoeForCausalLM" | "Qwen3MoeForCausalLM" => {
@@ -611,7 +611,7 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Llama3,
                         ),
-                        "PhiForCausalLM" => (
+                        "PhiForCausalLM" | "Ph2ForCausalLM" => (
                             LLMModel::Phi2(Arc::new(
                                 Phi2::new(vb, &config, dtype, &device, comm, Arc::clone(&reporter))
                                     .unwrap(),

@@ -25,6 +25,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support Chunked Prefilling (default chunk size 8K)
 - Support CUDA Graph
 - Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
+- Support Prefix Caching
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.
@@ -122,7 +123,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 
     `WEB UI`: --ui-server
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); `--fp8-kvcache` used to enable fp8 kvcache; `--ui-server` start with a built-in ChatGPT-like Web UI sever.
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever.
   </details>
 
 
@@ -373,6 +374,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
 - [Rust Crate Usage](docs/rust_crate.md)
 - [Embedding Model Usage](docs/embedding.md)
 - [MCP & Tool Calling](docs/mcp_tool_calling.md)
+- [Prefix Cache](docs/prefix_cache.md)
 
 ## How to send request(s) to the backend?
 

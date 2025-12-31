@@ -24,6 +24,7 @@
 - 支持`多节点`推理（使用MPI运行）。
 - 支持分块Prefilling (默认块大小8K)
 - 支持CUDA Graph
+- 支持Prefix Caching
 
 ## 支持的模型
 - 目前，candle-vllm支持以下模型结构的推理服务。
@@ -118,7 +119,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 
     `CACHE CONFIG`: --fp8-kvcache
 
-    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)，`--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存; `--fp8-kvcache` 参数用于启用FP8 KV Cache缓存。
+    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)，`--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存; `--fp8-kvcache` 参数用于启用FP8 KV Cache缓存; `--prefix-cache` 启用前缀缓存复用; `--prefix-cache-max-tokens` 限制前缀缓存大小。
   </details>
 
 ## 如何运行？
@@ -366,6 +367,7 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
 ## 📚 作为 Rust crate 使用
 - [Crate Usage](docs/rust_crate.md)
 - [Embedding模型使用](docs/embedding.md)
+- [Prefix Cache](docs/prefix_cache.md)
 
 ## 如何向后端发送请求？
 
