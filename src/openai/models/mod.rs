@@ -7,7 +7,7 @@ pub mod linear;
 pub mod llama;
 pub mod mistral;
 pub mod phi2;
-pub mod phi3;
+pub mod phi4;
 pub mod quantized_glm4;
 pub mod quantized_llama;
 pub mod quantized_phi3;

@@ -20,7 +20,7 @@ use crate::{
     },
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
-        sequence::{Sequence, SequenceGroup, _Sequence},
+        sequence::{Sequence, SequenceGroup, ToolCallState, _Sequence},
         SchedulerConfig, SchedulerOutput,
     },
     InputMetadata,
@@ -365,6 +365,7 @@ impl LLMEngine {
         request_id: String,
         created: u64,
         content: Option<String>,
+        tool_calls: Option<Vec<crate::tools::ToolCall>>,
         finish_reason: Option<String>,
         pipeline: &DefaultPipeline,
     ) -> ChatCompletionChunk {
@@ -373,7 +374,7 @@ impl LLMEngine {
             delta: ChoiceData {
                 role: "assistant".to_string(),
                 content,
-                tool_calls: None,
+                tool_calls,
             },
             finish_reason,
             index: 0,
@@ -737,6 +738,7 @@ impl LLMEngine {
 
             //only the first rank thread perform stream response
             let results = optional_results.unwrap();
+            let parser = ToolParser::new();
             for (result_, group) in zip(results, &scheduled) {
                 match result_ {
                     Either::Left(logprobs) => {
@@ -816,20 +818,97 @@ impl LLMEngine {
                                 }
 
                                 if data.active_reasoning_end.is_none() {
-                                    if !data.in_tool_call {
-                                        if token_str.contains("<tool_call>")
-                                            || data.accumulated_output.ends_with("<tool_call>")
-                                        {
-                                            tracing::info!(
-                                                "Detected <tool_call>, buffering started"
-                                            );
-                                            data.in_tool_call = true;
+                                    // Robust Tool Call Buffering Logic
+                                    match data.tool_call_state {
+                                        ToolCallState::Normal => {
+                                            // Check for start of tool call
+                                            if data.accumulated_output.ends_with("<tool_call>")
+                                                || token_str.contains("<tool_call>")
+                                            {
+                                                data.tool_call_state = ToolCallState::InToolCall;
+                                                data.tool_call_buffer.clear();
+                                                data.tool_call_buffer.push_str(token_str);
+                                                should_buffer = true;
+                                                tracing::info!(
+                                                    "Detected <tool_call>, buffering started"
+                                                );
+                                            } else if ToolParser::could_be_partial_tag(
+                                                &data.accumulated_output,
+                                            ) {
+                                                data.tool_call_state = ToolCallState::MaybeToolCall;
+                                                data.tool_call_buffer.clear();
+                                                // Buffer the current token as it might be part of the tag start
+                                                data.tool_call_buffer.push_str(token_str);
+                                                should_buffer = true;
+                                            }
+                                        }
+                                        ToolCallState::MaybeToolCall => {
+                                            data.tool_call_buffer.push_str(token_str);
+                                            // Check if it resolved to the tag
+                                            if data.tool_call_buffer.contains("<tool_call>") {
+                                                data.tool_call_state = ToolCallState::InToolCall;
+                                                should_buffer = true;
+                                                tracing::info!("Confirmed <tool_call> from partial, buffering started");
+                                            } else if ToolParser::could_be_partial_tag(
+                                                &data.tool_call_buffer,
+                                            ) {
+                                                // Still incomplete but potential tag
+                                                should_buffer = true;
+                                            } else {
+                                                // False positive, flushing handled below
+                                                data.tool_call_state = ToolCallState::Normal;
+                                                should_buffer = false;
+                                            }
+                                        }
+                                        ToolCallState::InToolCall => {
+                                            data.tool_call_buffer.push_str(token_str);
+                                            should_buffer = true;
+                                            // Check for completion
+                                            if parser.has_complete_tool_call(&data.tool_call_buffer)
+                                            {
+                                                tracing::info!("Tool call complete, parsing...");
+                                                let calls = parser.parse(&data.tool_call_buffer);
+                                                if !calls.is_empty() {
+                                                    let chunk = e.get_stream_response(
+                                                        group.request_id.clone(),
+                                                        group.arrival_time,
+                                                        None,                // no content
+                                                        Some(calls.clone()), // tool calls
+                                                        None,
+                                                        pipeline,
+                                                    );
+                                                    tracing::info!("Dump tool call: {:?}", chunk);
+                                                    let _ = sender.send(ChatResponse::Chunk(chunk));
+
+                                                    // Reset state
+                                                    data.tool_call_state = ToolCallState::Normal;
+                                                    data.tool_call_buffer.clear();
+                                                    // should_buffer is true, so we don't send the closing tag text.
+                                                } else {
+                                                    // Parsed empty? Should not happen if `has_complete_tool_call` is true.
+                                                    // Treat as text?
+                                                    data.tool_call_state = ToolCallState::Normal;
+                                                    data.tool_call_buffer.clear();
+                                                }
+                                            }
                                         }
                                     }
-                                    if data.in_tool_call {
-                                        // tracing::info!("Buffering tool call token: {:?}", token_str);
-                                        should_buffer = true;
-                                    }
+                                }
+                            }
+
+                            let mut content_to_send = Some(logprobs.bytes.clone());
+
+                            {
+                                let outer = seq.deref();
+                                let mut data = outer.deref_mut();
+
+                                if !should_buffer
+                                    && !data.tool_call_buffer.is_empty()
+                                    && data.tool_call_state == ToolCallState::Normal
+                                {
+                                    // Flush buffer (which includes current token)
+                                    content_to_send = Some(data.tool_call_buffer.clone());
+                                    data.tool_call_buffer.clear();
                                 }
                             }
 
@@ -837,7 +916,8 @@ impl LLMEngine {
                                 let chunk = e.get_stream_response(
                                     group.request_id.clone(),
                                     group.arrival_time,
-                                    Some(logprobs.bytes.clone()),
+                                    content_to_send,
+                                    None, // No tool calls in normal text stream
                                     None,
                                     pipeline,
                                 );
@@ -859,22 +939,32 @@ impl LLMEngine {
                     Either::Right(finish_reason) => {
                         let seq = group.get_seqs().values().nth(0).unwrap();
 
-                        // Check for tool calls in accumulated output
+                        // Check for pending tool calls in buffer (e.g. if stop token </tool_call> was swallowed)
                         let mut final_tool_calls = None;
                         {
                             let outer = seq.deref();
                             let data = outer.deref(); // Read lock
                             let parser = ToolParser::new();
-                            if !data.accumulated_output.is_empty() {
-                                let calls = parser.parse(&data.accumulated_output);
+
+                            // Only check buffer, not accumulated_output, to avoid duplicates
+                            if !data.tool_call_buffer.is_empty() {
+                                // If buffer contains start tag but we are here, it means we stopped before finding the end tag
+                                // (likely because it was the stop token).
+                                // Try to recover by appending closing tag if missing.
+                                let mut text_to_parse = data.tool_call_buffer.clone();
+                                if text_to_parse.contains("<tool_call>")
+                                    && !text_to_parse.contains("</tool_call>")
+                                {
+                                    text_to_parse.push_str("</tool_call>");
+                                }
+
+                                let calls = parser.parse(&text_to_parse);
                                 if !calls.is_empty() {
                                     tracing::info!(
-                                        "Parsed {} tool calls from accumulated output",
+                                        "Parsed {} tool calls from pending buffer at finish",
                                         calls.len()
                                     );
                                     final_tool_calls = Some(calls);
-                                } else {
-                                    tracing::info!("No tool calls found in accumulated output");
                                 }
                             }
                         }
@@ -891,6 +981,7 @@ impl LLMEngine {
                                         content: None,
                                         tool_calls: Some(tool_calls),
                                     },
+                                    // If we found a tool call at finish, the reason is likely tool_calls
                                     finish_reason: Some("tool_calls".to_string()),
                                     index: 0,
                                 };
@@ -905,8 +996,7 @@ impl LLMEngine {
                                     system_fingerprint: None,
                                 };
 
-                                tracing::info!("Sending tool call chunk: {:?}", chunk);
-
+                                tracing::info!("Sending final tool call chunk: {:?}", chunk);
                                 let ret = sender.send(ChatResponse::Chunk(chunk));
                                 if ret.is_err() {
                                     warn!(
@@ -919,6 +1009,7 @@ impl LLMEngine {
                                 let chunk = e.get_stream_response(
                                     group.request_id.clone(),
                                     group.arrival_time,
+                                    None,
                                     None,
                                     Some(finish_reason.clone()),
                                     pipeline,
