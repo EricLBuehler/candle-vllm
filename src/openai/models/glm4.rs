@@ -28,7 +28,6 @@ impl GLM4 {
                 .num_key_value_heads
                 .unwrap_or(config.num_attention_heads),
         );
-        config.num_hidden_layers = config.num_hidden_layers;
         config.max_seq_len = config.max_position_embeddings.unwrap_or(32768);
         config.attention_bias = Some(config.attention_bias.unwrap_or(false));
         config.bos_token_id = Some(
