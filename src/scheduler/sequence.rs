@@ -37,6 +37,7 @@ pub struct SequenceData {
     pub tool_call_state: ToolCallState,
     pub tool_call_buffer: String,
     pub active_reasoning_end: Option<String>,
+    pub in_code_block: bool,
 }
 
 impl SequenceData {
@@ -51,6 +52,7 @@ impl SequenceData {
             tool_call_state: ToolCallState::Normal,
             tool_call_buffer: String::new(),
             active_reasoning_end: None,
+            in_code_block: false,
         }
     }
 
@@ -278,6 +280,7 @@ pub struct SequenceGroup {
     pub tool_call_state: ToolCallState,
     pub tool_call_buffer: String,
     pub active_reasoning_end: Option<String>,
+    pub in_code_block: bool,
 }
 
 impl SequenceGroup {
@@ -315,6 +318,7 @@ impl SequenceGroup {
             tool_call_state: ToolCallState::Normal,
             tool_call_buffer: String::new(),
             active_reasoning_end: None,
+            in_code_block: false,
         }
     }
 

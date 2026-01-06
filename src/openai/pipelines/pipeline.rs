@@ -32,6 +32,7 @@ use either::Either::{Left, Right};
 use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use parking_lot::RwLock;
 use rayon::prelude::*;
+use regex::Regex;
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::Path;
@@ -76,6 +77,9 @@ pub struct DefaultPipeline {
     pub stop_token_ids: Vec<u32>,
     pub rank: usize,
     pub stream_decoders: RwLock<super::StreamDecoderMap>,
+    pub tool_call_end_token_ids: Vec<u32>,
+    pub json_end_token_id: Option<u32>,
+    pub tool_call_regex: Regex,
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
 }
@@ -1013,6 +1017,18 @@ impl DefaultPipeline {
             QWenGGUFMoE,
             GLM4GGUF,
         );
+
+        let tool_call_end_token_ids = tokenizer
+            .encode("</tool_call>", false)
+            .ok()
+            .and_then(|tokens| tokens.get_ids().last().copied().map(|id| vec![id]))
+            .unwrap_or_default();
+        let json_end_token_id = tokenizer
+            .encode("}", false)
+            .ok()
+            .and_then(|tokens| tokens.get_ids().last().copied());
+        let tool_call_regex =
+            Regex::new(r#"(?s)\{\s*"name"\s*:.*"arguments"\s*:.*\}\s*$"#).unwrap();
         Ok(Self {
             model,
             tokenizer,
@@ -1028,6 +1044,9 @@ impl DefaultPipeline {
             stop_token_ids,
             rank,
             stream_decoders: RwLock::new(HashMap::new()),
+            tool_call_end_token_ids,
+            json_end_token_id,
+            tool_call_regex,
             #[cfg(all(feature = "cuda", feature = "graph"))]
             capturer: GraphCapturer::new(
                 wrapper,
@@ -1265,6 +1284,9 @@ impl DefaultPipeline {
             .enumerate()
             .map(|(i, next_token)| {
                 let group_id = group_ids[i];
+                let group = groups
+                    .get(i)
+                    .expect("group index out of range for sampling");
                 let mut text = "".to_string();
                 let mut decoder_map = self.stream_decoders.write();
                 match decoder_map.get_mut(&group_id) {
@@ -1292,6 +1314,27 @@ impl DefaultPipeline {
 
                 let custom_stop_token_match = !custom_stop_tokens[i].is_empty()
                     && custom_stop_tokens[i].contains(&text.trim().to_string());
+
+                if group.sampling_params.mcp_mode.is_some() {
+                    if self.tool_call_end_token_ids.contains(&next_token) {
+                        return Right("tool_calls".to_string());
+                    }
+                    if self.json_end_token_id == Some(next_token) {
+                        let seq = group.get_seqs().values().next().unwrap();
+                        let mut output_tokens: Vec<u32> = seq
+                            .deref()
+                            .get_output_tokens()
+                            .iter()
+                            .map(|logprob| logprob.token)
+                            .collect();
+                        output_tokens.push(next_token);
+                        if let Ok(decoded) = self.tokenizer.decode(&output_tokens, true) {
+                            if self.tool_call_regex.is_match(&decoded) {
+                                return Right("tool_calls".to_string());
+                            }
+                        }
+                    }
+                }
 
                 if tokens_generated[i] < 0 {
                     Right("length".to_string())

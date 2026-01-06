@@ -394,6 +394,49 @@ impl Engine {
             // We need to access `messages` from request.
             let prompt = match &request.messages {
                 crate::openai::requests::Messages::Literal(msg) => msg.clone(),
+                crate::openai::requests::Messages::Chat(messages) => {
+                    let mut conv = conversation.clone();
+                    for message in messages {
+                        let role = message.role.as_str();
+                        if role == "system" {
+                            if let Some(content) = &message.content {
+                                conv.set_system_message(Some(content.clone()));
+                            }
+                            continue;
+                        }
+
+                        if role == "tool" {
+                            let tool_call_id = message.tool_call_id.as_deref().unwrap_or("unknown");
+                            let content = message.content.clone().unwrap_or_default();
+                            let trimmed = content.trim();
+                            if !trimmed.is_empty() {
+                                let prompt =
+                                    format!("[Tool Result for {}]: {}", tool_call_id, trimmed);
+                                conv.append_message(role.to_string(), prompt);
+                            }
+                            continue;
+                        }
+
+                        if let Some(tool_calls) = &message.tool_calls {
+                            let mut tool_text = String::new();
+                            for tc in tool_calls {
+                                tool_text.push_str(&format!(
+                                    "<tool_call>\n{{\"name\": \"{}\", \"arguments\": {}}}\n</tool_call>\n",
+                                    tc.function.name, tc.function.arguments
+                                ));
+                            }
+                            if !tool_text.trim().is_empty() {
+                                conv.append_message(role.to_string(), tool_text.trim().to_string());
+                            }
+                            continue;
+                        }
+
+                        if let Some(content) = &message.content {
+                            conv.append_message(role.to_string(), content.clone());
+                        }
+                    }
+                    conv.get_prompt(request.thinking.unwrap_or(false))
+                }
                 crate::openai::requests::Messages::Map(messages) => {
                     let mut conv = conversation.clone();
                     for message in messages {

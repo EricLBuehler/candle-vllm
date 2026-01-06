@@ -155,6 +155,9 @@ pub struct ToolChoiceFunction {
 /// A tool call made by the model
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
+    /// Index of this tool call in the tool_calls array (streaming only)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
     /// Unique identifier for this tool call
     pub id: String,
     /// Type of tool call (always "function")
@@ -172,6 +175,7 @@ impl ToolCall {
         arguments: impl Into<String>,
     ) -> Self {
         Self {
+            index: None,
             id: id.into(),
             call_type: "function".to_string(),
             function: FunctionCall {
@@ -179,6 +183,11 @@ impl ToolCall {
                 arguments: arguments.into(),
             },
         }
+    }
+
+    pub fn with_index(mut self, index: usize) -> Self {
+        self.index = Some(index);
+        self
     }
 }
 
