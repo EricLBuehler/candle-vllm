@@ -3,8 +3,20 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub role: String,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub tool_calls: Option<Vec<crate::tools::ToolCall>>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Messages {
+    Chat(Vec<ChatMessage>),
     Map(Vec<HashMap<String, String>>),
     Literal(String),
 }

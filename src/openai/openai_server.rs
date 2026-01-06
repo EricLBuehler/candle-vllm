@@ -4,7 +4,7 @@ use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
-use crate::tools::ToolFormat;
+use crate::tools::{Tool, ToolChoice, ToolFormat};
 use axum::response::sse::KeepAlive;
 use axum::{
     extract::{Json, State},
@@ -19,10 +19,80 @@ use tokio::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+enum ToolChoiceKind {
+    Auto,
+    None,
+    Function(String),
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedToolConfig {
+    tools: Vec<Tool>,
+    choice: ToolChoiceKind,
+}
+
+fn normalize_tool_choice(choice: &Option<ToolChoice>) -> ToolChoiceKind {
+    match choice {
+        None => ToolChoiceKind::Auto,
+        Some(ToolChoice::Function { function, .. }) => {
+            ToolChoiceKind::Function(function.name.clone())
+        }
+        Some(ToolChoice::Auto(value)) | Some(ToolChoice::None(value)) => match value.as_str() {
+            "none" => ToolChoiceKind::None,
+            "auto" => ToolChoiceKind::Auto,
+            _ => ToolChoiceKind::Auto,
+        },
+    }
+}
+
+fn resolve_tools_for_request(
+    request_tools: &Option<Vec<Tool>>,
+    tool_choice: &Option<ToolChoice>,
+    mcp_manager: Option<&Arc<crate::mcp::McpClientManager>>,
+) -> Result<ResolvedToolConfig, APIError> {
+    let choice = normalize_tool_choice(tool_choice);
+    let mut tools = if let Some(req_tools) = request_tools {
+        if req_tools.is_empty() {
+            Vec::new()
+        } else {
+            req_tools.clone()
+        }
+    } else if let Some(manager) = mcp_manager {
+        manager.cached_tools()
+    } else {
+        Vec::new()
+    };
+
+    if matches!(choice, ToolChoiceKind::None) {
+        tools.clear();
+        return Ok(ResolvedToolConfig { tools, choice });
+    }
+
+    if let ToolChoiceKind::Function(name) = &choice {
+        if tools.is_empty() {
+            return Err(APIError::new(format!(
+                "tool_choice '{}' requires tools to be provided.",
+                name
+            )));
+        }
+        tools.retain(|tool| tool.function.name == *name);
+        if tools.is_empty() {
+            return Err(APIError::new(format!(
+                "tool_choice '{}' not found in tools.",
+                name
+            )));
+        }
+    }
+
+    Ok(ResolvedToolConfig { tools, choice })
+}
+
 // Get prompt, roles
 async fn get_gen_prompt(
     data: &OpenAIServerData,
     request: &ChatCompletionRequest,
+    tool_config: &ResolvedToolConfig,
 ) -> Result<String, APIError> {
     let mut model = data.model.write();
     let pipeline = model
@@ -33,6 +103,47 @@ async fn get_gen_prompt(
     match &request.messages {
         Messages::Literal(msg) => {
             return Ok(msg.clone());
+        }
+        Messages::Chat(messages) => {
+            for message in messages {
+                let role = message.role.as_str();
+                if role == "system" {
+                    if let Some(content) = &message.content {
+                        tracing::info!("system prompt found: {}", content);
+                        conversation.set_system_message(Some(content.clone()));
+                    }
+                    continue;
+                }
+
+                if role == "tool" {
+                    let tool_call_id = message.tool_call_id.as_deref().unwrap_or("unknown");
+                    let content = message.content.clone().unwrap_or_default();
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        let prompt = format!("[Tool Result for {}]: {}", tool_call_id, trimmed);
+                        conversation.append_message(role.to_string(), prompt);
+                    }
+                    continue;
+                }
+
+                if let Some(tool_calls) = &message.tool_calls {
+                    let mut tool_text = String::new();
+                    for tc in tool_calls {
+                        tool_text.push_str(&format!(
+                            "<tool_call>\n{{\"name\": \"{}\", \"arguments\": {}}}\n</tool_call>\n",
+                            tc.function.name, tc.function.arguments
+                        ));
+                    }
+                    if !tool_text.trim().is_empty() {
+                        conversation.append_message(role.to_string(), tool_text.trim().to_string());
+                    }
+                    continue;
+                }
+
+                if let Some(content) = &message.content {
+                    conversation.append_message(role.to_string(), content.clone());
+                }
+            }
         }
         Messages::Map(messages) => {
             for message in messages {
@@ -56,31 +167,21 @@ async fn get_gen_prompt(
         }
     }
 
-    // Inject tools if present
-    if let Some(tools) = &request.tools {
-        if !tools.is_empty() {
-            let tools_prompt = ToolFormat::format_tools(tools);
-            let current_system = conversation.get_system_message().unwrap_or_default();
-            let new_system = if current_system.is_empty() {
-                tools_prompt
-            } else {
-                format!("{}\n\n{}", current_system, tools_prompt)
-            };
-            conversation.set_system_message(Some(new_system));
+    if !tool_config.tools.is_empty() {
+        let mut tools_prompt = ToolFormat::format_tools(&tool_config.tools);
+        if let ToolChoiceKind::Function(name) = &tool_config.choice {
+            tools_prompt = format!(
+                "IMPORTANT: You must call the tool \"{}\".\n\n{}",
+                name, tools_prompt
+            );
         }
-    } else if let Some(mcp_manager) = &data.mcp_manager {
-        // Check for MCP tools if enabled and no manual tools provided
-        let mcp_tools = mcp_manager.cached_tools();
-        if !mcp_tools.is_empty() {
-            let tools_prompt = ToolFormat::format_tools(&mcp_tools);
-            let current_system = conversation.get_system_message().unwrap_or_default();
-            let new_system = if current_system.is_empty() {
-                tools_prompt
-            } else {
-                format!("{}\n\n{}", current_system, tools_prompt)
-            };
-            conversation.set_system_message(Some(new_system));
-        }
+        let current_system = conversation.get_system_message().unwrap_or_default();
+        let new_system = if current_system.is_empty() {
+            tools_prompt
+        } else {
+            format!("{}\n\n{}", current_system, tools_prompt)
+        };
+        conversation.set_system_message(Some(new_system));
     }
 
     Ok(conversation.get_prompt(request.thinking.unwrap_or(false)))
@@ -167,7 +268,16 @@ pub async fn chat_completions(
         ));
     }
 
-    let prompt = match get_gen_prompt(&data, &request).await {
+    let tool_config = match resolve_tools_for_request(
+        &request.tools,
+        &request.tool_choice,
+        data.mcp_manager.as_ref(),
+    ) {
+        Ok(config) => config,
+        Err(e) => return ChatResponder::ValidationError(e),
+    };
+
+    let prompt = match get_gen_prompt(&data, &request, &tool_config).await {
         Ok(p) => p,
         Err(e) => return ChatResponder::ValidationError(e),
     };
@@ -209,7 +319,7 @@ pub async fn chat_completions(
     }
 
     let generation_cfg = data.pipeline_config.generation_cfg.as_ref().unwrap();
-    let sampling_params = match SamplingParams::new(
+    let mut sampling_params = match SamplingParams::new(
         request.n.unwrap_or(1),
         request.best_of,
         request
@@ -238,6 +348,8 @@ pub async fn chat_completions(
         Ok(params) => params,
         Err(e) => return ChatResponder::ValidationError(e),
     };
+    let has_tools = !tool_config.tools.is_empty();
+    sampling_params.mcp_mode = if has_tools { Some(true) } else { None };
 
     let (response_tx, rx) = flume::unbounded();
     tracing::info!("{:?}", sampling_params);
@@ -314,17 +426,16 @@ pub async fn chat_completions(
 
         // Check for tool calls in the output
         let mut final_choices = choices.clone();
-
-        // We need to parse tool calls from the content if present
-        // Use the same tools format parsing based on what we injected
-        // For now Assuming Generic format
-        let parser = crate::tools::parser::ToolParser::new();
-
-        for choice in &mut final_choices {
-            if let Some(content) = &choice.message.content {
-                let calls = parser.parse(content);
-                if !calls.is_empty() {
-                    choice.message.tool_calls = Some(calls.clone());
+        if has_tools {
+            let parser = crate::tools::parser::ToolParser::new();
+            for choice in &mut final_choices {
+                if let Some(content) = &choice.message.content {
+                    let calls = parser.parse(content);
+                    if !calls.is_empty() {
+                        choice.message.tool_calls = Some(calls);
+                        choice.message.content = None;
+                        choice.finish_reason = Some("tool_calls".to_string());
+                    }
                 }
             }
         }

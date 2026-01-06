@@ -92,6 +92,8 @@ pub struct SamplingParams {
     /// Thinking flag for reasoning models
     //  default = False
     pub thinking: Option<bool>,
+    #[serde(skip)]
+    pub mcp_mode: Option<bool>,
 }
 
 impl SamplingParams {
@@ -146,6 +148,7 @@ impl SamplingParams {
             prompt_logprobs,
             skip_special_tokens,
             thinking,
+            mcp_mode: None,
         };
 
         this.verify_args()?;
