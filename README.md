@@ -134,10 +134,14 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
   <details open>
     <summary>Show command</summary>
 
-    **Local Path (with port, device and isq specified)**
-
+    **Local Path (with port, device)**
     ```shell
-    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server
+    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
+    ```
+
+    **Local Path (ISQ, +UI Server)**
+    ```shell
+    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server
     ```
 
     **Model-ID (download from Huggingface)**
@@ -370,11 +374,12 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn
     Note: The exact NUMA binding sequence may vary depending on your hardware configuration.
   </details>
 
-## 📚 Work as a Rust crate
+## 📚 Additional Docs
 - [Rust Crate Usage](docs/rust_crate.md)
 - [Embedding Model Usage](docs/embedding.md)
 - [MCP & Tool Calling](docs/mcp_tool_calling.md)
 - [Prefix Cache](docs/prefix_cache.md)
+- [Work with Goose AI Agent](docs/goose.md)
 
 ## How to send request(s) to the backend?
 

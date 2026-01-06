@@ -128,10 +128,14 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
   <details open>
     <summary>显示命令</summary>
 
-    **本地路径（指定端口、设备及ISQ量化）**
-
+    **本地路径（指定端口、设备）**
     ```shell
-    target/release/candle-vllm --p 2000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k
+    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
+    ```
+
+    **本地路径 (ISQ量化, +UI Server)**
+    ```shell
+    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server
     ```
 
     **模型ID（从Huggingface下载）**
@@ -364,10 +368,12 @@ cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash att
     注意： 绑定顺序可能会根据你的硬件配置有所不同。
   </details>
 
-## 📚 作为 Rust crate 使用
+## 📚 其它文档
 - [Crate Usage](docs/rust_crate.md)
 - [Embedding模型使用](docs/embedding.md)
+- [MCP & Tool Calling](docs/mcp_tool_calling.md)
 - [Prefix Cache](docs/prefix_cache.md)
+- [Goose AI Agent + Candle-vLLM后端](docs/goose.md)
 
 ## 如何向后端发送请求？
 

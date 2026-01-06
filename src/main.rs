@@ -17,6 +17,8 @@ use candle_vllm::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm::scheduler::prefix_cache::PrefixCacheConfig;
 use candle_vllm::scheduler::SchedulerConfig;
 use clap::Parser;
+use colored::*;
+use local_ip_address::local_ip;
 use rustchatui::start_ui_server;
 use serde_json::json;
 use std::sync::Arc;
@@ -543,7 +545,15 @@ async fn main() -> Result<()> {
                 std::cmp::min(kvcached_tokens / batch, max_model_len)
             );
         }
-        warn!("Server started at http://{host}:{port}/v1/");
+        let ip = local_ip().unwrap_or("127.0.0.1".parse().unwrap());
+        let local_url = format!("http://localhost:{port}/v1/");
+        let lan_url = format!("http://{ip}:{port}/v1/");
+
+        println!(
+            "\n🧠 API server running at:\n\t{} (Local Access) \n\t{} (Remote Access)\n",
+            local_url.cyan().bold(),
+            lan_url.cyan().bold(),
+        );
     }
 
     let cors_layer = CorsLayer::new()

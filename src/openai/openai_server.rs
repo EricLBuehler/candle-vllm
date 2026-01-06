@@ -109,7 +109,6 @@ async fn get_gen_prompt(
                 let role = message.role.as_str();
                 if role == "system" {
                     if let Some(content) = &message.content {
-                        tracing::info!("system prompt found: {}", content);
                         conversation.set_system_message(Some(content.clone()));
                     }
                     continue;
@@ -158,7 +157,6 @@ async fn get_gen_prompt(
                     .clone();
 
                 if role == "system" {
-                    tracing::info!("system prompt found: {}", content);
                     conversation.set_system_message(Some(content.clone()));
                 } else {
                     conversation.append_message(role.to_string(), content)
