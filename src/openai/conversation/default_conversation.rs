@@ -169,7 +169,7 @@ impl DefaultConversation {
         &self,
         add_generation_prompt: bool,
         enable_thinking: bool,
-        tools: &Vec<Tool>
+        tools: &Vec<Tool>,
     ) -> Result<String, ApplyChatTemplateError> {
         if self.chat_template.is_none() {
             return Err(ApplyChatTemplateError::GetTemplateError(

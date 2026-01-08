@@ -4,7 +4,7 @@ use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
-use crate::openai::{ResolvedToolConfig, resolve_tools_for_request};
+use crate::openai::{resolve_tools_for_request, ResolvedToolConfig};
 use crate::tools::ToolFormat;
 use axum::response::sse::KeepAlive;
 use axum::{
@@ -53,35 +53,6 @@ async fn get_gen_prompt(
                     if !trimmed.is_empty() {
                         let prompt = format!("[Tool Result for {}]: {}", tool_call_id, trimmed);
                         conversation.append_message(role.to_string(), prompt);
-                    }
-                    continue;
-                }
-
-                if let Some(tool_calls) = &message.tool_calls {
-                    let start_tag = &pipeline.0.tool_config.start_token_str;
-                    let end_tag = &pipeline.0.tool_config.end_token_str;
-                    let has_tool_tags = message
-                        .content
-                        .as_ref()
-                        .is_some_and(|content| !start_tag.is_empty() && content.contains(start_tag));
-                    if has_tool_tags {
-                        if let Some(content) = &message.content {
-                            conversation.append_message(role.to_string(), content.clone());
-                        }
-                    } else {
-                        let mut tool_text = String::new();
-                        for tc in tool_calls {
-                            tool_text.push_str(&format!(
-                                "{start_tag}\n{{\"name\": \"{}\", \"arguments\": {}}}\n{end_tag}\n",
-                                tc.function.name, tc.function.arguments
-                            ));
-                        }
-                        if !tool_text.trim().is_empty() {
-                            conversation.append_message(
-                                role.to_string(),
-                                tool_text.trim().to_string(),
-                            );
-                        }
                     }
                     continue;
                 }

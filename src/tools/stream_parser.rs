@@ -183,11 +183,7 @@ impl ToolConfig {
         tool_call_end_ids
     }
 
-    fn matches_single_token(
-        tokenizer: &Tokenizer,
-        text: &str,
-        token_ids: &HashSet<u32>,
-    ) -> bool {
+    fn matches_single_token(tokenizer: &Tokenizer, text: &str, token_ids: &HashSet<u32>) -> bool {
         if text.is_empty() {
             return false;
         }
@@ -205,9 +201,14 @@ impl ToolConfig {
 pub struct StreamToolParser {
     config: ToolConfig,
     state: ParserState,
+    /// Buffer for tool call content (dynamic, grows as needed)
     buffer: String,
     parse_strategy: String,
-    accumulated_output: String,
+    /// Rolling context for detecting split markers (reasoning tags, code blocks).
+    /// We only keep the last N characters where N is sufficient for the longest marker.
+    marker_context: String,
+    /// Maximum length for marker detection context
+    max_marker_len: usize,
     active_reasoning_end: Option<&'static str>,
     in_code_block: bool,
     tool_call_index: usize,
@@ -228,22 +229,30 @@ impl StreamToolParser {
     }
 
     /// Create a new parser with a pre-validated tool config
-    pub fn new_with_config(
-        model_type: &ToolModelType,
-        config: ToolConfig,
-    ) -> Self {
+    pub fn new_with_config(model_type: &ToolModelType, config: ToolConfig) -> Self {
         let parse_strategy = match model_type {
             ToolModelType::Mistral => "mistral_list",
             _ => "json",
         }
         .to_string();
 
+        // Compute max marker length for context trimming
+        let max_marker_len = REASONING_MARKERS
+            .iter()
+            .flat_map(|(s, e)| [s.len(), e.len()])
+            .chain(std::iter::once(config.start_token_str.len()))
+            .chain(std::iter::once(config.end_token_str.len()))
+            .chain(std::iter::once(3)) // for "```"
+            .max()
+            .unwrap_or(20);
+
         Self {
             config,
             state: ParserState::Normal,
             buffer: String::new(),
             parse_strategy,
-            accumulated_output: String::new(),
+            marker_context: String::with_capacity(max_marker_len * 2),
+            max_marker_len,
             active_reasoning_end: None,
             in_code_block: false,
             tool_call_index: 0,
@@ -270,37 +279,70 @@ impl StreamToolParser {
         &self.buffer
     }
 
+    /// Update marker context with new text, keeping only what's needed for detection
+    fn update_marker_context(&mut self, text: &str) {
+        self.marker_context.push_str(text);
+        // Trim from front if too long
+        let excess = self
+            .marker_context
+            .len()
+            .saturating_sub(self.max_marker_len * 2);
+        if excess > 0 {
+            // Find a char boundary to trim at
+            let mut trim_at = excess;
+            while !self.marker_context.is_char_boundary(trim_at)
+                && trim_at < self.marker_context.len()
+            {
+                trim_at += 1;
+            }
+            self.marker_context = self.marker_context[trim_at..].to_string();
+        }
+    }
+
+    /// Check if marker context ends with a specific string
+    fn marker_context_ends_with(&self, suffix: &str) -> bool {
+        self.marker_context.ends_with(suffix)
+    }
+
     /// Process a single incoming token.
     pub fn process_token(&mut self, token_id: u32, token_text: &str) -> StreamResult {
-        self.accumulated_output.push_str(token_text);
+        // Update marker context for split marker detection
+        self.update_marker_context(token_text);
 
+        // -- Check for Reasoning Start/End --
         if self.active_reasoning_end.is_none() {
             for &(start, end) in REASONING_MARKERS {
-                if token_text.contains(start) || self.accumulated_output.ends_with(start) {
+                // Check if current token contains start marker OR context ends with it (split token)
+                if token_text.contains(start) || self.marker_context_ends_with(start) {
                     self.active_reasoning_end = Some(end);
                     break;
                 }
             }
         } else if let Some(end_marker) = self.active_reasoning_end {
-            if token_text.contains(end_marker) || self.accumulated_output.ends_with(end_marker) {
+            if token_text.contains(end_marker) || self.marker_context_ends_with(end_marker) {
                 self.active_reasoning_end = None;
             }
         }
 
-        if token_text.contains("```") || self.accumulated_output.ends_with("```") {
+        // -- Check for Code Blocks --
+        if token_text.contains("```") || self.marker_context_ends_with("```") {
             self.in_code_block = !self.in_code_block;
         }
 
+        // If inside reasoning or code block, treat as content (ignore tool tags)
         if self.in_reasoning() || self.in_code_block {
             return StreamResult::Content(token_text.to_string());
         }
 
+        // -- Tool Tag Detection Logic --
         match self.state.clone() {
             ParserState::Normal => {
+                // Check for explicit start tokens or text match
                 if self.is_start_token(token_id, token_text) {
                     self.state = ParserState::Buffering;
                     self.buffer.clear();
 
+                    // If text match, we might have content before the tag
                     if let Some(pos) = token_text.find(&self.config.start_token_str) {
                         let before = &token_text[..pos];
                         let after = &token_text[pos + self.config.start_token_str.len()..];
@@ -320,6 +362,7 @@ impl StreamToolParser {
                 }
 
                 if !self.config.has_start_tokens() {
+                    // Check for partial tags (split across tokens)
                     if let Some((prefix, partial)) = self.split_partial_start(token_text) {
                         self.state = ParserState::MaybeStart;
                         self.buffer.clear();
@@ -337,9 +380,13 @@ impl StreamToolParser {
             ParserState::MaybeStart => {
                 self.buffer.push_str(token_text);
 
+                // Check if the accumulated buffer now contains the full start tag
                 if let Some(tag_pos) = self.buffer.find(&self.config.start_token_str) {
+                    // Found it! Separate content before the tag
                     let before = self.buffer[..tag_pos].to_string();
-                    let after = self.buffer[tag_pos + self.config.start_token_str.len()..].to_string();
+                    let after =
+                        self.buffer[tag_pos + self.config.start_token_str.len()..].to_string();
+
                     self.buffer.clear();
                     if !after.is_empty() {
                         self.buffer.push_str(&after);
@@ -352,22 +399,31 @@ impl StreamToolParser {
                     };
                 }
 
+                // If buffer still ends with a partial prefix of the start tag, keep buffering
                 if self.partial_suffix_len(&self.buffer) > 0 {
+                    // Safety check: flush if buffer grows unreasonably large without match
+                    if self.buffer.len() > self.config.start_token_str.len() + 20 {
+                        self.state = ParserState::Normal;
+                        let flushed = self.buffer.clone();
+                        self.buffer.clear();
+                        return StreamResult::FlushBuffer(flushed);
+                    }
                     return StreamResult::Buffering;
                 }
 
+                // Not a start tag, flush everything
                 self.state = ParserState::Normal;
                 let flushed = self.buffer.clone();
                 self.buffer.clear();
-                StreamResult::FlushBuffer(flushed)
+                return StreamResult::FlushBuffer(flushed);
             }
             ParserState::Buffering => {
                 self.buffer.push_str(token_text);
 
                 let end_by_token = self.is_end_token(token_id, token_text);
-                let end_reached = end_by_token
-                    || self.buffer_has_end_tag()
-                    || self.maybe_complete_mistral_list();
+                let end_reached =
+                    end_by_token || self.buffer_has_end_tag() || self.maybe_complete_mistral_list();
+
                 if end_reached {
                     if end_by_token {
                         info!(
@@ -383,6 +439,7 @@ impl StreamToolParser {
                     let tool_calls = self.parse_buffer();
                     let result = if tool_calls.is_empty() {
                         error!("Unable to parse tool call buffer: {}", self.buffer);
+                        // If parsing failed, flush the buffer as raw text
                         StreamResult::FlushBuffer(self.buffer.clone())
                     } else {
                         StreamResult::ToolCalls(tool_calls)
@@ -465,7 +522,7 @@ impl StreamToolParser {
             if let Some(call) = self.json_to_tool_call(&item) {
                 calls.push(call);
             }
-        }  else if let Some(repaired) = self.repair_unbalanced_json(&clean_text) {
+        } else if let Some(repaired) = self.repair_unbalanced_json(&clean_text) {
             if repaired != clean_text {
                 tracing::warn!("Tool call JSON missing closing braces; attempting repair");
             }
@@ -610,5 +667,71 @@ impl StreamToolParser {
         };
         self.tool_call_index += 1;
         Some(call)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_marker_context() {
+        let mut parser = StreamToolParser::new(ToolModelType::Qwen);
+        parser.update_marker_context("hello");
+        assert!(parser.marker_context_ends_with("lo"));
+        assert!(parser.marker_context_ends_with("hello"));
+        assert!(!parser.marker_context_ends_with("world"));
+
+        parser.update_marker_context(" world");
+        assert!(parser.marker_context_ends_with("world"));
+        assert!(parser.marker_context_ends_with("o world"));
+    }
+
+    #[test]
+    fn test_process_token_content() {
+        let mut parser = StreamToolParser::new(ToolModelType::Qwen);
+        match parser.process_token(0, "hello") {
+            StreamResult::Content(s) => assert_eq!(s, "hello"),
+            _ => panic!("Expected content"),
+        }
+    }
+
+    #[test]
+    fn test_maybe_start_flush() {
+        let mut parser = StreamToolParser::new(ToolModelType::Phi4);
+        // "<" is a partial start token
+        match parser.process_token(0, "<") {
+            StreamResult::Buffering => {}
+            _ => panic!("Expected Buffering for partial start"),
+        }
+        // "not_tool" breaks the match
+        match parser.process_token(0, "not_tool") {
+            StreamResult::FlushBuffer(s) => assert_eq!(s, "<not_tool"),
+            _ => panic!("Expected FlushBuffer"),
+        }
+        // Next check content
+        // note: process_token only returns one result. In a real loop we might need to handle the fact
+        // that "not_tool" was consumed but not returned in the FlushBuffer result.
+        // *Correction*: In this implementation, `FlushBuffer` returns the *flushed buffer*.
+        // The current token `token_text` ("not_tool") was accumulated into `self.buffer` at start of `MaybeStart`.
+        // Wait, let's re-read the code logic for MaybeStart:
+        // `self.buffer.push_str(token_text);`
+        // Then checks.. if not partial start -> `StreamResult::FlushBuffer(flushed)`.
+        // So `flushed` contains "<not_tool".
+
+        // Let's re-verify the logic in test:
+        // 1. process_token("<") -> buffer="<", state=MaybeStart. returns Buffering.
+        // 2. process_token("not_tool") -> buffer="<not_tool".
+        //    check find start_token_str "<tool_call>"? No.
+        //    check partial_suffix_len? "<not_tool" ends with "<"? No.
+        //    -> state=Normal. flush buffer "<not_tool".
+
+        // So result should be "<not_tool"
+
+        // Actually, my test setup explanation above:
+        // match parser.process_token(0, "not_tool") {
+        //     StreamResult::FlushBuffer(s) => assert_eq!(s, "<not_tool"),
+        //     _ => panic!("Expected FlushBuffer"),
+        // }
     }
 }

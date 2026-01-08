@@ -782,12 +782,11 @@ impl LLMEngine {
 
                                 if should_parse_tools {
                                     if data.stream_tool_parser.is_none() {
-                                        data.stream_tool_parser = Some(
-                                            StreamToolParser::new_with_config(
+                                        data.stream_tool_parser =
+                                            Some(StreamToolParser::new_with_config(
                                                 &pipeline.tool_model_type,
                                                 pipeline.tool_config.clone(),
-                                            ),
-                                        );
+                                            ));
                                     }
                                     if let Some(parser) = data.stream_tool_parser.as_mut() {
                                         match parser.process_token(logprobs.token, token_str) {

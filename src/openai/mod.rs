@@ -1,5 +1,8 @@
 use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
-use crate::{openai::sampling_params::{GenerationConfig, SamplingParams}, tools::{Tool, ToolChoice}};
+use crate::{
+    openai::sampling_params::{GenerationConfig, SamplingParams},
+    tools::{Tool, ToolChoice},
+};
 use candle_core::Device;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -100,7 +103,6 @@ pub mod openai_server;
 pub mod pipelines;
 pub mod utils;
 
-
 #[derive(Debug, Clone)]
 enum ToolChoiceKind {
     Auto,
@@ -108,12 +110,12 @@ enum ToolChoiceKind {
     Function(String),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ResolvedToolConfig {
     pub tools: Vec<Tool>,
     choice: ToolChoiceKind,
 }
-
 
 fn normalize_tool_choice(choice: &Option<ToolChoice>) -> ToolChoiceKind {
     match choice {

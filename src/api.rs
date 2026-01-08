@@ -1,12 +1,12 @@
 use crate::openai::models::Config;
 use crate::openai::pipelines::llm_engine::LLMEngine;
 use crate::openai::pipelines::pipeline::DefaultLoader;
+use crate::openai::requests::Messages;
+use crate::openai::resolve_tools_for_request;
 use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use crate::scheduler::prefix_cache::PrefixCacheConfig;
 use crate::scheduler::SchedulerConfig;
-use crate::openai::resolve_tools_for_request;
-use crate::openai::requests::Messages;
 use crate::tools::ToolFormat;
 use candle_core::{DType, Result};
 use parking_lot::RwLock;
@@ -390,11 +390,8 @@ impl Engine {
             let e = self.engine.read();
             let (pipeline, _) = e.get_pipeline(0).unwrap();
 
-            let tool_config = resolve_tools_for_request(
-                &request.tools,
-                &request.tool_choice,
-                None,
-            ).map_err(candle_core::Error::wrap)?;
+            let tool_config = resolve_tools_for_request(&request.tools, &request.tool_choice, None)
+                .map_err(candle_core::Error::wrap)?;
 
             // tokenizer is inside DefaultPipeline
             let mut conversation = pipeline.conversation.clone();
@@ -457,7 +454,8 @@ impl Engine {
                 conversation.set_system_message(Some(new_system));
             }
 
-            let prompt = conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools);
+            let prompt =
+                conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools);
             (prompt, pipeline.tokenizer.clone())
         };
 
