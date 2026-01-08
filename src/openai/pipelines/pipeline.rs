@@ -9,6 +9,7 @@ use crate::openai::requests::StopTokens;
 use crate::openai::sampling_params::{GenerationConfig, Logprobs, TopLogprob};
 use crate::openai::{BosEosToken, TokenizerConfig};
 use crate::scheduler::sequence::SequenceGroup;
+use crate::tools::stream_parser::{ToolConfig, ToolModelType};
 use crate::{
     openai::{
         conversation::default_conversation::{
@@ -65,6 +66,23 @@ pub enum LLMModel {
     GLM4GGUF(Arc<GGUFGLM4>),
 }
 
+fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
+    match model {
+        LLMModel::Llama(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
+        LLMModel::Qwen(_) | LLMModel::QWenGGUF(_) => ToolModelType::Qwen,
+        LLMModel::Qwen3MoE(_) | LLMModel::QWenGGUFMoE(_) => ToolModelType::Qwen3MoE,
+        LLMModel::Gemma(_) => ToolModelType::Gemma,
+        LLMModel::Gemma3(_) => ToolModelType::Gemma3,
+        LLMModel::Mistral(_) => ToolModelType::Mistral,
+        LLMModel::Yi(_) => ToolModelType::Yi,
+        LLMModel::StableLM(_) => ToolModelType::StableLM,
+        LLMModel::GLM4(_) | LLMModel::GLM4GGUF(_) => ToolModelType::GLM4,
+        LLMModel::DeepSeek(_) => ToolModelType::DeepSeek,
+        LLMModel::Phi2(_) | LLMModel::Phi3GGUF(_) => ToolModelType::Phi,
+        LLMModel::Phi4(_) => ToolModelType::Phi4,
+    }
+}
+
 /// top-p, multinomial, and argmax sampling are implemented. Beam search is not implemented.
 pub struct DefaultPipeline {
     pub model: LLMModel,
@@ -80,6 +98,8 @@ pub struct DefaultPipeline {
     pub tool_call_end_token_ids: Vec<u32>,
     pub json_end_token_id: Option<u32>,
     pub tool_call_regex: Regex,
+    pub tool_config: ToolConfig,
+    pub tool_model_type: ToolModelType,
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
 }
@@ -1018,11 +1038,10 @@ impl DefaultPipeline {
             GLM4GGUF,
         );
 
-        let tool_call_end_token_ids = tokenizer
-            .encode("</tool_call>", false)
-            .ok()
-            .and_then(|tokens| tokens.get_ids().last().copied().map(|id| vec![id]))
-            .unwrap_or_default();
+        let tool_model_type = tool_model_type_for(&model);
+        let mut tool_config = ToolConfig::for_model_type(&tool_model_type);
+        tool_config.validate_with_tokenizer(&tokenizer, &tool_model_type);
+        let tool_call_end_token_ids = tool_config.tool_call_end_ids(&tokenizer);
         let json_end_token_id = tokenizer
             .encode("}", false)
             .ok()
@@ -1047,6 +1066,8 @@ impl DefaultPipeline {
             tool_call_end_token_ids,
             json_end_token_id,
             tool_call_regex,
+            tool_config,
+            tool_model_type,
             #[cfg(all(feature = "cuda", feature = "graph"))]
             capturer: GraphCapturer::new(
                 wrapper,

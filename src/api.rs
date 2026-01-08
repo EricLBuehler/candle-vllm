@@ -1,11 +1,13 @@
 use crate::openai::models::Config;
 use crate::openai::pipelines::llm_engine::LLMEngine;
 use crate::openai::pipelines::pipeline::DefaultLoader;
+use crate::openai::requests::Messages;
+use crate::openai::resolve_tools_for_request;
 use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use crate::scheduler::prefix_cache::PrefixCacheConfig;
 use crate::scheduler::SchedulerConfig;
-
+use crate::tools::ToolFormat;
 use candle_core::{DType, Result};
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -387,20 +389,25 @@ impl Engine {
         let (prompt, tokenizer) = {
             let e = self.engine.read();
             let (pipeline, _) = e.get_pipeline(0).unwrap();
+
+            let tool_config = resolve_tools_for_request(&request.tools, &request.tool_choice, None)
+                .map_err(candle_core::Error::wrap)?;
+
             // tokenizer is inside DefaultPipeline
-            let conversation = pipeline.conversation.clone();
+            let mut conversation = pipeline.conversation.clone();
 
             // Logic to get prompt from messages
             // We need to access `messages` from request.
-            let prompt = match &request.messages {
-                crate::openai::requests::Messages::Literal(msg) => msg.clone(),
-                crate::openai::requests::Messages::Chat(messages) => {
-                    let mut conv = conversation.clone();
+            match &request.messages {
+                Messages::Literal(msg) => {
+                    conversation.append_message("user".to_string(), msg.clone());
+                }
+                Messages::Chat(messages) => {
                     for message in messages {
                         let role = message.role.as_str();
                         if role == "system" {
                             if let Some(content) = &message.content {
-                                conv.set_system_message(Some(content.clone()));
+                                conversation.set_system_message(Some(content.clone()));
                             }
                             continue;
                         }
@@ -412,47 +419,52 @@ impl Engine {
                             if !trimmed.is_empty() {
                                 let prompt =
                                     format!("[Tool Result for {}]: {}", tool_call_id, trimmed);
-                                conv.append_message(role.to_string(), prompt);
-                            }
-                            continue;
-                        }
-
-                        if let Some(tool_calls) = &message.tool_calls {
-                            let mut tool_text = String::new();
-                            for tc in tool_calls {
-                                tool_text.push_str(&format!(
-                                    "<tool_call>\n{{\"name\": \"{}\", \"arguments\": {}}}\n</tool_call>\n",
-                                    tc.function.name, tc.function.arguments
-                                ));
-                            }
-                            if !tool_text.trim().is_empty() {
-                                conv.append_message(role.to_string(), tool_text.trim().to_string());
+                                conversation.append_message(role.to_string(), prompt);
                             }
                             continue;
                         }
 
                         if let Some(content) = &message.content {
-                            conv.append_message(role.to_string(), content.clone());
+                            conversation.append_message(role.to_string(), content.clone());
                         }
                     }
-                    conv.get_prompt(request.thinking.unwrap_or(false))
                 }
-                crate::openai::requests::Messages::Map(messages) => {
-                    let mut conv = conversation.clone();
+                Messages::Map(messages) => {
                     for message in messages {
                         if let (Some(role), Some(content)) =
                             (message.get("role"), message.get("content"))
                         {
                             if role == "system" {
-                                conv.set_system_message(Some(content.clone()));
+                                conversation.set_system_message(Some(content.clone()));
                             }
-                            conv.append_message(role.to_string(), content.clone());
+                            conversation.append_message(role.to_string(), content.clone());
                         }
                     }
-                    conv.get_prompt(request.thinking.unwrap_or(false))
                 }
             };
 
+            if !tool_config.tools.is_empty() {
+                let mut tools_prompt = ToolFormat::get_tool_prompt(&pipeline.tool_config);
+
+                // Enforce tool_choice=function
+                if let crate::openai::ToolChoiceKind::Function(name) = &tool_config.choice {
+                    tools_prompt = format!(
+                        "IMPORTANT: You MUST call the tool \"{}\". Do not respond with plain text.\n\n{}",
+                        name, tools_prompt
+                    );
+                }
+
+                let current_system = conversation.get_system_message().unwrap_or_default();
+                let new_system = if current_system.is_empty() {
+                    tools_prompt
+                } else {
+                    format!("{}\n\n{}", current_system, tools_prompt)
+                };
+                conversation.set_system_message(Some(new_system));
+            }
+
+            let prompt =
+                conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools);
             (prompt, pipeline.tokenizer.clone())
         };
 

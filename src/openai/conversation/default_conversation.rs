@@ -1,3 +1,5 @@
+use crate::tools::Tool;
+
 use super::{ApplyChatTemplateError, Message};
 use minijinja::{context, value::Kwargs, Environment, Error, ErrorKind, Value};
 use serde::Serialize;
@@ -167,6 +169,7 @@ impl DefaultConversation {
         &self,
         add_generation_prompt: bool,
         enable_thinking: bool,
+        tools: &Vec<Tool>,
     ) -> Result<String, ApplyChatTemplateError> {
         if self.chat_template.is_none() {
             return Err(ApplyChatTemplateError::GetTemplateError(
@@ -204,12 +207,13 @@ impl DefaultConversation {
               eos_token => self.eos_token,
               enable_thinking => enable_thinking,
               date_string => date_string,
+              tools => tools,
             })
             .map_err(ApplyChatTemplateError::RenderTemplateError)
     }
     /// Convert this conversation to a String prompt
-    pub fn get_prompt(&mut self, thinking: bool) -> String {
-        match self.apply_chat_template(true, thinking) {
+    pub fn get_prompt(&mut self, thinking: bool, tools: &Vec<Tool>) -> String {
+        match self.apply_chat_template(true, thinking, tools) {
             Ok(prompt) => prompt,
             Err(e) => {
                 if self.chat_template.is_some() {

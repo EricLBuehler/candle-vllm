@@ -6,6 +6,8 @@ use std::{
 use super::block_engine::LogicalTokenBlock;
 use crate::openai::sampling_params::{Logprobs, SamplingParams};
 use crate::openai::streaming::ChatResponse;
+use crate::tools::stream_parser::StreamToolParser;
+use crate::tools::ToolCall;
 use flume::Sender;
 use std::time::SystemTime;
 #[derive(Clone, PartialEq)]
@@ -38,6 +40,8 @@ pub struct SequenceData {
     pub tool_call_buffer: String,
     pub active_reasoning_end: Option<String>,
     pub in_code_block: bool,
+    pub stream_tool_parser: Option<StreamToolParser>,
+    pub pending_tool_calls: Vec<ToolCall>,
 }
 
 impl SequenceData {
@@ -53,6 +57,8 @@ impl SequenceData {
             tool_call_buffer: String::new(),
             active_reasoning_end: None,
             in_code_block: false,
+            stream_tool_parser: None,
+            pending_tool_calls: Vec::new(),
         }
     }
 

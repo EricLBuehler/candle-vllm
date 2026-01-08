@@ -410,6 +410,7 @@ mod tests {
     use crate::mcp::transport::{MemoryTransport, Transport};
     use crate::mcp::types::*;
     use serde_json::json;
+    use std::thread;
 
     #[test]
     fn tool_cache_roundtrip() {
