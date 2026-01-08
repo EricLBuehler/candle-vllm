@@ -239,11 +239,12 @@ pub struct ToolFormat {}
 
 impl ToolFormat {
     /// Get tool prompt for a specific tool config (model-aware tags).
+    /// Tool definitions are injected by the chat template - this only provides usage instructions.
     pub fn get_tool_prompt(tool_config: &crate::tools::stream_parser::ToolConfig) -> String {
         let start_tag = &tool_config.start_token_str;
         let end_tag = &tool_config.end_token_str;
         format!(
-            "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW: \n\
+            "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW:\n\
             For each function call, you MUST wrap function name and arguments in {start_tag}{end_tag} tags.\n\n\
             Do NOT USE ANY code blocks. Required format:\n\
             {start_tag}\n\

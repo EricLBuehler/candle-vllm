@@ -104,17 +104,16 @@ pub mod pipelines;
 pub mod utils;
 
 #[derive(Debug, Clone)]
-enum ToolChoiceKind {
+pub enum ToolChoiceKind {
     Auto,
     None,
     Function(String),
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ResolvedToolConfig {
     pub tools: Vec<Tool>,
-    choice: ToolChoiceKind,
+    pub choice: ToolChoiceKind,
 }
 
 fn normalize_tool_choice(choice: &Option<ToolChoice>) -> ToolChoiceKind {

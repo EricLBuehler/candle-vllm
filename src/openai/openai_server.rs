@@ -84,7 +84,16 @@ async fn get_gen_prompt(
     }
 
     if !tool_config.tools.is_empty() {
-        let tools_prompt = ToolFormat::get_tool_prompt(&pipeline.0.tool_config);
+        let mut tools_prompt = ToolFormat::get_tool_prompt(&pipeline.0.tool_config);
+
+        // Enforce tool_choice=function by prepending a mandatory instruction
+        if let crate::openai::ToolChoiceKind::Function(name) = &tool_config.choice {
+            tools_prompt = format!(
+                "IMPORTANT: You MUST call the tool \"{}\". Do not respond with plain text.\n\n{}",
+                name, tools_prompt
+            );
+        }
+
         let current_system = conversation.get_system_message().unwrap_or_default();
         let new_system = if current_system.is_empty() {
             tools_prompt
