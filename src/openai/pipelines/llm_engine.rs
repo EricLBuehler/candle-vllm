@@ -6,7 +6,7 @@ use crate::openai::pipelines::TokenOrFinishReason;
 use crate::openai::streaming::ChatResponse;
 use crate::openai::TaskData;
 use crate::scheduler::Scheduler;
-use crate::tools::parser::ToolParser;
+use crate::tools::stream_parser::{ParserState, StreamResult, StreamToolParser};
 use crate::{
     openai::{
         models::Config,
@@ -20,7 +20,7 @@ use crate::{
     },
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
-        sequence::{Sequence, SequenceGroup, ToolCallState, _Sequence},
+        sequence::{Sequence, SequenceGroup, _Sequence},
         SchedulerConfig, SchedulerOutput,
     },
     InputMetadata,
@@ -774,156 +774,50 @@ impl LLMEngine {
                             let (pipeline, _) = e.get_pipeline(rank).unwrap();
                             let token_str = &logprobs.bytes;
 
-                            // Handle buffering
-                            let mut should_buffer = false;
-                            let mut flush_buffer: Option<String> = None;
+                            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
+                            let mut content_to_send: Option<String> = None;
                             {
                                 let outer = seq.deref();
                                 let mut data = outer.deref_mut();
 
-                                data.accumulated_output.push_str(token_str);
-
-                                // Reasoning Logic
-                                let markers = [
-                                    ("<think>", "</think>"),
-                                    ("<|think|>", "<|/think|>"),
-                                    ("[THINK]", "[/THINK]"),
-                                    ("<thought>", "</thought>"),
-                                ];
-
-                                if data.active_reasoning_end.is_none() {
-                                    for (start, end) in markers {
-                                        if token_str.contains(start)
-                                            || data.accumulated_output.ends_with(start)
-                                        {
-                                            data.active_reasoning_end = Some(end.to_string());
-                                            tracing::info!(
-                                                "Reasoning block started, end marker: {}",
-                                                end
-                                            );
-                                            break;
-                                        }
-                                    }
-                                } else if let Some(end_marker) = &data.active_reasoning_end.clone()
-                                {
-                                    if token_str.contains(end_marker)
-                                        || data.accumulated_output.ends_with(end_marker)
-                                    {
-                                        tracing::info!(
-                                            "Reasoning block ended with marker: {}",
-                                            end_marker
+                                if should_parse_tools {
+                                    if data.stream_tool_parser.is_none() {
+                                        data.stream_tool_parser = Some(
+                                            StreamToolParser::new_with_config(
+                                                &pipeline.tool_model_type,
+                                                pipeline.tool_config.clone(),
+                                            ),
                                         );
-                                        data.active_reasoning_end = None;
                                     }
-                                }
-
-                                if token_str.contains("```")
-                                    || data.accumulated_output.ends_with("```")
-                                {
-                                    data.in_code_block = !data.in_code_block;
-                                }
-
-                                let should_buffer_tool_calls =
-                                    group.sampling_params.mcp_mode.is_some();
-                                if should_buffer_tool_calls
-                                    && data.active_reasoning_end.is_none()
-                                    && !data.in_code_block
-                                {
-                                    // Robust Tool Call Buffering Logic
-                                    match data.tool_call_state {
-                                        ToolCallState::Normal => {
-                                            if let Some(pos) = token_str.find("<tool_call>") {
-                                                data.tool_call_state = ToolCallState::InToolCall;
-                                                data.tool_call_buffer.clear();
-                                                let after_tag = &token_str[pos + 11..];
-                                                if !after_tag.is_empty() {
-                                                    data.tool_call_buffer.push_str(after_tag);
+                                    if let Some(parser) = data.stream_tool_parser.as_mut() {
+                                        match parser.process_token(logprobs.token, token_str) {
+                                            StreamResult::Content(text) => {
+                                                if !text.is_empty() {
+                                                    content_to_send = Some(text);
                                                 }
-                                                should_buffer = true;
-                                                tracing::info!(
-                                                    "Detected <tool_call>, buffering started"
-                                                );
-                                            } else if data
-                                                .accumulated_output
-                                                .ends_with("<tool_call>")
-                                            {
-                                                data.tool_call_state = ToolCallState::InToolCall;
-                                                data.tool_call_buffer.clear();
-                                                should_buffer = true;
-                                                tracing::info!(
-                                                    "Detected <tool_call> at end, buffering started"
-                                                );
-                                            } else if ToolParser::could_be_partial_tag(
-                                                &data.accumulated_output,
-                                            ) {
-                                                data.tool_call_state = ToolCallState::MaybeToolCall;
-                                                data.tool_call_buffer.clear();
-                                                data.tool_call_buffer.push_str(token_str);
-                                                should_buffer = true;
+                                            }
+                                            StreamResult::Buffering => {}
+                                            StreamResult::FlushBuffer(text) => {
+                                                if !text.is_empty() {
+                                                    content_to_send = Some(text);
+                                                }
+                                            }
+                                            StreamResult::ToolCalls(calls) => {
+                                                data.pending_tool_calls.extend(calls);
                                             }
                                         }
-                                        ToolCallState::MaybeToolCall => {
-                                            data.tool_call_buffer.push_str(token_str);
-                                            if let Some(tag_pos) =
-                                                data.tool_call_buffer.find("<tool_call>")
-                                            {
-                                                data.tool_call_state = ToolCallState::InToolCall;
-                                                let after_tag_start = tag_pos + 11;
-                                                let after_tag = data.tool_call_buffer
-                                                    [after_tag_start..]
-                                                    .to_string();
-                                                data.tool_call_buffer.clear();
-                                                if !after_tag.is_empty() {
-                                                    data.tool_call_buffer.push_str(&after_tag);
-                                                }
-                                                should_buffer = true;
-                                                tracing::info!(
-                                                    "Confirmed <tool_call> from partial, buffering started"
-                                                );
-                                            } else if ToolParser::could_be_partial_tag(
-                                                &data.accumulated_output,
-                                            ) {
-                                                should_buffer = true;
-                                            } else {
-                                                data.tool_call_state = ToolCallState::Normal;
-                                                flush_buffer = Some(data.tool_call_buffer.clone());
-                                                data.tool_call_buffer.clear();
-                                                should_buffer = false;
-                                            }
-                                        }
-                                        ToolCallState::InToolCall => {
-                                            data.tool_call_buffer.push_str(token_str);
-                                            should_buffer = true;
-                                        }
                                     }
+                                } else if !token_str.is_empty() {
+                                    content_to_send = Some(token_str.clone());
                                 }
                             }
 
-                            let mut content_to_send = Some(logprobs.bytes.clone());
-
-                            {
-                                let outer = seq.deref();
-                                let mut data = outer.deref_mut();
-
-                                if let Some(flush) = flush_buffer.take() {
-                                    content_to_send = Some(flush);
-                                }
-                                if !should_buffer
-                                    && !data.tool_call_buffer.is_empty()
-                                    && data.tool_call_state == ToolCallState::Normal
-                                {
-                                    // Flush buffer (which includes current token)
-                                    content_to_send = Some(data.tool_call_buffer.clone());
-                                    data.tool_call_buffer.clear();
-                                }
-                            }
-
-                            if !should_buffer {
+                            if let Some(content) = content_to_send {
                                 let chunk = e.get_stream_response(
                                     group.request_id.clone(),
                                     group.arrival_time,
-                                    content_to_send,
-                                    None, // No tool calls in normal text stream
+                                    Some(content),
+                                    None,
                                     None,
                                     pipeline,
                                 );
@@ -945,38 +839,40 @@ impl LLMEngine {
                     Either::Right(finish_reason) => {
                         let seq = group.get_seqs().values().nth(0).unwrap();
 
-                        // Check for pending tool calls in buffer (e.g. if stop token </tool_call> was swallowed)
                         let mut final_tool_calls = None;
                         let mut final_content = None;
                         {
                             let outer = seq.deref();
-                            let data = outer.deref(); // Read lock
-                            let parser = ToolParser::new();
+                            let mut data = outer.deref_mut();
+                            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
 
-                            let finish_reason_is_tool_calls = finish_reason == "tool_calls";
-                            let should_parse_tool_calls = group.sampling_params.mcp_mode.is_some()
-                                && !data.accumulated_output.is_empty()
-                                && !data.in_code_block
-                                && (data.tool_call_state == ToolCallState::InToolCall
-                                    || finish_reason_is_tool_calls);
-
-                            if should_parse_tool_calls {
-                                let calls = parser.parse(&data.accumulated_output);
-                                if !calls.is_empty() {
-                                    tracing::info!(
-                                        "Parsed {} tool calls from accumulated output at finish",
-                                        calls.len()
-                                    );
-                                    final_tool_calls = Some(calls);
-                                } else if data.tool_call_state != ToolCallState::Normal
-                                    && !data.tool_call_buffer.is_empty()
-                                {
-                                    final_content = Some(data.tool_call_buffer.clone());
+                            if should_parse_tools {
+                                if let Some(parser) = data.stream_tool_parser.as_mut() {
+                                    match parser.state() {
+                                        ParserState::Buffering => {
+                                            if let Some(mut parsed) = parser.finalize() {
+                                                data.pending_tool_calls.append(&mut parsed);
+                                            } else {
+                                                let buffer = parser.take_buffer();
+                                                if !buffer.is_empty() {
+                                                    final_content = Some(buffer);
+                                                }
+                                            }
+                                        }
+                                        ParserState::MaybeStart => {
+                                            let buffer = parser.take_buffer();
+                                            if !buffer.is_empty() {
+                                                final_content = Some(buffer);
+                                            }
+                                        }
+                                        ParserState::Normal => {}
+                                    }
                                 }
-                            } else if data.tool_call_state != ToolCallState::Normal
-                                && !data.tool_call_buffer.is_empty()
-                            {
-                                final_content = Some(data.tool_call_buffer.clone());
+                            }
+
+                            let pending = std::mem::take(&mut data.pending_tool_calls);
+                            if !pending.is_empty() {
+                                final_tool_calls = Some(pending);
                             }
                         }
 
@@ -1106,19 +1002,84 @@ impl LLMEngine {
                         let e = engine.read();
                         for (index, seq) in top_n.iter().enumerate() {
                             let outputs = seq.deref_mut().get_output_tokens();
-                            let data = outputs
-                                .iter()
-                                .map(|x| x.token.try_into().unwrap())
-                                .collect::<Vec<_>>();
                             let pipeline = e.get_pipeline(0usize).unwrap().0.as_ref();
-                            let data = pipeline.tokenizer().decode(&data, false).unwrap();
+                            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
+                            let mut finish_reason = seq.deref_mut().get_finish_reason().clone();
+
+                            let (content, tool_calls) = if should_parse_tools {
+                                let mut parser = StreamToolParser::new_with_config(
+                                    &pipeline.tool_model_type,
+                                    pipeline.tool_config.clone(),
+                                );
+                                let mut pending_tool_calls = Vec::new();
+                                let mut accumulated = String::new();
+
+                                for output in &outputs {
+                                    match parser.process_token(output.token, &output.bytes) {
+                                        StreamResult::Content(text) => {
+                                            accumulated.push_str(&text);
+                                        }
+                                        StreamResult::FlushBuffer(text) => {
+                                            accumulated.push_str(&text);
+                                        }
+                                        StreamResult::Buffering => {}
+                                        StreamResult::ToolCalls(mut calls) => {
+                                            pending_tool_calls.append(&mut calls);
+                                        }
+                                    }
+                                }
+
+                                match parser.state() {
+                                    ParserState::Buffering => {
+                                        if let Some(mut parsed) = parser.finalize() {
+                                            pending_tool_calls.append(&mut parsed);
+                                        } else {
+                                            let buffer = parser.take_buffer();
+                                            if !buffer.is_empty() {
+                                                accumulated.push_str(&buffer);
+                                            }
+                                        }
+                                    }
+                                    ParserState::MaybeStart => {
+                                        let buffer = parser.take_buffer();
+                                        if !buffer.is_empty() {
+                                            accumulated.push_str(&buffer);
+                                        }
+                                    }
+                                    ParserState::Normal => {}
+                                }
+
+                                if pending_tool_calls.is_empty() {
+                                    let content = if accumulated.is_empty() {
+                                        None
+                                    } else {
+                                        Some(accumulated)
+                                    };
+                                    (content, None)
+                                } else {
+                                    finish_reason = "tool_calls".to_string();
+                                    (None, Some(pending_tool_calls))
+                                }
+                            } else {
+                                let data = outputs
+                                    .iter()
+                                    .map(|x| x.token.try_into().unwrap())
+                                    .collect::<Vec<_>>();
+                                let data = pipeline.tokenizer().decode(&data, false).unwrap();
+                                (Some(data), None)
+                            };
+
+                            if tool_calls.is_none() && finish_reason == "tool_calls" {
+                                finish_reason = "stop".to_string();
+                            }
+
                             let choice = ChatChoice {
                                 message: ChatChoiceData {
                                     role: "assistant".to_string(),
-                                    content: Some(data),
-                                    tool_calls: None,
+                                    content,
+                                    tool_calls,
                                 },
-                                finish_reason: Some(seq.deref_mut().get_finish_reason().clone()),
+                                finish_reason: Some(finish_reason),
                                 index,
                                 logprobs: if group.use_logprobs {
                                     Some(WrapperLogprobs { content: outputs })

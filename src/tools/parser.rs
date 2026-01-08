@@ -6,6 +6,7 @@
 use super::ToolCall;
 use regex::Regex;
 use serde_json::Value;
+use tracing::error;
 
 /// Parser for extracting tool calls from model output text
 #[allow(dead_code)]
@@ -70,6 +71,14 @@ impl ToolParser {
             if let Some(block_calls) = self.parse_code_block_format(&final_answer, &mut call_id) {
                 calls.extend(block_calls);
             }
+        }
+
+        if calls.is_empty() && Self::looks_like_tool_call(&final_answer) {
+            let snippet: String = final_answer.chars().take(200).collect();
+            error!(
+                "Tool call parse failed; output contained tool markers. Snippet: {}",
+                snippet
+            );
         }
 
         calls
@@ -212,6 +221,14 @@ impl ToolParser {
         } else {
             Some(calls)
         }
+    }
+
+    fn looks_like_tool_call(text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed.contains("<tool_call>") || trimmed.contains("</tool_call>") {
+            return true;
+        }
+        trimmed.contains("\"name\"") && trimmed.contains("\"arguments\"") && trimmed.contains('{')
     }
 
     /// Convert a JSON Value to a ToolCall if it has the right structure

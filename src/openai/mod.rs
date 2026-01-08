@@ -1,5 +1,5 @@
 use self::{pipelines::llm_engine::LLMEngine, responses::APIError};
-use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
+use crate::{openai::sampling_params::{GenerationConfig, SamplingParams}, tools::{Tool, ToolChoice}};
 use candle_core::Device;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -99,3 +99,74 @@ pub mod models;
 pub mod openai_server;
 pub mod pipelines;
 pub mod utils;
+
+
+#[derive(Debug, Clone)]
+enum ToolChoiceKind {
+    Auto,
+    None,
+    Function(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedToolConfig {
+    pub tools: Vec<Tool>,
+    choice: ToolChoiceKind,
+}
+
+
+fn normalize_tool_choice(choice: &Option<ToolChoice>) -> ToolChoiceKind {
+    match choice {
+        None => ToolChoiceKind::Auto,
+        Some(ToolChoice::Function { function, .. }) => {
+            ToolChoiceKind::Function(function.name.clone())
+        }
+        Some(ToolChoice::Auto(value)) | Some(ToolChoice::None(value)) => match value.as_str() {
+            "none" => ToolChoiceKind::None,
+            "auto" => ToolChoiceKind::Auto,
+            _ => ToolChoiceKind::Auto,
+        },
+    }
+}
+
+pub fn resolve_tools_for_request(
+    request_tools: &Option<Vec<Tool>>,
+    tool_choice: &Option<ToolChoice>,
+    mcp_manager: Option<&Arc<crate::mcp::McpClientManager>>,
+) -> Result<ResolvedToolConfig, APIError> {
+    let choice = normalize_tool_choice(tool_choice);
+    let mut tools = if let Some(req_tools) = request_tools {
+        if req_tools.is_empty() {
+            Vec::new()
+        } else {
+            req_tools.clone()
+        }
+    } else if let Some(manager) = mcp_manager {
+        manager.cached_tools()
+    } else {
+        Vec::new()
+    };
+
+    if matches!(choice, ToolChoiceKind::None) {
+        tools.clear();
+        return Ok(ResolvedToolConfig { tools, choice });
+    }
+
+    if let ToolChoiceKind::Function(name) = &choice {
+        if tools.is_empty() {
+            return Err(APIError::new(format!(
+                "tool_choice '{}' requires tools to be provided.",
+                name
+            )));
+        }
+        tools.retain(|tool| tool.function.name == *name);
+        if tools.is_empty() {
+            return Err(APIError::new(format!(
+                "tool_choice '{}' not found in tools.",
+                name
+            )));
+        }
+    }
+
+    Ok(ResolvedToolConfig { tools, choice })
+}

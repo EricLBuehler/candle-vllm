@@ -4,7 +4,8 @@ use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
-use crate::tools::{Tool, ToolChoice, ToolFormat};
+use crate::openai::{ResolvedToolConfig, resolve_tools_for_request};
+use crate::tools::ToolFormat;
 use axum::response::sse::KeepAlive;
 use axum::{
     extract::{Json, State},
@@ -18,75 +19,6 @@ use tokio::sync::Notify;
 use tokio::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
-
-#[derive(Debug, Clone)]
-enum ToolChoiceKind {
-    Auto,
-    None,
-    Function(String),
-}
-
-#[derive(Debug, Clone)]
-struct ResolvedToolConfig {
-    tools: Vec<Tool>,
-    choice: ToolChoiceKind,
-}
-
-fn normalize_tool_choice(choice: &Option<ToolChoice>) -> ToolChoiceKind {
-    match choice {
-        None => ToolChoiceKind::Auto,
-        Some(ToolChoice::Function { function, .. }) => {
-            ToolChoiceKind::Function(function.name.clone())
-        }
-        Some(ToolChoice::Auto(value)) | Some(ToolChoice::None(value)) => match value.as_str() {
-            "none" => ToolChoiceKind::None,
-            "auto" => ToolChoiceKind::Auto,
-            _ => ToolChoiceKind::Auto,
-        },
-    }
-}
-
-fn resolve_tools_for_request(
-    request_tools: &Option<Vec<Tool>>,
-    tool_choice: &Option<ToolChoice>,
-    mcp_manager: Option<&Arc<crate::mcp::McpClientManager>>,
-) -> Result<ResolvedToolConfig, APIError> {
-    let choice = normalize_tool_choice(tool_choice);
-    let mut tools = if let Some(req_tools) = request_tools {
-        if req_tools.is_empty() {
-            Vec::new()
-        } else {
-            req_tools.clone()
-        }
-    } else if let Some(manager) = mcp_manager {
-        manager.cached_tools()
-    } else {
-        Vec::new()
-    };
-
-    if matches!(choice, ToolChoiceKind::None) {
-        tools.clear();
-        return Ok(ResolvedToolConfig { tools, choice });
-    }
-
-    if let ToolChoiceKind::Function(name) = &choice {
-        if tools.is_empty() {
-            return Err(APIError::new(format!(
-                "tool_choice '{}' requires tools to be provided.",
-                name
-            )));
-        }
-        tools.retain(|tool| tool.function.name == *name);
-        if tools.is_empty() {
-            return Err(APIError::new(format!(
-                "tool_choice '{}' not found in tools.",
-                name
-            )));
-        }
-    }
-
-    Ok(ResolvedToolConfig { tools, choice })
-}
 
 // Get prompt, roles
 async fn get_gen_prompt(
@@ -126,15 +58,30 @@ async fn get_gen_prompt(
                 }
 
                 if let Some(tool_calls) = &message.tool_calls {
-                    let mut tool_text = String::new();
-                    for tc in tool_calls {
-                        tool_text.push_str(&format!(
-                            "<tool_call>\n{{\"name\": \"{}\", \"arguments\": {}}}\n</tool_call>\n",
-                            tc.function.name, tc.function.arguments
-                        ));
-                    }
-                    if !tool_text.trim().is_empty() {
-                        conversation.append_message(role.to_string(), tool_text.trim().to_string());
+                    let start_tag = &pipeline.0.tool_config.start_token_str;
+                    let end_tag = &pipeline.0.tool_config.end_token_str;
+                    let has_tool_tags = message
+                        .content
+                        .as_ref()
+                        .is_some_and(|content| !start_tag.is_empty() && content.contains(start_tag));
+                    if has_tool_tags {
+                        if let Some(content) = &message.content {
+                            conversation.append_message(role.to_string(), content.clone());
+                        }
+                    } else {
+                        let mut tool_text = String::new();
+                        for tc in tool_calls {
+                            tool_text.push_str(&format!(
+                                "{start_tag}\n{{\"name\": \"{}\", \"arguments\": {}}}\n{end_tag}\n",
+                                tc.function.name, tc.function.arguments
+                            ));
+                        }
+                        if !tool_text.trim().is_empty() {
+                            conversation.append_message(
+                                role.to_string(),
+                                tool_text.trim().to_string(),
+                            );
+                        }
                     }
                     continue;
                 }
@@ -166,13 +113,7 @@ async fn get_gen_prompt(
     }
 
     if !tool_config.tools.is_empty() {
-        let mut tools_prompt = ToolFormat::format_tools(&tool_config.tools);
-        if let ToolChoiceKind::Function(name) = &tool_config.choice {
-            tools_prompt = format!(
-                "IMPORTANT: You must call the tool \"{}\".\n\n{}",
-                name, tools_prompt
-            );
-        }
+        let tools_prompt = ToolFormat::get_tool_prompt(&pipeline.0.tool_config);
         let current_system = conversation.get_system_message().unwrap_or_default();
         let new_system = if current_system.is_empty() {
             tools_prompt
@@ -182,7 +123,7 @@ async fn get_gen_prompt(
         conversation.set_system_message(Some(new_system));
     }
 
-    Ok(conversation.get_prompt(request.thinking.unwrap_or(false)))
+    Ok(conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools))
 }
 
 async fn check_length(
@@ -427,6 +368,9 @@ pub async fn chat_completions(
         if has_tools {
             let parser = crate::tools::parser::ToolParser::new();
             for choice in &mut final_choices {
+                if choice.message.tool_calls.is_some() {
+                    continue;
+                }
                 if let Some(content) = &choice.message.content {
                     let calls = parser.parse(content);
                     if !calls.is_empty() {

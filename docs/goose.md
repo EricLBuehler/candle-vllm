@@ -10,9 +10,9 @@ Goose -> Candle-vLLM (OpenAI-compatible)
 
 ```bash
 # Rust
-./target/release/candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --server --prefix-cache --p 8000
+./target/release/candle-vllm --m miromind-ai/MiroThinker-v1.5-30B --d 0,1 --server --prefix-cache --p 8000
 # Or
-cargo run --features cuda,nccl,graph,flash-attn,flash-decoding --release -- --w /path/Qwen3-30B-A3B-Instruct-2507 --d 0,1 --ui-server --prefix-cache
+cargo run --features cuda,nccl,graph,flash-attn,flash-decoding --release -- --m miromind-ai/MiroThinker-v1.5-30B --d 0,1 --ui-server --prefix-cache --p 8000
 ```
 
 ## 2) Configure Goose

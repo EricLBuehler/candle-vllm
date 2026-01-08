@@ -5,6 +5,7 @@
 //! allowing LLMs to invoke external functions and tools.
 
 pub mod parser;
+pub mod stream_parser;
 pub mod schema;
 
 use serde::{Deserialize, Serialize};
@@ -270,5 +271,26 @@ impl ToolFormat {
         output.push_str(&rule);
 
         output
+    }
+
+    /// Get tool prompt for a specific tool config (model-aware tags).
+    pub fn get_tool_prompt(tool_config: &crate::tools::stream_parser::ToolConfig) -> String {
+        let start_tag = &tool_config.start_token_str;
+        let end_tag = &tool_config.end_token_str;
+        format!(
+            "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW: For each function call, you MUST wrap function name and arguments in {start_tag}{end_tag} tags.\n\n\
+            Do NOT USE ANY code blocks. Required format:\n\
+            {start_tag}\n\
+            {{\"name\": \"<function-name>\", \"arguments\": <args-json-object>}}\n\
+            {end_tag}\n\n\
+            Rules:\n\
+            - Wrap function name and arguments with {start_tag} and {end_tag} tags\n\
+            - Always use the exact {start_tag}{end_tag} format shown above\n\
+            - Do NOT USE ANY code blocks\n\
+            - Tool-use must be placed **at the end** of your response, **top-level**, and not nested within other tags.\n\
+            - Always adhere to this format for the tool use to ensure proper parsing and execution.\n\
+            - The \"name\" and \"arguments\" are necessary fields\n\
+            - MUST FOLLOW the above instruction when using tool call!"
+        )
     }
 }
