@@ -10,12 +10,13 @@ Goose -> Candle-vLLM (OpenAI-compatible)
 
 ```bash
 # Rust
+cargo build --features cuda,nccl,graph,flash-attn,flash-decoding --release
 ./target/release/candle-vllm --m Qwen/Qwen3-30B-A3B-Instruct-2507 --d 0,1 --server --prefix-cache --p 8000
 # Or
 cargo run --features cuda,nccl,graph,flash-attn,flash-decoding --release -- --m Qwen/Qwen3-30B-A3B-Instruct-2507 --d 0,1 --ui-server --prefix-cache --p 8000
 ```
 
-## 2) Configure Goose
+## 2) Configure Goose (e.g., CLI)
 
 ### Download and install Goose: https://block.github.io/goose/docs/getting-started/installation/
 
@@ -69,7 +70,7 @@ goose configure
 └  Configuration saved successfully to /root/.config/goose/config.yaml
 ```
 
-### Run `goose` at any folder to work with your local server
+### Run `goose` at any folder
 
 ```shell
 goose
