@@ -550,7 +550,7 @@ async fn main() -> Result<()> {
         let lan_url = format!("http://{ip}:{port}/v1/");
 
         println!(
-            "\n🧠 API server running at:\n\t{} (Local Access) \n\t{} (Remote Access)\n",
+            "\n🧠 API server running at (Press `Ctrl+P` then `Ctrl+Q` to exit under Docker):\n\t{} (Local Access) \n\t{} (Remote Access)\n",
             local_url.cyan().bold(),
             lan_url.cyan().bold(),
         );

@@ -1,74 +1,76 @@
 # syntax=docker/dockerfile:1
 
-FROM docker.io/nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS builder
+FROM docker.io/nvidia/cuda:12.9.0-cudnn-devel-ubuntu22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-RUN <<HEREDOC
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl \
-        libssl-dev \
-        pkg-config \
-        clang \
-        libclang-dev \
-        libopenmpi-dev \
-        openmpi-bin && \
 
-    rm -rf /var/lib/apt/lists/*
-HEREDOC
+# 0=off, 1=on
+ARG CHINA_MIRROR=0
 
-RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
+# Build/runtime deps (single-stage, keep it simple)
+RUN set -eux; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends --allow-change-held-packages \
+    ca-certificates \
+    curl \
+    libssl-dev \
+    pkg-config \
+    clang \
+    libclang-dev \
+    libopenmpi-dev \
+    openmpi-bin; \
+  rm -rf /var/lib/apt/lists/*
+
+# Rust (stable) + optional China mirrors (SJTU for crates.io index)
+RUN set -eux; \
+  if [ "${CHINA_MIRROR}" = "1" ]; then \
+    export RUSTUP_UPDATE_ROOT="https://mirrors.ustc.edu.cn/rust-static/rustup"; \
+    export RUSTUP_DIST_SERVER="https://mirrors.tuna.tsinghua.edu.cn/rustup"; \
+  fi; \
+  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; \
+  if [ "${CHINA_MIRROR}" = "1" ]; then \
+    mkdir -p /root/.cargo; \
+    echo "RUSTUP_DIST_SERVER=https://mirrors.ustc.edu.cn/rust-static" >> /root/.cargo/env; \
+    printf '%s\n' \
+'[source.crates-io]' \
+'replace-with = "ustc"' \
+'' \
+'[source.ustc]' \
+'registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"' \
+'' \
+'[registries.ustc]' \
+'index = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"' \
+> /root/.cargo/config.toml; \
+  fi
+
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN rustup update nightly
-RUN rustup default nightly
-
-# MKL build dependencies
-RUN echo "deb [trusted=yes] https://apt.repos.intel.com/oneapi all main" | \
-    tee /etc/apt/sources.list.d/oneAPI.list \
-    && apt-get update \
-    && apt-get install -y libomp-dev intel-oneapi-mkl-devel
 
 WORKDIR /candle-vllm
-
 COPY . .
 
-# Rayon threads are limited to minimize memory requirements in CI, avoiding OOM
-# Rust threads are increased with a nightly feature for faster compilation (single-threaded by default)
+# Build args (stable)
 ARG CUDA_COMPUTE_CAP=80
-ARG RAYON_NUM_THREADS=4
-ARG RUST_NUM_THREADS=4
-ARG RUSTFLAGS="-Z threads=${RUST_NUM_THREADS}"
-ARG WITH_FEATURES="cuda,cudnn,nccl,mkl,mpi"
-RUN cargo build --release --workspace --features "${WITH_FEATURES}"
+ARG RAYON_NUM_THREADS=16
+ARG WITH_FEATURES="cuda,nccl,graph"
 
-FROM docker.io/nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04 AS base
+# Make env visible to build scripts if they read it
+ENV CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
+    RAYON_NUM_THREADS="${RAYON_NUM_THREADS}"
+
+# Build (no nightly flags)
+RUN set -eux; \
+  cargo build --release --features "${WITH_FEATURES}"; \
+  install -Dm755 target/release/candle-vllm /usr/local/bin/candle-vllm
+
+# Restore libnccl.so symlink if missing
+RUN set -eux; \
+  arch="$(uname -m)"; \
+  libdir="/usr/lib/${arch}-linux-gnu"; \
+  if [ ! -e "${libdir}/libnccl.so" ] && [ -e "${libdir}/libnccl.so.2" ]; then \
+    ln -s libnccl.so.2 "${libdir}/libnccl.so"; \
+  fi
+
 ENV HUGGINGFACE_HUB_CACHE=/data \
     PORT=80
 
-ARG DEBIAN_FRONTEND=noninteractive
-
-RUN echo "deb [trusted=yes] https://apt.repos.intel.com/oneapi all main" | \
-    tee /etc/apt/sources.list.d/oneAPI.list
-
-RUN <<HEREDOC
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-        libomp-dev \
-        ca-certificates \
-        libssl-dev \
-        curl \
-        pkg-config \
-        openmpi-bin \
-        intel-oneapi-hpc-toolkit && \
-
-    rm -rf /var/lib/apt/lists/*
-HEREDOC
-
-FROM base
-
-COPY --from=builder /candle-vllm/target/release/candle-vllm /usr/local/bin/candle-vllm
-RUN chmod +x /usr/local/bin/candle-vllm
-
-# Only the `devel` builder image provides symlinks, restore the `libnccl.so` symlink:
-RUN ln -s libnccl.so.2 /usr/lib/x86_64-linux-gnu/libnccl.so
-
+CMD ["bash"]

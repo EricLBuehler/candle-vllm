@@ -65,38 +65,60 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 ## General Usage
 ### Build Candle-vLLM
 
+**Clone code**
 ```shell
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh #install rust, 1.83.0+ required
-sudo apt install libssl-dev pkg-config -y
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
+```
 
-## Mac/Metal (single-node only)
-cargo build --release --features metal
+**CUDA Build (CUDA 11+, 12+, 13.0)**
+ > Option 1 (Build with docker)
+```bash
+# `flash-decoding` takes longer time to build
+./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding"
+# Use Rust crate China Mirror (used in Chinese Mainland)
+# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" 1
+```
+
+ > Option 2 (Manual Build)
+```shell
+sudo apt update
+# Install CUDA toolkit (optional)
+sudo apt install libssl-dev pkg-config curl -y
+sudo apt-get install -y cuda-toolkit-12-9
+#install rust, 1.83.0+ required
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 #Make sure the CUDA Toolkit can be found in the system PATH
 export PATH=$PATH:/usr/local/cuda/bin/
 
-#CUDA: single-node compilation (single gpu, or multi-gpus on single machine)
+# Single-node compilation (single gpu, or multi-gpus on single machine)
 cargo build --release --features cuda,nccl
 
-#CUDA: single-node compilation (+CUDA Graph)
+# Single-node compilation (+CUDA Graph)
 cargo build --release --features cuda,nccl,graph
 
-#CUDA: single-node compilation with flash attention for prefill only (requires CUDA_ARCH >= 800)
+# Single-node compilation with flash attention for prefill only (requires CUDA_ARCH >= 800)
 cargo build --release --features cuda,nccl,graph,flash-attn
 
-#CUDA: single-node compilation with flash attention for both prefill and decoding 
+# Single-node compilation with flash attention for both prefill and decoding 
 #(takes few minutes for the first build, faster inference for long-context, requires CUDA_ARCH >= 800)
 cargo build --release --features cuda,nccl,graph,flash-attn,flash-decoding
 
-#CUDA: multinode compilation with MPI (multi-gpus, multiple machines)
-sudo apt update
+# Multinode compilation with MPI (multi-gpus, multiple machines)
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
 sudo apt install clang libclang-dev
 cargo build --release --features cuda,nccl,mpi #build with mpi feature
 # or
 cargo build --release --features cuda,nccl,flash-attn,mpi #build with flash-attn and mpi features
+```
+
+**Mac/Metal Build (single-node only)**
+Install [Xcode command line tools](https://mac.install.guide/commandlinetools/)
+
+Build with `metal` feature
+```shell
+cargo build --release --features metal
 ```
 
 ### Build/Run Parameters

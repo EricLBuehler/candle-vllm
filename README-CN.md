@@ -63,38 +63,59 @@
 
 ## 基本用法
 ### 构建Candle-vLLM
-
+**下载源代码**
 ```shell
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh #安装Rust，需要1.83.0及以上版本
-sudo apt install libssl-dev pkg-config -y
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
+```
+**CUDA平台构建（11+, 12+, 13.0）**
 
-#Mac/Metal平台编译命令
-cargo build --release --features metal
+ > 方案 1 (使用docker构建)
+```bash
+# 启用`flash-decoding`特性需要更长的编译时间
+./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding"
+# 传 1 使用Rust 中国区镜像 (适用于中国大陆)
+# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" 1
+```
 
-#CUDA平台：确保CUDA Toolkit在系统PATH中
+ > 方案 2 (手动构建)
+```shell
+sudo apt update
+sudo apt install libssl-dev pkg-config curl -y
+# 安装 CUDA toolkit (可选)
+sudo apt-get install -y cuda-toolkit-12-9
+# 安装Rust，需要1.83.0及以上版本
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 确保CUDA Toolkit在系统PATH中
 export PATH=$PATH:/usr/local/cuda/bin/
 
-#CUDA平台：单节点（单机单卡或单机多卡）编译命令
+# 单节点（单机单卡或单机多卡）编译命令
 cargo build --release --features cuda,nccl
 
-#CUDA平台：单节点（+CUDA Graph）编译命令
+# 单节点（+CUDA Graph）编译命令
 cargo build --release --features cuda,nccl,graph
 
-#CUDA平台：单节点（+Flash attention仅用于Prefill，需要CUDA_ARCH >= 800）编译命令
+# 单节点（+Flash attention仅用于Prefill，需要CUDA_ARCH >= 800）编译命令
 cargo build --release --features cuda,nccl,graph,flash-attn
 
-#CUDA平台：单节点（+Flash attention同时用于Prefill/Decode，适用于长上下文推理，需要CUDA_ARCH >= 800）编译命令
+# 单节点（+Flash attention同时用于Prefill/Decode，适用于长上下文推理，需要CUDA_ARCH >= 800）编译命令
 cargo build --release --features cuda,nccl,graph,flash-attn,flash-decoding
 
-#CUDA平台：多节点（多机推理）编译命令
-sudo apt update
+# 多节点（多机推理）编译命令
 sudo apt install libopenmpi-dev openmpi-bin -y #安装MPI
 sudo apt install clang libclang-dev
 cargo build --release --features cuda,nccl,mpi #包含MPI功能
-#或
+# 或
 cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash attention与MPI功能
+```
+
+**Mac/Metal平台构建**
+安装 [Xcode command line tools](https://mac.install.guide/commandlinetools/)
+
+构建 `metal` 特性
+```shell
+cargo build --release --features metal
 ```
 
 ### 构建/运行参数
