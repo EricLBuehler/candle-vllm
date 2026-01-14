@@ -16,7 +16,9 @@ RUN set -eux; \
     libssl-dev \
     pkg-config \
     clang \
-    libclang-dev; \
+    libclang-dev \
+    libopenmpi-dev \
+    openmpi-bin; \
   rm -rf /var/lib/apt/lists/*
 
 # Rust (stable) + optional China mirrors (SJTU for crates.io index)
