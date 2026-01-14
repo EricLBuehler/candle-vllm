@@ -1,0 +1,24 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Cargo download/cache (optional, but usually good)
+.cargo/
+**/.cargo/
+
+# Git + editor noise
+.git/
+.gitignore
+**/.DS_Store
+**/.idea/
+**/.vscode/
+
+# Python caches (optional)
+**/__pycache__/
+**/*.pyc
+
+# Logs / temp
+**/*.log
+tmp/
+/Cargo.lock
+*.lock
