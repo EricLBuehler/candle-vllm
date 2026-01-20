@@ -6,7 +6,7 @@ use crate::openai::distributed::{
     embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
-use crate::openai::models::layers::moe::{FusedMoe, FusedMoeISQ};
+use crate::openai::models::layers::moe::{FusedMoe, FusedMoeFp8, FusedMoeISQ};
 use crate::openai::models::linear::LinearX as Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::QwenMoEConfig;
@@ -119,6 +119,7 @@ impl Module for Mlp {
 enum MoeOrMlp {
     FusedMoe(FusedMoe),
     FusedMoeISQ(FusedMoeISQ),
+    FusedMoeFp8(FusedMoeFp8),
     Mlp(Mlp),
 }
 
@@ -128,6 +129,7 @@ impl MoeOrMlp {
             Self::Mlp(m) => m.forward(xs),
             Self::FusedMoe(m) => m.forward(xs, is_prefill),
             Self::FusedMoeISQ(m) => m.forward(xs, is_prefill),
+            Self::FusedMoeFp8(m) => m.forward(xs, is_prefill),
         }
     }
 }
@@ -172,7 +174,32 @@ impl DecoderLayer {
             && (moe_cfg.num_experts.unwrap_or(0) > 0
                 && (layer_idx + 1) % moe_cfg.decoder_sparse_step.unwrap_or(1) == 0)
         {
-            if cfg.quant.is_some() {
+            // Check for FP8 quantization first
+            if let Some(ref quant_cfg) = cfg.quantization_config {
+                if quant_cfg.quant_method == "fp8" {
+                    MoeOrMlp::FusedMoeFp8(FusedMoeFp8::new(
+                        cfg,
+                        vb.pp("mlp").clone(),
+                        comm.clone(),
+                        dtype,
+                        quant_cfg,
+                    )?)
+                } else if cfg.quant.is_some() {
+                    MoeOrMlp::FusedMoeISQ(FusedMoeISQ::new(
+                        cfg,
+                        vb.pp("mlp").clone(),
+                        comm.clone(),
+                        dtype,
+                    )?)
+                } else {
+                    MoeOrMlp::FusedMoe(FusedMoe::new(
+                        cfg,
+                        vb.pp("mlp").clone(),
+                        comm.clone(),
+                        dtype,
+                    )?)
+                }
+            } else if cfg.quant.is_some() {
                 MoeOrMlp::FusedMoeISQ(FusedMoeISQ::new(
                     cfg,
                     vb.pp("mlp").clone(),

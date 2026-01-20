@@ -25,6 +25,7 @@
 - 支持分块Prefilling (默认块大小8K)
 - 支持CUDA Graph
 - 支持Prefix Caching
+- 支持硬件FP8模型推理加速（SM90+, Qwen3系列，Block-wise FP8量化）
 
 ## 支持的模型
 - 目前，candle-vllm支持以下模型结构的推理服务。
@@ -73,9 +74,13 @@ cd candle-vllm
  > 方案 1 (使用docker构建)
 ```bash
 # 启用`flash-decoding`特性需要更长的编译时间
-./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding"
+./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0
+
+# 添加 `cutlass` 特性以支持fp8模型 (Qwen3系列, sm90+)，使用CUDA 13 镜像
+# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_90 13.0.0
+
 # 传 1 使用Rust 中国区镜像 (适用于中国大陆)
-# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" 1
+# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0 1
 ```
 
  > 方案 2 (手动构建)
@@ -127,12 +132,12 @@ cargo build --release --features metal
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507] [--fp8-kvcache]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507] [--fp8-kvcache]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl
+    `BUILD_PARAM`: --release --features cuda,nccl,graph
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1
 
@@ -163,6 +168,11 @@ cargo build --release --features metal
 
     ```shell
     target/release/candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+    ```
+
+    **FP8 模型** (block-wise量化, 通过增加`cutlass`特性构建)
+    ```shell
+    target/release/candle-vllm --w Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8/ --ui-server --prefix-cache
     ```
 
   </details>

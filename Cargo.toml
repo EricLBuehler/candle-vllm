@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.4.15"
+version = "0.5.0"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -45,7 +45,7 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.2.2", rev = "66ba9a4" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.3.0", rev = "1d864d8" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 lazy_static = {version = "1.4.0"}
 interprocess = "2.2.2"
@@ -74,6 +74,7 @@ local-ip-address = "0.6.5"
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "attention-rs/cuda"]
+cutlass = ["cuda", "attention-rs/cutlass"]
 metal = ["candle-core/metal", "candle-nn/metal", "dep:metal", "attention-rs/metal"]
 cudnn = ["candle-core/cudnn"]
 flash-attn = ["cuda", "attention-rs/flash-attn"]
@@ -82,3 +83,4 @@ mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl"]
 nccl = ["candle-core/nccl"]
 mpi = ["candle-core/nccl", "dep:mpi"]
 graph = ["attention-rs/graph", "candle-core/graph"]
+
