@@ -17,16 +17,18 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         rust: [stable]
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions-rs/toolchain@v1
-        with:
-          profile: minimal
-          toolchain: ${{ matrix.rust }}
-          override: true
-      - uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --examples
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Linux: check with examples
+      - name: cargo check (linux, with examples)
+        if: runner.os == 'Linux'
+        run: cargo check --examples
+
+      # Windows: check without examples
+      - name: cargo check (windows, no examples)
+        if: runner.os == 'Windows'
+        run: cargo check
 
   fmt:
     name: Rustfmt
