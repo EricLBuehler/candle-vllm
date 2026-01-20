@@ -28,7 +28,7 @@ use crate::openai::distributed::shard;
 use candle_core::quantized;
 pub use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
-use either::Either;
+
 use std::sync::Arc;
 use tracing::warn;
 #[derive(Clone, Debug)]
@@ -770,17 +770,149 @@ impl Module for QLinear {
     }
 }
 
+/// FP8 Linear layer with block-wise scales
 #[derive(Debug, Clone)]
-pub struct LinearX(pub Either<Linear, QLinear>);
+pub struct LnFp8 {
+    pub weight: Tensor,
+    pub weight_scale: Tensor,
+    pub bias: Option<Tensor>,
+    pub weight_block_size: Vec<usize>,
+}
 
-impl Module for LinearX {
+impl LnFp8 {
+    pub fn new(
+        in_dim: usize,
+        out_dim: usize,
+        vb: VarBuilder,
+        shard: Shard,
+        quant_cfg: &QuantConfig,
+    ) -> Result<Self> {
+        let block_size = quant_cfg
+            .weight_block_size
+            .clone()
+            .unwrap_or(vec![128, 128]);
+        if block_size.len() != 2 {
+            candle_core::bail!("LnFp8: weight_block_size must have 2 elements");
+        }
+
+        let weight = vb.get_with_hints_dtype((out_dim, in_dim), "weight", shard, DType::U8)?;
+
+        let by = block_size[0];
+        let bx = block_size[1];
+
+        let scale_dim0 = (out_dim + by - 1) / by;
+        let scale_dim1 = (in_dim + bx - 1) / bx;
+
+        let weight_scale = match vb.get_with_hints_dtype(
+            (scale_dim0, scale_dim1),
+            "weight_scale",
+            shard,
+            DType::F32,
+        ) {
+            Ok(s) => s,
+            Err(_) => vb
+                .get_with_hints_dtype(
+                    (scale_dim0, scale_dim1),
+                    "weight_scale_inv",
+                    shard,
+                    DType::F32,
+                )
+                .map_err(|_| {
+                    candle_core::Error::Msg(
+                        "LnFp8: Missing weight_scale or weight_scale_inv".into(),
+                    )
+                })?,
+        };
+
+        #[cfg(feature = "cutlass")]
+        let weight_scale = weight_scale.t()?.contiguous()?;
+
+        // Load bias if present
+        let bias = vb.get((out_dim,), "bias");
+        let bias = if bias.is_ok() {
+            let bs = bias.unwrap();
+            let bs = if shard.world_size > 1 {
+                let dim_size = bs.dim(0)?;
+                let start = shard.rank * (dim_size / shard.world_size);
+                bs.narrow(0, start, dim_size / shard.world_size)?
+                    .contiguous()?
+            } else {
+                bs
+            };
+            Some(bs)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            weight,
+            weight_scale,
+            bias,
+            weight_block_size: block_size,
+        })
+    }
+}
+
+impl Module for LnFp8 {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        match &self.0 {
-            Either::Left(ln) => ln.forward(x),
-            Either::Right(ln) => ln.forward(x),
+        let (b_sz, seq_len, in_dim) = match x.dims() {
+            [b, s, d] => (*b, *s, *d),
+            [b, d] => (*b, 1, *d),
+            _ => candle_core::bail!("LnFp8: Input should be 2D or 3D"),
+        };
+
+        let m = b_sz * seq_len;
+        let k = in_dim;
+
+        let x_2d = x.reshape((m, k))?;
+
+        #[cfg(feature = "cutlass")]
+        let out = attention_rs::fp8_linear::fp8_matmul_cutlass(
+            &x_2d,
+            &self.weight.t()?,
+            &self.weight_scale,
+            &self.weight_block_size,
+        )?;
+
+        #[cfg(not(feature = "cutlass"))]
+        let out = attention_rs::fp8_linear::fp8_matmul(
+            &x_2d,
+            &self.weight,
+            &self.weight_scale,
+            &self.weight_block_size,
+        )?;
+
+        let (_, out_dim) = out.dims2()?;
+        let out = if seq_len > 1 {
+            out.reshape((b_sz, seq_len, out_dim))?
+        } else {
+            out
+        };
+
+        match &self.bias {
+            None => Ok(out),
+            Some(bias) => out.broadcast_add(bias),
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub enum LinearX {
+    Linear(Linear),
+    QLinear(QLinear),
+    LnFp8(LnFp8),
+}
+
+impl Module for LinearX {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        match self {
+            LinearX::Linear(ln) => ln.forward(x),
+            LinearX::QLinear(ln) => ln.forward(x),
+            LinearX::LnFp8(ln) => ln.forward(x),
+        }
+    }
+}
+
 impl LinearX {
     pub fn new(
         weight: Tensor,
@@ -790,28 +922,31 @@ impl LinearX {
     ) -> Self {
         let ln = Linear::new(weight, bias);
         if let Some(quantized_type) = quant {
-            LinearX(Either::Right(QLinear::from_linear_x(
+            LinearX::QLinear(QLinear::from_linear_x(
                 ln,
                 quantized_type.clone(),
                 quant_config,
-            )))
+            ))
         } else {
-            LinearX(Either::Left(ln))
+            LinearX::Linear(ln)
         }
     }
 
     #[cfg(feature = "cuda")]
     pub fn offload(&mut self) -> Result<()> {
-        match &mut self.0 {
-            Either::Left(ln) => ln.offload(),
-            Either::Right(ln) => ln.offload(),
+        match self {
+            LinearX::Linear(ln) => ln.offload(),
+            LinearX::QLinear(ln) => ln.offload(),
+            LinearX::LnFp8(_) => Ok(()), // FP8 weights are already small
         }
     }
+
     #[cfg(feature = "cuda")]
     pub fn reload(&mut self) -> Result<()> {
-        match &mut self.0 {
-            Either::Left(ln) => ln.reload(),
-            Either::Right(ln) => ln.reload(),
+        match self {
+            LinearX::Linear(ln) => ln.reload(),
+            LinearX::QLinear(ln) => ln.reload(),
+            LinearX::LnFp8(_) => Ok(()), // FP8 weights are already small
         }
     }
 }
@@ -825,16 +960,24 @@ pub fn linear_x(
     quant_config: &Option<QuantConfig>,
     dtype: DType,
 ) -> Result<LinearX> {
+    // Check for FP8 quantization first
+    if let Some(cfg) = quant_config {
+        if cfg.quant_method == "fp8" {
+            let ln = LnFp8::new(in_dim, out_dim, vb, shard, cfg)?;
+            return Ok(LinearX::LnFp8(ln));
+        }
+    }
+
     if let Some(quantized_type) = quant {
         let ln = qlinear(in_dim, out_dim, vb, shard, quant_config, true, dtype)?;
-        Ok(LinearX(Either::Right(QLinear::from_linear_x(
+        Ok(LinearX::QLinear(QLinear::from_linear_x(
             ln,
             quantized_type.clone(),
             quant_config,
-        ))))
+        )))
     } else {
         let ln = linear(in_dim, out_dim, vb, shard)?;
-        Ok(LinearX(Either::Left(ln)))
+        Ok(LinearX::Linear(ln))
     }
 }
 
@@ -848,6 +991,14 @@ pub fn linear_no_bias_x(
     dtype: DType,
     merged_chunks: Option<(usize, usize)>, //(chunk_idx, num_of_chunks)
 ) -> Result<LinearX> {
+    // Check for FP8 quantization first
+    if let Some(cfg) = quant_config {
+        if cfg.quant_method == "fp8" {
+            let ln = LnFp8::new(in_dim, out_dim, vb, shards, cfg)?;
+            return Ok(LinearX::LnFp8(ln));
+        }
+    }
+
     if quant.is_some() && matches!(quant.as_ref().unwrap().as_str(), "gptq" | "awq" | "marlin") {
         let quantized_type = quant.as_ref().unwrap().clone();
         //quantized weight in k x n (shift dim in original shards)
@@ -869,11 +1020,11 @@ pub fn linear_no_bias_x(
             dtype,
         )
         .unwrap();
-        Ok(LinearX(Either::Right(QLinear::from_linear_x(
+        Ok(LinearX::QLinear(QLinear::from_linear_x(
             ln,
             quantized_type.clone(),
             quant_config,
-        ))))
+        )))
     } else {
         //weight in n x k (use original shards)
         let ws = if merged_chunks.is_some() {
@@ -894,13 +1045,13 @@ pub fn linear_no_bias_x(
         let ln = Linear::new(ws, None);
         if quant.is_some() {
             let quantized_type = quant.as_ref().unwrap().clone();
-            Ok(LinearX(Either::Right(QLinear::from_linear_x(
+            Ok(LinearX::QLinear(QLinear::from_linear_x(
                 ln,
                 quantized_type,
                 quant_config,
-            ))))
+            )))
         } else {
-            Ok(LinearX(Either::Left(ln)))
+            Ok(LinearX::Linear(ln))
         }
     }
 }

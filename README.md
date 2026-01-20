@@ -26,6 +26,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support CUDA Graph
 - Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
 - Support Prefix Caching
+- Support Block-wise FP8 Models (SM90+, Qwen3 Series)
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.
@@ -74,10 +75,14 @@ cd candle-vllm
 **CUDA Build (CUDA 11+, 12+, 13.0)**
  > Option 1 (Build with docker)
 ```bash
-# `flash-decoding` takes longer time to build
-./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding"
+# `flash-decoding` takes longer time to build (pass hardware arch and cuda version)
+./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0
+
+# +cutlass feature for optimized fp8 models (Qwen3 series, sm90+) with CUDA 13
+# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_90 13.0.0
+
 # Use Rust crate China Mirror (used in Chinese Mainland)
-# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" 1
+# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0 1
 ```
 
  > Option 2 (Manual Build)
@@ -130,12 +135,12 @@ cargo build --release --features metal
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl
+    `BUILD_PARAM`: --release --features cuda,nccl,graph
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1
 
@@ -158,18 +163,23 @@ cargo build --release --features metal
 
     **Local Path (with port, device)**
     ```shell
-    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
+    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --prefix-cache
     ```
 
     **Local Path (ISQ, +UI Server)**
     ```shell
-    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server
+    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server --prefix-cache
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    target/release/candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --ui-server
+    target/release/candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --ui-server --prefix-cache
+    ```
+
+    **FP8 Model** (block-wise quant, build with `cutlass` feature)
+    ```shell
+    target/release/candle-vllm --w Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8/ --ui-server --prefix-cache
     ```
 
   </details>

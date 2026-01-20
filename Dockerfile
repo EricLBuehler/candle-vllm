@@ -1,10 +1,17 @@
 # syntax=docker/dockerfile:1
 
-FROM docker.io/nvidia/cuda:12.9.0-cudnn-devel-ubuntu22.04
+ARG CUDA_VERSION=12.9.0
+ARG UBUNTU_VERSION=22.04
+# NEW: must be passed by build script (or defaults here)
+# - CUDA major >= 13: devel
+# - else: cudnn-devel
+ARG CUDA_FLAVOR=cudnn-devel
+
+FROM docker.io/nvidia/cuda:${CUDA_VERSION}-${CUDA_FLAVOR}-ubuntu${UBUNTU_VERSION}
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# 0=off, 1=on
+# Toggle for China mirror mode (0=off, 1=on)
 ARG CHINA_MIRROR=0
 
 # Build/runtime deps (single-stage, keep it simple)
@@ -60,7 +67,8 @@ ENV CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
 # Build (no nightly flags)
 RUN set -eux; \
   cargo build --release --features "${WITH_FEATURES}"; \
-  install -Dm755 target/release/candle-vllm /usr/local/bin/candle-vllm
+  install -Dm755 target/release/candle-vllm /usr/local/bin/candle-vllm; \
+  cargo clean
 
 # Restore libnccl.so symlink if missing
 RUN set -eux; \
