@@ -18,6 +18,13 @@ jobs:
         rust: [stable]
     steps:
       - uses: actions/checkout@v4
+
+      - name: Windows: enable git longpaths
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          git config --system core.longpaths true
+          
       - uses: dtolnay/rust-toolchain@stable
 
       # Linux: check with examples

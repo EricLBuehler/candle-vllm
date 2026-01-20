@@ -127,6 +127,9 @@ impl CustomOp1 for AllReduce {
         use candle_core::DType;
         use half::{bf16, f16};
 
+        if !l.is_contiguous() {
+            candle_core::bail!("Inputs for all_reduce must be contiguous!");
+        }
         let elem_count = l.shape().elem_count();
         let dev = s.device().clone();
         let start_offset = l.start_offset();
