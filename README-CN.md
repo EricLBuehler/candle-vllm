@@ -63,27 +63,31 @@
   </details>
 
 ## 基本用法
-### 构建Candle-vLLM
+### 安装Candle-vLLM
 **下载源代码**
 ```shell
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
 ```
-**CUDA平台构建（11+, 12+, 13.0）**
+**CUDA平台（11+, 12+, 13.0）**
 
- > 方案 1 (使用docker构建)
+ > 方案 1 (安装进docker)
 ```bash
+# 使用以下命令之一:
+
 # 启用`flash-decoding`特性需要更长的编译时间
 ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0
 
 # 添加 `cutlass` 特性以支持fp8模型 (Qwen3系列, sm90+)，使用CUDA 13 镜像
-# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_90 13.0.0
+./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_90 13.0.0
 
 # 传 1 使用Rust 中国区镜像 (适用于中国大陆)
-# ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0 1
+./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0 1
 ```
 
- > 方案 2 (手动构建)
+ > 方案 2 (手动安装)
+
+安装依赖项
 ```shell
 sudo apt update
 sudo apt install libssl-dev pkg-config curl -y
@@ -94,36 +98,41 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # 确保CUDA Toolkit在系统PATH中
 export PATH=$PATH:/usr/local/cuda/bin/
+```
 
-# 单节点（单机单卡或单机多卡）编译命令
-cargo build --release --features cuda,nccl
+适用于单节点推理
+```shell
+cargo install --features cuda,nccl --path .
 
-# 单节点（+CUDA Graph）编译命令
-cargo build --release --features cuda,nccl,graph
+# +CUDA Graph
+cargo install --features cuda,nccl,graph --path .
 
-# 单节点（+Flash attention仅用于Prefill，需要CUDA_ARCH >= 800）编译命令
-cargo build --release --features cuda,nccl,graph,flash-attn
+# +Flash attention（仅用于Prefill，需要sm_80+）
+cargo install --features cuda,nccl,graph,flash-attn --path .
 
-# 单节点（+Flash attention同时用于Prefill/Decode，适用于长上下文推理，需要CUDA_ARCH >= 800）编译命令
-cargo build --release --features cuda,nccl,graph,flash-attn,flash-decoding
+# +Flash attention (同时用于Prefill/Decode，适用于长上下文推理，需要sm_80+）
+cargo install --features cuda,nccl,graph,flash-attn,flash-decoding --path .
+```
 
-# 多节点（多机推理）编译命令
+适用于多节点推理
+```shell
 sudo apt install libopenmpi-dev openmpi-bin -y #安装MPI
 sudo apt install clang libclang-dev
-cargo build --release --features cuda,nccl,mpi #包含MPI功能
+cargo install --features cuda,nccl,mpi --path . #包含MPI功能
 # 或
-cargo build --release --features cuda,nccl,flash-attn,mpi #同时包含flash attention与MPI功能
+cargo install --features cuda,nccl,flash-attn,mpi --path . #同时包含flash attention与MPI功能
 ```
 
-**Mac/Metal平台构建**
+**Mac/Metal平台**
+
 安装 [Xcode command line tools](https://mac.install.guide/commandlinetools/)
 
-构建 `metal` 特性
+安装带有 `metal` 特性
 ```shell
-cargo build --release --features metal
+cargo install --features metal --path .
 ```
 
-### 构建/运行参数
+### 直接运行（非安装方式）
 
 - [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`CACHE CONFIG`]
   <details open>
@@ -148,7 +157,7 @@ cargo build --release --features metal
     其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)，`--mem` (`kvcache-mem-gpu`) 参数控制KV Cache缓存，长文本或批量推理量请增大缓存; `--fp8-kvcache` 参数用于启用FP8 KV Cache缓存; `--prefix-cache` 启用前缀缓存复用; `--prefix-cache-max-tokens` 限制前缀缓存大小。
   </details>
 
-## 如何运行？
+## 如何运行模型？
 
 - 运行**未压缩**模型 
   <details open>
@@ -156,23 +165,23 @@ cargo build --release --features metal
 
     **本地路径（指定端口、设备）**
     ```shell
-    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
+    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
     ```
 
     **本地路径 (ISQ量化, +UI Server)**
     ```shell
-    target/release/candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server
+    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server
     ```
 
     **模型ID（从Huggingface下载）**
 
     ```shell
-    target/release/candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+    candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
     ```
 
     **FP8 模型** (block-wise量化, 通过增加`cutlass`特性构建)
     ```shell
-    target/release/candle-vllm --w Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8/ --ui-server --prefix-cache
+    candle-vllm --w Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8/ --ui-server --prefix-cache
     ```
 
   </details>
@@ -184,13 +193,13 @@ cargo build --release --features metal
     **本地路径**
 
     ```shell
-    target/release/candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+    candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
     ```
 
     **模型ID（从Huggingface下载）**
 
     ```shell
-    target/release/candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
+    candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf
     ```
 
   </details>
@@ -202,13 +211,13 @@ cargo build --release --features metal
     **本地路径（假设模型已下载到/home）**
 
     ```shell
-    cargo run --release --features metal -- --f /home/qwq-32b-q4_k_m.gguf
+    candle-vllm -- --f /home/qwq-32b-q4_k_m.gguf
     ```
 
     **模型ID（从Huggingface下载）**
 
     ```shell
-    cargo run --release --features metal -- --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf
+    candle-vllm -- --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf
     ```
 
   </details>
@@ -220,7 +229,7 @@ cargo build --release --features metal
     **只需在运行未量化模型时添加`isq`参数**
 
     ```shell
-    target/release/candle-vllm --w /home/DeepSeek-R1-Distill-Llama-8B/ --isq q4k
+    candle-vllm --w /home/DeepSeek-R1-Distill-Llama-8B/ --isq q4k
     ```
 
     注：原位量化加载可能需要更长的加载时间，原位`isq`参数选项：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -233,19 +242,19 @@ cargo build --release --features metal
     **本地路径**
 
     ```shell
-    target/release/candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
+    candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
     ```
 
     **模型ID（从Huggingface下载）**
 
     ```shell
-    target/release/candle-vllm --m thesven/Llama-3-8B-GPTQ-4bit
+    candle-vllm --m thesven/Llama-3-8B-GPTQ-4bit
     ```
 
     **将未压缩模型转换为Marlin兼容格式**
     ```shell
     python3 examples/convert_marlin.py --src /home/DeepSeek-R1-Distill-Qwen-14B/ --dst /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
-    target/release/candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
+    candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
     ```
 
   </details>
@@ -261,7 +270,7 @@ cargo build --release --features metal
 
     **运行转换后的AWQ模型**
     ```shell
-    target/release/candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
+    candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
     ```
 
   </details>
@@ -271,7 +280,7 @@ cargo build --release --features metal
     <summary>显示命令</summary>
 
     ```shell
-    target/release/candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/
+    candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/
     ```
 
   </details>
@@ -282,7 +291,7 @@ cargo build --release --features metal
 
     **在两块GPU上运行QwQ-32B BF16模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --d 0,1 --w /home/QwQ-32B/
+    candle-vllm --d 0,1 --w /home/QwQ-32B/
     ```
 
     **在两块GPU上运行QwQ-32B 4位AWQ模型**
@@ -294,7 +303,7 @@ cargo build --release --features metal
 
     2) 运行转换后的AWQ模型
     ```shell
-    cargo run --release --features cuda,nccl -- --d 0,1 --w /home/QwQ-32B-AWQ-Marlin/
+    candle-vllm --d 0,1 --w /home/QwQ-32B-AWQ-Marlin/
     ```
 
     **注意**：使用的GPU数量（`--d`）必须为2的幂次方（例如2、4或8）。
@@ -308,7 +317,7 @@ cargo build --release --features metal
 
     **在两块GPU上运行QwQ-32B BF16模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --multithread --d 0,1 --w /home/QwQ-32B/
+    candle-vllm --multithread --d 0,1 --w /home/QwQ-32B/
     ```
 
     如果在多线程多GPU模式下遇到问题，可以尝试：
@@ -329,7 +338,7 @@ cargo build --release --features metal
 
     **2. 在8块A100（40GB）上运行DeepSeek-R1模型**
     ```shell
-    cargo run --release --features cuda,nccl -- --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ --num-experts-offload-per-rank 15
+    candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin --num-experts-offload-per-rank 15
     ```
 
     **注意**：此设置将每个rank的15个专家（总共256个专家中的120个）卸载到CPU（需要约150GB的额外主机内存）。在推理过程中，这些卸载的专家会根据需要交换回GPU内存。如果GPU内存更少，可以增加`--num-experts-offload-per-rank`参数（最大支持每个rank卸载32个专家）。
@@ -346,7 +355,7 @@ cargo build --release --features metal
     sudo apt install libopenmpi-dev openmpi-bin -y #安装MPI
     sudo apt install clang libclang-dev
     #在两个节点的相同目录下克隆仓库并构建
-    cargo build --release --features cuda,nccl,mpi #构建MPI功能
+    cargo install --features cuda,nccl,mpi #构建MPI功能
     ```
 
     **2. 将AWQ DeepSeek模型转换为Marlin兼容格式**
@@ -366,7 +375,7 @@ cargo build --release --features metal
 
     **4. 使用MPI运行器在两个节点上运行模型**
     ```shell
-    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% target/release/candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/
+    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/
     ```
   </details>
 
@@ -385,13 +394,13 @@ cargo build --release --features metal
     如果你想使用全部 GPU 进行推理，下面的 NUMA 绑定配置可以获得最佳性能：
 
     ```shell
-    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --d 0,1,2,3,4,5,6,7 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
+    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,3,4,5,6,7 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
     ```
 
     如果你只使用 4 张 GPU，可以使用如下的 NUMA 绑定方式：
     
     ```shell
-    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 cargo run --release --features cuda,nccl -- --d 0,1,2,3 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
+    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,3 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
     ```
 
     以上命令中 `numactl --cpunodebind=0 --membind=0`指定了master进程（master rank）绑定的NUMA node，其必须与 `MAP_NUMA_NODE`相匹配。
@@ -598,7 +607,7 @@ cargo build --release --features metal
     **对于未量化模型：**
 
     ```
-    cargo run --release --features cuda -- --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
+    candle-vllm --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
     ```
 
     `quant`参数选项：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -606,7 +615,7 @@ cargo build --release --features metal
     **对于4位GPTQ量化模型：**
 
     ```
-    cargo run --release --features cuda -- --w /home/mistral_7b-int4/ --isq marlin
+    candle-vllm --w /home/mistral_7b-int4/ --isq marlin
     ```
 
     **关于Marlin的注意事项**：
@@ -632,7 +641,7 @@ cargo build --release --features metal
     你可以传递`frequency-penalty`、`presence-penalty`和`temperature`参数给模型以**防止潜在的重复**，例如：
 
     ```
-    cargo run --release --features cuda -- --w /home/mistral_7b/
+    candle-vllm --w /home/mistral_7b/
     ```
 
     `--max-gen-tokens`参数用于控制每次聊天响应的最大输出令牌数。默认值将设置为`max_sequence_len`的1/5。
@@ -640,7 +649,7 @@ cargo build --release --features metal
     对于`消费级GPU`，建议以GGML格式（或Marlin格式）运行模型，例如：
 
     ```
-    cargo run --release --features cuda -- --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
+    candle-vllm --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
     ```
 
     其中`isq`可选值为：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"]。
@@ -653,13 +662,13 @@ cargo build --release --features metal
     Candle-vllm现在支持GPTQ/AWQ（Marlin内核），如果你有`Marlin`格式的量化权重，可以传递`quant`（marlin）参数，例如：
 
     ```shell
-    cargo run --release --features cuda -- --w /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/
+    candle-vllm --w /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/
     ```
 
     或者，将现有的AWQ 4位模型转换为Marlin兼容格式：
     ```shell
     python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-    cargo run --release --features cuda,nccl -- --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
+    candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
     ```
 
     你也可以使用`GPTQModel`通过脚本`examples/convert_marlin.py`将模型转换为Marlin兼容格式。
