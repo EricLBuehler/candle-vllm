@@ -159,6 +159,11 @@ cargo install --features metal --path .
 
 ## 如何运行模型？
 
+- **注意:** 通过Docker安装后需执行以下命令进入candle-vllm Docker:
+```shell
+docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data candle-vllm:latest bash
+```
+
 - 运行**未压缩**模型 
   <details open>
     <summary>显示命令</summary>

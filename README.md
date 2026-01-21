@@ -166,6 +166,12 @@ cargo install --features metal --path .
 
 ## How to serve models?
 
+- **Note:** for docker build, execute the following command to enter docker:
+
+```shell
+docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data candle-vllm:latest bash
+```
+
 - Run **Uncompressed** models 
   <details open>
     <summary>Show command</summary>
