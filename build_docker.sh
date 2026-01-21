@@ -6,13 +6,13 @@ set -euo pipefail
 #   2: SM_ARG          (default: sm_80)  accepts sm_XX, XX, or comma list sm_80,sm_86
 #   3: CUDA_VERSION    (default: 12.9.0) accepts X.Y.Z, X.Y, or shorthand like 129/124
 #   4: CHINA_MIRROR    (default: 0)      0=off, 1=on
-#   5: IMAGE_TAG       (default: vllm-rs:latest)
+#   5: IMAGE_TAG       (default: candle-vllm:latest)
 
 WITH_FEATURES="${1:-cuda,nccl,graph,flash-attn,flash-decoding}"
 SM_ARG="${2:-sm_80}"
 CUDA_VERSION_ARG="${3:-12.9.0}"
 CHINA_MIRROR="${4:-0}"
-IMAGE_TAG="${5:-vllm-rs:latest}"
+IMAGE_TAG="${5:-candle-vllm:latest}"
 
 # Optional environment override (kept as env rather than positional to avoid breaking callers)
 UBUNTU_VERSION="${UBUNTU_VERSION:-22.04}"
@@ -131,18 +131,17 @@ Binary available in the image:
 
 Examples:
 
-1) Show help:
-   docker run --rm --gpus all ${IMAGE_TAG} candle-vllm --help
+1) Candle-vLLM Help:
+   docker run --rm -it --gpus all --network host ${IMAGE_TAG} candle-vllm --help
 
-2) Serving model:
-   # Start the docker
-   docker run --rm -it --gpus all -v /home:/home -p 2000:2000 -p 1999:1999 ${IMAGE_TAG} bash
-   # Run the server (choose local access, API server: http://host_ip:2000/v1)
-   candle-vllm --m Qwen/Qwen3-0.6B --p 2000
+2) Run API server (make sure `--network host`):
+   docker run --rm -it --gpus all --network host ${IMAGE_TAG} candle-vllm --m Qwen/Qwen3-0.6B
 
-3) Run interactively:
-   docker run --rm -it --gpus all ${IMAGE_TAG} bash
-
+3) Run UI + API Server:
+    a) Run interactively:
+      docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data ${IMAGE_TAG} bash
+    b) Start the UI + API server
+      candle-vllm --w /home/path/Qwen3-Coder-30B-A3B-Instruct-FP8 --ui-server
 ============================================================
 
 EOF
