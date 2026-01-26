@@ -93,7 +93,7 @@ Install dependencies
 ```shell
 sudo apt update
 # Install CUDA toolkit (optional)
-sudo apt install libssl-dev pkg-config curl -y
+sudo apt install git libssl-dev pkg-config curl -y
 sudo apt install -y cuda-toolkit-12-9
 # Install rust, 1.83.0+ required
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh

@@ -20,6 +20,7 @@ RUN set -eux; \
   apt-get install -y --no-install-recommends --allow-change-held-packages \
     ca-certificates \
     curl \
+    git \
     libssl-dev \
     pkg-config \
     clang \
