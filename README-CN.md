@@ -116,7 +116,7 @@ cargo install --features cuda,nccl,graph,flash-attn,flash-decoding --path .
 
 适用于多节点推理
 ```shell
-sudo apt install libopenmpi-dev openmpi-bin -y #安装MPI
+sudo apt install git libopenmpi-dev openmpi-bin -y #安装MPI
 sudo apt install clang libclang-dev
 cargo install --features cuda,nccl,mpi --path . #包含MPI功能
 # 或
