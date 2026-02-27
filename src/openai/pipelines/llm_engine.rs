@@ -375,11 +375,17 @@ impl LLMEngine {
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
         prefill_chunk_size: Option<usize>,
     ) -> Result<Arc<RwLock<Self>>> {
-        let mamba_slot_capacity = scheduler_config.max_num_seqs.max(16);
+        const MIN_MAMBA_SLOT_CAPACITY: usize = 16;
+        const MIN_MAMBA_PREFIX_CACHE_CAPACITY: usize = 16;
+
+        let mamba_slot_capacity = scheduler_config.max_num_seqs.max(MIN_MAMBA_SLOT_CAPACITY);
         let mamba_prefix_capacity = if scheduler_config.prefix_cache.enabled {
-            scheduler_config.prefix_cache.max_cached_blocks.max(16)
+            scheduler_config
+                .prefix_cache
+                .max_cached_blocks
+                .max(MIN_MAMBA_PREFIX_CACHE_CAPACITY)
         } else {
-            16
+            MIN_MAMBA_PREFIX_CACHE_CAPACITY
         };
         for (pipeline, _) in pipelines.values_mut() {
             pipeline.preallocate_mamba_cache(mamba_slot_capacity)?;
