@@ -407,7 +407,7 @@ impl FusedMoeISQ {
             candle::bail!("num_experts must be > 0")
         }
 
-        let mut quant_type = match cfg.quant.as_ref().unwrap().as_str() {
+        let mut quant_type = match cfg.isq_quant.as_ref().unwrap().as_str() {
             "q40" | "q4_0" => GgmlDType::Q4_0,
             "q4" | "q41" | "q4_1" => GgmlDType::Q4_1,
             "q50" | "q5_0" => GgmlDType::Q5_0,

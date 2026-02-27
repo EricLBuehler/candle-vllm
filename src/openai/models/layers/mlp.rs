@@ -23,7 +23,7 @@ impl Mlp {
             false,
             vb.pp("gate_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let up_proj = TensorParallelColumnLinear::load_with_hints(
@@ -32,7 +32,7 @@ impl Mlp {
             false,
             vb.pp("up_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let down_proj = TensorParallelRowLinear::load_with_hints(
@@ -41,7 +41,7 @@ impl Mlp {
             false,
             vb.pp("down_proj"),
             comm,
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         Ok(Self {

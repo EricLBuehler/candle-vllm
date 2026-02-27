@@ -58,18 +58,11 @@ impl Mistral {
                 .unwrap_or(config.num_attention_heads),
         );
         config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
-        if config.quantization_config.is_some() {
-            config.quant = Some(
-                config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            );
-        } else if isq.is_some() {
-            config.quant = Some(isq.unwrap().to_string());
-        }
+        config.isq_quant = if config.quantization_config.is_some() {
+            None
+        } else {
+            isq
+        };
         Ok(config)
     }
 
@@ -92,19 +85,9 @@ impl Mistral {
             .unwrap_or(super::TokenID(Either::Left(Some(2))));
 
         let quant = if config.text_config.quantization_config.is_some() {
-            Some(
-                config
-                    .text_config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            )
-        } else if isq.is_some() {
-            Some(isq.unwrap().to_string())
-        } else {
             None
+        } else {
+            isq
         };
 
         let config = Config {
@@ -139,7 +122,7 @@ impl Mistral {
             final_logit_softcapping: None,
             quantization_config: config.text_config.quantization_config.clone(),
             moe_config: None,
-            quant,
+            isq_quant: quant,
             fp8_kvcache: None,
             extra_config_json: None,
         };

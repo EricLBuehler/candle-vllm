@@ -108,7 +108,7 @@ impl GGUFGLM4 {
             final_logit_softcapping: None,
             quantization_config: None,
             moe_config: None,
-            quant: Some("gguf".to_string()),
+            isq_quant: None,
             fp8_kvcache: Some(kv_cache_dtype == DType::U8),
             extra_config_json: None,
         }

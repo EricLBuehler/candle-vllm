@@ -171,7 +171,7 @@ impl GGUFQWenMoE {
             final_logit_softcapping: None,
             quantization_config: None,
             moe_config: Some(MoEConfig::QwenMoE(moe_cfg.clone())),
-            quant: Some("gguf".to_string()),
+            isq_quant: None,
             fp8_kvcache: Some(kv_cache_dtype == DType::U8),
             extra_config_json: None,
         }

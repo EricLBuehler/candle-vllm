@@ -41,18 +41,11 @@ impl Qwen3_5 {
                 .or(config.attention_bias)
                 .unwrap_or(false),
         );
-        if config.quantization_config.is_some() {
-            config.quant = Some(
-                config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            );
-        } else if let Some(isq) = isq {
-            config.quant = Some(isq);
-        }
+        config.isq_quant = if config.quantization_config.is_some() {
+            None
+        } else {
+            isq
+        };
         Ok(config)
     }
 }
@@ -244,8 +237,8 @@ impl Qwen3_5 {
             } else {
                 vb.pp("lm_head")
             },
-            &cfg.quant,
-            &cfg.quantization_config,
+            &None,
+            &None,
         )?;
 
         let world_size = comm.world_size();

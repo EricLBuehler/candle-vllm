@@ -68,7 +68,7 @@ impl GatedDeltaNet {
         is_fp8_quant: bool,
     ) -> Result<GdnProjection> {
         let (quantization_config, quant) = if is_fp8_quant {
-            (config.quantization_config.clone(), config.quant.clone())
+            (config.quantization_config.clone(), config.isq_quant.clone())
         } else {
             (None, None)
         };
@@ -387,7 +387,11 @@ impl GatedDeltaNet {
             false,
             vb.pp("out_proj"),
             comm.clone(),
-            if is_fp8_quant { &config.quant } else { &None },
+            if is_fp8_quant {
+                &config.isq_quant
+            } else {
+                &None
+            },
             if is_fp8_quant {
                 &config.quantization_config
             } else {

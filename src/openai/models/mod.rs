@@ -235,7 +235,7 @@ pub struct Config {
     pub final_logit_softcapping: Option<f64>,
     pub moe_config: Option<MoEConfig>,
     pub quantization_config: Option<QuantConfig>,
-    pub quant: Option<String>,
+    pub isq_quant: Option<String>,
     pub fp8_kvcache: Option<bool>,
     pub extra_config_json: Option<String>,
 }

@@ -76,7 +76,7 @@ impl Attention {
             attention_bias,
             vb.pp("q_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let k_proj = TensorParallelColumnLinear::load_with_hints(
@@ -85,23 +85,23 @@ impl Attention {
             attention_bias,
             vb.pp("k_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         //v_proj requires higher precision
         let q8_0_quant = Some("q8_0".to_string());
         let v_proj_quant = if cfg.quantization_config.is_some() {
             // FP8/GPTQ/AWQ/Marlin paths are handled by quantization_config; do not override.
-            &cfg.quant
-        } else if cfg.quant.is_some()
+            &cfg.isq_quant
+        } else if cfg.isq_quant.is_some()
             && !matches!(
-                cfg.quant.as_ref().unwrap().as_str(),
+                cfg.isq_quant.as_ref().unwrap().as_str(),
                 "gptq" | "awq" | "marlin"
             )
         {
             &q8_0_quant
         } else {
-            &cfg.quant
+            &cfg.isq_quant
         };
         let v_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
@@ -119,7 +119,7 @@ impl Attention {
             false,
             vb.pp("o_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
 

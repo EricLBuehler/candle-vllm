@@ -29,18 +29,11 @@ impl Phi2 {
                 .unwrap_or(config.num_attention_heads),
         );
         config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
-        if config.quantization_config.is_some() {
-            config.quant = Some(
-                config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            );
-        } else if isq.is_some() {
-            config.quant = Some(isq.unwrap().to_string());
-        }
+        config.isq_quant = if config.quantization_config.is_some() {
+            None
+        } else {
+            isq
+        };
         Ok(config)
     }
 }
@@ -59,7 +52,7 @@ impl Mlp {
             false,
             vb.pp("gate_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let fc2 = TensorParallelRowLinear::load_with_hints(
@@ -68,7 +61,7 @@ impl Mlp {
             false,
             vb.pp("down_proj"),
             comm,
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         Ok(Self {
@@ -118,7 +111,7 @@ impl Attention {
             false,
             vb.pp("q_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let k_proj = TensorParallelColumnLinear::load_with_hints(
@@ -127,7 +120,7 @@ impl Attention {
             false,
             vb.pp("k_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let v_proj = TensorParallelColumnLinear::load_with_hints(
@@ -136,7 +129,7 @@ impl Attention {
             false,
             vb.pp("v_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
 
@@ -146,7 +139,7 @@ impl Attention {
             false,
             vb.pp("o_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let (q_layernorm, k_layernorm) = if cfg.qk_layernorm {

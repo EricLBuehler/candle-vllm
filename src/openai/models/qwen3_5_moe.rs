@@ -47,18 +47,11 @@ impl Qwen3_5MoE {
                 .unwrap_or(false),
         );
 
-        if config.quantization_config.is_some() {
-            config.quant = Some(
-                config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            );
-        } else if let Some(isq) = isq {
-            config.quant = Some(isq);
-        }
+        config.isq_quant = if config.quantization_config.is_some() {
+            None
+        } else {
+            isq
+        };
 
         if config.moe_config.is_none() {
             let f = std::fs::read(filename).map_err(candle::Error::wrap)?;
@@ -125,7 +118,7 @@ impl Mlp {
             false,
             vb.pp("gate_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let up_proj = TensorParallelColumnLinear::load_with_hints(
@@ -134,7 +127,7 @@ impl Mlp {
             false,
             vb.pp("up_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let down_proj = TensorParallelRowLinear::load_with_hints(
@@ -143,7 +136,7 @@ impl Mlp {
             false,
             vb.pp("down_proj"),
             comm,
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         Ok(Self {
@@ -247,7 +240,7 @@ impl DecoderLayer {
             } else {
                 candle_core::bail!("Missing quantization_config for fp8 model!")
             }
-        } else if cfg.quant.is_some() {
+        } else if cfg.isq_quant.is_some() {
             MoeOrMlp::FusedMoeISQ(FusedMoeISQ::new(
                 cfg,
                 vb.pp("mlp").clone(),
@@ -285,7 +278,7 @@ impl DecoderLayer {
                         (1, cfg.hidden_size),
                         "weight",
                         Default::default(),
-                        if cfg.quant.is_some() && !is_fp8_model {
+                        if cfg.isq_quant.is_some() && !is_fp8_model {
                             DType::F32
                         } else {
                             dtype
@@ -458,8 +451,8 @@ impl Qwen3_5MoE {
             } else {
                 vb.pp("lm_head")
             },
-            &cfg.quant,
-            &cfg.quantization_config,
+            &None,
+            &None,
         )?;
 
         let world_size = comm.world_size();

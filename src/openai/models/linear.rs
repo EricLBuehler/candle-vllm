@@ -1198,6 +1198,14 @@ pub fn linear_x(
             let ln = load_ln_fp8_with_hints(in_dim, out_dim, vb, shard, cfg, true)?;
             return Ok(LinearX::LnFp8(ln));
         }
+        if matches!(cfg.quant_method.as_str(), "gptq" | "awq" | "marlin") {
+            let ln = qlinear(in_dim, out_dim, vb, shard, &quant_config_local, true, dtype)?;
+            return Ok(LinearX::QLinear(QLinear::from_linear_x(
+                ln,
+                cfg.quant_method.clone(),
+                &quant_config_local,
+            )));
+        }
     }
 
     if let Some(quantized_type) = &quant_local {
@@ -1272,6 +1280,30 @@ pub fn linear_no_bias_x(
             }
             let ln = load_ln_fp8_with_hints(in_dim, out_dim, vb, shards, cfg, false)?;
             return Ok(LinearX::LnFp8(ln));
+        }
+        if matches!(cfg.quant_method.as_str(), "gptq" | "awq" | "marlin") {
+            let ln = qlinear(
+                in_dim,
+                out_dim,
+                vb,
+                shard(
+                    if shards.world_size < 2 || shards.dim == 1 {
+                        0
+                    } else {
+                        1
+                    },
+                    shards.rank,
+                    shards.world_size,
+                ),
+                &quant_config_local,
+                false,
+                dtype,
+            )?;
+            return Ok(LinearX::QLinear(QLinear::from_linear_x(
+                ln,
+                cfg.quant_method.clone(),
+                &quant_config_local,
+            )));
         }
     }
 
