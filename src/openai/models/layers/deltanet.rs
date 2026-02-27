@@ -67,7 +67,7 @@ impl GatedDeltaNet {
         dtype: DType,
         is_fp8_quant: bool,
     ) -> Result<GdnProjection> {
-        let (quantization_config, quant) = if is_fp8_quant {
+        let (quantization_config, _quant) = if is_fp8_quant {
             (config.quantization_config.clone(), config.isq_quant.clone())
         } else {
             (None, None)
@@ -81,7 +81,7 @@ impl GatedDeltaNet {
             false,
             vb.pp("in_proj_qkvz"),
             comm.clone(),
-            &quant,
+            &None,
             &quantization_config,
         );
 
@@ -110,7 +110,7 @@ impl GatedDeltaNet {
             false,
             vb.pp("in_proj_z"),
             comm.clone(),
-            &quant,
+            &None,
             &quantization_config,
         );
 
@@ -145,7 +145,7 @@ impl GatedDeltaNet {
                     vb.pp("in_proj_qkv"),
                     comm.clone(),
                     &quantization_config,
-                    &quant,
+                    &None,
                     dtype,
                 );
 
@@ -166,7 +166,7 @@ impl GatedDeltaNet {
                 false,
                 vb.pp("in_proj_qkv"),
                 comm.clone(),
-                &quant,
+                &None,
                 &quantization_config,
             );
 
@@ -387,11 +387,7 @@ impl GatedDeltaNet {
             false,
             vb.pp("out_proj"),
             comm.clone(),
-            if is_fp8_quant {
-                &config.isq_quant
-            } else {
-                &None
-            },
+            &None,
             if is_fp8_quant {
                 &config.quantization_config
             } else {

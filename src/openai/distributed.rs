@@ -254,16 +254,38 @@ impl TensorParallelColumnLinear {
         Ok(Self { linear, bias: bs })
     }
 
-    // pub fn load_multi(vb: VarBuilder, prefixes: &[&str], comm: Rc<Comm>) -> Result<Self> {
-    //     let rank = comm.rank();
-    //     let size = comm.world_size();
-    //     let weights: Vec<_> = prefixes
-    //         .iter()
-    //         .map(|p| vb.pp(p).get_with_hints((), "weight", shard(0, rank, size)))
-    //         .collect::<Result<Vec<_>>>()?;
-    //     let weight = Tensor::cat(&weights, 0)?.contiguous()?;
-    //     Ok(Self::new(Linear::new(weight, None)))
-    // }
+    pub fn load_with_shard(
+        in_dim: usize,
+        out_dim: usize,
+        bias: bool,
+        vb: VarBuilder,
+        shard: Shard,
+        quant: &Option<String>,
+        quant_config: &Option<QuantConfig>,
+    ) -> Result<Self> {
+        let dtype = vb.dtype();
+        let bs = if bias {
+            let full_bias = vb.get((out_dim,), "bias");
+            if full_bias.is_ok() {
+                if shard.world_size > 1 {
+                    let out_dim_partition = out_dim / shard.world_size;
+                    let full_bias = full_bias
+                        .unwrap()
+                        .narrow(0, shard.rank * out_dim_partition, out_dim_partition)?
+                        .contiguous()?;
+                    Some(full_bias)
+                } else {
+                    Some(vb.get((out_dim,), "bias")?)
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let linear = linear(in_dim, out_dim, vb, shard, quant, quant_config, dtype, None)?;
+        Ok(Self { linear, bias: bs })
+    }
 }
 
 impl MergedParallelColumnLinear {

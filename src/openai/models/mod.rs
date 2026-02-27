@@ -272,6 +272,10 @@ impl Config {
         match std::fs::read(filename.clone()) {
             Ok(f) => {
                 let raw = String::from_utf8(f.clone()).map_err(candle_core::Error::wrap)?;
+                let top_level_quant_config = serde_json::from_slice::<serde_json::Value>(&f)
+                    .ok()
+                    .and_then(|root| root.get("quantization_config").cloned())
+                    .and_then(|v| serde_json::from_value::<QuantConfig>(v).ok());
                 let mut config: Config =
                     if let Ok(mm_cfg) = serde_json::from_slice::<MultiModalArchConfig>(&f) {
                         if mm_cfg.text_config.is_some() && mm_cfg.vision_config.is_some() {
@@ -279,6 +283,11 @@ impl Config {
                                 serde_json::from_value(mm_cfg.text_config.clone().unwrap())
                                     .map_err(candle_core::Error::wrap)?;
                             cfg.architectures = mm_cfg.architectures.clone().or(cfg.architectures);
+                            // For multimodal configs, quantization_config (including modules_to_not_convert)
+                            // is usually defined at top level rather than under text_config.
+                            if let Some(qcfg) = top_level_quant_config.clone() {
+                                cfg.quantization_config = Some(qcfg);
+                            }
                             cfg
                         } else {
                             match serde_json::from_slice::<Config>(&f) {
@@ -289,6 +298,9 @@ impl Config {
                                             .map_err(candle_core::Error::wrap)?;
                                         cfg.architectures =
                                             mm_cfg.architectures.clone().or(cfg.architectures);
+                                        if let Some(qcfg) = top_level_quant_config.clone() {
+                                            cfg.quantization_config = Some(qcfg);
+                                        }
                                         cfg
                                     } else {
                                         return Err(candle_core::Error::wrap(root_err));
