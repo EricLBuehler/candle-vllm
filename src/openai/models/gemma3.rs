@@ -144,19 +144,9 @@ impl Gemma3 {
         };
 
         let quant = if config.text_config.quantization_config.is_some() {
-            Some(
-                config
-                    .text_config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            )
-        } else if isq.is_some() {
-            Some(isq.unwrap().to_string())
-        } else {
             None
+        } else {
+            isq
         };
 
         let config = Config {
@@ -191,8 +181,9 @@ impl Gemma3 {
             final_logit_softcapping: config.text_config.final_logit_softcapping,
             quantization_config: config.text_config.quantization_config.clone(),
             moe_config: None,
-            quant,
+            isq_quant: quant,
             fp8_kvcache: None,
+            extra_config_json: None,
         };
         Ok(config)
     }

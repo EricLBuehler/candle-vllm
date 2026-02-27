@@ -35,18 +35,11 @@ impl GLM4 {
                 .bos_token_id
                 .unwrap_or(super::TokenID(either::Either::Left(Some(128256)))),
         );
-        if config.quantization_config.is_some() {
-            config.quant = Some(
-                config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            );
-        } else if isq.is_some() {
-            config.quant = Some(isq.unwrap().to_string());
-        }
+        config.isq_quant = if config.quantization_config.is_some() {
+            None
+        } else {
+            isq
+        };
         Ok(config)
     }
 }
@@ -66,7 +59,7 @@ impl MLP {
             2,
             vb.pp("gate_up_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
 
@@ -76,7 +69,7 @@ impl MLP {
             false,
             vb.pp("down_proj"),
             comm,
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
 

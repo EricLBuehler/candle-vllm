@@ -48,9 +48,9 @@ impl LogicalTokenBlock {
 #[derive(Hash, PartialEq, Eq)]
 pub struct _PhysicalTokenBlock {
     pub block_id: usize,
-    block_size: usize,
+    pub(crate) block_size: usize,
     pub refcount: usize,
-    is_gpu: bool,
+    pub(crate) is_gpu: bool,
 }
 
 pub struct PhysicalTokenBlock(pub Mutex<_PhysicalTokenBlock>);
@@ -364,8 +364,99 @@ impl BlockEngine {
         }
     }
 
+    pub fn evict_prefix_cache_until_free(&mut self, min_free_blocks: usize) -> usize {
+        let mut total_evicted = 0;
+        loop {
+            if *self.gpu_allocator.get_num_free_blocks() >= min_free_blocks {
+                break;
+            }
+            let evicted = {
+                let Some(prefix_cache) = self.prefix_cache.as_mut() else {
+                    break;
+                };
+                prefix_cache.evict_blocks(1)
+            };
+            if evicted.is_empty() {
+                break;
+            }
+            total_evicted += evicted.len();
+            for block in evicted {
+                self.release_block(block);
+            }
+        }
+        total_evicted
+    }
+
     pub fn prefix_cache_enabled(&self) -> bool {
         self.prefix_cache.is_some()
+    }
+
+    pub fn prefix_hash_for_sequence(
+        &self,
+        sequence: &Sequence,
+        processed_tokens: usize,
+    ) -> Option<u64> {
+        let prefix_cache = self.prefix_cache.as_ref()?;
+        if !prefix_cache.enabled() {
+            return None;
+        }
+        let tokens = sequence.deref().get_token_ids();
+        let full_blocks = processed_tokens.min(tokens.len()) / self.block_size;
+        if full_blocks == 0 {
+            return None;
+        }
+        prefix_cache.hash_for_blocks(&tokens, full_blocks)
+    }
+
+    /// Rebuild a running sequence block table without shared prefix-cache blocks.
+    /// Returns false when insufficient free GPU blocks are available for full reallocation.
+    pub fn fallback_sequence_to_full_prefill(&mut self, sequence: &Sequence) -> bool {
+        let seq_id = sequence.deref().get_id();
+        let logical_blocks = sequence.deref().get_logical_token_blocks();
+
+        let Some(old_table) = self.block_tables.remove(&seq_id) else {
+            return false;
+        };
+
+        for block in &old_table {
+            self.release_block(block.clone());
+        }
+
+        if *self.gpu_allocator.get_num_free_blocks() < logical_blocks {
+            let _ = self.evict_prefix_cache_until_free(logical_blocks);
+        }
+
+        if *self.gpu_allocator.get_num_free_blocks() < logical_blocks {
+            for block in &old_table {
+                let (was_zero, is_gpu) = {
+                    let mut inner = block.deref_mut();
+                    let was_zero = inner.refcount == 0;
+                    inner.refcount += 1;
+                    (was_zero, inner.is_gpu)
+                };
+                if was_zero {
+                    if is_gpu {
+                        self.gpu_allocator
+                            .free_blocks
+                            .retain(|candidate| !Arc::ptr_eq(candidate, block));
+                    } else {
+                        self.cpu_allocator
+                            .free_blocks
+                            .retain(|candidate| !Arc::ptr_eq(candidate, block));
+                    }
+                }
+            }
+            self.block_tables.insert(seq_id, old_table);
+            return false;
+        }
+
+        let mut new_table = VecDeque::with_capacity(logical_blocks);
+        for _ in 0..logical_blocks {
+            new_table.push_back(self.gpu_allocator.allocate());
+        }
+        self.block_tables.insert(seq_id, new_table);
+        sequence.deref_mut().set_num_cached_tokens(0);
+        true
     }
 
     pub fn can_swap_out_seq_group(&self, seq_group: &SequenceGroup) -> bool {

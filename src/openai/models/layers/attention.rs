@@ -1,6 +1,6 @@
 use super::rotary_emb::ScalingRotaryEmbedding;
 use crate::openai::distributed::{
-    rms_norm_with_dtype, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
+    rms_norm_x, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::Config;
@@ -26,6 +26,8 @@ pub struct Attention {
     attn: PagedAttention,
     softcapping: Option<f64>,
     dtype: DType,
+    attn_output_gate: bool,
+    no_per_head_norm: bool,
 }
 
 impl Attention {
@@ -40,15 +42,41 @@ impl Attention {
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads.unwrap();
         let head_dim = cfg.head_dim.unwrap_or(hidden_sz / num_heads);
-        let attention_bias = cfg.attention_bias.unwrap_or(false);
+        let arch = cfg
+            .architectures
+            .as_ref()
+            .and_then(|a| a.first())
+            .cloned()
+            .unwrap_or_default();
+        let is_gemma = matches!(
+            arch.as_str(),
+            "Gemma3ForConditionalGeneration" | "Gemma3ForCausalLM"
+        );
+        let is_qwen35_or_next = matches!(
+            arch.as_str(),
+            "Qwen3_5ForCausalLM"
+                | "Qwen3_5ForConditionalGeneration"
+                | "Qwen3_5MoeForCausalLM"
+                | "Qwen3_5MoeForConditionalGeneration"
+                | "Qwen3NextForCausalLM"
+                | "Qwen3NextForConditionalGeneration"
+        );
+        // Qwen3.5/Qwen3-Next and Gemma q/k norms use Gemma-style +1 weight semantics.
+        let qk_norm_add_one = is_gemma || is_qwen35_or_next;
+        let attention_bias = if is_qwen35_or_next {
+            cfg.use_qkv_bias.or(cfg.attention_bias).unwrap_or(false)
+        } else {
+            cfg.attention_bias.unwrap_or(false)
+        };
+        let attn_output_gate = is_qwen35_or_next;
 
         let q_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
-            num_heads * head_dim,
+            num_heads * head_dim * if attn_output_gate { 2 } else { 1 },
             attention_bias,
             vb.pp("q_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         let k_proj = TensorParallelColumnLinear::load_with_hints(
@@ -57,27 +85,31 @@ impl Attention {
             attention_bias,
             vb.pp("k_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
         //v_proj requires higher precision
         let q8_0_quant = Some("q8_0".to_string());
+        let v_proj_quant = if cfg.quantization_config.is_some() {
+            // FP8/GPTQ/AWQ/Marlin paths are handled by quantization_config; do not override.
+            &cfg.isq_quant
+        } else if cfg.isq_quant.is_some()
+            && !matches!(
+                cfg.isq_quant.as_ref().unwrap().as_str(),
+                "gptq" | "awq" | "marlin"
+            )
+        {
+            &q8_0_quant
+        } else {
+            &cfg.isq_quant
+        };
         let v_proj = TensorParallelColumnLinear::load_with_hints(
             hidden_sz,
             num_kv_heads * head_dim,
             attention_bias,
             vb.pp("v_proj"),
             comm.clone(),
-            if cfg.quant.is_some()
-                && !matches!(
-                    cfg.quant.as_ref().unwrap().as_str(),
-                    "gptq" | "awq" | "marlin"
-                )
-            {
-                &q8_0_quant
-            } else {
-                &cfg.quant
-            },
+            v_proj_quant,
             &cfg.quantization_config,
         )?;
 
@@ -87,15 +119,27 @@ impl Attention {
             false,
             vb.pp("o_proj"),
             comm.clone(),
-            &cfg.quant,
+            &cfg.isq_quant,
             &cfg.quantization_config,
         )?;
 
         //we use higher precision for q/k norm
-        let q_norm =
-            rms_norm_with_dtype(head_dim, cfg.rms_norm_eps, vb.pp("q_norm"), DType::F32).ok();
-        let k_norm =
-            rms_norm_with_dtype(head_dim, cfg.rms_norm_eps, vb.pp("k_norm"), DType::F32).ok();
+        let q_norm = rms_norm_x(
+            head_dim,
+            cfg.rms_norm_eps,
+            vb.pp("q_norm"),
+            DType::F32,
+            qk_norm_add_one,
+        )
+        .ok();
+        let k_norm = rms_norm_x(
+            head_dim,
+            cfg.rms_norm_eps,
+            vb.pp("k_norm"),
+            DType::F32,
+            qk_norm_add_one,
+        )
+        .ok();
 
         assert!(cfg.num_attention_heads >= comm.world_size());
         assert!(cfg.num_attention_heads % comm.world_size() == 0);
@@ -128,6 +172,8 @@ impl Attention {
             )?,
             softcapping: cfg.attn_logit_softcapping,
             dtype: vb.dtype(),
+            attn_output_gate,
+            no_per_head_norm: is_qwen35_or_next,
         })
     }
 
@@ -145,6 +191,27 @@ impl Attention {
         let key_states = self.k_proj.forward(xs)?;
         let value_states = self.v_proj.forward(xs)?;
 
+        let local_q_dim = self.num_heads * self.head_dim;
+        let (query_states, q_gate) = if self.attn_output_gate {
+            let q_dim = query_states.dim(1)?;
+            if q_dim != local_q_dim * 2 {
+                candle_core::bail!(
+                    "q_proj output dim mismatch for gated attention, expected {}, got {}",
+                    local_q_dim * 2,
+                    q_dim
+                );
+            }
+            let q_gate = query_states.reshape((seq_len, self.num_heads, self.head_dim * 2))?;
+            let q = q_gate.narrow(2, 0, self.head_dim)?;
+            let gate = q_gate.narrow(2, self.head_dim, self.head_dim)?;
+            (
+                q.reshape((seq_len, local_q_dim))?,
+                Some(gate.reshape((seq_len, local_q_dim))?),
+            )
+        } else {
+            (query_states, None)
+        };
+
         let q = query_states
             .reshape((1, seq_len, self.num_heads, self.head_dim))?
             .transpose(1, 2)?
@@ -158,6 +225,8 @@ impl Attention {
             .transpose(1, 2)?
             .contiguous()?;
 
+        // Q/K norm weights are loaded in F32 for Qwen3.5/Next; cast activations
+        // to keep CUDA RMSNorm dtype-consistent.
         let (q, k) = if q.dtype() != DType::F32 {
             (q.to_dtype(DType::F32)?, k.to_dtype(DType::F32)?)
         } else {
@@ -166,23 +235,33 @@ impl Attention {
 
         let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
             // Per‑head RMSNorm in qwen3
-            let q_flat = q.flatten(0, 2)?; // (B*H, L, D) -> (BHL, D) after transpose later
-            let k_flat = k.flatten(0, 2)?;
+            if self.no_per_head_norm {
+                let q = q_norm.forward(&q)?;
+                let k = k_norm.forward(&k)?;
+                (q, k)
+            } else {
+                let q_flat = q.flatten(0, 2)?;
+                let k_flat = k.flatten(0, 2)?;
 
-            // q_norm and k_norm weights stored in f32 format in qwen3 gguf
-            let q_flat = q_norm.forward(&q_flat)?;
-            let k_flat = k_norm.forward(&k_flat)?;
+                let q_flat = q_norm.forward(&q_flat)?;
+                let k_flat = k_norm.forward(&k_flat)?;
 
-            let q = q_flat.reshape((1, self.num_heads, seq_len, self.head_dim))?;
-            let k = k_flat.reshape((1, self.num_kv_heads, seq_len, self.head_dim))?;
+                let q = q_flat.reshape((1, self.num_heads, seq_len, self.head_dim))?;
+                let k = k_flat.reshape((1, self.num_kv_heads, seq_len, self.head_dim))?;
 
-            (q, k)
+                (q, k)
+            }
         } else {
             (q, k)
         };
 
         let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
         let (q, k) = (q.to_dtype(self.dtype)?, k.to_dtype(self.dtype)?);
+        let v = if v.dtype() != self.dtype {
+            v.to_dtype(self.dtype)?
+        } else {
+            v
+        };
 
         let y = self
             .attn
@@ -198,7 +277,18 @@ impl Attention {
             )?
             .reshape((seq_len, ()))?;
 
-        let y = self.o_proj.forward(&y)?;
+        let y = if let Some(gate) = q_gate {
+            let gate = if gate.dtype() != y.dtype() {
+                gate.to_dtype(y.dtype())?
+            } else {
+                gate
+            };
+            y.broadcast_mul(&candle_nn::ops::sigmoid(&gate)?)?
+        } else {
+            y
+        };
+
+        let y = self.o_proj.forward(&y.to_dtype(xs.dtype())?)?;
         Ok(y)
     }
 }

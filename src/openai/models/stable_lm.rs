@@ -27,18 +27,11 @@ impl StableLM {
         config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
         config.partial_rotary_factor = Some(config.partial_rotary_factor.unwrap_or(0.25));
         config.use_qkv_bias = Some(config.use_qkv_bias.unwrap_or(false));
-        if config.quantization_config.is_some() {
-            config.quant = Some(
-                config
-                    .quantization_config
-                    .as_ref()
-                    .unwrap()
-                    .quant_method
-                    .clone(),
-            );
-        } else if isq.is_some() {
-            config.quant = Some(isq.unwrap().to_string());
-        }
+        config.isq_quant = if config.quantization_config.is_some() {
+            None
+        } else {
+            isq
+        };
         Ok(config)
     }
 }

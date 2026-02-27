@@ -34,7 +34,7 @@ async fn get_gen_prompt(
 
     match &request.messages {
         Messages::Literal(msg) => {
-            return Ok(msg.clone());
+            conversation.append_message("user".to_string(), msg.clone());
         }
         Messages::Chat(messages) => {
             for message in messages {
@@ -121,7 +121,7 @@ async fn check_length(
             pipeline
                 .0
                 .tokenizer()
-                .encode_fast(prompt, false)
+                .encode_fast(prompt, true)
                 .map_err(APIError::from)?
                 .get_ids()
                 .to_vec(),
@@ -405,7 +405,7 @@ pub async fn create_embeddings(
             .ok_or(APIError::new("Missing pipeline".to_string()));
 
         match pipeline {
-            Ok(pipeline) => match pipeline.0.tokenizer().encode_fast(prompt_str, false) {
+            Ok(pipeline) => match pipeline.0.tokenizer().encode_fast(prompt_str, true) {
                 Ok(encoding) => (encoding.get_ids().to_vec(), available_kv_tokens),
                 Err(e) => return ChatResponder::ValidationError(APIError::from(e)),
             },

@@ -406,7 +406,7 @@ async fn main() -> Result<()> {
 
     let total_gpu_blocks = cache_config.num_gpu_blocks.unwrap_or(0);
     let default_prefix_cache_blocks = if total_gpu_blocks > 0 {
-        std::cmp::max(1, total_gpu_blocks / 4)
+        std::cmp::max(1, total_gpu_blocks / 2)
     } else {
         0
     };
