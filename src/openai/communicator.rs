@@ -96,8 +96,8 @@ pub enum RankData {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum TaskSampleData {
-    Token(Logprobs),
-    StopReason(String),
+    Token { seq_id: usize, logprobs: Logprobs },
+    StopReason { seq_id: usize, reason: String },
 }
 
 #[derive(Serialize, Deserialize, Debug)]

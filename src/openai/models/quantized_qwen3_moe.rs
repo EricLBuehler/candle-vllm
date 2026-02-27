@@ -173,6 +173,7 @@ impl GGUFQWenMoE {
             moe_config: Some(MoEConfig::QwenMoE(moe_cfg.clone())),
             quant: Some("gguf".to_string()),
             fp8_kvcache: Some(kv_cache_dtype == DType::U8),
+            extra_config_json: None,
         }
     }
 
@@ -234,6 +235,7 @@ impl GGUFQWenMoE {
             norm_topk_prob: shared_expert_intermediate_size.is_none(),
             num_experts_per_tok: md_get(format!("{arch}.expert_used_count").as_str())?.to_u32()?
                 as usize,
+            routed_scaling_factor: None,
         };
 
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;

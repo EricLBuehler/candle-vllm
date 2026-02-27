@@ -76,6 +76,264 @@ pub struct LLMEngine {
 }
 
 impl LLMEngine {
+    fn ordered_group_sequences(group: &Arc<SequenceGroup>) -> Vec<Arc<Sequence>> {
+        let mut seqs = group
+            .get_seqs()
+            .iter()
+            .map(|(seq_id, seq)| (*seq_id, Arc::clone(seq)))
+            .collect::<Vec<_>>();
+        seqs.sort_unstable_by_key(|(seq_id, _)| *seq_id);
+        seqs.into_iter().map(|(_, seq)| seq).collect()
+    }
+
+    fn primary_sequence(group: &Arc<SequenceGroup>) -> Arc<Sequence> {
+        Self::ordered_group_sequences(group)
+            .into_iter()
+            .next()
+            .expect("sequence group must contain at least one sequence")
+    }
+
+    #[cfg(feature = "nccl")]
+    fn primary_sequence_id(group: &Arc<SequenceGroup>) -> usize {
+        Self::primary_sequence(group).deref().get_id()
+    }
+
+    fn fallback_sequence_to_full_prefill(
+        &mut self,
+        sequence: &Sequence,
+        seq_id: usize,
+        cached_tokens: usize,
+        reason: &str,
+    ) {
+        let rebuilt = self
+            .scheduler
+            .block_engine
+            .fallback_sequence_to_full_prefill(sequence);
+        if rebuilt {
+            tracing::warn!(
+                "Seq {} {} (cached {} tokens); rebuilt block table and falling back to full prefill",
+                seq_id,
+                reason,
+                cached_tokens
+            );
+        } else {
+            tracing::warn!(
+                "Seq {} {} (cached {} tokens); unable to rebuild block table due memory pressure, keeping cached prefill",
+                seq_id,
+                reason,
+                cached_tokens
+            );
+        }
+    }
+
+    fn capture_mamba_prefix_states_for_prefill_progress(
+        &mut self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+        chunk_size: usize,
+        rank: usize,
+    ) -> Result<()> {
+        if groups.is_empty() || chunk_size == 0 {
+            return Ok(());
+        }
+
+        let mut captures = Vec::new();
+        for group in groups {
+            for seq in Self::ordered_group_sequences(group) {
+                let seq_id = seq.deref().get_id();
+                let prompt_len = seq.deref().get_prompt_len();
+                let num_cached_tokens = seq.deref().get_num_cached_tokens();
+                if prompt_len == 0 || num_cached_tokens >= prompt_len {
+                    continue;
+                }
+
+                let processed_tokens =
+                    if prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len {
+                        prompt_len
+                    } else {
+                        num_cached_tokens + chunk_size
+                    };
+
+                if let Some(hash) = self
+                    .scheduler
+                    .block_engine
+                    .prefix_hash_for_sequence(&seq, processed_tokens)
+                {
+                    captures.push((seq_id, hash));
+                }
+            }
+        }
+
+        if captures.is_empty() {
+            return Ok(());
+        }
+
+        let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
+        for (seq_id, hash) in captures {
+            if let Err(e) = pipeline.capture_mamba_prefix_state(seq_id, hash) {
+                tracing::warn!(
+                    "Failed to capture prefill mamba prefix state for seq {} hash {}: {}",
+                    seq_id,
+                    hash,
+                    e
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn capture_mamba_prefix_states_for_decode_progress(
+        &mut self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+        rank: usize,
+    ) -> Result<()> {
+        if groups.is_empty() {
+            return Ok(());
+        }
+
+        let block_size = self.cache_config.block_size;
+        let mut captures = Vec::new();
+        for group in groups {
+            for seq in Self::ordered_group_sequences(group) {
+                if seq.deref().is_finished() {
+                    continue;
+                }
+                let seq_id = seq.deref().get_id();
+                let seq_len = seq.deref().get_len();
+                if seq_len < block_size || seq_len % block_size != 0 {
+                    continue;
+                }
+                if let Some(hash) = self
+                    .scheduler
+                    .block_engine
+                    .prefix_hash_for_sequence(&seq, seq_len)
+                {
+                    captures.push((seq_id, hash));
+                }
+            }
+        }
+
+        if captures.is_empty() {
+            return Ok(());
+        }
+
+        let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
+        for (seq_id, hash) in captures {
+            if let Err(e) = pipeline.capture_mamba_prefix_state(seq_id, hash) {
+                tracing::warn!(
+                    "Failed to capture decode mamba prefix state for seq {} hash {}: {}",
+                    seq_id,
+                    hash,
+                    e
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn restore_mamba_prefix_states_for_prompt(
+        &mut self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+        rank: usize,
+    ) -> Result<()> {
+        if groups.is_empty() {
+            return Ok(());
+        }
+
+        let mut sequence_ids: Vec<usize> = Vec::new();
+        for group in groups {
+            for seq in Self::ordered_group_sequences(group) {
+                sequence_ids.push(seq.deref().get_id());
+            }
+        }
+        {
+            let (pipeline, _) = self.get_pipeline(rank).unwrap();
+            let _ = pipeline.ensure_mamba_slots_for_sequences(&sequence_ids)?;
+        }
+
+        for group in groups {
+            for seq in Self::ordered_group_sequences(group) {
+                let seq_id = seq.deref().get_id();
+                let cached_tokens = seq.deref().get_num_cached_tokens();
+                if cached_tokens == 0 {
+                    continue;
+                }
+                let Some(hash) = self
+                    .scheduler
+                    .block_engine
+                    .prefix_hash_for_sequence(&seq, cached_tokens)
+                else {
+                    tracing::warn!(
+                        "Seq {} has {} cached tokens but no prefix hash; fallback to full prefill",
+                        seq_id,
+                        cached_tokens
+                    );
+                    self.fallback_sequence_to_full_prefill(
+                        &seq,
+                        seq_id,
+                        cached_tokens,
+                        "has no prefix hash",
+                    );
+                    continue;
+                };
+
+                let has_snapshot = {
+                    let (pipeline, _) = self.get_pipeline(rank).unwrap();
+                    pipeline.has_mamba_prefix_state(hash)?
+                };
+                if !has_snapshot {
+                    self.fallback_sequence_to_full_prefill(
+                        &seq,
+                        seq_id,
+                        cached_tokens,
+                        &format!("missing mamba snapshot for hash {}", hash),
+                    );
+                    continue;
+                }
+
+                let restored = {
+                    let (pipeline, _) = self.get_pipeline(rank).unwrap();
+                    pipeline.restore_mamba_prefix_state(seq_id, hash)?
+                };
+                if !restored {
+                    self.fallback_sequence_to_full_prefill(
+                        &seq,
+                        seq_id,
+                        cached_tokens,
+                        &format!("failed to restore mamba snapshot for hash {}", hash),
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn free_finished_sequence_groups_and_sync_mamba(&mut self, rank: usize) {
+        let mut captures = Vec::new();
+        let released_ids = self
+            .scheduler
+            .free_finished_sequence_groups_with(|seq_id, hash| {
+                if let Some(hash) = hash {
+                    captures.push((seq_id, hash));
+                }
+            });
+
+        let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
+        for (seq_id, hash) in captures {
+            if let Err(e) = pipeline.capture_mamba_prefix_state(seq_id, hash) {
+                tracing::warn!(
+                    "Failed to capture mamba prefix state for seq {} hash {}: {}",
+                    seq_id,
+                    hash,
+                    e
+                );
+            }
+        }
+        for seq_id in released_ids {
+            pipeline.release_sequence_state(seq_id);
+        }
+    }
+
     async fn generate_parallel(
         engine: &Arc<RwLock<LLMEngine>>,
         ranks: Vec<usize>,
@@ -106,7 +364,7 @@ impl LLMEngine {
     }
 
     pub fn new(
-        pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
+        mut pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
         scheduler_config: SchedulerConfig,
         cache_config: &CacheConfig,
         config: &Config,
@@ -117,6 +375,17 @@ impl LLMEngine {
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
         prefill_chunk_size: Option<usize>,
     ) -> Result<Arc<RwLock<Self>>> {
+        let mamba_slot_capacity = scheduler_config.max_num_seqs.max(16);
+        let mamba_prefix_capacity = if scheduler_config.prefix_cache.enabled {
+            scheduler_config.prefix_cache.max_cached_blocks.max(16)
+        } else {
+            16
+        };
+        for (pipeline, _) in pipelines.values_mut() {
+            pipeline.preallocate_mamba_cache(mamba_slot_capacity)?;
+            pipeline.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
+        }
+
         let num_threads: usize = pipelines.len();
         let engine = Arc::new(RwLock::new(Self {
             pipelines,
@@ -426,7 +695,7 @@ impl LLMEngine {
             match message {
                 Ok(MessageType::Abort(ids)) => {
                     for group in scheduled.iter() {
-                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        let seq = Self::primary_sequence(group);
                         if ids.contains(&seq.deref().get_id()) {
                             seq.deref_mut().set_finish_reason("abort".to_string());
                             warn!("abort sequence ({}) in subprocess!", seq.deref().get_id());
@@ -436,7 +705,7 @@ impl LLMEngine {
                 Ok(MessageType::Finish) | Ok(MessageType::Close) => {
                     warn!("A abort/finish or close message!");
                     for group in scheduled.iter() {
-                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        let seq = Self::primary_sequence(group);
                         seq.deref_mut().set_finish_reason("abort".to_string());
                         warn!(
                             "abort/finish sequence ({}) in subprocess!",
@@ -518,8 +787,13 @@ impl LLMEngine {
                 continue; //data not ready
             }
 
-            let seqs = scheduled[0].get_seqs();
             let is_embedding = scheduled[0].is_embedding;
+            let is_prompt_request = Self::primary_sequence(&scheduled[0]).deref().is_prompt();
+
+            if is_prompt_request {
+                let mut e = engine.write();
+                e.restore_mamba_prefix_states_for_prompt(&scheduled, rank)?;
+            }
             //run partial models in parallel
             let (mut logits, is_prompt, model_name) = {
                 let e = engine.read();
@@ -530,10 +804,10 @@ impl LLMEngine {
                     tokens,
                     positions,
                     metadata,
-                } = if seqs.values().nth(0).unwrap().deref().is_prompt() {
-                    e.prepare_prompt(&scheduled, device)
+                } = if is_prompt_request {
+                    e.prepare_prompt(&scheduled, device, rank)
                 } else {
-                    e.prepare_decode(&scheduled, device)
+                    e.prepare_decode(&scheduled, device, rank)
                 }?;
 
                 let x = if is_embedding {
@@ -561,7 +835,7 @@ impl LLMEngine {
                     //Process embedding response
                     let mut start_idx = 0;
                     for group in &scheduled {
-                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        let seq = Self::primary_sequence(group);
                         let prompt_len = seq.deref().get_prompt_len();
                         let end_idx = start_idx + prompt_len;
 
@@ -621,7 +895,7 @@ impl LLMEngine {
                         start_idx = end_idx;
                     }
 
-                    e.scheduler.free_finished_sequence_groups();
+                    e.free_finished_sequence_groups_and_sync_mamba(rank);
                 }
                 continue;
             }
@@ -635,6 +909,11 @@ impl LLMEngine {
                 };
 
                 if prefill_chunk_size > 0 {
+                    e.capture_mamba_prefix_states_for_prefill_progress(
+                        &scheduled,
+                        prefill_chunk_size,
+                        rank,
+                    )?;
                     let (finished_indices, finished_groups) = e
                         .scheduler
                         .filter_prefill_finished(&scheduled, prefill_chunk_size);
@@ -673,14 +952,17 @@ impl LLMEngine {
                     let e = engine.read();
                     let mut daemon_manager = e.daemon_manager.write();
                     let mut logprobs: Vec<TaskSampleData> = Vec::new();
-                    for s in &sample {
+                    for (s, group) in sample.iter().zip(scheduled.iter()) {
+                        let seq_id = Self::primary_sequence_id(group);
                         match s {
-                            Either::Left(logprob) => {
-                                logprobs.push(TaskSampleData::Token(logprob.clone()))
-                            }
-                            Either::Right(s) => {
-                                logprobs.push(TaskSampleData::StopReason(s.clone()))
-                            }
+                            Either::Left(logprobs_data) => logprobs.push(TaskSampleData::Token {
+                                seq_id,
+                                logprobs: logprobs_data.clone(),
+                            }),
+                            Either::Right(reason) => logprobs.push(TaskSampleData::StopReason {
+                                seq_id,
+                                reason: reason.clone(),
+                            }),
                         };
                     }
                     let _ = daemon_manager
@@ -698,21 +980,44 @@ impl LLMEngine {
                         let mut daemon_manager = e.daemon_manager.write();
                         daemon_manager.as_mut().unwrap().receive_message()
                     };
-                    let mut logprobs: Vec<TokenOrFinishReason> = Vec::new();
                     match message {
                         Ok(MessageType::Sample(data)) => {
+                            let mut by_seq_id = HashMap::<usize, TokenOrFinishReason>::new();
                             for s in data {
                                 match s {
-                                    TaskSampleData::Token(t) => {
-                                        logprobs.push(TokenOrFinishReason::Left(t))
+                                    TaskSampleData::Token { seq_id, logprobs } => {
+                                        by_seq_id
+                                            .insert(seq_id, TokenOrFinishReason::Left(logprobs));
                                     }
-                                    TaskSampleData::StopReason(s) => {
-                                        logprobs.push(TokenOrFinishReason::Right(s))
+                                    TaskSampleData::StopReason { seq_id, reason } => {
+                                        by_seq_id
+                                            .insert(seq_id, TokenOrFinishReason::Right(reason));
                                     }
                                 }
                             }
+                            let mut ordered =
+                                Vec::<TokenOrFinishReason>::with_capacity(scheduled.len());
+                            for group in &scheduled {
+                                let seq_id = Self::primary_sequence_id(group);
+                                if let Some(sample) = by_seq_id.remove(&seq_id) {
+                                    ordered.push(sample);
+                                } else {
+                                    candle_core::bail!(
+                                        "Missing sampled token for seq_id {} on daemon rank {}",
+                                        seq_id,
+                                        rank
+                                    );
+                                }
+                            }
+                            if !by_seq_id.is_empty() {
+                                warn!(
+                                    "Received {} extra sampled entries on daemon rank {}",
+                                    by_seq_id.len(),
+                                    rank
+                                );
+                            }
                             debug!("generate_once: received sample");
-                            Some(logprobs)
+                            Some(ordered)
                         }
                         _ => {
                             info!("generate_once: received empty sample");
@@ -738,10 +1043,18 @@ impl LLMEngine {
 
             //only the first rank thread perform stream response
             let results = optional_results.unwrap();
+            if results.len() != scheduled.len() {
+                candle_core::bail!(
+                    "Sample result and scheduled group length mismatch on rank {}: {} vs {}",
+                    rank,
+                    results.len(),
+                    scheduled.len()
+                );
+            }
             for (result_, group) in zip(results, &scheduled) {
                 match result_ {
                     Either::Left(logprobs) => {
-                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        let seq = Self::primary_sequence(group);
                         if seq.deref().is_prompt() {
                             let e = engine.read();
                             e.scheduler.print_free_blocks();
@@ -836,7 +1149,7 @@ impl LLMEngine {
                         seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
-                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        let seq = Self::primary_sequence(group);
 
                         let mut final_tool_calls = None;
                         let mut final_content = None;
@@ -947,7 +1260,8 @@ impl LLMEngine {
 
             {
                 let mut e = engine.write();
-                e.scheduler.free_finished_sequence_groups();
+                e.capture_mamba_prefix_states_for_decode_progress(&scheduled, rank)?;
+                e.free_finished_sequence_groups_and_sync_mamba(rank);
             }
 
             let mut aborted_sequences: Vec<usize> = Vec::new();
@@ -959,7 +1273,7 @@ impl LLMEngine {
                         .duration_since(prompt_finish_time)
                         .unwrap()
                         .as_millis();
-                    let seq = group.get_seqs().values().nth(0).unwrap();
+                    let seq = Self::primary_sequence(group);
                     let decoded_tokens = seq.deref().get_len() - seq.deref().get_prompt_len();
                     #[cfg(feature = "nccl")]
                     let do_log = DaemonManager::is_master_rank();
@@ -976,11 +1290,16 @@ impl LLMEngine {
                     // Create choices from the group
                     let mut seqs = group.get_seqs().values().collect::<Vec<_>>();
                     seqs.sort_by(|seq_a, seq_b| {
-                        seq_b
+                        let logprob_cmp = seq_b
                             .deref_mut()
                             .get_cumulative_logprob()
                             .partial_cmp(&seq_a.deref_mut().get_cumulative_logprob())
-                            .unwrap()
+                            .unwrap_or(std::cmp::Ordering::Equal);
+                        if logprob_cmp == std::cmp::Ordering::Equal {
+                            seq_a.deref().get_id().cmp(&seq_b.deref().get_id())
+                        } else {
+                            logprob_cmp
+                        }
                     });
                     let top_n = seqs.get(0..group.sampling_params.n).unwrap();
 
@@ -1064,7 +1383,10 @@ impl LLMEngine {
                                     .iter()
                                     .map(|x| x.token.try_into().unwrap())
                                     .collect::<Vec<_>>();
-                                let data = pipeline.tokenizer().decode(&data, false).unwrap();
+                                let data = pipeline
+                                    .tokenizer()
+                                    .decode(&data, group.sampling_params.skip_special_tokens)
+                                    .unwrap();
                                 (Some(data), None)
                             };
 
@@ -1126,7 +1448,7 @@ impl LLMEngine {
                         }
                     }
                     if let Some(sender) = &group.sender {
-                        let seq = group.get_seqs().values().nth(0).unwrap();
+                        let seq = Self::primary_sequence(group);
                         if seq.deref().get_finish_reason() != "abort" {
                             debug!(
                                 "Sending completion message to client! (sequence id {})",
@@ -1146,7 +1468,7 @@ impl LLMEngine {
             if multi_process {
                 let mut e = engine.write();
                 e.sync_abort_sequences(&scheduled, aborted_sequences);
-                e.scheduler.free_finished_sequence_groups();
+                e.free_finished_sequence_groups_and_sync_mamba(rank);
             };
 
             {
@@ -1202,67 +1524,93 @@ impl LLMEngine {
         groups: &VecDeque<Arc<SequenceGroup>>,
         device: &Device,
     ) -> Result<Tensor> {
+        let mut ordered_sequences = Vec::<Arc<Sequence>>::new();
+        for group in groups {
+            ordered_sequences.extend(Self::ordered_group_sequences(group));
+        }
+
         let mut max_len = 0;
-        for group in groups {
-            for seq in group.get_seqs().values() {
-                let len = self
-                    .scheduler
-                    .block_engine
-                    .block_tables
-                    .get(&seq.deref().get_id())
-                    .unwrap()
-                    .len();
-                if len > max_len {
-                    max_len = len;
-                }
+        for seq in &ordered_sequences {
+            let len = self
+                .scheduler
+                .block_engine
+                .block_tables
+                .get(&seq.deref().get_id())
+                .unwrap()
+                .len();
+            if len > max_len {
+                max_len = len;
             }
         }
-        let mut flat: Vec<u32> = Vec::with_capacity(groups.len() * max_len);
+        let mut flat: Vec<u32> = Vec::with_capacity(ordered_sequences.len() * max_len);
 
-        for group in groups {
-            for seq in group.get_seqs().values() {
-                let table = self
-                    .scheduler
-                    .block_engine
-                    .block_tables
-                    .get(&seq.deref().get_id())
-                    .unwrap();
-                let table = table
-                    .iter()
-                    .map(|block| block.deref_mut().block_id as u32)
-                    .collect::<Vec<_>>();
+        for seq in &ordered_sequences {
+            let table = self
+                .scheduler
+                .block_engine
+                .block_tables
+                .get(&seq.deref().get_id())
+                .unwrap();
+            let table = table
+                .iter()
+                .map(|block| block.deref_mut().block_id as u32)
+                .collect::<Vec<_>>();
 
-                let bt = if let Some(sliding_window) = self.config.sliding_window {
-                    let sliding_window_blocks = sliding_window / self.cache_config.block_size;
-                    let slide_idx = if table.len() > sliding_window_blocks {
-                        table.len() - sliding_window_blocks
-                    } else {
-                        0
-                    };
-                    table.get(slide_idx..).unwrap().to_vec()
+            let bt = if let Some(sliding_window) = self.config.sliding_window {
+                let sliding_window_blocks = sliding_window / self.cache_config.block_size;
+                let slide_idx = if table.len() > sliding_window_blocks {
+                    table.len() - sliding_window_blocks
                 } else {
-                    table
+                    0
                 };
+                table.get(slide_idx..).unwrap().to_vec()
+            } else {
+                table
+            };
 
-                flat.extend_from_slice(bt.as_slice());
-                flat.extend(std::iter::repeat(0).take(max_len - bt.len()));
-            }
+            flat.extend_from_slice(bt.as_slice());
+            flat.extend(std::iter::repeat(0).take(max_len - bt.len()));
         }
 
-        Tensor::from_vec(flat, (groups.len(), max_len), device)
+        Tensor::from_vec(flat, (ordered_sequences.len(), max_len), device)
     }
 
     //Revised based on https://github.com/guoqingbao/vllm.rs/blob/main/src/core/runner.rs#L392
+    fn prepare_mamba_slot_mapping(
+        &self,
+        sequence_ids: &[usize],
+        is_prefill: bool,
+        rank: usize,
+        device: &Device,
+    ) -> Result<Option<Tensor>> {
+        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+        let slots = if is_prefill {
+            pipeline.ensure_mamba_slots_for_sequences(sequence_ids)?
+        } else {
+            pipeline.get_mamba_slots_for_sequences(sequence_ids)?
+        };
+
+        if slots.is_empty() {
+            return Ok(None);
+        }
+
+        let slots_i64 = slots.into_iter().map(|s| s as i64).collect::<Vec<_>>();
+        let len = slots_i64.len();
+        Ok(Some(Tensor::from_vec(slots_i64, (len,), device)?))
+    }
+
     fn prepare_prompt(
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
         device: &Device,
+        rank: usize,
     ) -> Result<PreparedInputs> {
         let mut context_lens = Vec::new();
         let mut input_ids: Vec<u32> = Vec::new();
         let mut positions = Vec::new();
         let mut cu_seqlens_q = vec![0];
         let mut cu_seqlens_k = vec![0];
+        let mut sequence_ids = Vec::new();
         let mut max_seqlen_q = 0;
         let mut max_seqlen_k = 0;
         let mut slot_mapping = Vec::new();
@@ -1273,8 +1621,9 @@ impl LLMEngine {
         };
         let mut max_context_len = 0;
         for group in groups {
-            for seq in group.get_seqs().values() {
+            for seq in Self::ordered_group_sequences(group) {
                 let prompt_ids = seq.deref_mut().get_token_ids();
+                sequence_ids.push(seq.deref().get_id());
                 let seq_len = prompt_ids.len();
                 if seq_len > max_context_len {
                     max_context_len = seq_len + self.cache_config.block_size;
@@ -1392,11 +1741,16 @@ impl LLMEngine {
         } else {
             (None, None)
         };
+        let cu_seqlens_q_vec = cu_seqlens_q.clone();
         let cu_seqlens_q = Tensor::from_vec(cu_seqlens_q, (q_len,), device)?;
         let cu_seqlens_k = Tensor::from_vec(cu_seqlens_k, (k_len,), device)?;
+        let mamba_slot_mapping =
+            self.prepare_mamba_slot_mapping(&sequence_ids, true, rank, device)?;
 
         let input_metadata = InputMetadata {
             is_prefill: true,
+            sequence_ids: Some(sequence_ids),
+            mamba_slot_mapping,
             slot_mapping,
             block_tables,
             context_lens,
@@ -1406,7 +1760,8 @@ impl LLMEngine {
             max_seqlen_k,
             max_context_len,
             disable_flash_attn: None,
-            seqlens: None,
+            seqlens: Some(cu_seqlens_q_vec[1..].to_vec()),
+            flashinfer_metadata: None,
         };
 
         Ok(PreparedInputs {
@@ -1421,14 +1776,17 @@ impl LLMEngine {
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
         device: &Device,
+        rank: usize,
     ) -> Result<PreparedInputs> {
         let mut input_ids = Vec::new();
         let mut positions = Vec::new();
         let mut slot_mapping = Vec::new();
+        let mut sequence_ids = Vec::new();
         let mut context_lens = Vec::new();
         let mut block_tables = Vec::new();
         for group in groups {
-            for seq in group.get_seqs().values() {
+            for seq in Self::ordered_group_sequences(group) {
+                sequence_ids.push(seq.deref().get_id());
                 let last_token_id = seq.deref_mut().get_last_token_id();
                 input_ids.push(last_token_id);
                 let position = seq.deref_mut().get_len() - 1;
@@ -1495,8 +1853,12 @@ impl LLMEngine {
             device,
         )?;
         let block_tables = block_tables.reshape(((), max_block_table_len))?;
+        let mamba_slot_mapping =
+            self.prepare_mamba_slot_mapping(&sequence_ids, false, rank, device)?;
         let input_metadata = InputMetadata {
             is_prefill: false,
+            sequence_ids: Some(sequence_ids),
+            mamba_slot_mapping,
             slot_mapping,
             block_tables: Some(block_tables),
             context_lens: Some(context_lens),
@@ -1507,6 +1869,7 @@ impl LLMEngine {
             max_context_len: max_context_len as usize,
             disable_flash_attn: None,
             seqlens: None,
+            flashinfer_metadata: None,
         };
 
         Ok(PreparedInputs {

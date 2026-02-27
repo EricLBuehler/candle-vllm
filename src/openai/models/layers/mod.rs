@@ -1,4 +1,5 @@
 pub mod attention;
+pub mod deltanet;
 pub mod mask;
 pub mod mlp;
 pub mod moe;

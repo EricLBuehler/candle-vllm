@@ -111,6 +111,7 @@ pub fn get_cache_config(
     kv_dtype: candle::DType,
     num_shards: usize,
 ) -> crate::scheduler::cache_engine::CacheConfig {
+    let kv_layers = config.kv_cache_num_layers().max(1);
     let dsize = kv_dtype.size_in_bytes();
     let size_in_mb = 1024 * 1024;
     let num_gpu_blocks = kvcache_mem_gpu * size_in_mb
@@ -118,14 +119,14 @@ pub fn get_cache_config(
         / block_size
         / (config.num_key_value_heads.unwrap() / num_shards)
         / config.k_head_dim()
-        / config.num_hidden_layers
+        / kv_layers
         / 2;
     let num_cpu_blocks = kvcache_mem_cpu * size_in_mb
         / dsize
         / block_size
         / (config.num_key_value_heads.unwrap() / num_shards)
         / config.k_head_dim()
-        / config.num_hidden_layers
+        / kv_layers
         / 2;
     crate::scheduler::cache_engine::CacheConfig {
         block_size,

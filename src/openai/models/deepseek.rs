@@ -193,6 +193,7 @@ impl DeepSeek {
             moe_config: Some(MoEConfig::DeepSeekMoE(moe_config)),
             quant,
             fp8_kvcache: None,
+            extra_config_json: None,
         };
         Ok(config)
     }

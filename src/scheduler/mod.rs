@@ -222,8 +222,16 @@ impl Scheduler {
         !self.running.is_empty() || !self.waiting.is_empty()
     }
 
-    pub fn free_finished_sequence_groups(&mut self) {
+    pub fn free_finished_sequence_groups(&mut self) -> Vec<usize> {
+        self.free_finished_sequence_groups_with(|_, _| {})
+    }
+
+    pub fn free_finished_sequence_groups_with<F>(&mut self, mut on_finished: F) -> Vec<usize>
+    where
+        F: FnMut(usize, Option<u64>),
+    {
         let mut to_free = Vec::new();
+        let mut released_ids = Vec::new();
         let clone = self.running.clone();
         self.running = clone
             .iter()
@@ -238,8 +246,17 @@ impl Scheduler {
             .cloned()
             .collect::<VecDeque<_>>();
         for group in to_free {
+            for seq in group.get_seqs().values() {
+                let seq_id = seq.deref().get_id();
+                let hash = self
+                    .block_engine
+                    .prefix_hash_for_sequence(seq, seq.deref().get_len());
+                on_finished(seq_id, hash);
+                released_ids.push(seq_id);
+            }
             self._free(&group, true);
         }
+        released_ids
     }
 
     pub fn prefix_cache_enabled(&self) -> bool {

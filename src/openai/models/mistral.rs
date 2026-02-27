@@ -141,6 +141,7 @@ impl Mistral {
             moe_config: None,
             quant,
             fp8_kvcache: None,
+            extra_config_json: None,
         };
         Ok(config)
     }

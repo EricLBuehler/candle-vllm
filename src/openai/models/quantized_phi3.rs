@@ -190,6 +190,7 @@ impl GGUFPhi3 {
             moe_config: None,
             quant: Some("gguf".to_string()),
             fp8_kvcache: Some(kv_cache_dtype == DType::U8),
+            extra_config_json: None,
         }
     }
 

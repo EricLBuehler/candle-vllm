@@ -341,7 +341,13 @@ impl SequenceGroup {
     }
 
     pub fn get_status(&self) -> SequenceStatus {
-        self.seqs.values().nth(0).unwrap().deref().get_status()
+        self.seqs
+            .iter()
+            .min_by_key(|(seq_id, _)| *seq_id)
+            .expect("sequence group must contain at least one sequence")
+            .1
+            .deref()
+            .get_status()
     }
 
     /// Blocks to add one new token to each sequence
@@ -353,7 +359,13 @@ impl SequenceGroup {
     }
 
     pub fn get_prompt_len(&self) -> usize {
-        self.seqs.len()
+        self.seqs
+            .iter()
+            .min_by_key(|(seq_id, _)| *seq_id)
+            .expect("sequence group must contain at least one sequence")
+            .1
+            .deref()
+            .get_prompt_len()
     }
 
     pub fn get_total_logical_token_blocks(&self) -> usize {
