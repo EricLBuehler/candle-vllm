@@ -1268,7 +1268,17 @@ impl LLMEngine {
             for group in scheduled.iter() {
                 if group.is_finished() && !responses.contains_key(&group.request_id) {
                     let end_time = SystemTime::now();
-                    let prompt_finish_time = prompt_finish_times[group.get_id()];
+                    let prompt_finish_time = prompt_finish_times
+                        .get(group.get_id())
+                        .cloned()
+                        .unwrap_or_else(|| {
+                            warn!(
+                                "Missing prompt_finish_time for finished request {} (group id {}), using created_time fallback",
+                                group.request_id,
+                                group.get_id()
+                            );
+                            group.created_time
+                        });
                     let completion_time_costs = end_time
                         .duration_since(prompt_finish_time)
                         .unwrap()
