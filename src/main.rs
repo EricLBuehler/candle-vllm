@@ -96,7 +96,7 @@ struct Args {
 
     /// Maximum waiting time for processing parallel requests (in milliseconds).
     /// A larger value means the engine can hold more requests and process them in a single generation call.
-    #[arg(long, default_value_t = 500)]
+    #[arg(long, default_value_t = 100)]
     holding_time: usize,
 
     //Whether the program is forced running in multithread model for parallel inference (for debug)

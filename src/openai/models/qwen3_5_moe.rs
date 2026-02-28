@@ -278,11 +278,7 @@ impl DecoderLayer {
                         (1, cfg.hidden_size),
                         "weight",
                         Default::default(),
-                        if cfg.isq_quant.is_some() && !is_fp8_model {
-                            DType::F32
-                        } else {
-                            dtype
-                        },
+                        dtype,
                     )?;
 
                     let shared_gate = Linear::new(ws, None, &None, &None);
