@@ -257,11 +257,38 @@ impl LLMEngine {
                 if cached_tokens == 0 {
                     continue;
                 }
-                let Some(hash) = self
+                if let Some(hash) = self
                     .scheduler
                     .block_engine
                     .prefix_hash_for_sequence(&seq, cached_tokens)
-                else {
+                {
+                    let has_snapshot = {
+                        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+                        pipeline.has_mamba_prefix_state(hash)?
+                    };
+                    if !has_snapshot {
+                        self.fallback_sequence_to_full_prefill(
+                            &seq,
+                            seq_id,
+                            cached_tokens,
+                            &format!("missing mamba snapshot for hash {}", hash),
+                        );
+                        continue;
+                    }
+
+                    let restored = {
+                        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+                        pipeline.restore_mamba_prefix_state(seq_id, hash)?
+                    };
+                    if !restored {
+                        self.fallback_sequence_to_full_prefill(
+                            &seq,
+                            seq_id,
+                            cached_tokens,
+                            &format!("failed to restore mamba snapshot for hash {}", hash),
+                        );
+                    }
+                } else {
                     tracing::warn!(
                         "Seq {} has {} cached tokens but no prefix hash; fallback to full prefill",
                         seq_id,
@@ -275,33 +302,6 @@ impl LLMEngine {
                     );
                     continue;
                 };
-
-                let has_snapshot = {
-                    let (pipeline, _) = self.get_pipeline(rank).unwrap();
-                    pipeline.has_mamba_prefix_state(hash)?
-                };
-                if !has_snapshot {
-                    self.fallback_sequence_to_full_prefill(
-                        &seq,
-                        seq_id,
-                        cached_tokens,
-                        &format!("missing mamba snapshot for hash {}", hash),
-                    );
-                    continue;
-                }
-
-                let restored = {
-                    let (pipeline, _) = self.get_pipeline(rank).unwrap();
-                    pipeline.restore_mamba_prefix_state(seq_id, hash)?
-                };
-                if !restored {
-                    self.fallback_sequence_to_full_prefill(
-                        &seq,
-                        seq_id,
-                        cached_tokens,
-                        &format!("failed to restore mamba snapshot for hash {}", hash),
-                    );
-                }
             }
         }
 

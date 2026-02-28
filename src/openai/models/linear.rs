@@ -6,9 +6,9 @@
 //! output has shape `(b_sz, out_c)` and `(out_c,)` respectively.
 //!
 //! ```rust
-//! use candle::{Tensor, Device::Cpu};
+//! use candle_core::{Tensor, Device::Cpu};
 //! use candle_nn::{Linear, Module};
-//! # fn main() -> candle::Result<()> {
+//! # fn main() -> candle_core::Result<()> {
 //!
 //! let w = Tensor::new(&[[1f32, 2.], [3., 4.], [5., 6.]], &Cpu)?;
 //! let layer = Linear::new(w, None); // Use no bias.

@@ -258,7 +258,7 @@ impl EngineBuilder {
 
         let notify = Arc::new(Notify::new());
         // holding_time logic
-        let holding_time = 500; // Default
+        let holding_time = 100; // Default
 
         let engine = LLMEngine::new(
             pipelines,

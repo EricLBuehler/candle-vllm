@@ -1,5 +1,6 @@
 // src/models/layers/deltanet.rs
 // Shared Qwen3.5/Qwen3Next GatedDeltaNet linear-attention layer.
+// Adapted from https://github.com/guoqingbao/vllm.rs/blob/main/src/models/layers/deltanet.rs
 
 use crate::openai::distributed::{
     Comm, MergedParallelColumnLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
