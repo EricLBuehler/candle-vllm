@@ -1619,7 +1619,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => Ok(model.has_mamba_prefix_state(hash)),
             LLMModel::Qwen3_5MoE(model) => Ok(model.has_mamba_prefix_state(hash)),
-            _ => Ok(false),
+            _ => Ok(true),
         }
     }
 
@@ -1627,7 +1627,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.restore_mamba_prefix_state(seq_id, hash),
             LLMModel::Qwen3_5MoE(model) => model.restore_mamba_prefix_state(seq_id, hash),
-            _ => Ok(false),
+            _ => Ok(true),
         }
     }
 
