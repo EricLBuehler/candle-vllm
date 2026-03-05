@@ -9,3 +9,5 @@ kernels/src/lib.rs
 *.log
 /Cargo.lock
 *.lock
+CLAUDE.md
+.claude/
