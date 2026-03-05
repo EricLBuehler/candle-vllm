@@ -45,7 +45,7 @@ fn arch_name(cfg: &Config) -> &str {
 fn resolve_packed_gate_up_layout(cfg: &Config) -> Result<PackedGateUpLayout> {
     let arch = arch_name(cfg);
 
-    // Qwen3.5 MoE / Qwen3-Next store gate_up as [experts, 2*intermediate, hidden].
+    // Qwen3.5 MoE / Qwen3-Next checkpoints store gate_up as [experts, 2*intermediate, hidden].
     if matches!(
         arch,
         "Qwen3_5MoeForCausalLM"
@@ -72,7 +72,7 @@ fn resolve_packed_gate_up_layout(cfg: &Config) -> Result<PackedGateUpLayout> {
 fn resolve_packed_down_layout(cfg: &Config) -> PackedDownLayout {
     let arch = arch_name(cfg);
 
-    // Qwen3.5 MoE / Qwen3-Next store down_proj as [experts, hidden, intermediate].
+    // Qwen3.5 MoE / Qwen3-Next checkpoints store down_proj as [experts, hidden, intermediate].
     if matches!(
         arch,
         "Qwen3_5MoeForCausalLM"
@@ -100,19 +100,6 @@ fn get_packed_weight_3d(
         .pp(tensor_name)
         .get_with_hints(shape, "weight", sh)
         .or_else(|_| experts_vb.get_with_hints(shape, tensor_name, sh))
-}
-
-fn get_packed_weight_3d_dtype(
-    experts_vb: &VarBuilder,
-    tensor_name: &str,
-    shape: (usize, usize, usize),
-    sh: Shard,
-    dtype: DType,
-) -> Result<Tensor> {
-    experts_vb
-        .pp(tensor_name)
-        .get_with_hints_dtype(shape, "weight", sh, dtype)
-        .or_else(|_| experts_vb.get_with_hints_dtype(shape, tensor_name, sh, dtype))
 }
 
 fn load_packed_experts(
@@ -729,13 +716,12 @@ impl FusedMoeFp8 {
         let by = block_size[0];
         let bx = block_size[1];
 
-        let gate_ws = vb.pp("gate").get_with_hints_dtype(
-            (num_experts, cfg.hidden_size),
-            "weight",
+        let gate = linear_no_bias(
+            cfg.hidden_size,
+            num_experts,
+            vb.pp("gate"),
             Shard::default(),
-            dtype,
         )?;
-        let gate = Linear::new(gate_ws, None);
 
         let experts_vb = vb.pp("experts");
 
@@ -747,103 +733,89 @@ impl FusedMoeFp8 {
             down_experts,
             down_experts_scale,
         ) = if has_packed_gate_up(&experts_vb) {
-            // Packed (Qwen3.5/Qwen3-Next FP8 checkpoints).
-            let gate_weight = get_packed_weight_3d_dtype(
-                &experts_vb,
-                "gate_up_proj",
-                (
-                    num_experts,
-                    cfg.hidden_size,
-                    moe_cfg.moe_intermediate_size * 2,
-                ),
-                shard(2, comm.rank(), comm.world_size() * 2),
-                DType::U8,
-            )?
-            .t()?
-            .contiguous()?;
-
-            let up_weight = get_packed_weight_3d_dtype(
-                &experts_vb,
-                "gate_up_proj",
-                (
-                    num_experts,
-                    cfg.hidden_size,
-                    moe_cfg.moe_intermediate_size * 2,
-                ),
-                shard(2, comm.rank() + comm.world_size(), comm.world_size() * 2),
-                DType::U8,
-            )?
-            .t()?
-            .contiguous()?;
-
+            // Qwen3 VL approach.
             let scale_n = (cfg.hidden_size + by - 1) / by;
             let scale_k = (moe_cfg.moe_intermediate_size * 2 + bx - 1) / bx;
 
-            let gate_up_scale = experts_vb
-                .get_with_hints_dtype(
+            let (gate_weight, gate_s, up_weight, up_s, down_weight, down_s) = {
+                let gate_weight = experts_vb
+                    .get_with_hints_dtype(
+                        (
+                            num_experts,
+                            cfg.hidden_size,
+                            moe_cfg.moe_intermediate_size * 2,
+                        ),
+                        "gate_up_proj",
+                        shard(2, comm.rank(), comm.world_size() * 2),
+                        DType::U8,
+                    )?
+                    .t()?
+                    .contiguous()?;
+
+                let up_weight = experts_vb
+                    .get_with_hints_dtype(
+                        (
+                            num_experts,
+                            cfg.hidden_size,
+                            moe_cfg.moe_intermediate_size * 2,
+                        ),
+                        "gate_up_proj",
+                        shard(2, comm.rank() + comm.world_size(), comm.world_size() * 2),
+                        DType::U8,
+                    )?
+                    .t()?
+                    .contiguous()?;
+
+                let gate_up_scale = experts_vb.get_with_hints_dtype(
                     (num_experts, scale_n, scale_k),
                     "gate_up_proj_scale_inv",
                     Shard::default(),
                     DType::F32,
-                )
-                .or_else(|_| {
-                    experts_vb.pp("gate_up_proj").get_with_hints_dtype(
-                        (num_experts, scale_n, scale_k),
-                        "weight_scale_inv",
-                        Shard::default(),
-                        DType::F32,
-                    )
-                })?;
+                )?;
 
-            let inter_blocks = moe_cfg.moe_intermediate_size / bx;
-            let local_inter_blocks = inter_blocks / comm.world_size();
-            let start_blocks = comm.rank() * local_inter_blocks;
+                let inter_blocks = moe_cfg.moe_intermediate_size / bx;
+                let local_inter_blocks = inter_blocks / comm.world_size();
+                let start_blocks = comm.rank() * local_inter_blocks;
 
-            let gate_s_t = gate_up_scale.narrow(2, 0, inter_blocks)?.contiguous()?;
-            let up_s_t = gate_up_scale
-                .narrow(2, inter_blocks, inter_blocks)?
-                .contiguous()?;
+                let gate_s_t = gate_up_scale.narrow(2, 0, inter_blocks)?.contiguous()?;
+                let up_s_t = gate_up_scale
+                    .narrow(2, inter_blocks, inter_blocks)?
+                    .contiguous()?;
 
-            let gate_s = gate_s_t
-                .narrow(2, start_blocks, local_inter_blocks)?
-                .t()?
-                .contiguous()?;
-            let up_s = up_s_t
-                .narrow(2, start_blocks, local_inter_blocks)?
-                .t()?
-                .contiguous()?;
+                let gate_s = gate_s_t
+                    .narrow(2, start_blocks, local_inter_blocks)?
+                    .t()?
+                    .contiguous()?;
+                let up_s = up_s_t
+                    .narrow(2, start_blocks, local_inter_blocks)?
+                    .t()?
+                    .contiguous()?;
 
-            let down_weight = get_packed_weight_3d_dtype(
-                &experts_vb,
-                "down_proj",
-                (num_experts, moe_cfg.moe_intermediate_size, cfg.hidden_size),
-                shard(1, comm.rank(), comm.world_size()),
-                DType::U8,
-            )?
-            .t()?
-            .contiguous()?;
+                let down_weight = experts_vb
+                    .get_with_hints_dtype(
+                        (num_experts, moe_cfg.moe_intermediate_size, cfg.hidden_size),
+                        "down_proj",
+                        shard(1, comm.rank(), comm.world_size()),
+                        DType::U8,
+                    )?
+                    .t()?
+                    .contiguous()?;
 
-            let down_s = experts_vb
-                .get_with_hints_dtype(
-                    (num_experts, scale_k / 2, scale_n),
-                    "down_proj_scale_inv",
-                    shard(1, comm.rank(), comm.world_size()),
-                    DType::F32,
-                )
-                .or_else(|_| {
-                    experts_vb.pp("down_proj").get_with_hints_dtype(
+                let down_s = experts_vb
+                    .get_with_hints_dtype(
                         (num_experts, scale_k / 2, scale_n),
-                        "weight_scale_inv",
+                        "down_proj_scale_inv",
                         shard(1, comm.rank(), comm.world_size()),
                         DType::F32,
-                    )
-                })?
-                .t()?
-                .contiguous()?;
+                    )?
+                    .t()?
+                    .contiguous()?;
+                (gate_weight, gate_s, up_weight, up_s, down_weight, down_s)
+            };
 
             (gate_weight, gate_s, up_weight, up_s, down_weight, down_s)
         } else {
-            // Per-expert layout.
+            // Per-expert loading
             let mut gate_experts = Vec::with_capacity(num_experts);
             let mut gate_experts_scale = Vec::with_capacity(num_experts);
             let mut up_experts = Vec::with_capacity(num_experts);
@@ -869,23 +841,12 @@ impl FusedMoeFp8 {
                     DType::F32,
                 ) {
                     Ok(s) => s,
-                    Err(_) => expert_vb
-                        .pp("gate_proj")
-                        .get_with_hints_dtype(
-                            (sn, sk),
-                            "weight_scale_inv",
-                            shard(0, comm.rank(), comm.world_size()),
-                            DType::F32,
-                        )
-                        .map_err(|_| {
-                            candle::Error::Msg(
-                                format!(
-                                    "FusedMoeFp8: Missing weight_scale/inv for expert {} gate_proj",
-                                    i
-                                )
-                                .into(),
-                            )
-                        })?,
+                    Err(_) => expert_vb.pp("gate_proj").get_with_hints_dtype(
+                        (sn, sk),
+                        "weight_scale_inv",
+                        shard(0, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )?,
                 };
 
                 let up_weight = expert_vb.pp("up_proj").get_with_hints_dtype(
@@ -901,23 +862,12 @@ impl FusedMoeFp8 {
                     DType::F32,
                 ) {
                     Ok(s) => s,
-                    Err(_) => expert_vb
-                        .pp("up_proj")
-                        .get_with_hints_dtype(
-                            (sn, sk),
-                            "weight_scale_inv",
-                            shard(0, comm.rank(), comm.world_size()),
-                            DType::F32,
-                        )
-                        .map_err(|_| {
-                            candle::Error::Msg(
-                                format!(
-                                    "FusedMoeFp8: Missing weight_scale/inv for expert {} up_proj",
-                                    i
-                                )
-                                .into(),
-                            )
-                        })?,
+                    Err(_) => expert_vb.pp("up_proj").get_with_hints_dtype(
+                        (sn, sk),
+                        "weight_scale_inv",
+                        shard(0, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )?,
                 };
 
                 let down_weight = expert_vb.pp("down_proj").get_with_hints_dtype(
@@ -935,23 +885,12 @@ impl FusedMoeFp8 {
                     DType::F32,
                 ) {
                     Ok(s) => s,
-                    Err(_) => expert_vb
-                        .pp("down_proj")
-                        .get_with_hints_dtype(
-                            (down_sn, down_sk),
-                            "weight_scale_inv",
-                            shard(1, comm.rank(), comm.world_size()),
-                            DType::F32,
-                        )
-                        .map_err(|_| {
-                            candle::Error::Msg(
-                                format!(
-                                    "FusedMoeFp8: Missing weight_scale/inv for expert {} down_proj",
-                                    i
-                                )
-                                .into(),
-                            )
-                        })?,
+                    Err(_) => expert_vb.pp("down_proj").get_with_hints_dtype(
+                        (down_sn, down_sk),
+                        "weight_scale_inv",
+                        shard(1, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )?,
                 };
 
                 gate_experts.push(gate_weight);

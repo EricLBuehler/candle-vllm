@@ -150,17 +150,27 @@ impl GatedDeltaNet {
                     dtype,
                 );
 
-                if let Ok(in_proj_qkv) = split_qkv_merged {
-                    return Ok(GdnProjection::SplitQkvZaMerged {
-                        in_proj_qkv,
-                        in_proj_z,
-                        in_proj_b,
-                        in_proj_a,
-                    });
+                match split_qkv_merged {
+                    Ok(in_proj_qkv) => {
+                        return Ok(GdnProjection::SplitQkvZaMerged {
+                            in_proj_qkv,
+                            in_proj_z,
+                            in_proj_b,
+                            in_proj_a,
+                        });
+                    }
+                    Err(err) => {
+                        if is_fp8_quant {
+                            candle_core::bail!(
+                                "Unable to load TP-safe FP8 Qwen3.5 split in_proj_qkv: {}",
+                                err
+                            );
+                        }
+                    }
                 }
             }
 
-            // Single GPU (or fallback): use legacy split loader.
+            // Single GPU (or non-FP8 fallback): use legacy split loader.
             let split_qkv_legacy = TensorParallelColumnLinear::load_with_hints(
                 hidden_size,
                 key_dim_global * 2 + value_dim_global,
