@@ -232,7 +232,7 @@ impl ToolParser {
     }
 
     /// Convert a JSON Value to a ToolCall if it has the right structure
-    fn value_to_tool_call(&self, value: &Value, call_id: &mut usize) -> Option<ToolCall> {
+    fn value_to_tool_call(&self, value: &Value, _call_id: &mut usize) -> Option<ToolCall> {
         let name = value.get("name")?.as_str()?;
         let arguments = value.get("arguments")?;
 
@@ -242,9 +242,8 @@ impl ToolParser {
             serde_json::to_string(arguments).ok()?
         };
 
-        *call_id += 1;
         Some(ToolCall::new(
-            format!("call_{}", call_id),
+            super::generate_tool_call_id(),
             name.to_string(),
             args_str,
         ))

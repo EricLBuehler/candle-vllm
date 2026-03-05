@@ -1,15 +1,17 @@
 // src/tools/mod.rs
-//! Tool calling support for vLLM.rs
+//! Tool calling support for candle-vLLM
 //!
 //! This module provides OpenAI-compatible tool calling functionality,
 //! allowing LLMs to invoke external functions and tools.
 
+pub mod helpers;
 pub mod parser;
 pub mod schema;
 pub mod stream_parser;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::Uuid;
 
 /// A tool definition following OpenAI's function calling format
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -21,11 +23,9 @@ pub struct Tool {
     pub function: FunctionDefinition,
 }
 
-impl Tool {
-    /// Create a new function tool
-    pub fn function(name: impl Into<String>, description: impl Into<String>) -> ToolBuilder {
-        ToolBuilder::new(name.into(), description.into())
-    }
+/// Builder entry point — create a new function tool builder.
+pub fn function_tool(name: impl Into<String>, description: impl Into<String>) -> ToolBuilder {
+    ToolBuilder::new(name.into(), description.into())
 }
 
 /// Definition of a callable function
@@ -34,7 +34,8 @@ pub struct FunctionDefinition {
     /// Name of the function
     pub name: String,
     /// Description of what the function does
-    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// JSON Schema for the function parameters
     pub parameters: Value,
     /// Whether to enable strict schema adherence
@@ -107,7 +108,7 @@ impl ToolBuilder {
             tool_type: "function".to_string(),
             function: FunctionDefinition {
                 name: self.name,
-                description: self.description,
+                description: Some(self.description),
                 parameters: self.parameters,
                 strict: self.strict,
             },
@@ -119,33 +120,49 @@ impl ToolBuilder {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ToolChoice {
-    /// Let the model decide
-    Auto(String),
-    /// Force no tool usage
-    None(String),
+    /// String modes: "auto" | "none" | "required"
+    Mode(ToolChoiceMode),
     /// Force a specific tool
     Function {
         #[serde(rename = "type")]
-        choice_type: String,
+        choice_type: ToolChoiceType,
         function: ToolChoiceFunction,
     },
 }
 
 impl ToolChoice {
     pub fn auto() -> Self {
-        ToolChoice::Auto("auto".to_string())
+        ToolChoice::Mode(ToolChoiceMode::Auto)
     }
 
     pub fn none() -> Self {
-        ToolChoice::None("none".to_string())
+        ToolChoice::Mode(ToolChoiceMode::None)
+    }
+
+    pub fn required() -> Self {
+        ToolChoice::Mode(ToolChoiceMode::Required)
     }
 
     pub fn function(name: impl Into<String>) -> Self {
         ToolChoice::Function {
-            choice_type: "function".to_string(),
+            choice_type: ToolChoiceType::Function,
             function: ToolChoiceFunction { name: name.into() },
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolChoiceMode {
+    Auto,
+    None,
+    Required,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ToolChoiceType {
+    Function,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -201,6 +218,35 @@ pub struct FunctionCall {
     pub arguments: String,
 }
 
+/// Build a ToolCall from name/arguments with a provided ID.
+pub fn new_tool_call(
+    id: impl Into<String>,
+    name: impl Into<String>,
+    arguments: impl Into<String>,
+) -> ToolCall {
+    ToolCall::new(id, name, arguments)
+}
+
+/// Generate a compact tool call ID with `call_` prefix.
+/// Uses 16 hex chars (64 bits) from UUIDv4 for low collision risk and shorter payloads.
+pub fn generate_tool_call_id() -> String {
+    let raw = Uuid::new_v4().simple().to_string();
+    format!("call_{}", &raw[..16])
+}
+
+/// Convert a parsed tool call from the `tool_parser` crate into our ToolCall type.
+pub fn tool_call_from_parser(parsed: tool_parser::ToolCall) -> ToolCall {
+    ToolCall {
+        index: None,
+        id: generate_tool_call_id(),
+        call_type: "function".to_string(),
+        function: FunctionCall {
+            name: parsed.function.name,
+            arguments: parsed.function.arguments,
+        },
+    }
+}
+
 /// Result of a tool execution
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
@@ -239,7 +285,7 @@ pub struct ToolFormat {}
 
 impl ToolFormat {
     /// Get tool prompt for a specific tool config (model-aware tags).
-    /// Tool definitions are injected by the chat template - this only provides usage instructions.
+    /// Tool definitions are injected by the chat template — this only provides usage instructions.
     pub fn get_tool_prompt(tool_config: &crate::tools::stream_parser::ToolConfig) -> String {
         let start_tag = &tool_config.start_token_str;
         let end_tag = &tool_config.end_token_str;
@@ -259,5 +305,47 @@ impl ToolFormat {
             - The \"name\" and \"arguments\" are necessary fields\n\
             - MUST FOLLOW the above instruction when using tool call!"
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_choice_deserializes_string_modes() {
+        let auto: ToolChoice = serde_json::from_str(r#""auto""#).unwrap();
+        let none: ToolChoice = serde_json::from_str(r#""none""#).unwrap();
+        let required: ToolChoice = serde_json::from_str(r#""required""#).unwrap();
+
+        assert!(matches!(auto, ToolChoice::Mode(ToolChoiceMode::Auto)));
+        assert!(matches!(none, ToolChoice::Mode(ToolChoiceMode::None)));
+        assert!(matches!(
+            required,
+            ToolChoice::Mode(ToolChoiceMode::Required)
+        ));
+    }
+
+    #[test]
+    fn tool_choice_deserializes_function_mode() {
+        let choice: ToolChoice =
+            serde_json::from_str(r#"{"type":"function","function":{"name":"read_file"}}"#).unwrap();
+        match choice {
+            ToolChoice::Function {
+                choice_type,
+                function,
+            } => {
+                assert_eq!(choice_type, ToolChoiceType::Function);
+                assert_eq!(function.name, "read_file");
+            }
+            _ => panic!("expected function tool choice"),
+        }
+    }
+
+    #[test]
+    fn generate_tool_call_id_has_correct_format() {
+        let id = generate_tool_call_id();
+        assert!(id.starts_with("call_"));
+        assert_eq!(id.len(), 5 + 16); // "call_" + 16 hex chars
     }
 }

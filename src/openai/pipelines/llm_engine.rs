@@ -1102,7 +1102,7 @@ impl LLMEngine {
                                 if should_parse_tools {
                                     if data.stream_tool_parser.is_none() {
                                         data.stream_tool_parser =
-                                            Some(StreamToolParser::new_with_config(
+                                            Some(StreamToolParser::new_with_config_compat(
                                                 &pipeline.tool_model_type,
                                                 pipeline.tool_config.clone(),
                                             ));
@@ -1175,12 +1175,6 @@ impl LLMEngine {
                                                 if !buffer.is_empty() {
                                                     final_content = Some(buffer);
                                                 }
-                                            }
-                                        }
-                                        ParserState::MaybeStart => {
-                                            let buffer = parser.take_buffer();
-                                            if !buffer.is_empty() {
-                                                final_content = Some(buffer);
                                             }
                                         }
                                         ParserState::Normal => {}
@@ -1341,7 +1335,7 @@ impl LLMEngine {
                             let mut finish_reason = seq.deref_mut().get_finish_reason().clone();
 
                             let (content, tool_calls) = if should_parse_tools {
-                                let mut parser = StreamToolParser::new_with_config(
+                                let mut parser = StreamToolParser::new_with_config_compat(
                                     &pipeline.tool_model_type,
                                     pipeline.tool_config.clone(),
                                 );
@@ -1372,12 +1366,6 @@ impl LLMEngine {
                                             if !buffer.is_empty() {
                                                 accumulated.push_str(&buffer);
                                             }
-                                        }
-                                    }
-                                    ParserState::MaybeStart => {
-                                        let buffer = parser.take_buffer();
-                                        if !buffer.is_empty() {
-                                            accumulated.push_str(&buffer);
                                         }
                                     }
                                     ParserState::Normal => {}

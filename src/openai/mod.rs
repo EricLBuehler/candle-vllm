@@ -122,10 +122,10 @@ fn normalize_tool_choice(choice: &Option<ToolChoice>) -> ToolChoiceKind {
         Some(ToolChoice::Function { function, .. }) => {
             ToolChoiceKind::Function(function.name.clone())
         }
-        Some(ToolChoice::Auto(value)) | Some(ToolChoice::None(value)) => match value.as_str() {
-            "none" => ToolChoiceKind::None,
-            "auto" => ToolChoiceKind::Auto,
-            _ => ToolChoiceKind::Auto,
+        Some(ToolChoice::Mode(mode)) => match mode {
+            crate::tools::ToolChoiceMode::Auto => ToolChoiceKind::Auto,
+            crate::tools::ToolChoiceMode::None => ToolChoiceKind::None,
+            crate::tools::ToolChoiceMode::Required => ToolChoiceKind::Auto,
         },
     }
 }
