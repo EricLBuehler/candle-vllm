@@ -6,7 +6,9 @@ use crate::openai::pipelines::TokenOrFinishReason;
 use crate::openai::streaming::ChatResponse;
 use crate::openai::TaskData;
 use crate::scheduler::Scheduler;
-use crate::tools::stream_parser::{ParserState, StreamResult, StreamToolParser};
+use crate::tools::stream_parser::{
+    BufferedFinalizeResult, ParserState, StreamResult, StreamToolParser,
+};
 use crate::{
     openai::{
         models::Config,
@@ -543,6 +545,7 @@ impl LLMEngine {
                             task.is_embedding,
                             task.encoding_format,
                             task.embedding_type,
+                            task.tools.clone(),
                             None,
                         );
                         tracing::debug!("Daemon process: add_sequence to group {}", task.group_id);
@@ -586,6 +589,7 @@ impl LLMEngine {
                     task.is_embedding,
                     task.encoding_format.clone(),
                     task.embedding_type.clone(),
+                    task.tools.clone(),
                     sender,
                 );
                 tracing::debug!("Main process: add_sequence to group {}", task.group_id);
@@ -1102,9 +1106,12 @@ impl LLMEngine {
                                 if should_parse_tools {
                                     if data.stream_tool_parser.is_none() {
                                         data.stream_tool_parser =
-                                            Some(StreamToolParser::new_with_config_compat(
+                                            Some(StreamToolParser::new_with_config(
                                                 &pipeline.tool_model_type,
+                                                pipeline.tool_parser_model_id.clone(),
                                                 pipeline.tool_config.clone(),
+                                                group.tools.clone(),
+                                                pipeline.enforce_parser.clone(),
                                             ));
                                     }
                                     if let Some(parser) = data.stream_tool_parser.as_mut() {
@@ -1168,13 +1175,20 @@ impl LLMEngine {
                                 if let Some(parser) = data.stream_tool_parser.as_mut() {
                                     match parser.state() {
                                         ParserState::Buffering => {
-                                            if let Some(mut parsed) = parser.finalize() {
-                                                data.pending_tool_calls.append(&mut parsed);
-                                            } else {
-                                                let buffer = parser.take_buffer();
-                                                if !buffer.is_empty() {
-                                                    final_content = Some(buffer);
+                                            match parser.finalize_buffered_tool_calls() {
+                                                Some(BufferedFinalizeResult::ToolCalls(
+                                                    mut parsed,
+                                                )) => {
+                                                    data.pending_tool_calls.append(&mut parsed);
                                                 }
+                                                Some(BufferedFinalizeResult::FlushBuffer(
+                                                    buffer,
+                                                )) => {
+                                                    if !buffer.is_empty() {
+                                                        final_content = Some(buffer);
+                                                    }
+                                                }
+                                                None => {}
                                             }
                                         }
                                         ParserState::Normal => {}
@@ -1335,9 +1349,12 @@ impl LLMEngine {
                             let mut finish_reason = seq.deref_mut().get_finish_reason().clone();
 
                             let (content, tool_calls) = if should_parse_tools {
-                                let mut parser = StreamToolParser::new_with_config_compat(
+                                let mut parser = StreamToolParser::new_with_config(
                                     &pipeline.tool_model_type,
+                                    pipeline.tool_parser_model_id.clone(),
                                     pipeline.tool_config.clone(),
+                                    group.tools.clone(),
+                                    pipeline.enforce_parser.clone(),
                                 );
                                 let mut pending_tool_calls = Vec::new();
                                 let mut accumulated = String::new();
@@ -1359,13 +1376,16 @@ impl LLMEngine {
 
                                 match parser.state() {
                                     ParserState::Buffering => {
-                                        if let Some(mut parsed) = parser.finalize() {
-                                            pending_tool_calls.append(&mut parsed);
-                                        } else {
-                                            let buffer = parser.take_buffer();
-                                            if !buffer.is_empty() {
-                                                accumulated.push_str(&buffer);
+                                        match parser.finalize_buffered_tool_calls() {
+                                            Some(BufferedFinalizeResult::ToolCalls(mut parsed)) => {
+                                                pending_tool_calls.append(&mut parsed);
                                             }
+                                            Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
+                                                if !buffer.is_empty() {
+                                                    accumulated.push_str(&buffer);
+                                                }
+                                            }
+                                            None => {}
                                         }
                                     }
                                     ParserState::Normal => {}
@@ -1895,6 +1915,7 @@ impl LLMEngine {
         is_embedding: bool,
         encoding_format: crate::openai::requests::EncodingFormat,
         embedding_type: crate::openai::requests::EmbeddingType,
+        tools: Vec<crate::tools::Tool>,
         sender: Option<Sender<ChatResponse>>,
     ) -> SequenceGroup {
         let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
@@ -1913,6 +1934,7 @@ impl LLMEngine {
             is_embedding,
             encoding_format,
             embedding_type,
+            tools,
             sender,
         )
     }
@@ -1927,6 +1949,7 @@ impl LLMEngine {
         is_embedding: bool,
         encoding_format: crate::openai::requests::EncodingFormat,
         embedding_type: crate::openai::requests::EmbeddingType,
+        tools: Vec<crate::tools::Tool>,
         sender: Option<Arc<Sender<ChatResponse>>>,
         sync_notify: Option<Arc<Notify>>,
     ) {
@@ -1964,6 +1987,7 @@ impl LLMEngine {
             is_embedding,
             encoding_format,
             embedding_type,
+            tools,
         };
         let mut waiting_tasks = self.waiting_tasks.write();
         waiting_tasks.push(task);

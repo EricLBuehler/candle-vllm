@@ -20,6 +20,21 @@ use tokio::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
 
+fn current_model_name(data: &OpenAIServerData) -> Result<String, APIError> {
+    let model = data.model.read();
+    let (pipeline, _) = model
+        .get_pipeline(0)
+        .ok_or(APIError::new("Missing pipeline".to_string()))?;
+    Ok(pipeline.name().to_string())
+}
+
+fn resolve_response_model_name(requested: Option<&str>, current: &str) -> String {
+    match requested.map(str::trim) {
+        None | Some("") | Some("default") => current.to_string(),
+        Some(name) => name.to_string(),
+    }
+}
+
 // Get prompt, roles
 async fn get_gen_prompt(
     data: &OpenAIServerData,
@@ -47,13 +62,26 @@ async fn get_gen_prompt(
                 }
 
                 if role == "tool" {
-                    let tool_call_id = message.tool_call_id.as_deref().unwrap_or("unknown");
                     let content = message.content.clone().unwrap_or_default();
                     let trimmed = content.trim();
                     if !trimmed.is_empty() {
-                        let prompt = format!("[Tool Result for {}]: {}", tool_call_id, trimmed);
-                        conversation.append_message(role.to_string(), prompt);
+                        conversation.append_message_with_tool_metadata(
+                            role.to_string(),
+                            trimmed.to_string(),
+                            None,
+                            message.tool_call_id.clone(),
+                        );
                     }
+                    continue;
+                }
+
+                if role == "assistant" && message.tool_calls.is_some() {
+                    conversation.append_message_with_tool_metadata(
+                        role.to_string(),
+                        message.content.clone().unwrap_or_default(),
+                        message.tool_calls.clone(),
+                        None,
+                    );
                     continue;
                 }
 
@@ -276,7 +304,10 @@ pub async fn chat_completions(
     let data_clone = data.clone();
     let request_id_clone = request_id.clone();
     let stream_request = request.stream.is_some_and(|x| x);
-    let model_name = request.model.clone().unwrap_or("default".to_string());
+    let model_name = match current_model_name(&data) {
+        Ok(current) => resolve_response_model_name(request.model.as_deref(), &current),
+        Err(e) => return ChatResponder::ModelError(e),
+    };
     let sync_notify = Arc::new(Notify::new());
     let sync_completion_notify = if stream_request {
         None
@@ -298,6 +329,7 @@ pub async fn chat_completions(
                     false,
                     EncodingFormat::default(),
                     EmbeddingType::default(),
+                    tool_config.tools.clone(),
                     if stream_request {
                         Some(Arc::new(response_tx))
                     } else {
@@ -465,6 +497,7 @@ pub async fn create_embeddings(
                     true, //is_embedding
                     request.encoding_format.clone(),
                     request.embedding_type.clone(),
+                    Vec::new(),
                     Some(Arc::new(response_tx)),
                     None,
                 );

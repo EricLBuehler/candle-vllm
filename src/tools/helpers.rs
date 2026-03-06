@@ -462,8 +462,7 @@ fn repair_embedded_parameter_blocks(
         let mut first_marker_start = None;
         let mut matched_any = false;
         for caps in re.captures_iter(text) {
-            let (Some(full), Some(name_m), Some(value_m)) =
-                (caps.get(0), caps.get(1), caps.get(2))
+            let (Some(full), Some(name_m), Some(value_m)) = (caps.get(0), caps.get(1), caps.get(2))
             else {
                 continue;
             };
@@ -604,7 +603,10 @@ mod tests {
             }
         });
         let mut args = serde_json::Map::new();
-        args.insert("file_path".to_string(), Value::String("/tmp/a.rs".to_string()));
+        args.insert(
+            "file_path".to_string(),
+            Value::String("/tmp/a.rs".to_string()),
+        );
 
         let normalized = normalize_argument_keys(&args, &schema);
         assert!(normalized.contains_key("filePath"));

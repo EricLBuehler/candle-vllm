@@ -94,6 +94,7 @@ pub struct TaskData {
     pub is_embedding: bool,
     pub encoding_format: requests::EncodingFormat,
     pub embedding_type: requests::EmbeddingType,
+    pub tools: Vec<Tool>,
 }
 
 pub mod conversation;

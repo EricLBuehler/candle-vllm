@@ -1,8 +1,9 @@
-use crate::tools::Tool;
+use crate::tools::{Tool, ToolCall};
 
 use super::{ApplyChatTemplateError, Message};
-use minijinja::{context, value::Kwargs, Environment, Error, ErrorKind, Value};
+use minijinja::{context, value::Kwargs, Environment, Error, ErrorKind, Value as JinjaValue};
 use serde::Serialize;
+use serde_json::Value as JsonValue;
 
 pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
 pub const DEFAULT_SEP: &str = "\n";
@@ -85,7 +86,7 @@ impl DefaultConversation {
     }
 }
 
-fn tojson(value: Value, kwargs: Kwargs) -> Result<Value, Error> {
+fn tojson(value: JinjaValue, kwargs: Kwargs) -> Result<JinjaValue, Error> {
     if let Ok(indent) = kwargs.get("indent") {
         let mut buf = Vec::new();
         let repeat = b" ".repeat(indent);
@@ -115,7 +116,7 @@ fn tojson(value: Value, kwargs: Kwargs) -> Result<Value, Error> {
                 _ => rv.push(c),
             }
         }
-        Value::from_safe_string(rv)
+        JinjaValue::from_safe_string(rv)
     })
 }
 
@@ -142,6 +143,8 @@ impl DefaultConversation {
                     Message {
                         role: "system".to_string(),
                         content: msg,
+                        tool_calls: None,
+                        tool_call_id: None,
                     },
                 );
             }
@@ -154,7 +157,32 @@ impl DefaultConversation {
 
     /// Append a new message.
     pub fn append_message(&mut self, role: String, content: String) {
-        self.messages.push(Message { role, content });
+        self.messages.push(Message {
+            role,
+            content,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+    }
+
+    pub fn append_message_with_tool_metadata(
+        &mut self,
+        role: String,
+        content: String,
+        tool_calls: Option<Vec<ToolCall>>,
+        tool_call_id: Option<String>,
+    ) {
+        self.messages.push(Message {
+            role,
+            content,
+            tool_calls: tool_calls.map(|calls| {
+                calls
+                    .iter()
+                    .map(Self::to_template_tool_call)
+                    .collect::<Vec<_>>()
+            }),
+            tool_call_id,
+        });
     }
 
     pub fn get_roles(&self) -> &(String, String) {
@@ -476,6 +504,38 @@ impl DefaultConversation {
                     }
                 }
             }
+        }
+    }
+}
+
+impl DefaultConversation {
+    fn to_template_tool_call(call: &ToolCall) -> JsonValue {
+        let args = Self::parse_template_tool_arguments(&call.function.arguments);
+        serde_json::json!({
+            "id": call.id,
+            "type": call.call_type,
+            "function": {
+                "name": call.function.name,
+                "arguments": args
+            }
+        })
+    }
+
+    fn parse_template_tool_arguments(arguments: &str) -> JsonValue {
+        let raw = arguments.trim();
+        if raw.is_empty() {
+            return serde_json::json!({});
+        }
+
+        match serde_json::from_str::<JsonValue>(raw).ok() {
+            Some(JsonValue::Object(obj)) => JsonValue::Object(obj),
+            Some(JsonValue::String(inner)) => {
+                match serde_json::from_str::<JsonValue>(inner.trim()).ok() {
+                    Some(JsonValue::Object(obj)) => JsonValue::Object(obj),
+                    _ => serde_json::json!({}),
+                }
+            }
+            _ => serde_json::json!({}),
         }
     }
 }

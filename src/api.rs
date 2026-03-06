@@ -165,6 +165,7 @@ impl EngineBuilder {
             model_id.clone(),
             weight_path.clone(),
             weight_file.clone(),
+            None,
         ));
 
         // Use cached token if available, or try to load safely without prompt (api mode should not block on stdin)
@@ -520,6 +521,7 @@ impl Engine {
                 false, // is_embedding
                 crate::openai::requests::EncodingFormat::default(),
                 crate::openai::requests::EmbeddingType::default(),
+                request.tools.clone().unwrap_or_default(),
                 None, // streamer
                 Some(req_notify.clone()), // Use the local notify
             );
@@ -537,12 +539,16 @@ impl Engine {
         }
 
         let e = self.engine.read();
+        let response_model = e
+            .get_pipeline(0)
+            .map(|(pipeline, _)| pipeline.name().to_string())
+            .unwrap_or_else(|| request.model.clone().unwrap_or("default".to_string()));
         if let Some(record) = e.completion_records.get(&request_id) {
             Ok(ChatCompletionResponse {
                 id: request_id,
                 choices: record.0.clone(),
                 created: record.1.created,
-                model: request.model.clone().unwrap_or("default".to_string()),
+                model: response_model,
                 object: "chat.completion",
                 usage: record.1.clone(),
             })
@@ -617,6 +623,7 @@ impl Engine {
                 true, // is_embedding
                 request.encoding_format.clone(),
                 request.embedding_type.clone(),
+                Vec::new(),
                 Some(std::sync::Arc::new(tx)),
                 None,
             );
