@@ -15,6 +15,7 @@ pub struct CacheConfig {
     pub fully_init: bool,
     pub dtype: DType,
     pub kvcache_mem_gpu: usize, // in MB
+    pub mamba_cache_budget_bytes: usize,
 }
 
 impl CacheConfig {

@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::Entry, HashMap, VecDeque},
+    collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
     hash::Hash,
     marker::PhantomData,
     ops::Deref,
@@ -199,6 +199,7 @@ pub struct BlockEngine {
     block_size: usize,
     kvcache_mem_gpu: usize,
     prefix_cache: Option<PrefixCache>,
+    valid_mamba_prefix_hashes: HashSet<u64>,
 }
 
 impl BlockEngine {
@@ -223,6 +224,7 @@ impl BlockEngine {
             block_size,
             kvcache_mem_gpu,
             prefix_cache,
+            valid_mamba_prefix_hashes: HashSet::new(),
         }
     }
 
@@ -406,6 +408,41 @@ impl BlockEngine {
             return None;
         }
         prefix_cache.hash_for_blocks(&tokens, full_blocks)
+    }
+
+    pub fn record_mamba_prefix_hash(&mut self, hash: u64) {
+        self.valid_mamba_prefix_hashes.insert(hash);
+    }
+
+    pub fn invalidate_mamba_prefix_hash(&mut self, hash: u64) {
+        self.valid_mamba_prefix_hashes.remove(&hash);
+    }
+
+    fn resolve_valid_mamba_matched_blocks(
+        valid_hashes: &HashSet<u64>,
+        prefix_cache: &PrefixCache,
+        matched_blocks: usize,
+        last_hash: Option<u64>,
+    ) -> usize {
+        if matched_blocks == 0 {
+            return 0;
+        }
+        let Some(last_hash) = last_hash else {
+            return 0;
+        };
+        let hashes = prefix_cache.hashes_for_match(last_hash);
+        if hashes.len() < matched_blocks {
+            return 0;
+        }
+        let mut valid_blocks = matched_blocks;
+        while valid_blocks > 0 {
+            let candidate_hash = hashes[valid_blocks - 1];
+            if valid_hashes.contains(&candidate_hash) {
+                break;
+            }
+            valid_blocks -= 1;
+        }
+        valid_blocks
     }
 
     /// Rebuild a running sequence block table without shared prefix-cache blocks.
@@ -595,13 +632,14 @@ impl BlockEngine {
 
         if let Some(seq) = seqs.first() {
             let tokens = seq.deref().deref().get_token_ids();
+            let valid_hashes = self.valid_mamba_prefix_hashes.clone();
             if let Some(prefix_cache) = self.prefix_cache.as_mut() {
                 let PrefixMatch {
                     matched_blocks,
                     last_hash,
                 } = prefix_cache.match_prefix(&tokens);
                 let full_blocks = tokens.len() / block_size;
-                let matched_blocks = if matched_blocks == full_blocks
+                let raw_matched_blocks = if matched_blocks == full_blocks
                     && tokens.len() % block_size == 0
                     && matched_blocks > 0
                 {
@@ -609,6 +647,19 @@ impl BlockEngine {
                 } else {
                     matched_blocks
                 };
+                let matched_blocks = Self::resolve_valid_mamba_matched_blocks(
+                    &valid_hashes,
+                    prefix_cache,
+                    raw_matched_blocks,
+                    last_hash,
+                );
+                if raw_matched_blocks > 0 && matched_blocks == 0 {
+                    tracing::info!(
+                        "Prefix cache mamba-state miss seq {} (raw {} blocks matched, but no compatible mamba snapshot)",
+                        seq.deref().deref().get_id(),
+                        raw_matched_blocks
+                    );
+                }
                 cached_tokens = matched_blocks * block_size;
                 if matched_blocks > 0 {
                     tracing::info!(

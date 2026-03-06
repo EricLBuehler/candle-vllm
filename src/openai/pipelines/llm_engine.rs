@@ -36,7 +36,7 @@ use rayon::iter::IntoParallelRefIterator;
 #[cfg(feature = "nccl")]
 use rayon::iter::ParallelIterator;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
     collections::{HashMap, VecDeque},
     iter::zip,
@@ -75,6 +75,7 @@ pub struct LLMEngine {
     pub daemon_manager: RwLock<Option<DaemonManager>>,
     prefill_chunk_size: Option<usize>,
     pub exit_flag: Arc<AtomicBool>,
+    last_decoding_throughput_log_ms: usize,
 }
 
 impl LLMEngine {
@@ -169,16 +170,26 @@ impl LLMEngine {
             return Ok(());
         }
 
-        let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
-        for (seq_id, hash) in captures {
-            if let Err(e) = pipeline.capture_mamba_prefix_state(seq_id, hash) {
-                tracing::warn!(
-                    "Failed to capture prefill mamba prefix state for seq {} hash {}: {}",
-                    seq_id,
-                    hash,
-                    e
-                );
+        let mut captured_hashes = Vec::new();
+        {
+            let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
+            for (seq_id, hash) in captures {
+                match pipeline.capture_mamba_prefix_state(seq_id, hash) {
+                    Ok(true) => captured_hashes.push(hash),
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to capture prefill mamba prefix state for seq {} hash {}: {}",
+                            seq_id,
+                            hash,
+                            e
+                        );
+                    }
+                }
             }
+        }
+        for hash in captured_hashes {
+            self.scheduler.block_engine.record_mamba_prefix_hash(hash);
         }
         Ok(())
     }
@@ -193,6 +204,7 @@ impl LLMEngine {
         }
 
         let block_size = self.cache_config.block_size;
+        let stride_blocks = crate::mamba_snapshot_block_stride_blocks();
         let mut captures = Vec::new();
         for group in groups {
             for seq in Self::ordered_group_sequences(group) {
@@ -202,6 +214,10 @@ impl LLMEngine {
                 let seq_id = seq.deref().get_id();
                 let seq_len = seq.deref().get_len();
                 if seq_len < block_size || seq_len % block_size != 0 {
+                    continue;
+                }
+                let full_blocks = seq_len / block_size;
+                if stride_blocks > 1 && full_blocks % stride_blocks != 0 {
                     continue;
                 }
                 if let Some(hash) = self
@@ -218,16 +234,26 @@ impl LLMEngine {
             return Ok(());
         }
 
-        let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
-        for (seq_id, hash) in captures {
-            if let Err(e) = pipeline.capture_mamba_prefix_state(seq_id, hash) {
-                tracing::warn!(
-                    "Failed to capture decode mamba prefix state for seq {} hash {}: {}",
-                    seq_id,
-                    hash,
-                    e
-                );
+        let mut captured_hashes = Vec::new();
+        {
+            let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
+            for (seq_id, hash) in captures {
+                match pipeline.capture_mamba_prefix_state(seq_id, hash) {
+                    Ok(true) => captured_hashes.push(hash),
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to capture decode mamba prefix state for seq {} hash {}: {}",
+                            seq_id,
+                            hash,
+                            e
+                        );
+                    }
+                }
             }
+        }
+        for hash in captured_hashes {
+            self.scheduler.block_engine.record_mamba_prefix_hash(hash);
         }
         Ok(())
     }
@@ -242,9 +268,16 @@ impl LLMEngine {
         }
 
         let mut sequence_ids: Vec<usize> = Vec::new();
-        for group in groups {
-            for seq in Self::ordered_group_sequences(group) {
-                sequence_ids.push(seq.deref().get_id());
+        let mut had_live_mamba_state: HashMap<usize, bool> = HashMap::new();
+        {
+            let (pipeline, _) = self.get_pipeline(rank).unwrap();
+            for group in groups {
+                for seq in Self::ordered_group_sequences(group) {
+                    let seq_id = seq.deref().get_id();
+                    sequence_ids.push(seq_id);
+                    had_live_mamba_state
+                        .insert(seq_id, pipeline.has_mamba_slot_for_sequence(seq_id));
+                }
             }
         }
         {
@@ -259,6 +292,9 @@ impl LLMEngine {
                 if cached_tokens == 0 {
                     continue;
                 }
+                if had_live_mamba_state.get(&seq_id).copied().unwrap_or(false) {
+                    continue;
+                }
                 if let Some(hash) = self
                     .scheduler
                     .block_engine
@@ -269,6 +305,9 @@ impl LLMEngine {
                         pipeline.has_mamba_prefix_state(hash)?
                     };
                     if !has_snapshot {
+                        self.scheduler
+                            .block_engine
+                            .invalidate_mamba_prefix_hash(hash);
                         self.fallback_sequence_to_full_prefill(
                             &seq,
                             seq_id,
@@ -320,20 +359,104 @@ impl LLMEngine {
                 }
             });
 
-        let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
-        for (seq_id, hash) in captures {
-            if let Err(e) = pipeline.capture_mamba_prefix_state(seq_id, hash) {
-                tracing::warn!(
-                    "Failed to capture mamba prefix state for seq {} hash {}: {}",
-                    seq_id,
-                    hash,
-                    e
-                );
+        let mut captured_hashes = Vec::new();
+        {
+            let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
+            for (seq_id, hash) in captures {
+                match pipeline.capture_mamba_prefix_state(seq_id, hash) {
+                    Ok(true) => captured_hashes.push(hash),
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to capture mamba prefix state for seq {} hash {}: {}",
+                            seq_id,
+                            hash,
+                            e
+                        );
+                    }
+                }
             }
         }
-        for seq_id in released_ids {
-            pipeline.release_sequence_state(seq_id);
+        for hash in captured_hashes {
+            self.scheduler.block_engine.record_mamba_prefix_hash(hash);
         }
+        {
+            let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
+            for seq_id in released_ids {
+                pipeline.release_sequence_state(seq_id);
+            }
+        }
+    }
+
+    fn may_log_decoding_throughput(
+        &mut self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+        prompt_finish_times: &HashMap<usize, SystemTime>,
+        _rank: usize,
+    ) {
+        #[cfg(feature = "nccl")]
+        let do_log = DaemonManager::is_master_rank();
+        #[cfg(not(feature = "nccl"))]
+        let do_log = true;
+        if !do_log || groups.is_empty() {
+            return;
+        }
+
+        let cur_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("Time went backwards")
+            .as_millis() as usize;
+        if cur_time.saturating_sub(self.last_decoding_throughput_log_ms) < 5000 {
+            return;
+        }
+        self.last_decoding_throughput_log_ms = cur_time;
+
+        let now = SystemTime::now();
+        let mut active_seq_ids = Vec::new();
+        let mut total_decoded_tokens = 0usize;
+        let mut total_decoding_time_ms = 0usize;
+
+        for group in groups {
+            if group.is_finished() {
+                continue;
+            }
+            let Some(prompt_finish_time) = prompt_finish_times.get(group.get_id()) else {
+                continue;
+            };
+            let seq = Self::primary_sequence(group);
+            let decoded_tokens = seq
+                .deref()
+                .get_len()
+                .saturating_sub(seq.deref().get_prompt_len());
+            if decoded_tokens == 0 {
+                continue;
+            }
+            let decoding_time_ms = now
+                .duration_since(*prompt_finish_time)
+                .unwrap_or_default()
+                .as_millis() as usize;
+            if decoding_time_ms == 0 {
+                continue;
+            }
+            total_decoded_tokens += decoded_tokens;
+            total_decoding_time_ms += decoding_time_ms;
+            active_seq_ids.push(seq.deref().get_id());
+        }
+
+        if active_seq_ids.is_empty() || total_decoding_time_ms < 1000 {
+            return;
+        }
+
+        let avg_tps = total_decoded_tokens as f64 * 1000.0 / total_decoding_time_ms as f64;
+        let total_tps = avg_tps * active_seq_ids.len() as f64;
+        info!(
+            "Decoding: {} active request(s) [Seq: {:?}], avg. {:.2} tokens/s per request (total: {:.2} tokens/s)",
+            active_seq_ids.len(),
+            active_seq_ids,
+            avg_tps,
+            total_tps,
+        );
+        self.scheduler.print_free_blocks();
     }
 
     async fn generate_parallel(
@@ -378,17 +501,95 @@ impl LLMEngine {
         prefill_chunk_size: Option<usize>,
     ) -> Result<Arc<RwLock<Self>>> {
         const MIN_MAMBA_SLOT_CAPACITY: usize = 16;
-        const MIN_MAMBA_PREFIX_CACHE_CAPACITY: usize = 16;
+        let devices: Vec<_> = pipelines
+            .values()
+            .map(|(pipeline, _)| pipeline.device())
+            .collect();
+        let model_dtype = pipelines
+            .values()
+            .next()
+            .map(|(pipeline, _)| pipeline.dtype)
+            .unwrap_or(cache_config.dtype);
+        let mut mamba_slot_capacity = scheduler_config.max_num_seqs.max(MIN_MAMBA_SLOT_CAPACITY);
+        let mut mamba_prefix_capacity = 0usize;
 
-        let mamba_slot_capacity = scheduler_config.max_num_seqs.max(MIN_MAMBA_SLOT_CAPACITY);
-        let mamba_prefix_capacity = if scheduler_config.prefix_cache.enabled {
-            scheduler_config
-                .prefix_cache
-                .max_cached_blocks
-                .max(MIN_MAMBA_PREFIX_CACHE_CAPACITY)
-        } else {
-            MIN_MAMBA_PREFIX_CACHE_CAPACITY
-        };
+        if let Some(estimate) = crate::estimate_hybrid_mamba_cache(config, model_dtype, num_shards)
+        {
+            let stride_blocks = crate::mamba_snapshot_block_stride_blocks();
+            info!(
+                "Hybrid mamba snapshot capture stride: {} block(s) ({} tokens), configured by {}",
+                stride_blocks,
+                stride_blocks.saturating_mul(cache_config.block_size),
+                crate::MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV,
+            );
+            let reports = crate::query_device_memory_for_devices(&devices)?;
+            let min_free_bytes = reports
+                .iter()
+                .map(|report| report.free_bytes)
+                .min()
+                .unwrap_or(0);
+            for (rank, report) in reports.iter().enumerate() {
+                info!(
+                    "Rank {} GPU memory after KV cache allocation: total {:.2} GB, free {:.2} GB, used {:.2} GB",
+                    rank,
+                    report.total_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                    report.free_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                    report.used_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                );
+            }
+
+            if cache_config.mamba_cache_budget_bytes > 0 {
+                let planned_total_slots =
+                    cache_config.mamba_cache_budget_bytes / estimate.slot_bytes;
+                if planned_total_slots >= mamba_slot_capacity {
+                    mamba_prefix_capacity = if scheduler_config.prefix_cache.enabled {
+                        planned_total_slots.saturating_sub(mamba_slot_capacity)
+                    } else {
+                        0
+                    };
+                } else if planned_total_slots > 0 {
+                    warn!(
+                        "Hybrid mamba planned budget only fits {} total slot(s), below the target active minimum {}; using the largest safe active capacity instead.",
+                        planned_total_slots,
+                        mamba_slot_capacity
+                    );
+                    mamba_slot_capacity = planned_total_slots;
+                    mamba_prefix_capacity = 0;
+                } else {
+                    warn!(
+                        "Hybrid mamba planned budget is smaller than one slot; falling back to 1 active slot."
+                    );
+                    mamba_slot_capacity = 1;
+                    mamba_prefix_capacity = 0;
+                }
+
+                let active_bytes = mamba_slot_capacity.saturating_mul(estimate.slot_bytes);
+                let prefix_budget_bytes = cache_config
+                    .mamba_cache_budget_bytes
+                    .saturating_sub(active_bytes);
+
+                info!(
+                    "Hybrid mamba cache sizing: {} active slot(s), {} prefix snapshot slot(s), {:.2} MB/slot, {} GDN layer(s), planned mamba budget {:.2} GB, min free GPU memory after KV {:.2} GB",
+                    mamba_slot_capacity,
+                    mamba_prefix_capacity,
+                    estimate.slot_bytes as f64 / 1024.0 / 1024.0,
+                    estimate.num_gdn_layers,
+                    cache_config.mamba_cache_budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                    min_free_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                );
+                info!(
+                    "Hybrid mamba memory split: active {:.2} GB, prefix snapshots {:.2} GB",
+                    active_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                    prefix_budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                );
+            } else {
+                warn!(
+                    "Hybrid mamba budget was not reserved in the combined cache budget; using fallback active slot capacity {}.",
+                    mamba_slot_capacity
+                );
+            }
+        }
+
         for (pipeline, _) in pipelines.values_mut() {
             pipeline.preallocate_mamba_cache(mamba_slot_capacity)?;
             pipeline.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
@@ -414,6 +615,7 @@ impl LLMEngine {
             senders: HashMap::new(),
             prefill_chunk_size,
             exit_flag: Arc::new(AtomicBool::new(false)),
+            last_decoding_throughput_log_ms: 0,
         }));
         let engine_clone = engine.clone();
 
@@ -1276,6 +1478,9 @@ impl LLMEngine {
                 let mut e = engine.write();
                 e.capture_mamba_prefix_states_for_decode_progress(&scheduled, rank)?;
                 e.free_finished_sequence_groups_and_sync_mamba(rank);
+                if !is_prompt {
+                    e.may_log_decoding_throughput(&scheduled, &prompt_finish_times, rank);
+                }
             }
 
             let mut aborted_sequences: Vec<usize> = Vec::new();

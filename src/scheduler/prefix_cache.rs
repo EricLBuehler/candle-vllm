@@ -110,6 +110,21 @@ impl PrefixCache {
         blocks
     }
 
+    pub fn hashes_for_match(&self, last_hash: u64) -> Vec<u64> {
+        let mut hashes = Vec::new();
+        let mut current = Some(last_hash);
+        while let Some(hash) = current {
+            let entry = match self.entries.get(&hash) {
+                Some(entry) => entry,
+                None => break,
+            };
+            hashes.push(hash);
+            current = entry.parent;
+        }
+        hashes.reverse();
+        hashes
+    }
+
     pub fn hash_for_blocks(&self, tokens: &[u32], full_blocks: usize) -> Option<u64> {
         if !self.enabled() || full_blocks == 0 {
             return None;

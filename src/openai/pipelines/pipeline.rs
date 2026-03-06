@@ -1650,6 +1650,14 @@ impl DefaultPipeline {
         }
     }
 
+    pub fn has_mamba_slot_for_sequence(&self, sequence_id: usize) -> bool {
+        match &self.model {
+            LLMModel::Qwen3_5(model) => model.has_mamba_slot_for_sequence(sequence_id),
+            LLMModel::Qwen3_5MoE(model) => model.has_mamba_slot_for_sequence(sequence_id),
+            _ => false,
+        }
+    }
+
     pub fn preallocate_mamba_cache(&self, max_num_seqs: usize) -> Result<()> {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.preallocate_mamba_cache(max_num_seqs),
