@@ -11,12 +11,12 @@ OpenCode -> Candle-vLLM (OpenAI-compatible)
 
 ```bash
 # Rust build
-cargo build --features cuda,nccl,graph,flash-attn,flash-decoding --release
+cargo build --features cuda,nccl,graph,flash-attn,flash-decoding,cutlass --release
 # Run
 ./target/release/candle-vllm --m Qwen/Qwen3.5-27B-FP8 --d 0 --prefix-cache --p 8000 --gpu-memory-fraction 0.85 --enforce-parser qwen_coder
 
 # Or
-cargo run --features cuda,nccl,graph,flash-attn,flash-decoding --release -- --m Qwen/Qwen3.5-27B-FP8 --d 0 --prefix-cache --p 8000 --gpu-memory-fraction 0.85 --enforce-parser qwen_coder
+cargo run --features cuda,nccl,graph,flash-attn,flash-decoding,cutlass --release -- --m Qwen/Qwen3.5-27B-FP8 --d 0 --prefix-cache --p 8000 --gpu-memory-fraction 0.85 --enforce-parser qwen_coder
 ```
 
 If you are serving a different model, replace `--m` or use `--w` / `--f`.
