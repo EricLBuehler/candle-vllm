@@ -78,16 +78,12 @@ cd candle-vllm
 **CUDA (CUDA 11+, 12+, 13.0)**
  > Option 1 (Install into docker)
 ```bash
-# Use one of the following commands:
-
 # `flash-decoding` takes longer time to build (pass hardware arch and cuda version)
-./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0
-
-# +cutlass feature for optimized fp8 models (Qwen3 series, sm90+) with CUDA 13
+# Host driver version need to >= specified cuda version
 ./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_90 13.0.0
 
-# Use Rust crate China Mirror (used in Chinese Mainland)
-./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0 1
+# Or, use Rust crate China Mirror (used in Chinese Mainland)
+./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_80 12.9.0 1
 ```
 
  > Option 2 (Manual Installation)
@@ -97,7 +93,7 @@ Install dependencies
 sudo apt update
 # Install CUDA toolkit (optional)
 sudo apt install git libssl-dev pkg-config curl -y
-sudo apt install -y cuda-toolkit-12-9
+sudo apt install -y cuda-toolkit-12-9 # must <= host driver version
 # Install rust, 1.83.0+ required
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
@@ -105,18 +101,10 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 export PATH=$PATH:/usr/local/cuda/bin/
 ```
 
-Install for single node inference (use one of the commands)
+Install for single node inference
 ```shell
-cargo install --release --features cuda,nccl --path .
-
-# +CUDA Graph
-cargo install --features cuda,nccl,graph --path .
-
-# +Flash attention for prefill only (sm_80+)
-cargo install --features cuda,nccl,graph,flash-attn --path .
-
-# +Flash attention for both prefill and decoding (sm_80+)
-cargo install --features cuda,nccl,graph,flash-attn,flash-decoding --path .
+# Remove "flash-attn,flash-decoding,cutlass" for sm_75 and sm_70
+cargo install --features cuda,nccl,graph,flash-attn,flash-decoding,cutlass --path .
 ```
 
 Install for multinode inference
@@ -124,9 +112,7 @@ Install for multinode inference
 # Use MPI (multi-gpus on multiple machines)
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
 sudo apt install clang libclang-dev
-cargo install --features cuda,nccl,mpi --path . #install with mpi feature
-# or
-cargo install --features cuda,nccl,flash-attn,flash-decoding,mpi --path .
+cargo install --features cuda,nccl,graph,flash-attn,flash-decoding,cutlass,mpi --path .
 ```
 
 **Mac/Metal (single-node only)**
@@ -147,22 +133,22 @@ cargo install --features metal --path .
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1] [--w /home/weights/Qwen3-30B-A3B-Instruct-2507] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flash-attn,flash-decoding,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl,graph
+    `BUILD_PARAM`: --release --features cuda,nccl,flash-attn,flash-decoding,cutlass,graph
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --mem 4096 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 
-    `MODEL_ID/MODEL_WEIGHT_PATH`: --w /home/weights/Qwen3-30B-A3B-Instruct-2507 (or `--m` specify model-id)
+    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3-Coder-Next-FP8 (or `--w` specify local model path)
 
     `CACHE CONFIG`: --fp8-kvcache
 
     `WEB UI`: --ui-server
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) is the key parameter to control KV cache usage (increase this for large batch); `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever.
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * total_gpu_memory - current_usage`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever.
   </details>
 
 
@@ -186,7 +172,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
 
     **Local Path (ISQ, +UI Server)**
     ```shell
-    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --isq q4k --ui-server --prefix-cache
+    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3.5-27B/ --isq q4k --ui-server --prefix-cache
     ```
 
     **Model-ID (download from Huggingface)**
@@ -433,7 +419,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
 - [Embedding Model Usage](docs/embedding.md)
 - [MCP & Tool Calling](docs/mcp_tool_calling.md)
 - [Prefix Cache](docs/prefix_cache.md)
-- [Work with Goose AI Agent](docs/goose.md)
+- [Work with OpenCode](docs/opencode.md)
 
 ## How to send request(s) to the backend?
 
@@ -648,7 +634,29 @@ Chat frontend (any frontend compatible with openai API, simple options available
 - KV Cache config, sampling parameter, etc.
   <details>
     <summary>Show details</summary>
-    The `--mem` (kvcache-mem-gpu) parameter is used to control kv cache, default 4GB GPU memory, increase this for large batch and long-context inference. 
+    The `--mem` (`kvcache-mem-gpu`) parameter sets a fixed KV cache budget in MB. By default this is `4096` MB.
+
+    The `--gpu-memory-fraction` parameter is a lighter-weight auto mode. After the model finishes loading, candle-vllm probes each loaded CUDA or Metal device and computes the KV cache budget as:
+
+    ```
+    gpu_memory_fraction * total_gpu_memory - current_memory_usage
+    ```
+
+    The minimum detected budget across ranks is used as the KV cache budget per rank. For example:
+
+    ```
+    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.85
+    ```
+
+    Use `--mem` when you want an explicit fixed budget. Use `--gpu-memory-fraction` when you want the server to adapt to the currently available GPU memory after model load.
+
+    The `--enforce-parser` parameter forces a specific tool-calling parser backend instead of the model-based default selection. This is useful when a model is compatible with a parser but does not get auto-detected correctly. Common values are `qwen_coder`, `qwen`, `json`, and `mistral`. For example:
+
+    ```
+    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --enforce-parser qwen_coder
+    ```
+
+    Invalid parser names are rejected at startup.
 
     For chat history settings, set `record_conversation` to `true` to let candle-vllm remember chat history. By `default`, candle-vllm `does not` record chat history; instead, the client sends both the messages and the contextual history to candle-vllm. If record_conversation is set to `true`, the client sends only new chat messages to candle-vllm, and candle-vllm is responsible for recording the previous chat messages. However, this approach requires per-session chat recording, which is not yet implemented, so the default approach `record_conversation=false` is recommended.
 

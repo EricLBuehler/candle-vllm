@@ -40,6 +40,8 @@ pub struct EngineBuilder {
     max_num_seqs: usize,
     block_size: usize,
     kvcache_mem_gpu: usize,
+    kvcache_mem_gpu_explicit: bool,
+    gpu_memory_fraction: Option<f32>,
     kvcache_mem_cpu: usize,
     temperature: Option<f32>,
     top_p: Option<f32>,
@@ -62,6 +64,8 @@ impl EngineBuilder {
             max_num_seqs: 16,
             block_size: 64,
             kvcache_mem_gpu: 4096,
+            kvcache_mem_gpu_explicit: false,
+            gpu_memory_fraction: Some(0.85),
             kvcache_mem_cpu: 128,
             temperature: None,
             top_p: None,
@@ -110,6 +114,12 @@ impl EngineBuilder {
 
     pub fn with_kvcache_mem_gpu(mut self, kvcache_mem_gpu: usize) -> Self {
         self.kvcache_mem_gpu = kvcache_mem_gpu;
+        self.kvcache_mem_gpu_explicit = true;
+        self
+    }
+
+    pub fn with_gpu_memory_fraction(mut self, gpu_memory_fraction: f32) -> Self {
+        self.gpu_memory_fraction = Some(gpu_memory_fraction);
         self
     }
 
@@ -208,6 +218,43 @@ impl EngineBuilder {
         let mut cache_config: Option<CacheConfig> = None;
 
         let num_shards = device_ids.len();
+        let first_pipeline = pipelines
+            .first()
+            .expect("at least one pipeline must be loaded");
+        let first_config = first_pipeline.get_model_config();
+        let first_model_dtype = first_pipeline.dtype;
+        let devices: Vec<_> = pipelines.iter().map(|pipeline| pipeline.device()).collect();
+        let (kvcache_mem_gpu, mamba_cache_budget_bytes) = match self.gpu_memory_fraction {
+            Some(gpu_memory_fraction) => {
+                let detected =
+                    crate::detect_kvcache_mem_gpu_mb_for_devices(&devices, gpu_memory_fraction)?;
+                let floored = if self.kvcache_mem_gpu_explicit {
+                    detected
+                } else {
+                    detected.max(self.kvcache_mem_gpu)
+                };
+                let mut effective_kvcache_mem_gpu = floored;
+                let mut mamba_cache_budget_bytes = 0usize;
+                if let Some(estimate) =
+                    crate::estimate_hybrid_mamba_cache(&first_config, first_model_dtype, num_shards)
+                {
+                    if let Some(plan) = crate::plan_hybrid_mamba_cache(
+                        floored * 1024 * 1024,
+                        estimate,
+                        self.max_num_seqs.max(16),
+                        false,
+                    ) {
+                        let reserved_mamba_mb = plan.budget_bytes.div_ceil(1024 * 1024);
+                        if reserved_mamba_mb < floored {
+                            effective_kvcache_mem_gpu = floored - reserved_mamba_mb;
+                            mamba_cache_budget_bytes = plan.budget_bytes;
+                        }
+                    }
+                }
+                (effective_kvcache_mem_gpu, mamba_cache_budget_bytes)
+            }
+            None => (self.kvcache_mem_gpu, 0),
+        };
 
         let pipelines: HashMap<
             usize,
@@ -220,14 +267,15 @@ impl EngineBuilder {
             .enumerate()
             .map(|(rank, pipeline)| {
                 let cfg = pipeline.get_model_config();
-                let cache_cfg = crate::get_cache_config(
-                    self.kvcache_mem_gpu,
+                let mut cache_cfg = crate::get_cache_config(
+                    kvcache_mem_gpu,
                     self.kvcache_mem_cpu,
                     self.block_size,
                     &cfg,
                     kv_cache_dtype,
                     num_shards,
                 );
+                cache_cfg.mamba_cache_budget_bytes = mamba_cache_budget_bytes;
 
                 let cache_engine = CacheEngine::new(
                     &cfg,

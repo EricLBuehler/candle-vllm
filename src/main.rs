@@ -79,9 +79,14 @@ struct Args {
     #[arg(long, default_value_t = false)]
     cpu: bool,
 
-    /// Available GPU memory for kvcache (MB)
+    /// Fixed GPU memory budget for kvcache (MB). Used when auto sizing is unavailable.
     #[arg(long = "mem", default_value_t = 4096)]
     kvcache_mem_gpu: usize,
+
+    /// Auto-size GPU KV cache after model load using `fraction * total_gpu_mem - current_usage`.
+    /// Defaults to 0.85 and takes priority over `--mem` on CUDA/Metal.
+    #[arg(long)]
+    gpu_memory_fraction: Option<f32>,
 
     /// Available CPU memory for kvcache (MB)
     #[arg(long, default_value_t = 128)]
@@ -195,6 +200,7 @@ fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Resul
 #[allow(unused_mut)]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    let mem_was_explicit = std::env::args().any(|arg| arg == "--mem" || arg.starts_with("--mem="));
     if !args.log {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
@@ -374,19 +380,108 @@ async fn main() -> Result<()> {
     };
     let mut config: Option<Config> = None;
     let mut cache_config: Option<CacheConfig> = None;
+    let devices: Vec<_> = default_pipelines
+        .iter()
+        .map(|pipeline| pipeline.device())
+        .collect();
+    let first_pipeline = default_pipelines
+        .first()
+        .expect("at least one pipeline must be loaded");
+    let first_config = first_pipeline.get_model_config();
+    let first_model_dtype = first_pipeline.dtype;
+    let requested_gpu_memory_fraction = args.gpu_memory_fraction.unwrap_or(0.85);
+    let explicit_gpu_memory_fraction = args.gpu_memory_fraction.is_some();
+    let (kvcache_mem_gpu, mamba_cache_budget_bytes, kvcache_budget_desc) =
+        match candle_vllm::detect_kvcache_mem_gpu_mb_for_devices(
+            &devices,
+            requested_gpu_memory_fraction,
+        ) {
+            Ok(detected) => {
+                let floored = if mem_was_explicit {
+                    detected
+                } else {
+                    detected.max(args.kvcache_mem_gpu)
+                };
+                if floored != detected {
+                    warn!(
+                    "Auto-detected KV cache budget {} MB is below the default fixed floor {} MB; using the floor.",
+                    detected,
+                    args.kvcache_mem_gpu
+                );
+                }
+                let mut effective_kvcache_mem_gpu = floored;
+                let mut mamba_cache_budget_bytes = 0usize;
+                if let Some(estimate) = candle_vllm::estimate_hybrid_mamba_cache(
+                    &first_config,
+                    first_model_dtype,
+                    num_shards,
+                ) {
+                    if let Some(plan) = candle_vllm::plan_hybrid_mamba_cache(
+                        floored * 1024 * 1024,
+                        estimate,
+                        args.max_num_seqs.max(16),
+                        args.prefix_cache,
+                    ) {
+                        let reserved_mamba_mb = plan.budget_bytes.div_ceil(1024 * 1024);
+                        if reserved_mamba_mb < floored {
+                            effective_kvcache_mem_gpu = floored - reserved_mamba_mb;
+                            mamba_cache_budget_bytes = plan.budget_bytes;
+                            info!(
+                            "Reserved {:.2} GB of the combined GPU cache budget for hybrid mamba/GDN ({} active slot target, {} prefix slot target); KV cache budget is now {:.2} GB",
+                            plan.budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                            plan.active_slot_capacity,
+                            plan.prefix_slot_capacity,
+                            effective_kvcache_mem_gpu as f64 / 1024.0,
+                        );
+                        } else {
+                            warn!(
+                            "Hybrid mamba reservation {:.2} GB would consume the entire combined cache budget {:.2} GB; skipping upfront reservation.",
+                            plan.budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                            floored as f64 / 1024.0,
+                        );
+                        }
+                    }
+                }
+                info!(
+                "Using auto-detected KV cache budget of {} MB per rank (gpu_memory_fraction={})",
+                effective_kvcache_mem_gpu, requested_gpu_memory_fraction
+            );
+                (
+                    effective_kvcache_mem_gpu,
+                    mamba_cache_budget_bytes,
+                    format!(
+                        "--gpu-memory-fraction {} -> {} MB per rank",
+                        requested_gpu_memory_fraction, effective_kvcache_mem_gpu
+                    ),
+                )
+            }
+            Err(err) if !explicit_gpu_memory_fraction => {
+                warn!(
+                    "Auto KV cache sizing unavailable ({}), falling back to fixed --mem {} MB",
+                    err, args.kvcache_mem_gpu
+                );
+                (
+                    args.kvcache_mem_gpu,
+                    0,
+                    format!("--mem {} MB", args.kvcache_mem_gpu),
+                )
+            }
+            Err(err) => return Err(err),
+        };
 
     let pipelines = default_pipelines
         .into_iter()
         .map(|pipeline| {
             let cfg = pipeline.get_model_config();
-            let cache_cfg = candle_vllm::get_cache_config(
-                args.kvcache_mem_gpu,
+            let mut cache_cfg = candle_vllm::get_cache_config(
+                kvcache_mem_gpu,
                 args.kvcache_mem_cpu, //dummy 512MB for cpu
                 args.block_size,
                 &cfg,
                 kv_cache_dtype,
                 num_shards,
             );
+            cache_cfg.mamba_cache_budget_bytes = mamba_cache_budget_bytes;
             let cache_engine = CacheEngine::new(
                 &cfg,
                 &cache_cfg,
@@ -541,7 +636,8 @@ async fn main() -> Result<()> {
 
     if global_rank == 0 {
         warn!(
-            "Maximum Model Length (affected by `--mem` (kvcache-mem-gpu) and the number of ranks):"
+            "Maximum Model Length (affected by {} and the number of ranks):",
+            kvcache_budget_desc
         );
         for batch in [1, 8] {
             println!(

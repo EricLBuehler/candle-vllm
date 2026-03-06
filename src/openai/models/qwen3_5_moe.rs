@@ -601,6 +601,10 @@ impl Qwen3_5MoE {
             .get_slots_for_sequences(sequence_ids)
     }
 
+    pub fn has_mamba_slot_for_sequence(&self, sequence_id: usize) -> bool {
+        self.mamba_cache.read().get_slot(sequence_id).is_some()
+    }
+
     pub fn lock_mamba_cache_for_graph(&self) -> RwLockWriteGuard<'_, MambaCache> {
         self.mamba_cache.write()
     }
