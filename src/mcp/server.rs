@@ -65,7 +65,7 @@ impl McpServer {
     pub fn register_internal_tool(&mut self, tool: &Tool, handler: Option<ToolHandler>) {
         let mcp_tool = McpTool {
             name: tool.function.name.clone(),
-            description: Some(tool.function.description.clone()),
+            description: tool.function.description.clone(),
             input_schema: tool.function.parameters.clone(),
             output_schema: None,
         };

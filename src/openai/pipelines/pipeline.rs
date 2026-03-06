@@ -99,11 +99,14 @@ pub struct DefaultPipeline {
     pub stop_token_ids: Vec<u32>,
     pub rank: usize,
     pub stream_decoders: RwLock<super::StreamDecoderMap>,
+    pub tool_call_start_token_ids: Vec<u32>,
     pub tool_call_end_token_ids: Vec<u32>,
     pub json_end_token_id: Option<u32>,
     pub tool_call_regex: Regex,
     pub tool_config: ToolConfig,
     pub tool_model_type: ToolModelType,
+    pub tool_parser_model_id: String,
+    pub enforce_parser: Option<String>,
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
 }
@@ -112,6 +115,7 @@ pub struct DefaultLoader {
     model_id: Option<String>,
     weight_path: Option<String>,
     weight_file: Option<String>,
+    enforce_parser: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -146,12 +150,49 @@ impl DefaultLoader {
         model_id: Option<String>,
         weight_path: Option<String>,
         weight_file: Option<String>,
+        enforce_parser: Option<String>,
     ) -> Self {
         Self {
             model_id,
             weight_path,
             weight_file,
+            enforce_parser,
         }
+    }
+
+    fn public_model_name(&self) -> Option<String> {
+        if let Some(model_id) = &self.model_id {
+            if !model_id.trim().is_empty() {
+                return Some(model_id.clone());
+            }
+        }
+
+        if let Some(weight_path) = &self.weight_path {
+            let trimmed = weight_path.trim_end_matches(['/', '\\']);
+            let path = Path::new(trimmed);
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+            if let Some(component) = path.components().last() {
+                let name = component.as_os_str().to_string_lossy().to_string();
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+        }
+
+        if let Some(weight_file) = &self.weight_file {
+            let path = Path::new(weight_file);
+            if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -884,6 +925,7 @@ impl DefaultLoader {
         #[cfg(not(feature = "nccl"))]
         let global_rank = local_rank.unwrap_or(0);
 
+        let public_model_name = self.public_model_name();
         let pipelines = models
             .into_iter()
             .enumerate()
@@ -1081,14 +1123,9 @@ impl DefaultLoader {
                         &devices[rank],
                         stop_token_ids,
                         rank,
-                        if gguf {
-                            match crate::backend::gguf::get_gguf_name(&paths.get_weight_filenames()[0]) {
-                                Ok(name) => name,
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        },
+                        public_model_name.clone(),
+                        self.model_id.clone(),
+                        self.enforce_parser.clone(),
                         #[cfg(all(feature = "cuda", feature = "graph"))]
                         block_size,
                         #[cfg(all(feature = "cuda", feature = "graph"))]
@@ -1114,6 +1151,8 @@ impl DefaultPipeline {
         stop_token_ids: Vec<u32>,
         rank: usize,
         model_name: Option<String>,
+        tool_parser_model_id: Option<String>,
+        enforce_parser: Option<String>,
         #[cfg(all(feature = "cuda", feature = "graph"))] block_size: usize,
         #[cfg(all(feature = "cuda", feature = "graph"))] max_num_seqs: usize,
     ) -> Result<Self> {
@@ -1145,6 +1184,7 @@ impl DefaultPipeline {
         let tool_model_type = tool_model_type_for(&model);
         let mut tool_config = ToolConfig::for_model_type(&tool_model_type);
         tool_config.validate_with_tokenizer(&tokenizer, &tool_model_type);
+        let tool_call_start_token_ids = tool_config.tool_call_start_ids(&tokenizer);
         let tool_call_end_token_ids = tool_config.tool_call_end_ids(&tokenizer);
         let json_end_token_id = tokenizer
             .encode("}", false)
@@ -1152,26 +1192,31 @@ impl DefaultPipeline {
             .and_then(|tokens| tokens.get_ids().last().copied());
         let tool_call_regex =
             Regex::new(r#"(?s)\{\s*"name"\s*:.*"arguments"\s*:.*\}\s*$"#).unwrap();
+        let pipeline_name = if let Some(name) = model_name {
+            name
+        } else {
+            config.architectures.as_ref().unwrap()[0].clone()
+        };
+        let tool_parser_model_id = tool_parser_model_id.unwrap_or_else(|| pipeline_name.clone());
         Ok(Self {
             model,
             tokenizer,
             logits_processor,
             conversation,
-            name: if let Some(name) = model_name {
-                name
-            } else {
-                config.architectures.as_ref().unwrap()[0].clone()
-            },
+            name: pipeline_name,
             dtype,
             device: device.clone(),
             stop_token_ids,
             rank,
             stream_decoders: RwLock::new(HashMap::new()),
+            tool_call_start_token_ids,
             tool_call_end_token_ids,
             json_end_token_id,
             tool_call_regex,
             tool_config,
             tool_model_type,
+            tool_parser_model_id,
+            enforce_parser,
             #[cfg(all(feature = "cuda", feature = "graph"))]
             capturer: GraphCapturer::new(
                 wrapper,
@@ -1478,6 +1523,20 @@ impl DefaultPipeline {
 
                 if group.sampling_params.mcp_mode.is_some() {
                     if self.tool_call_end_token_ids.contains(&next_token) {
+                        if !self.tool_call_start_token_ids.is_empty() {
+                            let seq = group.get_seqs().values().next().unwrap();
+                            let has_start = seq.deref().get_output_tokens().iter().any(|logprob| {
+                                self.tool_call_start_token_ids.contains(&logprob.token)
+                            });
+                            if !has_start {
+                                return Left(Logprobs {
+                                    token: next_token,
+                                    logprob: 0.0,
+                                    top_logprobs: Vec::<TopLogprob>::new(),
+                                    bytes: text,
+                                });
+                            }
+                        }
                         return Right("tool_calls".to_string());
                     }
                     if self.json_end_token_id == Some(next_token) {

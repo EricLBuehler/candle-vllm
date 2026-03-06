@@ -152,6 +152,10 @@ struct Args {
     /// Path to MCP config file (multi-server mode)
     #[arg(long)]
     mcp_config: Option<String>,
+
+    /// Force a specific tool parser backend (for example: qwen, qwen_coder, json, mistral).
+    #[arg(long)]
+    enforce_parser: Option<String>,
 }
 
 fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Result<()> {
@@ -201,6 +205,7 @@ async fn main() -> Result<()> {
         args.model_id,
         args.weight_path,
         args.weight_file,
+        args.enforce_parser.clone(),
     ));
 
     let (paths, gguf) = loader.prepare_model_weights(args.hf_token, args.hf_token_path)?;

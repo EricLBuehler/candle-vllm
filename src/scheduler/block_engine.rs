@@ -711,6 +711,7 @@ mod tests {
             false,
             EncodingFormat::Float,
             EmbeddingType::Last,
+            Vec::new(),
             None,
         );
         (group, seq)

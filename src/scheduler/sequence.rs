@@ -7,7 +7,7 @@ use super::block_engine::LogicalTokenBlock;
 use crate::openai::sampling_params::{Logprobs, SamplingParams};
 use crate::openai::streaming::ChatResponse;
 use crate::tools::stream_parser::StreamToolParser;
-use crate::tools::ToolCall;
+use crate::tools::{Tool, ToolCall};
 use flume::Sender;
 use std::time::SystemTime;
 #[derive(Clone, PartialEq)]
@@ -280,6 +280,7 @@ pub struct SequenceGroup {
     pub is_embedding: bool,
     pub encoding_format: crate::openai::requests::EncodingFormat,
     pub embedding_type: crate::openai::requests::EmbeddingType,
+    pub tools: Vec<Tool>,
     pub sender: Option<Sender<ChatResponse>>,
     // Tool call and reasoning tracking
     pub accumulated_output: String,
@@ -302,6 +303,7 @@ impl SequenceGroup {
         is_embedding: bool,
         encoding_format: crate::openai::requests::EncodingFormat,
         embedding_type: crate::openai::requests::EmbeddingType,
+        tools: Vec<Tool>,
         sender: Option<Sender<ChatResponse>>,
     ) -> Self {
         let mut seq_map = HashMap::new();
@@ -319,6 +321,7 @@ impl SequenceGroup {
             is_embedding,
             encoding_format,
             embedding_type,
+            tools,
             sender,
             accumulated_output: "".to_string(),
             tool_call_state: ToolCallState::Normal,
