@@ -510,11 +510,13 @@ impl LLMEngine {
             .next()
             .map(|(pipeline, _)| pipeline.dtype)
             .unwrap_or(cache_config.dtype);
+        let hybrid_mamba_estimate =
+            crate::estimate_hybrid_mamba_cache(config, model_dtype, num_shards);
+        let require_mamba_prefix_snapshots = hybrid_mamba_estimate.is_some();
         let mut mamba_slot_capacity = scheduler_config.max_num_seqs.max(MIN_MAMBA_SLOT_CAPACITY);
         let mut mamba_prefix_capacity = 0usize;
 
-        if let Some(estimate) = crate::estimate_hybrid_mamba_cache(config, model_dtype, num_shards)
-        {
+        if let Some(estimate) = hybrid_mamba_estimate {
             let stride_blocks = crate::mamba_snapshot_block_stride_blocks();
             info!(
                 "Hybrid mamba snapshot capture stride: {} block(s) ({} tokens), configured by {}",
@@ -598,7 +600,11 @@ impl LLMEngine {
         let num_threads: usize = pipelines.len();
         let engine = Arc::new(RwLock::new(Self {
             pipelines,
-            scheduler: Scheduler::new(scheduler_config, cache_config),
+            scheduler: Scheduler::new(
+                scheduler_config,
+                cache_config,
+                require_mamba_prefix_snapshots,
+            ),
             seq_id: 0,
             cache_config: cache_config.clone(),
             config: config.clone(),

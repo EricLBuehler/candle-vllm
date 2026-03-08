@@ -54,7 +54,11 @@ pub struct Scheduler {
 }
 
 impl Scheduler {
-    pub fn new(config: SchedulerConfig, cache_config: &CacheConfig) -> Self {
+    pub fn new(
+        config: SchedulerConfig,
+        cache_config: &CacheConfig,
+        require_mamba_prefix_snapshots: bool,
+    ) -> Self {
         assert!(cache_config.fully_init);
         let prefix_cache_cfg = config.prefix_cache.clone();
         Self {
@@ -68,6 +72,7 @@ impl Scheduler {
                 cache_config.num_cpu_blocks.unwrap(),
                 cache_config.kvcache_mem_gpu,
                 prefix_cache_cfg,
+                require_mamba_prefix_snapshots,
             ),
             is_last_prefill: false,
         }
