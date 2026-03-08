@@ -199,6 +199,7 @@ pub struct BlockEngine {
     block_size: usize,
     kvcache_mem_gpu: usize,
     prefix_cache: Option<PrefixCache>,
+    require_mamba_prefix_snapshots: bool,
     valid_mamba_prefix_hashes: HashSet<u64>,
 }
 
@@ -210,6 +211,7 @@ impl BlockEngine {
         num_cpu_blocks: usize,
         kvcache_mem_gpu: usize,
         prefix_cache: PrefixCacheConfig,
+        require_mamba_prefix_snapshots: bool,
     ) -> Self {
         let prefix_cache = if prefix_cache.enabled && prefix_cache.max_cached_blocks > 0 {
             Some(PrefixCache::new(block_size, prefix_cache))
@@ -224,6 +226,7 @@ impl BlockEngine {
             block_size,
             kvcache_mem_gpu,
             prefix_cache,
+            require_mamba_prefix_snapshots,
             valid_mamba_prefix_hashes: HashSet::new(),
         }
     }
@@ -419,6 +422,7 @@ impl BlockEngine {
     }
 
     fn resolve_valid_mamba_matched_blocks(
+        require_mamba_prefix_snapshots: bool,
         valid_hashes: &HashSet<u64>,
         prefix_cache: &PrefixCache,
         matched_blocks: usize,
@@ -426,6 +430,9 @@ impl BlockEngine {
     ) -> usize {
         if matched_blocks == 0 {
             return 0;
+        }
+        if !require_mamba_prefix_snapshots {
+            return matched_blocks;
         }
         let Some(last_hash) = last_hash else {
             return 0;
@@ -648,6 +655,7 @@ impl BlockEngine {
                     matched_blocks
                 };
                 let matched_blocks = Self::resolve_valid_mamba_matched_blocks(
+                    self.require_mamba_prefix_snapshots,
                     &valid_hashes,
                     prefix_cache,
                     raw_matched_blocks,
@@ -780,6 +788,7 @@ mod tests {
                 enabled: true,
                 max_cached_blocks: 4,
             },
+            false,
         );
 
         let (group1, seq1) = make_group(1, 1, block_size, vec![1, 2, 3, 4, 5, 6, 7, 8]);

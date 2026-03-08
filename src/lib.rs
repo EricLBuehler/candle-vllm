@@ -198,9 +198,9 @@ pub fn query_device_memory(device: &Device) -> Result<DeviceMemoryReport> {
         }
         #[cfg(feature = "metal")]
         Device::Metal(metal) => {
-            let total_bytes = metal.recommended_max_working_set_size();
-            let used_bytes = metal.current_allocated_size();
-            let free_bytes = total_bytes.saturating_sub(used_bytes);
+            let total_bytes = metal.recommended_max_working_set_size() as usize;
+            let used_bytes = metal.current_allocated_size() as usize;
+            let free_bytes = total_bytes.saturating_sub(used_bytes) as usize;
             Ok(DeviceMemoryReport {
                 total_bytes,
                 free_bytes,
