@@ -26,6 +26,7 @@
 - 支持CUDA Graph
 - 支持Prefix Caching
 - 支持硬件FP8模型推理加速（SM90+, Qwen3系列，Block-wise FP8量化）
+- 支持 Flashinfer 后端
 
 ## 支持的模型
 - 目前，candle-vllm支持以下模型结构的推理服务。
@@ -76,13 +77,12 @@ cd candle-vllm
 
  > 方案 1 (安装进docker)
 ```bash
-# 启用`flashattn`或`flashinfer`特性需要更长的编译时间
-# 添加 `cutlass` 特性以支持fp8模型 (Qwen3.5系列, sm90+)，使用CUDA 13 镜像
-# 主机驱动版本需要 >= 选定的CUDA版本
+# 主机驱动版本需要 >= 选定的CUDA版本；启用`flashattn`或`flashinfer`特性需要更长的编译时间
+# 将 `sm_80` 更改为当前硬件特性, 例如, sm_75 (V100), sm_80 (Ampere, A100), sm_86/89 (RTX30xx, RTX40xx), sm_90 (Hopper, H100/H200), sm_100/sm_120 (Blackwell, RTX50xx)
 ./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass" sm_90 13.0.0
 
 # 或切换为 Flah attention 后端, 或 传 1 使用Rust 中国区镜像 (适用于中国大陆)
-./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0
+./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0 1
 ```
 
  > 方案 2 (手动安装)

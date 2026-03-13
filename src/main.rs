@@ -266,8 +266,8 @@ async fn main() -> Result<()> {
     #[cfg(all(feature = "cuda", feature = "graph"))]
     {
         assert!(
-            multi_process,
-            "Graph capture is only available under multi process mode!"
+            multi_process || (!multi_process && num_shards == 1),
+            "Graph capture is only available under multiprocess mode or single-rank multithread mode!"
         );
         if args.max_num_seqs > 16 {
             tracing::warn!("Higher GPU memory required for capturing large batch!");
@@ -636,9 +636,6 @@ async fn main() -> Result<()> {
         let mut daemon_manager = e.daemon_manager.write();
         daemon_manager.as_mut().unwrap().mpi_sync();
     }
-
-    #[cfg(all(feature = "cuda", feature = "graph"))]
-    LLMEngine::graph_capture(&server_data.model).unwrap();
 
     if global_rank == 0 {
         warn!(

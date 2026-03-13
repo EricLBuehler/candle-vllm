@@ -273,24 +273,6 @@ impl LLMEngine {
             return Ok(());
         }
 
-        let mut sequence_ids: Vec<usize> = Vec::new();
-        let mut had_live_mamba_state: HashMap<usize, bool> = HashMap::new();
-        {
-            let (pipeline, _) = self.get_pipeline(rank).unwrap();
-            for group in groups {
-                for seq in Self::ordered_group_sequences(group) {
-                    let seq_id = seq.deref().get_id();
-                    sequence_ids.push(seq_id);
-                    had_live_mamba_state
-                        .insert(seq_id, pipeline.has_mamba_slot_for_sequence(seq_id));
-                }
-            }
-        }
-        {
-            let (pipeline, _) = self.get_pipeline(rank).unwrap();
-            let _ = pipeline.ensure_mamba_slots_for_sequences(&sequence_ids)?;
-        }
-
         for group in groups {
             for seq in Self::ordered_group_sequences(group) {
                 let seq_id = seq.deref().get_id();
@@ -299,9 +281,6 @@ impl LLMEngine {
                     continue;
                 }
                 if self.restored_prefix_sequences.read().contains(&seq_id) {
-                    continue;
-                }
-                if had_live_mamba_state.get(&seq_id).copied().unwrap_or(false) {
                     continue;
                 }
                 if let Some(hash) = self
@@ -496,16 +475,19 @@ impl LLMEngine {
     }
 
     #[cfg(all(feature = "cuda", feature = "graph"))]
-    pub fn graph_capture(engine: &Arc<RwLock<LLMEngine>>) -> Result<()> {
-        let mut e = engine.write();
-        let (ref mut pipeline, cache_engine) = e.get_mut_pipeline(0usize).unwrap();
-        let device = pipeline.device();
-        let _ = device.as_cuda_device().unwrap().bind_to_thread();
-        let result = pipeline.warmup_capture(Some(&cache_engine.get_kv_cache()));
-        if result.is_ok() {
-            e.restored_prefix_sequences.write().clear();
+    fn graph_capture_all_pipelines(&mut self) -> Result<()> {
+        let mut ranks = self.pipelines.keys().copied().collect::<Vec<_>>();
+        ranks.sort_unstable();
+        for rank in ranks {
+            let (pipeline, cache_engine) = self.get_mut_pipeline(rank).ok_or_else(|| {
+                candle_core::Error::msg(format!("missing pipeline for rank {rank}"))
+            })?;
+            let device = pipeline.device();
+            let _ = device.as_cuda_device().unwrap().bind_to_thread();
+            pipeline.warmup_capture(Some(&cache_engine.get_kv_cache()))?;
         }
-        result
+        self.restored_prefix_sequences.write().clear();
+        Ok(())
     }
 
     pub fn new(
@@ -655,9 +637,27 @@ impl LLMEngine {
         let is_master_rank = DaemonManager::is_master_rank();
         #[cfg(not(feature = "nccl"))]
         let is_master_rank = true;
+        #[cfg(all(feature = "cuda", feature = "graph"))]
+        let (graph_capture_tx, graph_capture_rx) = std::sync::mpsc::sync_channel(1);
 
         let _ = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
+                #[cfg(all(feature = "cuda", feature = "graph"))]
+                {
+                    let graph_capture_result = {
+                        let mut e = engine.write();
+                        e.graph_capture_all_pipelines()
+                    };
+                    let _ = graph_capture_tx.send(
+                        graph_capture_result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|e| format!("{e:?}")),
+                    );
+                    if graph_capture_result.is_err() {
+                        return;
+                    }
+                }
                 loop {
                     if engine.read().exit_flag.load(Ordering::Relaxed) {
                         break;
@@ -736,6 +736,16 @@ impl LLMEngine {
                 }
             });
         });
+
+        #[cfg(all(feature = "cuda", feature = "graph"))]
+        match graph_capture_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => candle_core::bail!("Unable to capture cuda graph {err}!"),
+            Err(err) => candle_core::bail!(
+                "Failed to receive cuda graph warmup result from engine worker thread: {}",
+                err
+            ),
+        }
 
         Ok(engine_clone)
     }
@@ -1110,12 +1120,20 @@ impl LLMEngine {
                 }?;
                 #[cfg(feature = "flashinfer")]
                 if !prepared.metadata.is_prefill {
-                    e.ensure_flashinfer_decode_plan(
-                        rank,
-                        device,
-                        prepared.tokens.dim(0)?,
-                        &mut prepared.metadata,
-                    )?;
+                    let use_cuda_graph = prepared
+                        .metadata
+                        .flashinfer_metadata
+                        .as_ref()
+                        .map(|fm| fm.use_cuda_graph)
+                        .unwrap_or(false);
+                    if !use_cuda_graph {
+                        e.ensure_flashinfer_decode_plan(
+                            rank,
+                            device,
+                            prepared.tokens.dim(0)?,
+                            &mut prepared.metadata,
+                        )?;
+                    }
                 }
                 let PreparedInputs {
                     tokens,

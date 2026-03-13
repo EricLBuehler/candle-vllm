@@ -27,6 +27,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
 - Support Prefix Caching
 - Support Block-wise FP8 Models (SM90+, Qwen3 Series)
+- Support Flashinfer Backend
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.
@@ -78,8 +79,8 @@ cd candle-vllm
 **CUDA (CUDA 11+, 12+, 13.0)**
  > Option 1 (Install into docker)
 ```bash
-# `flashattn` and `flashinfer` take longer time to build (pass hardware arch and cuda version)
-# Host driver version need to >= specified cuda version
+# Host driver version must >= specified cuda version, `flashattn` and `flashinfer` take longer time to build
+# Change `sm_80` to your hardware spec, e.g., sm_75 (V100), sm_80 (Ampere, A100), sm_86/89 (RTX30xx, RTX40xx), sm_90 (Hopper, H100/H200), sm_100/sm_120 (Blackwell, RTX50xx). 
 ./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass" sm_90 13.0.0
 
 # Or switch to Flash attention backend, or use Rust crate China Mirror (used in Chinese Mainland)
