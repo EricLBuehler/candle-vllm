@@ -331,18 +331,9 @@ impl Phi4Attention {
         let key_states = &qkv[1];
         let value_states = &qkv[2];
 
-        let q = query_states
-            .reshape((1, seq_len, self.num_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let k = key_states
-            .reshape((1, seq_len, self.num_kv_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let v = value_states
-            .reshape((1, seq_len, self.num_kv_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
+        let q = query_states.reshape((seq_len, self.num_heads, self.head_dim))?;
+        let k = key_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
+        let v = value_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
 
         let (q, k) = self
             .rotary_emb

@@ -1120,7 +1120,7 @@ impl LLMEngine {
 
             if is_prompt {
                 let mut e = engine.write();
-                let prefill_chunk_size = if cfg!(feature = "flash-decoding") {
+                let prefill_chunk_size = if cfg!(feature = "flashattn") {
                     e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE / 2)
                 } else {
                     e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE)
@@ -1849,7 +1849,7 @@ impl LLMEngine {
         let mut max_seqlen_q = 0;
         let mut max_seqlen_k = 0;
         let mut slot_mapping = Vec::new();
-        let chunk_size = if cfg!(feature = "flash-decoding") {
+        let chunk_size = if cfg!(feature = "flashattn") {
             self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE / 2)
         } else {
             self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE)
@@ -1874,7 +1874,7 @@ impl LLMEngine {
 
                 let seqlen_q = num_tokens;
                 let use_cached_kv = num_cached_tokens > 0
-                    && (cfg!(feature = "flash-decoding") || self.scheduler.prefix_cache_enabled());
+                    && (cfg!(feature = "flashattn") || self.scheduler.prefix_cache_enabled());
                 let seqlen_k = if use_cached_kv {
                     num_cached_tokens + num_tokens
                 } else {

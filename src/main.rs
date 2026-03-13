@@ -84,7 +84,7 @@ struct Args {
     kvcache_mem_gpu: usize,
 
     /// Auto-size GPU KV cache after model load using `fraction * total_gpu_mem - current_usage`.
-    /// Defaults to 0.85 and takes priority over `--mem` on CUDA/Metal.
+    /// Defaults to 0.8 with `flashattn`, otherwise 0.7, and takes priority over `--mem` on CUDA/Metal.
     #[arg(long)]
     gpu_memory_fraction: Option<f32>,
 
@@ -219,10 +219,10 @@ async fn main() -> Result<()> {
     let dtype = candle_vllm::get_dtype(args.dtype);
     let kv_cache_dtype = if args.fp8_kvcache { DType::U8 } else { dtype };
 
-    if cfg!(feature = "flash-decoding") {
+    if cfg!(feature = "flashattn") {
         assert!(
             !args.fp8_kvcache,
-            "fp8 kvcache is not compatible with `flash-decoding` feature!"
+            "fp8 kvcache is not compatible with `flashattn` feature!"
         );
     }
 
@@ -389,7 +389,13 @@ async fn main() -> Result<()> {
         .expect("at least one pipeline must be loaded");
     let first_config = first_pipeline.get_model_config();
     let first_model_dtype = first_pipeline.dtype;
-    let requested_gpu_memory_fraction = args.gpu_memory_fraction.unwrap_or(0.85);
+    let requested_gpu_memory_fraction =
+        args.gpu_memory_fraction
+            .unwrap_or(if cfg!(feature = "flashattn") {
+                0.8
+            } else {
+                0.7
+            });
     let explicit_gpu_memory_fraction = args.gpu_memory_fraction.is_some();
     let (kvcache_mem_gpu, mamba_cache_budget_bytes, kvcache_budget_desc) =
         match candle_vllm::detect_kvcache_mem_gpu_mb_for_devices(

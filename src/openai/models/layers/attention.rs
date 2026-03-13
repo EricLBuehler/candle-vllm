@@ -212,18 +212,9 @@ impl Attention {
             (query_states, None)
         };
 
-        let q = query_states
-            .reshape((1, seq_len, self.num_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let k = key_states
-            .reshape((1, seq_len, self.num_kv_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let v = value_states
-            .reshape((1, seq_len, self.num_kv_heads, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
+        let q = query_states.reshape((seq_len, self.num_heads, self.head_dim))?;
+        let k = key_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
+        let v = value_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
 
         // Q/K norm weights are loaded in F32 for Qwen3.5/Next; cast activations
         // to keep CUDA RMSNorm dtype-consistent.
@@ -240,14 +231,14 @@ impl Attention {
                 let k = k_norm.forward(&k)?;
                 (q, k)
             } else {
-                let q_flat = q.flatten(0, 2)?;
-                let k_flat = k.flatten(0, 2)?;
+                let q_flat = q.flatten(0, 1)?;
+                let k_flat = k.flatten(0, 1)?;
 
                 let q_flat = q_norm.forward(&q_flat)?;
                 let k_flat = k_norm.forward(&k_flat)?;
 
-                let q = q_flat.reshape((1, self.num_heads, seq_len, self.head_dim))?;
-                let k = k_flat.reshape((1, self.num_kv_heads, seq_len, self.head_dim))?;
+                let q = q_flat.reshape((seq_len, self.num_heads, self.head_dim))?;
+                let k = k_flat.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
 
                 (q, k)
             }
@@ -444,30 +435,21 @@ impl QuantizedAttention {
             v
         };
 
-        let q = q
-            .reshape((1, seq_len, self.n_head, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let k = k
-            .reshape((1, seq_len, self.n_kv_head, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
-        let v = v
-            .reshape((1, seq_len, self.n_kv_head, self.head_dim))?
-            .transpose(1, 2)?
-            .contiguous()?;
+        let q = q.reshape((seq_len, self.n_head, self.head_dim))?;
+        let k = k.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+        let v = v.reshape((seq_len, self.n_kv_head, self.head_dim))?;
 
         let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
             // Per‑head RMSNorm in qwen3
-            let q_flat = q.flatten(0, 2)?; // (B*H, L, D) -> (BHL, D) after transpose later
-            let k_flat = k.flatten(0, 2)?;
+            let q_flat = q.flatten(0, 1)?;
+            let k_flat = k.flatten(0, 1)?;
 
             // q_norm and k_norm weights stored in f32 format in qwen3 gguf
             let q_flat = q_norm.forward(&q_flat)?;
             let k_flat = k_norm.forward(&k_flat)?;
 
-            let q = q_flat.reshape((1, self.n_head, seq_len, self.head_dim))?;
-            let k = k_flat.reshape((1, self.n_kv_head, seq_len, self.head_dim))?;
+            let q = q_flat.reshape((seq_len, self.n_head, self.head_dim))?;
+            let k = k_flat.reshape((seq_len, self.n_kv_head, self.head_dim))?;
 
             (q, k)
         } else {
