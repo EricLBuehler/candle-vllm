@@ -78,12 +78,12 @@ cd candle-vllm
 **CUDA (CUDA 11+, 12+, 13.0)**
  > Option 1 (Install into docker)
 ```bash
-# `flash-decoding` takes longer time to build (pass hardware arch and cuda version)
+# `flashattn` takes longer time to build (pass hardware arch and cuda version)
 # Host driver version need to >= specified cuda version
-./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_90 13.0.0
+./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_90 13.0.0
 
 # Or, use Rust crate China Mirror (used in Chinese Mainland)
-./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_80 12.9.0 1
+./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0 1
 ```
 
  > Option 2 (Manual Installation)
@@ -103,8 +103,8 @@ export PATH=$PATH:/usr/local/cuda/bin/
 
 Install for single node inference
 ```shell
-# Remove "flash-attn,flash-decoding,cutlass" for sm_75 and sm_70
-cargo install --features cuda,nccl,graph,flash-attn,flash-decoding,cutlass --path .
+# Remove "flashattn,cutlass" for sm_75 and sm_70
+cargo install --features cuda,nccl,graph,flashattn,cutlass --path .
 ```
 
 Install for multinode inference
@@ -112,7 +112,7 @@ Install for multinode inference
 # Use MPI (multi-gpus on multiple machines)
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
 sudo apt install clang libclang-dev
-cargo install --features cuda,nccl,graph,flash-attn,flash-decoding,cutlass,mpi --path .
+cargo install --features cuda,nccl,graph,flashattn,cutlass,mpi --path .
 ```
 
 **Mac/Metal (single-node only)**
@@ -133,12 +133,12 @@ cargo install --features metal --path .
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flash-attn,flash-decoding,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashattn,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl,flash-attn,flash-decoding,cutlass,graph
+    `BUILD_PARAM`: --release --features cuda,nccl,flashattn,cutlass,graph
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 

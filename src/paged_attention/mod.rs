@@ -93,7 +93,7 @@ impl PagedAttention {
         let (batch_size, attention_heads, seq_len, head_size) = query.shape().dims4()?;
         let (_, key_value_heads, _, _) = key.shape().dims4()?;
 
-        #[cfg(feature = "flash-attn")]
+        #[cfg(feature = "flashattn")]
         let att = if input_metadata.is_prompt {
             let k = repeat_kv(
                 key.clone(),
@@ -134,7 +134,7 @@ impl PagedAttention {
             None
         };
 
-        #[cfg(not(feature = "flash-attn"))]
+        #[cfg(not(feature = "flashattn"))]
         let att = if input_metadata.is_prompt {
             //chunked attention for each sequence
             let chunk_size = 1024;

@@ -76,13 +76,13 @@ cd candle-vllm
 
  > 方案 1 (安装进docker)
 ```bash
-# 启用`flash-decoding`特性需要更长的编译时间
+# 启用`flashattn`特性需要更长的编译时间
 # 添加 `cutlass` 特性以支持fp8模型 (Qwen3.5系列, sm90+)，使用CUDA 13 镜像
 # 主机驱动版本需要 >= 选定的CUDA版本
-./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding,cutlass" sm_90 13.0.0
+./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_90 13.0.0
 
 # 或，传 1 使用Rust 中国区镜像 (适用于中国大陆)
-./build_docker.sh "cuda,nccl,graph,flash-attn,flash-decoding" sm_80 12.9.0 1
+./build_docker.sh "cuda,nccl,graph,flashattn" sm_80 12.9.0 1
 ```
 
  > 方案 2 (手动安装)
@@ -102,15 +102,15 @@ export PATH=$PATH:/usr/local/cuda/bin/
 
 适用于单节点推理
 ```shell
-# sm+70/sm_75硬件平台需要去除“flash-attn,flash-decoding,cutlass”特性
-cargo install --features cuda,nccl,graph,flash-attn,flash-decoding,cutlass --path .
+# sm+70/sm_75硬件平台需要去除“flashattn,cutlass”特性
+cargo install --features cuda,nccl,graph,flashattn,cutlass --path .
 ```
 
 适用于多节点推理
 ```shell
 sudo apt install git libopenmpi-dev openmpi-bin -y #安装MPI
 sudo apt install clang libclang-dev
-cargo install --features cuda,nccl,flash-attn,flash-decoding,cutlass,mpi --path . #同时包含flash attention与MPI功能
+cargo install --features cuda,nccl,flashattn,cutlass,mpi --path . #同时包含flash attention与MPI功能
 ```
 
 **Mac/Metal平台**
@@ -131,12 +131,12 @@ cargo install --features metal --path .
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flash-attn,flash-decoding,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashattn,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl,flash-attn,flash-decoding,cutlass,graph
+    `BUILD_PARAM`: --release --features cuda,nccl,flashattn,cutlass,graph
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 

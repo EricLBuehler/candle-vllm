@@ -26,5 +26,5 @@ is reserved for cached prefixes.
 - Prefix cache uses the same KV memory pool as active sequences. A larger cache
   reduces the maximum number of concurrent tokens available for new requests.
 - With prefix cache enabled, prefill can reuse cached KV even without
-  `flash-decoding` as long as the backend kernels support it.
+  `flashattn` as long as the backend kernels support it.
 - Sliding window attention limits how much cached context is effectively used.
