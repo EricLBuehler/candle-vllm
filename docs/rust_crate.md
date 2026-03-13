@@ -20,6 +20,7 @@ You must enable at least one backend feature unless you are running on CPU (whic
 - **`cuda`**: Helper to enable CUDA support (requires wrapping project to also configure CUDA).
 - **`metal`**: For macOS Metal support.
 - **`flashattn`**: Enables the flash attention backend.
+- **`flashinfer`**: Enables the FlashInfer backend on CUDA.
 
 ## Usage Example
 

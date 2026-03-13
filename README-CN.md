@@ -26,31 +26,29 @@
 - 支持CUDA Graph
 - 支持Prefix Caching
 - 支持硬件FP8模型推理加速（SM90+, Qwen3系列，Block-wise FP8量化）
+- 支持 Flashinfer 后端
 
 ## 支持的模型
 - 目前，candle-vllm支持以下模型结构的推理服务。
-  <details>
+  <details open>
     <summary>显示支持的模型架构</summary>
 
-    | 模型ID | 模型类型 | 是否支持 | 速度（A100, `BF16`） | 吞吐量（`BF16`, `bs=16`） | 量化（A100, `Q4K`或`Marlin`） | 量化吞吐量（`GTPQ/Marlin`, `bs=16`） |
-    |--|--|--|--|--|--|--|
-    | #1 | **LLAMA** |✅|65 tks/s (8B) | 553 tks/s (8B) | 75 tks/s (8B), 115 tks/s (8B, **Marlin**) |968 tks/s (8B)|
-    | #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), 115 tks/s (7B, **Marlin**) |981 tks/s (7B)|
-    | #3 | **Phi** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
-    | #4 | **QWen2/Qwen3** |✅|81 tks/s (8B)|831 tks/s (8B) |-|TBD|S
-    | #4 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|TBD|
-    | #5 | **StableLM** |✅|99 tks/s (3B)|TBD|-|TBD|
-    | #6 | **Gemma-2/Gemma-3** |✅|60 tks/s (9B)|TBD |73 tks/s (9B, **Marlin**) |587 tks/s (9B)|
-    | #7 | **DeepSeek-R1-Distill-QWen** |✅|48 tks (14B)|TBD|62 tks (14B)|TBD|
-    | #8 | **DeepSeek-R1-Distill-LLaMa** |✅|65 tks (8B)|TBD|108 tks (8B)|TBD|
-    | #9 | **DeepSeek V2/V3/R1** |✅|TBD|TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|TBD|
-    | #10 | **QwQ-32B** |✅|30 tks/s **(32B, tp=2)**|TBD |36 tks/s **(32B, Q4K, GGUF)**|TBD|
-    | #11 | **GLM4** |✅|55 tks/s **(9B)**|TBD |92 tks/s **(9B, Q4K, GGUF)**|TBD|
-    | #12 | **QWen2 MoE** |✅|TBD|TBD |65 tks/s (14B, Q4K)|TBD|
-    | #13 | **QWen3 MoE 30B** |✅|92 tks/s|TBD |114 tks/s **(Q4K)** |TBD|
-    | #14 | **QWen3-Next MoE** |✅|71 tks/s|TBD|TBD|TBD|
-    | #15 | **QWen3.5 Dense 27B** |✅|27 tks/s|TBD|39 tks/s **(Q4K)** |TBD|
-    | #16 | **QWen3.5 MoE 35B** |✅|66 tks/s|TBD|73 tks/s **(Q4K)** |TBD|
+    | 模型ID | 模型类型 | 解码速度 / 单请求（`BF16`, Hopper） | 量化（`Q4K`或`Marlin`） |
+    |--|--|--|--|
+    | #1 | **LLAMA** |105 tks/s (8B) | 154 tks/s (8B, Q4k), 163 tks/s (8B, **Marlin**) |
+    | #2 | **Mistral** |112 tks/s (7B)| 171 tks/s (7B, Q4k), 175 tks/s (7B, **Marlin**) |
+    | #3 | **Phi3/Phi4** |139 tks/s (3.8B)|180 tks/s (3.8B, Q4k)|
+    | #4 | **QWen2/Qwen3 Dense** |96 tks/s (8B)|135 tks/s **(8B, Q4k)**|
+    | #5 | **QWen3 MoE** |92 tks/s **(30B)**|114 tks/s **(30B, Q4K)** |
+    | #6 | **QWen3-Next MoE** |71 tks/s **(80B, BF16, tp=2)**|TBD|
+    | #7 | **QWen3.5 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
+    | #8 | **QWen3.5 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
+    | #9 | **Yi** |148 tks/s (6B)| 180 tks/s (6B, Q4k)|
+    | #10 | **StableLM** |223 tks/s (3B)|-|
+    | #11 | **Gemma-2/Gemma-3** |92 tks/s (9B)|115 tks/s (9B, **Marlin**)|
+    | #12 | **DeepSeek V2/V3/R1** |TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|
+    | #13 | **QwQ-32B** |45 tks/s **(32B, tp=2)**|63 tks/s **(32B, Q4K)**|
+    | #14 | **GLM4** |89 tks/s **(9B)**|124 tks/s **(9B, Q4K)**|
   </details>
 
 ### 演示视频
@@ -76,13 +74,12 @@ cd candle-vllm
 
  > 方案 1 (安装进docker)
 ```bash
-# 启用`flashattn`特性需要更长的编译时间
-# 添加 `cutlass` 特性以支持fp8模型 (Qwen3.5系列, sm90+)，使用CUDA 13 镜像
-# 主机驱动版本需要 >= 选定的CUDA版本
-./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_90 13.0.0
+# 主机驱动版本需要 >= 选定的CUDA版本；启用`flashattn`或`flashinfer`特性需要更长的编译时间
+# 将 `sm_80` 更改为当前硬件特性, 例如, sm_75 (V100), sm_80 (Ampere, A100), sm_86/89 (RTX30xx, RTX40xx), sm_90 (Hopper, H100/H200), sm_100/sm_120 (Blackwell, RTX50xx)
+./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass" sm_90 13.0.0
 
-# 或，传 1 使用Rust 中国区镜像 (适用于中国大陆)
-./build_docker.sh "cuda,nccl,graph,flashattn" sm_80 12.9.0 1
+# 或切换为 Flah attention 后端, 或 传 1 使用Rust 中国区镜像 (适用于中国大陆)
+./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0 1
 ```
 
  > 方案 2 (手动安装)
@@ -102,8 +99,9 @@ export PATH=$PATH:/usr/local/cuda/bin/
 
 适用于单节点推理
 ```shell
-# sm+70/sm_75硬件平台需要去除“flashattn,cutlass”特性
-cargo install --features cuda,nccl,graph,flashattn,cutlass --path .
+# sm+70/sm_75硬件平台需要去除“flashattn,flashinfer,cutlass”特性
+# 将 `flashinfer` 替换为 `flashattn` 则启用Flash attention后端
+cargo install --features cuda,nccl,graph,flashinfer,cutlass --path .
 ```
 
 适用于多节点推理
@@ -111,6 +109,9 @@ cargo install --features cuda,nccl,graph,flashattn,cutlass --path .
 sudo apt install git libopenmpi-dev openmpi-bin -y #安装MPI
 sudo apt install clang libclang-dev
 cargo install --features cuda,nccl,flashattn,cutlass,mpi --path . #同时包含flash attention与MPI功能
+
+# FlashInfer 后端
+cargo install --features cuda,nccl,graph,flashinfer,cutlass,mpi --path .
 ```
 
 **Mac/Metal平台**
@@ -131,22 +132,22 @@ cargo install --features metal --path .
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashattn,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl,flashattn,cutlass,graph
+    `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 
-    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3-Coder-Next-FP8（或使用 `--w` 指定本地模型路径）
+    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.5-27B-FP8（或使用 `--w` 指定本地模型路径）
 
     `CACHE CONFIG`: --fp8-kvcache
 
     `WEB UI`: --ui-server
 
-    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--gpu-memory-fraction` 会在模型加载完成后按 `fraction * 总显存 - 当前占用显存` 自动计算 KV Cache 大小；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--fp8-kvcache` 参数用于启用 FP8 KV Cache；`--prefix-cache` 启用前缀缓存复用；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--ui-server` 启动内置 Web UI。
+    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--gpu-memory-fraction` 会在模型加载完成后按 `fraction * 总显存 - 当前占用显存` 自动计算 KV Cache 大小；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--fp8-kvcache` 参数用于启用 FP8 KV Cache；`--prefix-cache` 启用前缀缓存复用；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--ui-server` 启动内置 Web UI。若要使用 Flash attention 后端，可将示例中的 `flashinfer` 替换为 `flashattn`。
   </details>
 
 ## 如何运行模型？
@@ -173,12 +174,12 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     **模型ID（从Huggingface下载）**
 
     ```shell
-    candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B
+    candle-vllm --m Qwen/Qwen3.5-35B-A3B --ui-server --prefix-cache
     ```
 
     **FP8 模型** (block-wise量化, 通过增加`cutlass`特性构建)
     ```shell
-    candle-vllm --w Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8/ --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.5-27B-FP8 --ui-server --prefix-cache
     ```
 
   </details>
@@ -226,7 +227,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     **只需在运行未量化模型时添加`isq`参数**
 
     ```shell
-    candle-vllm --w /home/DeepSeek-R1-Distill-Llama-8B/ --isq q4k
+    candle-vllm --m Qwen/Qwen3.5-27B --isq q4k
     ```
 
     注：原位量化加载可能需要更长的加载时间，原位`isq`参数选项：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]

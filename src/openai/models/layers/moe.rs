@@ -253,8 +253,8 @@ fn load_packed_experts(
 #[allow(dead_code)]
 pub struct FusedMoe {
     gate: Linear,
-    gate_w: Tensor,
-    up_w: Tensor,
+    gate_up_w: Tensor,
+    w_size_n: usize,
     down_w: Tensor,
     act: candle_nn::Activation,
     norm_topk_prob: bool,
@@ -285,12 +285,14 @@ impl FusedMoe {
         )?;
 
         let (gate_w, up_w, down_w) = load_packed_experts(cfg, vb.pp("experts"), comm.clone())?;
+        let gate_up_w = Tensor::cat(&[&gate_w, &up_w], 1)?;
         let world_size = comm.world_size();
+        let w_size_n = gate_up_w.dim(1)? / 2;
 
         Ok(Self {
             gate,
-            gate_w,
-            up_w,
+            gate_up_w,
+            w_size_n,
             down_w,
             act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
@@ -319,6 +321,31 @@ impl FusedMoe {
             topk_weights = (topk_weights * routed_scaling_factor)?;
         }
 
+        #[cfg(all(feature = "cuda", feature = "flashinfer"))]
+        {
+            let xs = if xs.dtype() == DType::F32 {
+                xs.to_dtype(DType::BF16)?
+            } else {
+                xs.to_owned()
+            };
+            if let Ok(mut ys) = moe::flashinfer_fused_moe(
+                &xs,
+                &topk_ids,
+                &topk_weights,
+                &self.gate_up_w,
+                &self.down_w,
+            ) {
+                if self.world_size > 1 {
+                    ys = self.all_reduce.apply(&ys)?;
+                }
+                return Ok(if ys.dtype() != self.dtype {
+                    ys.to_dtype(self.dtype)?
+                } else {
+                    ys
+                });
+            }
+        }
+
         let (expert_ids, sorted_token_ids) = if is_prefill {
             #[cfg(feature = "cuda")]
             {
@@ -331,9 +358,9 @@ impl FusedMoe {
             topk_ids.flatten_all()?.sort_last_dim(true)?
         };
 
-        let gate = moe::moe_gemm(
+        let gate_up = moe::moe_gemm(
             &xs,
-            &self.gate_w,
+            &self.gate_up_w,
             &None,
             &sorted_token_ids,
             &expert_ids,
@@ -341,15 +368,12 @@ impl FusedMoe {
             is_prefill,
         )?;
 
-        let up = moe::moe_gemm(
-            &xs,
-            &self.up_w,
-            &None,
-            &sorted_token_ids,
-            &expert_ids,
-            self.num_experts_per_tok,
-            is_prefill,
-        )?;
+        let gate = gate_up
+            .narrow(candle_core::D::Minus1, 0, self.w_size_n)?
+            .contiguous()?;
+        let up = gate_up
+            .narrow(candle_core::D::Minus1, self.w_size_n, self.w_size_n)?
+            .contiguous()?;
 
         let down_inputs = (up * gate.apply(&self.act)?)?;
 
@@ -676,10 +700,9 @@ impl FusedMoeISQ {
 /// FP8 Mixture of Experts layer with block-wise scales
 pub struct FusedMoeFp8 {
     gate: Linear,
-    gate_experts: Tensor,
-    gate_experts_scale: Tensor,
-    up_experts: Tensor,
-    up_experts_scale: Tensor,
+    gate_up_experts: Tensor,
+    gate_up_experts_scale: Tensor,
+    w_size_n: usize,
     down_experts: Tensor,
     down_experts_scale: Tensor,
     act: candle_nn::Activation,
@@ -911,12 +934,15 @@ impl FusedMoeFp8 {
             )
         };
 
+        let gate_up_experts = Tensor::cat(&[&gate_experts, &up_experts], 1)?;
+        let gate_up_experts_scale = Tensor::cat(&[&gate_experts_scale, &up_experts_scale], 1)?;
+        let w_size_n = gate_up_experts.dim(1)? / 2;
+
         Ok(Self {
             gate,
-            gate_experts,
-            gate_experts_scale,
-            up_experts,
-            up_experts_scale,
+            gate_up_experts,
+            gate_up_experts_scale,
+            w_size_n,
             down_experts,
             down_experts_scale,
             act: candle_nn::Activation::Silu,
@@ -946,6 +972,33 @@ impl FusedMoeFp8 {
             topk_weights = (topk_weights * routed_scaling_factor)?;
         }
 
+        #[cfg(all(feature = "cuda", feature = "flashinfer"))]
+        {
+            let xs = if xs.dtype() == DType::F32 {
+                xs.to_dtype(DType::BF16)?
+            } else {
+                xs.to_owned()
+            };
+            if let Ok(mut ys) = moe::flashinfer_fused_moe_fp8(
+                &xs,
+                &topk_ids,
+                &topk_weights,
+                &self.gate_up_experts,
+                &self.gate_up_experts_scale,
+                &self.down_experts,
+                &self.down_experts_scale,
+            ) {
+                if self.world_size > 1 {
+                    ys = self.all_reduce.apply(&ys)?;
+                }
+                return Ok(if ys.dtype() != self.dtype {
+                    ys.to_dtype(self.dtype)?
+                } else {
+                    ys
+                });
+            }
+        }
+
         let (expert_ids, sorted_token_ids) = if is_prefill {
             #[cfg(feature = "cuda")]
             {
@@ -964,10 +1017,10 @@ impl FusedMoeFp8 {
             xs.clone()
         };
 
-        let gate = moe_gemm_fp8(
+        let gate_up = moe_gemm_fp8(
             &xs,
-            &self.gate_experts,
-            &self.gate_experts_scale,
+            &self.gate_up_experts,
+            &self.gate_up_experts_scale,
             &None,
             &sorted_token_ids,
             &expert_ids,
@@ -977,18 +1030,12 @@ impl FusedMoeFp8 {
             is_prefill,
         )?;
 
-        let up = moe_gemm_fp8(
-            &xs,
-            &self.up_experts,
-            &self.up_experts_scale,
-            &None,
-            &sorted_token_ids,
-            &expert_ids,
-            self.num_experts_per_tok,
-            self.block_size[0],
-            self.block_size[1],
-            is_prefill,
-        )?;
+        let gate = gate_up
+            .narrow(candle_core::D::Minus1, 0, self.w_size_n)?
+            .contiguous()?;
+        let up = gate_up
+            .narrow(candle_core::D::Minus1, self.w_size_n, self.w_size_n)?
+            .contiguous()?;
 
         let down_inputs = (up * gate.apply(&self.act)?)?;
 

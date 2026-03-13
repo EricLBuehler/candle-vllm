@@ -29,8 +29,38 @@ use candle_core::quantized;
 pub use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 
+use std::cell::Cell;
 use std::sync::Arc;
 use tracing::warn;
+
+thread_local! {
+    static FP8_LINEAR_IS_PREFILL: Cell<bool> = const { Cell::new(false) };
+}
+
+pub struct Fp8LinearPrefillGuard {
+    prev: bool,
+}
+
+impl Drop for Fp8LinearPrefillGuard {
+    fn drop(&mut self) {
+        FP8_LINEAR_IS_PREFILL.with(|flag| flag.set(self.prev));
+    }
+}
+
+pub fn set_fp8_linear_is_prefill(is_prefill: bool) -> Fp8LinearPrefillGuard {
+    let prev = FP8_LINEAR_IS_PREFILL.with(|flag| {
+        let prev = flag.get();
+        flag.set(is_prefill);
+        prev
+    });
+    Fp8LinearPrefillGuard { prev }
+}
+
+#[cfg(feature = "flashinfer")]
+fn fp8_linear_is_prefill() -> bool {
+    FP8_LINEAR_IS_PREFILL.with(|flag| flag.get())
+}
+
 #[derive(Clone, Debug)]
 pub struct Linear {
     weight: Tensor,
@@ -775,6 +805,7 @@ impl Module for QLinear {
 pub struct LnFp8 {
     pub weight: Tensor,
     pub weight_scale: Tensor,
+    pub weight_scale_cutlass: Option<Tensor>,
     pub bias: Option<Tensor>,
     pub weight_block_size: Vec<usize>,
     pub sm_version: usize,
@@ -833,13 +864,16 @@ impl LnFp8 {
         let sm_version = 0;
 
         #[cfg(feature = "cutlass")]
-        let weight_scale = if sm_version >= 100 {
-            weight_scale.t()?
+        let weight_scale_cutlass = if sm_version >= 100 {
+            Some(weight_scale.t()?)
         } else if sm_version >= 90 {
-            weight_scale.t()?.contiguous()?
+            Some(weight_scale.t()?.contiguous()?)
         } else {
-            weight_scale
+            None
         };
+
+        #[cfg(not(feature = "cutlass"))]
+        let weight_scale_cutlass = None;
 
         // Load bias if present
         let bias = vb.get((out_dim,), "bias");
@@ -861,6 +895,7 @@ impl LnFp8 {
         Ok(Self {
             weight,
             weight_scale,
+            weight_scale_cutlass,
             bias,
             weight_block_size: block_size,
             sm_version,
@@ -1000,13 +1035,16 @@ fn load_ln_fp8_with_hints(
     let sm_version = 0;
 
     #[cfg(feature = "cutlass")]
-    let weight_scale = if sm_version >= 100 {
-        weight_scale.t()?
+    let weight_scale_cutlass = if sm_version >= 100 {
+        Some(weight_scale.t()?)
     } else if sm_version >= 90 {
-        weight_scale.t()?.contiguous()?
+        Some(weight_scale.t()?.contiguous()?)
     } else {
-        weight_scale
+        None
     };
+
+    #[cfg(not(feature = "cutlass"))]
+    let weight_scale_cutlass = None;
 
     let bias = if load_bias {
         vb.get_with_hints_dtype((out_dim,), "bias", shard, DType::F32)
@@ -1020,6 +1058,7 @@ fn load_ln_fp8_with_hints(
     Ok(LnFp8 {
         weight,
         weight_scale,
+        weight_scale_cutlass,
         bias,
         weight_block_size: block_size,
         sm_version,
@@ -1039,12 +1078,66 @@ impl Module for LnFp8 {
 
         let x_2d = x.reshape((m, k))?;
 
+        #[cfg(feature = "flashinfer")]
+        let can_use_flashinfer_fp8 = (90..100).contains(&self.sm_version)
+            && x_2d.dtype() == DType::BF16
+            && self.weight_block_size.as_slice() == &[128, 128]
+            && !fp8_linear_is_prefill()
+            && m <= 64;
+
+        #[cfg(feature = "flashinfer")]
+        let out = if can_use_flashinfer_fp8 {
+            attention_rs::fp8_linear::fp8_matmul_flashinfer(
+                &x_2d,
+                &self.weight,
+                &self.weight_scale,
+            )?
+        } else {
+            #[cfg(feature = "cutlass")]
+            {
+                let weight_scale_cutlass = self
+                    .weight_scale_cutlass
+                    .as_ref()
+                    .unwrap_or(&self.weight_scale);
+                if self.sm_version >= 90 {
+                    attention_rs::fp8_linear::fp8_matmul_cutlass(
+                        &x_2d,
+                        &self.weight.t()?,
+                        weight_scale_cutlass,
+                        &self.weight_block_size,
+                    )?
+                } else {
+                    attention_rs::fp8_linear::fp8_matmul(
+                        &x_2d,
+                        &self.weight,
+                        &self.weight_scale,
+                        &self.weight_block_size,
+                    )?
+                }
+            }
+
+            #[cfg(not(feature = "cutlass"))]
+            {
+                attention_rs::fp8_linear::fp8_matmul(
+                    &x_2d,
+                    &self.weight,
+                    &self.weight_scale,
+                    &self.weight_block_size,
+                )?
+            }
+        };
+
+        #[cfg(not(feature = "flashinfer"))]
         #[cfg(feature = "cutlass")]
         let out = if self.sm_version >= 90 {
+            let weight_scale_cutlass = self
+                .weight_scale_cutlass
+                .as_ref()
+                .unwrap_or(&self.weight_scale);
             attention_rs::fp8_linear::fp8_matmul_cutlass(
                 &x_2d,
                 &self.weight.t()?,
-                &self.weight_scale,
+                weight_scale_cutlass,
                 &self.weight_block_size,
             )?
         } else {
@@ -1057,7 +1150,7 @@ impl Module for LnFp8 {
             )?
         };
 
-        #[cfg(not(feature = "cutlass"))]
+        #[cfg(all(not(feature = "flashinfer"), not(feature = "cutlass")))]
         let out = attention_rs::fp8_linear::fp8_matmul(
             &x_2d,
             &self.weight,

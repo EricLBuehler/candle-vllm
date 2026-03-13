@@ -180,26 +180,32 @@ impl MergedParallelColumnLinear {
             .contiguous()?;
 
         #[cfg(feature = "cutlass")]
-        let gate_scale_shard = if sm_version >= 100 {
-            gate_scale_shard.t()?
+        let gate_scale_cutlass = if sm_version >= 100 {
+            Some(gate_scale_shard.t()?)
         } else if sm_version >= 90 {
-            gate_scale_shard.t()?.contiguous()?
+            Some(gate_scale_shard.t()?.contiguous()?)
         } else {
-            gate_scale_shard
+            None
         };
 
         #[cfg(feature = "cutlass")]
-        let up_scale_shard = if sm_version >= 100 {
-            up_scale_shard.t()?
+        let up_scale_cutlass = if sm_version >= 100 {
+            Some(up_scale_shard.t()?)
         } else if sm_version >= 90 {
-            up_scale_shard.t()?.contiguous()?
+            Some(up_scale_shard.t()?.contiguous()?)
         } else {
-            up_scale_shard
+            None
         };
+
+        #[cfg(not(feature = "cutlass"))]
+        let gate_scale_cutlass = None;
+        #[cfg(not(feature = "cutlass"))]
+        let up_scale_cutlass = None;
 
         let gate_linear = LinearX::LnFp8(LnFp8 {
             weight: gate_weight_shard,
             weight_scale: gate_scale_shard,
+            weight_scale_cutlass: gate_scale_cutlass,
             bias: None,
             weight_block_size: block_size.clone(),
             sm_version,
@@ -212,6 +218,7 @@ impl MergedParallelColumnLinear {
         let up_linear = LinearX::LnFp8(LnFp8 {
             weight: up_weight_shard,
             weight_scale: up_scale_shard,
+            weight_scale_cutlass: up_scale_cutlass,
             bias: None,
             weight_block_size: block_size.clone(),
             sm_version,
@@ -258,17 +265,21 @@ impl MergedParallelColumnLinear {
         output_splits: Vec<usize>,
     ) -> Self {
         #[cfg(feature = "cutlass")]
-        let packed_scale = if sm_version >= 100 {
-            packed_scale.t().unwrap()
+        let packed_scale_cutlass = if sm_version >= 100 {
+            Some(packed_scale.t().unwrap())
         } else if sm_version >= 90 {
-            packed_scale.t().unwrap().contiguous().unwrap()
+            Some(packed_scale.t().unwrap().contiguous().unwrap())
         } else {
-            packed_scale
+            None
         };
+
+        #[cfg(not(feature = "cutlass"))]
+        let packed_scale_cutlass = None;
 
         let linear = LinearX::LnFp8(LnFp8 {
             weight: packed_weight,
             weight_scale: packed_scale,
+            weight_scale_cutlass: packed_scale_cutlass,
             bias: None,
             weight_block_size: block_size,
             sm_version,
@@ -723,17 +734,21 @@ impl MergedParallelColumnLinear {
             };
 
             #[cfg(feature = "cutlass")]
-            let merged_scale = if sm_version >= 100 {
-                merged_scale.t()?
+            let merged_scale_cutlass = if sm_version >= 100 {
+                Some(merged_scale.t()?)
             } else if sm_version >= 90 {
-                merged_scale.t()?.contiguous()?
+                Some(merged_scale.t()?.contiguous()?)
             } else {
-                merged_scale
+                None
             };
+
+            #[cfg(not(feature = "cutlass"))]
+            let merged_scale_cutlass = None;
 
             let linear = LinearX::LnFp8(LnFp8 {
                 weight: merged_weight,
                 weight_scale: merged_scale,
+                weight_scale_cutlass: merged_scale_cutlass,
                 bias: None,
                 weight_block_size: block_size.clone(),
                 sm_version,

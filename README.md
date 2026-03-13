@@ -27,31 +27,29 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
 - Support Prefix Caching
 - Support Block-wise FP8 Models (SM90+, Qwen3 Series)
+- Support Flashinfer Backend
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.
-  <details>
+  <details open>
     <summary>Show supported model architectures</summary>
 
-    | Model ID | Model Type | Supported | Speed (A100, `BF16`) | Throughput (`BF16`, `bs=16`) | Quantized (A100, `Q4K` or `Marlin`) | Throughput (`GTPQ/Marlin`, `bs=16`) |
-    |--|--|--|--|--|--|--|
-    | #1 | **LLAMA** |✅|65 tks/s (8B) | 553 tks/s (8B) | 75 tks/s (8B), 115 tks/s (8B, **Marlin**) |968 tks/s (8B)|
-    | #2 | **Mistral** |✅|70 tks/s (7B)| 585 tks/s (7B) | 96 tks/s (7B), 115 tks/s (7B, **Marlin**) |981 tks/s (7B)|
-    | #3 | **Phi** |✅|107 tks/s (3.8B)| 744 tks/s (3.8B)|135 tks/s (3.8B)|TBD|
-    | #4 | **QWen2/Qwen3** |✅|81 tks/s (8B)|831 tks/s (8B) |-|TBD|S
-    | #4 | **Yi** |✅|75 tks/s (6B)| 566 tks/s (6B) | 105 tks/s (6B)|TBD|
-    | #5 | **StableLM** |✅|99 tks/s (3B)|TBD|-|TBD|
-    | #6 | **Gemma-2/Gemma-3** |✅|60 tks/s (9B)|TBD |73 tks/s (9B, **Marlin**) |587 tks/s (9B)|
-    | #7 | **DeepSeek-R1-Distill-QWen** |✅|48 tks (14B)|TBD|62 tks (14B)|TBD|
-    | #8 | **DeepSeek-R1-Distill-LLaMa** |✅|65 tks (8B)|TBD|108 tks (8B)|TBD|
-    | #9 | **DeepSeek V2/V3/R1** |✅|TBD|TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|TBD|
-    | #10 | **QwQ-32B** |✅|30 tks/s **(32B, tp=2)**|TBD |36 tks/s **(32B, Q4K, GGUF)**|TBD|
-    | #11 | **GLM4** |✅|55 tks/s **(9B)**|TBD |92 tks/s **(9B, Q4K, GGUF)**|TBD|
-    | #12 | **QWen2 MoE** |✅|TBD|TBD |65 tks/s (14B, Q4K)|TBD|
-    | #13 | **QWen3 MoE 30B** |✅|92 tks/s|TBD |114 tks/s **(Q4K)** |TBD|
-    | #14 | **QWen3-Next MoE** |✅|71 tks/s|TBD|TBD|TBD|
-    | #15 | **QWen3.5 Dense 27B** |✅|27 tks/s|TBD|39 tks/s **(Q4K)** |TBD|
-    | #16 | **QWen3.5 MoE 35B** |✅|66 tks/s|TBD|73 tks/s **(Q4K)** |TBD|
+    | Model ID | Model Type | Decoding Speed / Request (`BF16`, Hopper) | Quantized (`Q4K` or `Marlin`) |
+    |--|--|--|--|
+    | #1 | **LLAMA** |105 tks/s (8B) | 154 tks/s (8B, Q4k), 163 tks/s (8B, **Marlin**) |
+    | #2 | **Mistral** |112 tks/s (7B)| 171 tks/s (7B, Q4k), 175 tks/s (7B, **Marlin**) |
+    | #3 | **Phi3/Phi4** |139 tks/s (3.8B)|180 tks/s (3.8B, Q4k)|
+    | #4 | **QWen2/Qwen3 Dense** |96 tks/s (8B)|135 tks/s **(8B, Q4k)**|
+    | #5 | **QWen3 MoE** |92 tks/s **(30B)**|114 tks/s **(30B, Q4K)** |
+    | #6 | **QWen3-Next MoE** |71 tks/s **(80B, BF16, tp=2)**|TBD|
+    | #7 | **QWen3.5 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
+    | #8 | **QWen3.5 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
+    | #9 | **Yi** |148 tks/s (6B)| 180 tks/s (6B, Q4k)|
+    | #10 | **StableLM** |223 tks/s (3B)|-|
+    | #11 | **Gemma-2/Gemma-3** |92 tks/s (9B)|115 tks/s (9B, **Marlin**)|
+    | #12 | **DeepSeek V2/V3/R1** |TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|
+    | #13 | **QwQ-32B** |45 tks/s **(32B, tp=2)**|63 tks/s **(32B, Q4K)**|
+    | #14 | **GLM4** |89 tks/s **(9B)**|124 tks/s **(9B, Q4K)**|
   </details>
 
 ### Demo Video
@@ -78,11 +76,11 @@ cd candle-vllm
 **CUDA (CUDA 11+, 12+, 13.0)**
  > Option 1 (Install into docker)
 ```bash
-# `flashattn` takes longer time to build (pass hardware arch and cuda version)
-# Host driver version need to >= specified cuda version
-./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_90 13.0.0
+# Host driver version must >= specified cuda version, `flashattn` and `flashinfer` take longer time to build
+# Change `sm_80` to your hardware spec, e.g., sm_75 (V100), sm_80 (Ampere, A100), sm_86/89 (RTX30xx, RTX40xx), sm_90 (Hopper, H100/H200), sm_100/sm_120 (Blackwell, RTX50xx). 
+./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass" sm_90 13.0.0
 
-# Or, use Rust crate China Mirror (used in Chinese Mainland)
+# Or switch to Flash attention backend, or use Rust crate China Mirror (used in Chinese Mainland)
 ./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0 1
 ```
 
@@ -103,8 +101,9 @@ export PATH=$PATH:/usr/local/cuda/bin/
 
 Install for single node inference
 ```shell
-# Remove "flashattn,cutlass" for sm_75 and sm_70
-cargo install --features cuda,nccl,graph,flashattn,cutlass --path .
+# Remove "flashattn,flashinfer,cutlass" for sm_75 and sm_70
+# Replace `flashinfer` with `flashattn` to use Flash attention backend
+cargo install --features cuda,nccl,graph,flashinfer,cutlass --path .
 ```
 
 Install for multinode inference
@@ -113,6 +112,9 @@ Install for multinode inference
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
 sudo apt install clang libclang-dev
 cargo install --features cuda,nccl,graph,flashattn,cutlass,mpi --path .
+
+# FlashInfer backend
+cargo install --features cuda,nccl,graph,flashinfer,cutlass,mpi --path .
 ```
 
 **Mac/Metal (single-node only)**
@@ -133,22 +135,22 @@ cargo install --features metal --path .
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashattn,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl,flashattn,cutlass,graph
+    `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 
-    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3-Coder-Next-FP8 (or `--w` specify local model path)
+    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.5-27B-FP8 (or `--w` specify local model path)
 
     `CACHE CONFIG`: --fp8-kvcache
 
     `WEB UI`: --ui-server
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * total_gpu_memory - current_usage`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever.
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * total_gpu_memory - current_usage`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
   </details>
 
 
@@ -178,12 +180,12 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     **Model-ID (download from Huggingface)**
 
     ```shell
-    candle-vllm --m deepseek-ai/DeepSeek-R1-0528-Qwen3-8B --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.5-35B-A3B --ui-server --prefix-cache
     ```
 
     **FP8 Model** (block-wise quant, build with `cutlass` feature)
     ```shell
-    candle-vllm --w Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8/ --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.5-27B-FP8 --ui-server --prefix-cache
     ```
 
     ```shell
@@ -235,7 +237,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     **Simply add `isq` parameter when running unquantized models**
 
     ```shell
-    candle-vllm --p 2000 --w /home/DeepSeek-R1-Distill-Llama-8B/ --isq q4k
+    candle-vllm --p 2000 --m Qwen/Qwen3.5-27B --isq q4k
     ```
 
     Options for in-site `isq` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]

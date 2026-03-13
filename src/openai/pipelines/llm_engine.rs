@@ -9,6 +9,8 @@ use crate::scheduler::Scheduler;
 use crate::tools::stream_parser::{
     BufferedFinalizeResult, ParserState, StreamResult, StreamToolParser,
 };
+#[cfg(feature = "flashinfer")]
+use crate::FlashInferKvParams;
 use crate::{
     openai::{
         models::Config,
@@ -17,6 +19,7 @@ use crate::{
             ChoiceData, EmbeddingData, EmbeddingOutput, EmbeddingResponse, EmbeddingUsage,
             WrapperLogprobs,
         },
+        sampling_params::Logprobs,
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
     },
@@ -27,6 +30,8 @@ use crate::{
     },
     InputMetadata,
 };
+#[cfg(feature = "flashinfer")]
+use attention_rs::FlashInferMetadata;
 use candle_core::{Device, Result, Tensor};
 use either::Either;
 use flume::Sender;
@@ -38,7 +43,7 @@ use rayon::iter::ParallelIterator;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     iter::zip,
     sync::Arc,
 };
@@ -50,6 +55,11 @@ struct PreparedInputs {
     tokens: Tensor,
     positions: Tensor,
     metadata: InputMetadata,
+}
+
+struct StreamEmission {
+    content: Option<String>,
+    tool_calls: Option<Vec<crate::tools::ToolCall>>,
 }
 
 const _PAD_SLOT_ID: i64 = -1;
@@ -74,6 +84,7 @@ pub struct LLMEngine {
     #[cfg(feature = "nccl")]
     pub daemon_manager: RwLock<Option<DaemonManager>>,
     prefill_chunk_size: Option<usize>,
+    restored_prefix_sequences: RwLock<HashSet<usize>>,
     pub exit_flag: Arc<AtomicBool>,
     last_decoding_throughput_log_ms: usize,
 }
@@ -108,6 +119,7 @@ impl LLMEngine {
         cached_tokens: usize,
         reason: &str,
     ) {
+        let _ = self.restored_prefix_sequences.write().remove(&seq_id);
         let rebuilt = self
             .scheduler
             .block_engine
@@ -267,22 +279,24 @@ impl LLMEngine {
             return Ok(());
         }
 
-        let mut sequence_ids: Vec<usize> = Vec::new();
-        let mut had_live_mamba_state: HashMap<usize, bool> = HashMap::new();
-        {
-            let (pipeline, _) = self.get_pipeline(rank).unwrap();
-            for group in groups {
-                for seq in Self::ordered_group_sequences(group) {
-                    let seq_id = seq.deref().get_id();
-                    sequence_ids.push(seq_id);
-                    had_live_mamba_state
-                        .insert(seq_id, pipeline.has_mamba_slot_for_sequence(seq_id));
+        let mut restore_candidates = Vec::new();
+        for group in groups {
+            for seq in Self::ordered_group_sequences(group) {
+                let seq_id = seq.deref().get_id();
+                let cached_tokens = seq.deref().get_num_cached_tokens();
+                if cached_tokens == 0 {
+                    continue;
                 }
+                if self.restored_prefix_sequences.read().contains(&seq_id) {
+                    continue;
+                }
+                restore_candidates.push(seq_id);
             }
         }
-        {
+
+        if !restore_candidates.is_empty() {
             let (pipeline, _) = self.get_pipeline(rank).unwrap();
-            let _ = pipeline.ensure_mamba_slots_for_sequences(&sequence_ids)?;
+            pipeline.ensure_mamba_slots_for_sequences(&restore_candidates)?;
         }
 
         for group in groups {
@@ -292,7 +306,7 @@ impl LLMEngine {
                 if cached_tokens == 0 {
                     continue;
                 }
-                if had_live_mamba_state.get(&seq_id).copied().unwrap_or(false) {
+                if self.restored_prefix_sequences.read().contains(&seq_id) {
                     continue;
                 }
                 if let Some(hash) = self
@@ -328,6 +342,8 @@ impl LLMEngine {
                             cached_tokens,
                             &format!("failed to restore mamba snapshot for hash {}", hash),
                         );
+                    } else {
+                        self.restored_prefix_sequences.write().insert(seq_id);
                     }
                 } else {
                     tracing::warn!(
@@ -379,6 +395,12 @@ impl LLMEngine {
         }
         for hash in captured_hashes {
             self.scheduler.block_engine.record_mamba_prefix_hash(hash);
+        }
+        {
+            let mut restored = self.restored_prefix_sequences.write();
+            for seq_id in &released_ids {
+                let _ = restored.remove(seq_id);
+            }
         }
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
@@ -479,13 +501,19 @@ impl LLMEngine {
     }
 
     #[cfg(all(feature = "cuda", feature = "graph"))]
-    pub fn graph_capture(engine: &Arc<RwLock<LLMEngine>>) -> Result<()> {
-        let mut e = engine.write();
-        let (ref mut pipeline, cache_engine) = e.get_mut_pipeline(0usize).unwrap();
-        let device = pipeline.device();
-        let _ = device.as_cuda_device().unwrap().bind_to_thread();
-        let x = pipeline.warmup_capture(Some(&cache_engine.get_kv_cache()));
-        x
+    fn graph_capture_all_pipelines(&mut self) -> Result<()> {
+        let mut ranks = self.pipelines.keys().copied().collect::<Vec<_>>();
+        ranks.sort_unstable();
+        for rank in ranks {
+            let (pipeline, cache_engine) = self.get_mut_pipeline(rank).ok_or_else(|| {
+                candle_core::Error::msg(format!("missing pipeline for rank {rank}"))
+            })?;
+            let device = pipeline.device();
+            let _ = device.as_cuda_device().unwrap().bind_to_thread();
+            pipeline.warmup_capture(Some(&cache_engine.get_kv_cache()))?;
+        }
+        self.restored_prefix_sequences.write().clear();
+        Ok(())
     }
 
     pub fn new(
@@ -620,6 +648,7 @@ impl LLMEngine {
             sync_notifies: HashMap::new(),
             senders: HashMap::new(),
             prefill_chunk_size,
+            restored_prefix_sequences: RwLock::new(HashSet::new()),
             exit_flag: Arc::new(AtomicBool::new(false)),
             last_decoding_throughput_log_ms: 0,
         }));
@@ -634,9 +663,27 @@ impl LLMEngine {
         let is_master_rank = DaemonManager::is_master_rank();
         #[cfg(not(feature = "nccl"))]
         let is_master_rank = true;
+        #[cfg(all(feature = "cuda", feature = "graph"))]
+        let (graph_capture_tx, graph_capture_rx) = std::sync::mpsc::sync_channel(1);
 
         let _ = tokio::task::spawn_blocking(move || {
             tokio::runtime::Handle::current().block_on(async move {
+                #[cfg(all(feature = "cuda", feature = "graph"))]
+                {
+                    let graph_capture_result = {
+                        let mut e = engine.write();
+                        e.graph_capture_all_pipelines()
+                    };
+                    let _ = graph_capture_tx.send(
+                        graph_capture_result
+                            .as_ref()
+                            .map(|_| ())
+                            .map_err(|e| format!("{e:?}")),
+                    );
+                    if graph_capture_result.is_err() {
+                        return;
+                    }
+                }
                 loop {
                     if engine.read().exit_flag.load(Ordering::Relaxed) {
                         break;
@@ -715,6 +762,16 @@ impl LLMEngine {
                 }
             });
         });
+
+        #[cfg(all(feature = "cuda", feature = "graph"))]
+        match graph_capture_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => candle_core::bail!("Unable to capture cuda graph {err}!"),
+            Err(err) => candle_core::bail!(
+                "Failed to receive cuda graph warmup result from engine worker thread: {}",
+                err
+            ),
+        }
 
         Ok(engine_clone)
     }
@@ -815,10 +872,14 @@ impl LLMEngine {
                             self.num_shards - 1
                         );
                     }
+                    let mut ipc_tasks = send_tasks.clone();
+                    for task in &mut ipc_tasks {
+                        task.tools.clear();
+                    }
                     let _ = daemon_manager
                         .as_mut()
                         .unwrap()
-                        .send_message(&MessageType::Data(send_tasks));
+                        .send_message(&MessageType::Data(ipc_tasks));
                 } else {
                     let _ = daemon_manager
                         .as_mut()
@@ -845,6 +906,69 @@ impl LLMEngine {
         rank: usize,
     ) -> Option<&mut (Box<DefaultPipeline>, CacheEngine)> {
         self.pipelines.get_mut(&rank)
+    }
+
+    #[cfg(feature = "flashinfer")]
+    fn flashinfer_kv_params_for_rank(&self, rank: usize) -> Result<Option<FlashInferKvParams>> {
+        let (_, cache_engine) = self
+            .get_pipeline(rank)
+            .ok_or_else(|| candle_core::Error::msg(format!("missing pipeline for rank {rank}")))?;
+        let kv_cache = cache_engine.get_kv_cache();
+        if kv_cache.is_empty() {
+            return Ok(None);
+        }
+
+        let (k_cache, _) = &kv_cache[0];
+        if k_cache.dtype() == candle_core::DType::U8 {
+            return Ok(None);
+        }
+
+        let (_, page_size, num_kv_heads, head_dim) = k_cache.dims4()?;
+        Ok(Some(FlashInferKvParams {
+            kv_dtype: k_cache.dtype(),
+            out_dtype: self
+                .get_pipeline(rank)
+                .map(|(pipeline, _)| pipeline.dtype)
+                .unwrap_or(k_cache.dtype()),
+            page_size,
+            num_kv_heads,
+            head_dim,
+            num_qo_heads: self.config.num_attention_heads / self.num_shards,
+        }))
+    }
+
+    #[cfg(feature = "flashinfer")]
+    fn ensure_flashinfer_decode_plan(
+        &self,
+        rank: usize,
+        device: &Device,
+        input_batch: usize,
+        metadata: &mut InputMetadata,
+    ) -> Result<()> {
+        let Some(fm) = metadata.flashinfer_metadata.as_mut() else {
+            return Ok(());
+        };
+        if fm.decode_plan_info.is_some() {
+            return Ok(());
+        }
+        let Some(params) = self.flashinfer_kv_params_for_rank(rank)? else {
+            return Ok(());
+        };
+        fm.decode_plan_info = Some(attention_rs::flashinfer::decode_plan(
+            device,
+            params.kv_dtype,
+            params.out_dtype,
+            &fm.indptr_host,
+            fm.last_len_host.as_deref(),
+            fm.kv_len_arr_host.as_deref(),
+            input_batch,
+            params.num_qo_heads,
+            params.num_kv_heads,
+            params.head_dim,
+            params.page_size,
+            fm.use_cuda_graph,
+        )?);
+        Ok(())
     }
 
     fn get_stream_response(
@@ -875,6 +999,197 @@ impl LLMEngine {
             model: pipeline.name().to_string(),
             object: "chat.completion.chunk",
             system_fingerprint: None,
+        }
+    }
+
+    fn collect_stream_emission_for_token(
+        &self,
+        rank: usize,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+        logprobs: &Logprobs,
+    ) -> StreamEmission {
+        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+        let token_str = &logprobs.bytes;
+        let should_parse_tools = group.sampling_params.mcp_mode.is_some();
+        let mut content = None;
+
+        {
+            let outer = seq.deref();
+            let mut data = outer.deref_mut();
+
+            if should_parse_tools {
+                if data.stream_tool_parser.is_none() {
+                    data.stream_tool_parser = Some(StreamToolParser::new_with_config(
+                        &pipeline.tool_model_type,
+                        pipeline.tool_parser_model_id.clone(),
+                        pipeline.tool_config.clone(),
+                        group.tools.clone(),
+                        pipeline.enforce_parser.clone(),
+                    ));
+                }
+                if let Some(parser) = data.stream_tool_parser.as_mut() {
+                    match parser.process_token(logprobs.token, token_str) {
+                        StreamResult::Content(text) | StreamResult::FlushBuffer(text) => {
+                            if !text.is_empty() {
+                                content = Some(text);
+                            }
+                        }
+                        StreamResult::Buffering => {}
+                        StreamResult::ToolCalls(calls) => {
+                            data.pending_tool_calls.extend(calls);
+                        }
+                    }
+                }
+            } else if !token_str.is_empty() {
+                content = Some(token_str.clone());
+            }
+        }
+
+        StreamEmission {
+            content,
+            tool_calls: None,
+        }
+    }
+
+    fn apply_pending_finish_logprobs(
+        &self,
+        rank: usize,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+    ) {
+        let pending = {
+            let outer = seq.deref();
+            let mut data = outer.deref_mut();
+            data.pending_finish_logprobs.take()
+        };
+
+        let Some(logprobs) = pending else {
+            return;
+        };
+
+        if group.sampling_params.mcp_mode.is_some() {
+            let (pipeline, _) = self.get_pipeline(rank).unwrap();
+            let outer = seq.deref();
+            let mut data = outer.deref_mut();
+            if data.stream_tool_parser.is_none() {
+                data.stream_tool_parser = Some(StreamToolParser::new_with_config(
+                    &pipeline.tool_model_type,
+                    pipeline.tool_parser_model_id.clone(),
+                    pipeline.tool_config.clone(),
+                    group.tools.clone(),
+                    pipeline.enforce_parser.clone(),
+                ));
+            }
+            if let Some(parser) = data.stream_tool_parser.as_mut() {
+                if let StreamResult::ToolCalls(calls) =
+                    parser.process_token(logprobs.token, &logprobs.bytes)
+                {
+                    data.pending_tool_calls.extend(calls);
+                }
+            }
+        }
+
+        seq.deref_mut().add_token(logprobs);
+    }
+
+    fn collect_stream_emission_on_finish(
+        &self,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+    ) -> StreamEmission {
+        let mut content = None;
+        let mut tool_calls = None;
+
+        {
+            let outer = seq.deref();
+            let mut data = outer.deref_mut();
+            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
+
+            if should_parse_tools {
+                if let Some(parser) = data.stream_tool_parser.as_mut() {
+                    if matches!(parser.state(), ParserState::Buffering) {
+                        match parser.finalize_buffered_tool_calls() {
+                            Some(BufferedFinalizeResult::ToolCalls(mut parsed)) => {
+                                data.pending_tool_calls.append(&mut parsed);
+                            }
+                            Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
+                                if !buffer.is_empty() {
+                                    content = Some(buffer);
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+
+            let pending = std::mem::take(&mut data.pending_tool_calls);
+            if !pending.is_empty() {
+                tool_calls = Some(pending);
+            }
+        }
+
+        StreamEmission {
+            content,
+            tool_calls,
+        }
+    }
+
+    fn send_stream_emission(
+        &self,
+        rank: usize,
+        sender: &Sender<ChatResponse>,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+        emission: StreamEmission,
+        finish_reason: Option<String>,
+    ) {
+        let should_log_free_blocks =
+            finish_reason.is_none() && emission.tool_calls.is_none() && emission.content.is_some();
+        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+        let chunk = if let Some(tool_calls) = emission.tool_calls {
+            self.get_stream_response(
+                group.request_id.clone(),
+                get_created_time_secs(),
+                None,
+                Some(
+                    tool_calls
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, call)| call.with_index(idx))
+                        .collect(),
+                ),
+                Some("tool_calls".to_string()),
+                pipeline,
+            )
+        } else {
+            self.get_stream_response(
+                group.request_id.clone(),
+                group.arrival_time,
+                emission.content,
+                None,
+                finish_reason,
+                pipeline,
+            )
+        };
+
+        if matches!(
+            chunk.choices.first(),
+            Some(choice) if choice.delta.tool_calls.is_some()
+        ) {
+            tracing::info!("Sending final tool call chunk: {:?}", chunk);
+        }
+
+        let ret = sender.send(ChatResponse::Chunk(chunk));
+        if ret.is_err() {
+            warn!(
+                "Send stream response error! (sequence id {})",
+                seq.deref().get_id()
+            );
+            seq.deref_mut().set_finish_reason("abort".to_string());
+        } else if should_log_free_blocks && seq.deref_mut().get_len() % 1000 == 0 {
+            self.scheduler.print_free_blocks();
         }
     }
 
@@ -953,7 +1268,7 @@ impl LLMEngine {
         let mut responses =
             HashMap::<String, (Vec<ChatChoice>, ChatCompletionUsageResponse)>::new();
         let mut prompt_finish_times = HashMap::<usize, SystemTime>::new();
-        #[cfg(feature = "nccl")]
+        #[cfg(feature = "cuda")]
         {
             debug!("Start processing...");
             let e = engine.read();
@@ -1018,15 +1333,34 @@ impl LLMEngine {
                 let (pipeline, cache_engine) = e.get_pipeline(rank).unwrap();
                 let device = pipeline.device();
                 let model_name = pipeline.name().to_string();
-                let PreparedInputs {
-                    tokens,
-                    positions,
-                    metadata,
-                } = if is_prompt_request {
+                #[cfg_attr(not(feature = "flashinfer"), allow(unused_mut))]
+                let mut prepared = if is_prompt_request {
                     e.prepare_prompt(&scheduled, device, rank)
                 } else {
                     e.prepare_decode(&scheduled, device, rank)
                 }?;
+                #[cfg(feature = "flashinfer")]
+                if !prepared.metadata.is_prefill {
+                    let use_cuda_graph = prepared
+                        .metadata
+                        .flashinfer_metadata
+                        .as_ref()
+                        .map(|fm| fm.use_cuda_graph)
+                        .unwrap_or(false);
+                    if !use_cuda_graph {
+                        e.ensure_flashinfer_decode_plan(
+                            rank,
+                            device,
+                            prepared.tokens.dim(0)?,
+                            &mut prepared.metadata,
+                        )?;
+                    }
+                }
+                let PreparedInputs {
+                    tokens,
+                    positions,
+                    metadata,
+                } = prepared;
 
                 let x = if is_embedding {
                     pipeline.forward_embedding(
@@ -1298,178 +1632,36 @@ impl LLMEngine {
                         }
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
-                            let (pipeline, _) = e.get_pipeline(rank).unwrap();
-                            let token_str = &logprobs.bytes;
-
-                            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
-                            let mut content_to_send: Option<String> = None;
-                            {
-                                let outer = seq.deref();
-                                let mut data = outer.deref_mut();
-
-                                if should_parse_tools {
-                                    if data.stream_tool_parser.is_none() {
-                                        data.stream_tool_parser =
-                                            Some(StreamToolParser::new_with_config(
-                                                &pipeline.tool_model_type,
-                                                pipeline.tool_parser_model_id.clone(),
-                                                pipeline.tool_config.clone(),
-                                                group.tools.clone(),
-                                                pipeline.enforce_parser.clone(),
-                                            ));
-                                    }
-                                    if let Some(parser) = data.stream_tool_parser.as_mut() {
-                                        match parser.process_token(logprobs.token, token_str) {
-                                            StreamResult::Content(text) => {
-                                                if !text.is_empty() {
-                                                    content_to_send = Some(text);
-                                                }
-                                            }
-                                            StreamResult::Buffering => {}
-                                            StreamResult::FlushBuffer(text) => {
-                                                if !text.is_empty() {
-                                                    content_to_send = Some(text);
-                                                }
-                                            }
-                                            StreamResult::ToolCalls(calls) => {
-                                                data.pending_tool_calls.extend(calls);
-                                            }
-                                        }
-                                    }
-                                } else if !token_str.is_empty() {
-                                    content_to_send = Some(token_str.clone());
-                                }
-                            }
-
-                            if let Some(content) = content_to_send {
-                                let chunk = e.get_stream_response(
-                                    group.request_id.clone(),
-                                    group.arrival_time,
-                                    Some(content),
-                                    None,
-                                    None,
-                                    pipeline,
-                                );
-                                let ret = sender.send(ChatResponse::Chunk(chunk));
-                                if ret.is_err() {
-                                    warn!(
-                                        "Send stream response error! (sequence id {})",
-                                        seq.deref().get_id()
-                                    );
-                                    seq.deref_mut().set_finish_reason("abort".to_string());
-                                }
-                                if seq.deref_mut().get_len() % 1000 == 0 {
-                                    e.scheduler.print_free_blocks();
-                                }
+                            let emission =
+                                e.collect_stream_emission_for_token(rank, group, &seq, &logprobs);
+                            if emission.tool_calls.is_some() || emission.content.is_some() {
+                                e.send_stream_emission(rank, sender, group, &seq, emission, None);
                             }
                         };
                         seq.deref_mut().add_token(logprobs);
                     }
                     Either::Right(finish_reason) => {
                         let seq = Self::primary_sequence(group);
-
-                        let mut final_tool_calls = None;
-                        let mut final_content = None;
                         {
-                            let outer = seq.deref();
-                            let mut data = outer.deref_mut();
-                            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
-
-                            if should_parse_tools {
-                                if let Some(parser) = data.stream_tool_parser.as_mut() {
-                                    match parser.state() {
-                                        ParserState::Buffering => {
-                                            match parser.finalize_buffered_tool_calls() {
-                                                Some(BufferedFinalizeResult::ToolCalls(
-                                                    mut parsed,
-                                                )) => {
-                                                    data.pending_tool_calls.append(&mut parsed);
-                                                }
-                                                Some(BufferedFinalizeResult::FlushBuffer(
-                                                    buffer,
-                                                )) => {
-                                                    if !buffer.is_empty() {
-                                                        final_content = Some(buffer);
-                                                    }
-                                                }
-                                                None => {}
-                                            }
-                                        }
-                                        ParserState::Normal => {}
-                                    }
-                                }
-                            }
-
-                            let pending = std::mem::take(&mut data.pending_tool_calls);
-                            if !pending.is_empty() {
-                                final_tool_calls = Some(pending);
-                            }
+                            let e = engine.read();
+                            e.apply_pending_finish_logprobs(rank, group, &seq);
                         }
-
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
-                            let (pipeline, _) = e.get_pipeline(rank).unwrap();
-
-                            if let Some(tool_calls) = final_tool_calls {
-                                let tool_calls = tool_calls
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(idx, call)| call.with_index(idx))
-                                    .collect::<Vec<_>>();
-                                let mut choices = Vec::new();
-                                let choice = Choice {
-                                    delta: ChoiceData {
-                                        role: "assistant".to_string(),
-                                        content: None,
-                                        tool_calls: Some(tool_calls),
-                                    },
-                                    // If we found a tool call at finish, the reason is likely tool_calls
-                                    finish_reason: Some("tool_calls".to_string()),
-                                    index: 0,
-                                };
-                                choices.push(choice);
-
-                                let chunk = ChatCompletionChunk {
-                                    id: group.request_id.clone(),
-                                    choices,
-                                    created: get_created_time_secs(),
-                                    model: pipeline.name().to_string(),
-                                    object: "chat.completion.chunk",
-                                    system_fingerprint: None,
-                                };
-
-                                tracing::info!("Sending final tool call chunk: {:?}", chunk);
-                                let ret = sender.send(ChatResponse::Chunk(chunk));
-                                if ret.is_err() {
-                                    warn!(
-                                        "Send stream response error! (sequence id {})",
-                                        seq.deref().get_id()
-                                    );
-                                    seq.deref_mut().set_finish_reason("abort".to_string());
-                                }
+                            let emission = e.collect_stream_emission_on_finish(group, &seq);
+                            let stream_finish_reason = if finish_reason == "tool_calls" {
+                                "stop".to_string()
                             } else {
-                                let finish_reason = if finish_reason == "tool_calls" {
-                                    "stop".to_string()
-                                } else {
-                                    finish_reason.clone()
-                                };
-                                let chunk = e.get_stream_response(
-                                    group.request_id.clone(),
-                                    group.arrival_time,
-                                    final_content,
-                                    None,
-                                    Some(finish_reason.clone()),
-                                    pipeline,
-                                );
-                                let ret = sender.send(ChatResponse::Chunk(chunk));
-                                if ret.is_err() {
-                                    warn!(
-                                        "Send stream response error! (sequence id {})",
-                                        seq.deref().get_id()
-                                    );
-                                    seq.deref_mut().set_finish_reason("abort".to_string());
-                                }
-                            }
+                                finish_reason.clone()
+                            };
+                            e.send_stream_emission(
+                                rank,
+                                sender,
+                                group,
+                                &seq,
+                                emission,
+                                Some(stream_finish_reason),
+                            );
                         };
                         seq.deref_mut().set_finish_reason(finish_reason);
                     }
@@ -1847,8 +2039,18 @@ impl LLMEngine {
         let mut slot_mapping = Vec::new();
         let chunk_size = self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
         let mut max_context_len = 0;
+        #[cfg(feature = "flashinfer")]
+        let mut ordered_sequences = Vec::<Arc<Sequence>>::new();
+        #[cfg(feature = "flashinfer")]
+        let mut prefill_tokens = Vec::new();
+        #[cfg(feature = "flashinfer")]
+        let mut batch_indices_vec = Vec::<u32>::new();
+        #[cfg(feature = "flashinfer")]
+        let mut positions_vec = Vec::<u32>::new();
         for group in groups {
             for seq in Self::ordered_group_sequences(group) {
+                #[cfg(feature = "flashinfer")]
+                ordered_sequences.push(Arc::clone(&seq));
                 let prompt_ids = seq.deref_mut().get_token_ids();
                 sequence_ids.push(seq.deref().get_id());
                 let seq_len = prompt_ids.len();
@@ -1861,12 +2063,15 @@ impl LLMEngine {
                 } else {
                     seq_len - num_cached_tokens
                 };
+                #[cfg(feature = "flashinfer")]
+                prefill_tokens.push(num_tokens);
 
                 context_lens.push(seq_len as u32);
 
                 let seqlen_q = num_tokens;
                 let use_cached_kv = num_cached_tokens > 0
-                    && (cfg!(feature = "flashattn") || self.scheduler.prefix_cache_enabled());
+                    && ((cfg!(feature = "flashattn") || cfg!(feature = "flashinfer"))
+                        || self.scheduler.prefix_cache_enabled());
                 let seqlen_k = if use_cached_kv {
                     num_cached_tokens + num_tokens
                 } else {
@@ -1884,6 +2089,15 @@ impl LLMEngine {
                     (num_cached_tokens as i64..(num_cached_tokens + num_tokens) as i64)
                         .collect::<Vec<_>>(),
                 );
+                #[cfg(feature = "flashinfer")]
+                {
+                    let batch_idx = (sequence_ids.len() - 1) as u32;
+                    batch_indices_vec.extend(std::iter::repeat(batch_idx).take(num_tokens));
+                    positions_vec.extend(
+                        (num_cached_tokens as u32..(num_cached_tokens + num_tokens) as u32)
+                            .collect::<Vec<_>>(),
+                    );
+                }
                 let table = self
                     .scheduler
                     .block_engine
@@ -1973,6 +2187,89 @@ impl LLMEngine {
         let cu_seqlens_k = Tensor::from_vec(cu_seqlens_k, (k_len,), device)?;
         let mamba_slot_mapping =
             self.prepare_mamba_slot_mapping(&sequence_ids, true, rank, device)?;
+        #[cfg(feature = "flashinfer")]
+        let flashinfer_metadata = if self.flashinfer_kv_params_for_rank(rank)?.is_some() {
+            let mut indptr = vec![0u32];
+            let mut indices = Vec::new();
+            let mut last_len = Vec::new();
+            for (seq, &num_tokens) in ordered_sequences.iter().zip(prefill_tokens.iter()) {
+                let effective_len = seq.deref().get_num_cached_tokens() + num_tokens;
+                let Some(table) = self
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq.deref().get_id())
+                else {
+                    indptr.push(indices.len() as u32);
+                    last_len.push(0);
+                    continue;
+                };
+                let table = table
+                    .iter()
+                    .map(|block| block.deref_mut().block_id as u32)
+                    .collect::<Vec<_>>();
+                let max_blocks = table.len();
+                let num_blocks = if effective_len == 0 {
+                    0
+                } else {
+                    (effective_len + self.cache_config.block_size - 1)
+                        / self.cache_config.block_size
+                };
+                let num_blocks = std::cmp::min(num_blocks, max_blocks);
+                indices.extend(table[..num_blocks].iter().copied());
+                indptr.push(indices.len() as u32);
+                let last = if effective_len == 0 {
+                    0
+                } else {
+                    (effective_len - 1) % self.cache_config.block_size + 1
+                };
+                last_len.push(last as u32);
+            }
+            if let Some(limit) = self.cache_config.num_gpu_blocks {
+                if let Some((pos, &bad_idx)) = indices
+                    .iter()
+                    .enumerate()
+                    .find(|(_, idx)| **idx as usize >= limit)
+                {
+                    candle_core::bail!(
+                        "flashinfer prefill block index out of range: indices[{}]={} >= num_gpu_blocks ({})",
+                        pos,
+                        bad_idx,
+                        limit
+                    );
+                }
+            }
+            let indptr_host = indptr.clone();
+            let last_len_host = last_len.clone();
+            let mut kv_len_arr_host = Vec::with_capacity(last_len_host.len());
+            for i in 0..last_len_host.len() {
+                let num_pages = indptr_host[i + 1] - indptr_host[i];
+                if num_pages == 0 {
+                    kv_len_arr_host.push(0);
+                } else {
+                    let full = (num_pages - 1) * self.cache_config.block_size as u32;
+                    kv_len_arr_host.push(full + last_len_host[i]);
+                }
+            }
+            Some(FlashInferMetadata {
+                indptr: Tensor::from_vec(indptr, (indptr_host.len(),), device)?,
+                indptr_host,
+                indices: Tensor::from_vec(indices.clone(), (indices.len(),), device)?,
+                last_len: Tensor::from_vec(last_len, (last_len_host.len(),), device)?,
+                last_len_host: Some(last_len_host),
+                kv_len_arr_host: Some(kv_len_arr_host),
+                cu_seqlens_q_host: Some(cu_seqlens_q_vec.clone()),
+                total_num_rows: Some(*cu_seqlens_q_vec.last().unwrap()),
+                batch_indices: Some(Tensor::from_vec(batch_indices_vec, (length,), device)?),
+                positions: Some(Tensor::from_vec(positions_vec, (length,), device)?),
+                use_cuda_graph: false,
+                decode_plan_info: None,
+            })
+        } else {
+            None
+        };
+        #[cfg(not(feature = "flashinfer"))]
+        let flashinfer_metadata = None;
 
         let input_metadata = InputMetadata {
             is_prefill: true,
@@ -1988,7 +2285,7 @@ impl LLMEngine {
             max_context_len,
             disable_flash_attn: None,
             seqlens: Some(cu_seqlens_q_vec[1..].to_vec()),
-            flashinfer_metadata: None,
+            flashinfer_metadata,
         };
 
         Ok(PreparedInputs {
@@ -2082,6 +2379,88 @@ impl LLMEngine {
         let block_tables = block_tables.reshape(((), max_block_table_len))?;
         let mamba_slot_mapping =
             self.prepare_mamba_slot_mapping(&sequence_ids, false, rank, device)?;
+        #[cfg(feature = "flashinfer")]
+        let flashinfer_metadata = if self.flashinfer_kv_params_for_rank(rank)?.is_some() {
+            #[cfg(all(feature = "cuda", feature = "graph"))]
+            let use_cuda_graph = {
+                let (pipeline, _) = self.get_pipeline(rank).ok_or_else(|| {
+                    candle_core::Error::msg(format!("missing pipeline for rank {rank}"))
+                })?;
+                pipeline.capturer.is_exact_captured(length)
+            };
+            #[cfg(not(all(feature = "cuda", feature = "graph")))]
+            let use_cuda_graph = false;
+
+            let mut indptr = vec![0u32];
+            let mut indices = Vec::new();
+            let mut last_len = Vec::new();
+            for group in groups {
+                for seq in Self::ordered_group_sequences(group) {
+                    let table = self
+                        .scheduler
+                        .block_engine
+                        .block_tables
+                        .get(&seq.deref().get_id())
+                        .unwrap()
+                        .iter()
+                        .map(|block| block.deref_mut().block_id as u32)
+                        .collect::<Vec<_>>();
+                    indices.extend(table);
+                    indptr.push(indices.len() as u32);
+                    let len = seq.deref().get_len();
+                    let last = if len == 0 {
+                        0
+                    } else {
+                        (len - 1) % self.cache_config.block_size + 1
+                    };
+                    last_len.push(last as u32);
+                }
+            }
+            if let Some(limit) = self.cache_config.num_gpu_blocks {
+                if let Some((pos, &bad_idx)) = indices
+                    .iter()
+                    .enumerate()
+                    .find(|(_, idx)| **idx as usize >= limit)
+                {
+                    candle_core::bail!(
+                        "flashinfer decode block index out of range: indices[{}]={} >= num_gpu_blocks ({})",
+                        pos,
+                        bad_idx,
+                        limit
+                    );
+                }
+            }
+            let indptr_host = indptr.clone();
+            let last_len_host = last_len.clone();
+            let mut kv_len_arr_host = Vec::with_capacity(last_len_host.len());
+            for i in 0..last_len_host.len() {
+                let num_pages = indptr_host[i + 1] - indptr_host[i];
+                if num_pages == 0 {
+                    kv_len_arr_host.push(0);
+                } else {
+                    let full = (num_pages - 1) * self.cache_config.block_size as u32;
+                    kv_len_arr_host.push(full + last_len_host[i]);
+                }
+            }
+            Some(FlashInferMetadata {
+                indptr: Tensor::from_vec(indptr, (length + 1,), device)?,
+                indptr_host,
+                indices: Tensor::from_vec(indices.clone(), (indices.len(),), device)?,
+                last_len: Tensor::from_vec(last_len, (length,), device)?,
+                last_len_host: Some(last_len_host),
+                kv_len_arr_host: Some(kv_len_arr_host),
+                cu_seqlens_q_host: None,
+                total_num_rows: None,
+                batch_indices: None,
+                positions: None,
+                use_cuda_graph,
+                decode_plan_info: None,
+            })
+        } else {
+            None
+        };
+        #[cfg(not(feature = "flashinfer"))]
+        let flashinfer_metadata = None;
         let input_metadata = InputMetadata {
             is_prefill: false,
             sequence_ids: Some(sequence_ids),
@@ -2096,7 +2475,7 @@ impl LLMEngine {
             max_context_len: max_context_len as usize,
             disable_flash_attn: None,
             seqlens: None,
-            flashinfer_metadata: None,
+            flashinfer_metadata,
         };
 
         Ok(PreparedInputs {

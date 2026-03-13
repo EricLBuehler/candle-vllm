@@ -677,7 +677,7 @@ impl BlockEngine {
                         matched_blocks
                     );
                 } else {
-                    tracing::debug!("Prefix cache miss seq {}", seq.deref().deref().get_id());
+                    tracing::info!("Prefix cache miss seq {}", seq.deref().deref().get_id());
                 }
                 if matched_blocks > 0 {
                     let mut blocks = prefix_cache.blocks_for_match(last_hash.unwrap());
