@@ -78,11 +78,11 @@ cd candle-vllm
 **CUDA (CUDA 11+, 12+, 13.0)**
  > Option 1 (Install into docker)
 ```bash
-# `flashattn` takes longer time to build (pass hardware arch and cuda version)
+# `flashattn` and `flashinfer` take longer time to build (pass hardware arch and cuda version)
 # Host driver version need to >= specified cuda version
-./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_90 13.0.0
+./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass" sm_90 13.0.0
 
-# Or, use Rust crate China Mirror (used in Chinese Mainland)
+# Or switch to Flash attention backend, or use Rust crate China Mirror (used in Chinese Mainland)
 ./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0 1
 ```
 
@@ -103,8 +103,9 @@ export PATH=$PATH:/usr/local/cuda/bin/
 
 Install for single node inference
 ```shell
-# Remove "flashattn,cutlass" for sm_75 and sm_70
-cargo install --features cuda,nccl,graph,flashattn,cutlass --path .
+# Remove "flashattn,flashinfer,cutlass" for sm_75 and sm_70
+# Replace `flashinfer` with `flashattn` to use Flash attention backend
+cargo install --features cuda,nccl,graph,flashinfer,cutlass --path .
 ```
 
 Install for multinode inference
@@ -113,6 +114,9 @@ Install for multinode inference
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
 sudo apt install clang libclang-dev
 cargo install --features cuda,nccl,graph,flashattn,cutlass,mpi --path .
+
+# FlashInfer backend
+cargo install --features cuda,nccl,graph,flashinfer,cutlass,mpi --path .
 ```
 
 **Mac/Metal (single-node only)**
@@ -133,12 +137,12 @@ cargo install --features metal --path .
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashattn,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl,flashattn,cutlass,graph
+    `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 
@@ -148,7 +152,7 @@ cargo install --features metal --path .
 
     `WEB UI`: --ui-server
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * total_gpu_memory - current_usage`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever.
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * total_gpu_memory - current_usage`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
   </details>
 
 

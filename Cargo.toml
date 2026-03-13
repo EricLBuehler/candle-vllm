@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -80,6 +80,7 @@ cutlass = ["cuda", "attention-rs/cutlass"]
 metal = ["candle-core/metal", "candle-nn/metal", "dep:metal", "attention-rs/metal"]
 cudnn = ["candle-core/cudnn"]
 flashattn = ["attention-rs/flashattn", "attention-rs/no-fp8-kvcache"]
+flashinfer = ["attention-rs/flashinfer"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl"]
 nccl = ["candle-core/nccl"]
 mpi = ["candle-core/nccl", "dep:mpi"]

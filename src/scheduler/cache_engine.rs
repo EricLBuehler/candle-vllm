@@ -94,7 +94,7 @@ impl CacheEngine {
             cache_config.num_gpu_blocks.unwrap_or(32)
         };
 
-        if cfg!(feature = "flashattn") {
+        if cfg!(any(feature = "flashattn", feature = "flashinfer")) {
             let kv_shape = Self::calculate_flash_key_value_block_shape(
                 model_config,
                 cache_config.block_size,

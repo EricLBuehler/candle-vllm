@@ -2,13 +2,14 @@
 set -euo pipefail
 
 # Positional args:
-#   1: WITH_FEATURES   (default: cuda,nccl,graph,flashattn)
+#   1: WITH_FEATURES   (default: cuda,nccl,graph,flashinfer)
+#                        use `flashattn` instead of `flashattn` for the Flash attention backend
 #   2: SM_ARG          (default: sm_80)  accepts sm_XX, XX, or comma list sm_80,sm_86
 #   3: CUDA_VERSION    (default: 12.9.0) accepts X.Y.Z, X.Y, or shorthand like 129/124
 #   4: CHINA_MIRROR    (default: 0)      0=off, 1=on
 #   5: IMAGE_TAG       (default: candle-vllm:latest)
 
-WITH_FEATURES="${1:-cuda,nccl,graph,flashattn}"
+WITH_FEATURES="${1:-cuda,nccl,graph,flashinfer}"
 SM_ARG="${2:-sm_80}"
 CUDA_VERSION_ARG="${3:-12.9.0}"
 CHINA_MIRROR="${4:-0}"

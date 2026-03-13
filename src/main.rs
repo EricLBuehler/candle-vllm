@@ -219,10 +219,10 @@ async fn main() -> Result<()> {
     let dtype = candle_vllm::get_dtype(args.dtype);
     let kv_cache_dtype = if args.fp8_kvcache { DType::U8 } else { dtype };
 
-    if cfg!(feature = "flashattn") {
+    if cfg!(any(feature = "flashattn", feature = "flashinfer")) {
         assert!(
             !args.fp8_kvcache,
-            "fp8 kvcache is not compatible with `flashattn` feature!"
+            "fp8 kvcache is not compatible with `flashattn` or `flashinfer` features!"
         );
     }
 

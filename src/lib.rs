@@ -12,6 +12,17 @@ pub use attention_rs::{InputMetadata, PagedAttention};
 
 pub mod api;
 
+#[cfg(feature = "flashinfer")]
+#[derive(Clone, Copy, Debug)]
+pub struct FlashInferKvParams {
+    pub kv_dtype: candle::DType,
+    pub out_dtype: candle::DType,
+    pub page_size: usize,
+    pub num_kv_heads: usize,
+    pub head_dim: usize,
+    pub num_qo_heads: usize,
+}
+
 pub fn get_dtype(dtype: Option<String>) -> candle::DType {
     let dtype = match dtype.as_deref() {
         Some("f16") => candle::DType::F16,

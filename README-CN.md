@@ -76,13 +76,13 @@ cd candle-vllm
 
  > 方案 1 (安装进docker)
 ```bash
-# 启用`flashattn`特性需要更长的编译时间
+# 启用`flashattn`或`flashinfer`特性需要更长的编译时间
 # 添加 `cutlass` 特性以支持fp8模型 (Qwen3.5系列, sm90+)，使用CUDA 13 镜像
 # 主机驱动版本需要 >= 选定的CUDA版本
-./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_90 13.0.0
+./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass" sm_90 13.0.0
 
-# 或，传 1 使用Rust 中国区镜像 (适用于中国大陆)
-./build_docker.sh "cuda,nccl,graph,flashattn" sm_80 12.9.0 1
+# 或切换为 Flah attention 后端, 或 传 1 使用Rust 中国区镜像 (适用于中国大陆)
+./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0
 ```
 
  > 方案 2 (手动安装)
@@ -102,8 +102,9 @@ export PATH=$PATH:/usr/local/cuda/bin/
 
 适用于单节点推理
 ```shell
-# sm+70/sm_75硬件平台需要去除“flashattn,cutlass”特性
-cargo install --features cuda,nccl,graph,flashattn,cutlass --path .
+# sm+70/sm_75硬件平台需要去除“flashattn,flashinfer,cutlass”特性
+# 将 `flashinfer` 替换为 `flashattn` 则启用Flash attention后端
+cargo install --features cuda,nccl,graph,flashinfer,cutlass --path .
 ```
 
 适用于多节点推理
@@ -111,6 +112,9 @@ cargo install --features cuda,nccl,graph,flashattn,cutlass --path .
 sudo apt install git libopenmpi-dev openmpi-bin -y #安装MPI
 sudo apt install clang libclang-dev
 cargo install --features cuda,nccl,flashattn,cutlass,mpi --path . #同时包含flash attention与MPI功能
+
+# FlashInfer 后端
+cargo install --features cuda,nccl,graph,flashinfer,cutlass,mpi --path .
 ```
 
 **Mac/Metal平台**
@@ -131,12 +135,12 @@ cargo install --features metal --path .
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashattn,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3-Coder-Next-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl,flashattn,cutlass,graph
+    `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 
@@ -146,7 +150,7 @@ cargo install --features metal --path .
 
     `WEB UI`: --ui-server
 
-    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--gpu-memory-fraction` 会在模型加载完成后按 `fraction * 总显存 - 当前占用显存` 自动计算 KV Cache 大小；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--fp8-kvcache` 参数用于启用 FP8 KV Cache；`--prefix-cache` 启用前缀缓存复用；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--ui-server` 启动内置 Web UI。
+    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--gpu-memory-fraction` 会在模型加载完成后按 `fraction * 总显存 - 当前占用显存` 自动计算 KV Cache 大小；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--fp8-kvcache` 参数用于启用 FP8 KV Cache；`--prefix-cache` 启用前缀缓存复用；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--ui-server` 启动内置 Web UI。若要使用 Flash attention 后端，可将示例中的 `flashinfer` 替换为 `flashattn`。
   </details>
 
 ## 如何运行模型？

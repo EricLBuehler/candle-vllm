@@ -4,12 +4,15 @@ use crate::backend::gguf;
 use crate::backend::graph::{CudaGraphFn, CudaGraphWrapper, GraphCapturer, ModelFn};
 use crate::backend::progress::{progress_worker, ProgressLike, ProgressReporter};
 use crate::openai::logits_processor::LogitsProcessor;
+use crate::openai::models::linear::set_fp8_linear_is_prefill;
 use crate::openai::models::TokenID;
 use crate::openai::requests::StopTokens;
 use crate::openai::sampling_params::{GenerationConfig, Logprobs, TopLogprob};
 use crate::openai::{BosEosToken, TokenizerConfig};
 use crate::scheduler::sequence::SequenceGroup;
 use crate::tools::stream_parser::{ToolConfig, ToolModelType};
+#[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
+use crate::FlashInferKvParams;
 use crate::{
     openai::{
         conversation::default_conversation::{
@@ -413,6 +416,12 @@ impl DefaultLoader {
     ) -> Result<(Vec<Box<DefaultPipeline>>, PipelineConfig)> {
         let reporter = Arc::new(RwLock::new(ProgressReporter::new(local_rank.unwrap_or(0))));
         let num_subprogress = local_world_size.map_or(0, |n| n - 1);
+        #[cfg(feature = "nccl")]
+        let pipeline_num_shards = global_world_size
+            .or(local_world_size)
+            .unwrap_or(device_ids.len());
+        #[cfg(not(feature = "nccl"))]
+        let pipeline_num_shards = local_world_size.unwrap_or(device_ids.len());
         let _guard = candle_core::InferenceMode::enter();
         let (models, devices, config, sep_style) = if gguf {
             let device = crate::new_device(device_ids[0]).unwrap();
@@ -1126,6 +1135,8 @@ impl DefaultLoader {
                         public_model_name.clone(),
                         self.model_id.clone(),
                         self.enforce_parser.clone(),
+                        kv_cache_dtype,
+                        pipeline_num_shards,
                         #[cfg(all(feature = "cuda", feature = "graph"))]
                         block_size,
                         #[cfg(all(feature = "cuda", feature = "graph"))]
@@ -1153,6 +1164,8 @@ impl DefaultPipeline {
         model_name: Option<String>,
         tool_parser_model_id: Option<String>,
         enforce_parser: Option<String>,
+        _kv_cache_dtype: DType,
+        _num_shards: usize,
         #[cfg(all(feature = "cuda", feature = "graph"))] block_size: usize,
         #[cfg(all(feature = "cuda", feature = "graph"))] max_num_seqs: usize,
     ) -> Result<Self> {
@@ -1180,6 +1193,22 @@ impl DefaultPipeline {
             QWenGGUFMoE,
             GLM4GGUF,
         );
+        #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
+        let flashinfer_kv_params = if _kv_cache_dtype == DType::U8 {
+            None
+        } else {
+            Some(FlashInferKvParams {
+                kv_dtype: _kv_cache_dtype,
+                out_dtype: dtype,
+                page_size: block_size,
+                num_kv_heads: config
+                    .num_key_value_heads
+                    .unwrap_or(config.num_attention_heads)
+                    / _num_shards,
+                head_dim: config.k_head_dim(),
+                num_qo_heads: config.num_attention_heads / _num_shards,
+            })
+        };
 
         let tool_model_type = tool_model_type_for(&model);
         let mut tool_config = ToolConfig::for_model_type(&tool_model_type);
@@ -1224,6 +1253,8 @@ impl DefaultPipeline {
                 config.max_seq_len,
                 block_size,
                 config.hidden_size,
+                #[cfg(feature = "flashinfer")]
+                &flashinfer_kv_params,
             ),
         })
     }
@@ -1235,6 +1266,7 @@ impl DefaultPipeline {
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
+        let _ = set_fp8_linear_is_prefill(input_metadata.is_prefill);
         #[cfg(all(feature = "cuda", feature = "graph"))]
         if !input_metadata.is_prefill {
             let input_batch = input_tokens.dim(0)?;
@@ -1331,6 +1363,7 @@ impl DefaultPipeline {
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
+        let _ = set_fp8_linear_is_prefill(input_metadata.is_prefill);
         match &self.model {
             LLMModel::Llama(llama) => {
                 llama.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
@@ -1703,9 +1736,15 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Phi4(_) => Ok(()),
             LLMModel::Phi3GGUF(_) => Ok(()),
-            LLMModel::Qwen3_5(_) => Ok(()),
-            LLMModel::Qwen3_5MoE(_) => Ok(()),
-            _ => self.capturer.capture(&self.device, kv_caches),
+            _ => {
+                self.capturer.capture(&self.device, kv_caches)?;
+                match &self.model {
+                    LLMModel::Qwen3_5(model) => model.reset_mamba_cache()?,
+                    LLMModel::Qwen3_5MoE(model) => model.reset_mamba_cache()?,
+                    _ => {}
+                }
+                Ok(())
+            }
         }
     }
 }
