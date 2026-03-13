@@ -19,6 +19,7 @@ use crate::{
             ChoiceData, EmbeddingData, EmbeddingOutput, EmbeddingResponse, EmbeddingUsage,
             WrapperLogprobs,
         },
+        sampling_params::Logprobs,
         sampling_params::SamplingParams,
         utils::get_created_time_secs,
     },
@@ -54,6 +55,11 @@ struct PreparedInputs {
     tokens: Tensor,
     positions: Tensor,
     metadata: InputMetadata,
+}
+
+struct StreamEmission {
+    content: Option<String>,
+    tool_calls: Option<Vec<crate::tools::ToolCall>>,
 }
 
 const _PAD_SLOT_ID: i64 = -1;
@@ -866,10 +872,14 @@ impl LLMEngine {
                             self.num_shards - 1
                         );
                     }
+                    let mut ipc_tasks = send_tasks.clone();
+                    for task in &mut ipc_tasks {
+                        task.tools.clear();
+                    }
                     let _ = daemon_manager
                         .as_mut()
                         .unwrap()
-                        .send_message(&MessageType::Data(send_tasks));
+                        .send_message(&MessageType::Data(ipc_tasks));
                 } else {
                     let _ = daemon_manager
                         .as_mut()
@@ -989,6 +999,220 @@ impl LLMEngine {
             model: pipeline.name().to_string(),
             object: "chat.completion.chunk",
             system_fingerprint: None,
+        }
+    }
+
+    fn should_finish_tool_calls_for_token(
+        &self,
+        rank: usize,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+        token: u32,
+    ) -> bool {
+        if group.sampling_params.mcp_mode.is_none() {
+            return false;
+        }
+
+        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+        if pipeline.tool_call_end_token_ids.contains(&token) {
+            return if pipeline.tool_call_start_token_ids.is_empty() {
+                true
+            } else {
+                seq.deref()
+                    .get_output_tokens()
+                    .iter()
+                    .any(|output| pipeline.tool_call_start_token_ids.contains(&output.token))
+            };
+        }
+
+        if pipeline.json_end_token_id == Some(token) {
+            let mut output_tokens: Vec<u32> = seq
+                .deref()
+                .get_output_tokens()
+                .iter()
+                .map(|output| output.token)
+                .collect();
+            output_tokens.push(token);
+            if let Ok(decoded) = pipeline.tokenizer().decode(&output_tokens, true) {
+                return pipeline.tool_call_regex.is_match(&decoded);
+            }
+        }
+
+        false
+    }
+
+    fn collect_stream_emission_for_token(
+        &self,
+        rank: usize,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+        logprobs: &Logprobs,
+        should_finish_tool_calls: bool,
+    ) -> StreamEmission {
+        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+        let token_str = &logprobs.bytes;
+        let should_parse_tools = group.sampling_params.mcp_mode.is_some();
+        let mut content = None;
+        let mut tool_calls = None;
+
+        {
+            let outer = seq.deref();
+            let mut data = outer.deref_mut();
+
+            if should_parse_tools {
+                if data.stream_tool_parser.is_none() {
+                    data.stream_tool_parser = Some(StreamToolParser::new_with_config(
+                        &pipeline.tool_model_type,
+                        pipeline.tool_parser_model_id.clone(),
+                        pipeline.tool_config.clone(),
+                        group.tools.clone(),
+                        pipeline.enforce_parser.clone(),
+                    ));
+                }
+                if let Some(parser) = data.stream_tool_parser.as_mut() {
+                    match parser.process_token(logprobs.token, token_str) {
+                        StreamResult::Content(text) | StreamResult::FlushBuffer(text) => {
+                            if !text.is_empty() {
+                                content = Some(text);
+                            }
+                        }
+                        StreamResult::Buffering => {}
+                        StreamResult::ToolCalls(calls) => {
+                            data.pending_tool_calls.extend(calls);
+                        }
+                    }
+                }
+
+                if should_finish_tool_calls {
+                    if let Some(parser) = data.stream_tool_parser.as_mut() {
+                        if matches!(parser.state(), ParserState::Buffering) {
+                            match parser.finalize_buffered_tool_calls() {
+                                Some(BufferedFinalizeResult::ToolCalls(mut parsed)) => {
+                                    data.pending_tool_calls.append(&mut parsed);
+                                }
+                                Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
+                                    if !buffer.is_empty() {
+                                        content = Some(buffer);
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                    }
+                    let pending = std::mem::take(&mut data.pending_tool_calls);
+                    if !pending.is_empty() {
+                        tool_calls = Some(pending);
+                        content = None;
+                    }
+                }
+            } else if !token_str.is_empty() {
+                content = Some(token_str.clone());
+            }
+        }
+
+        StreamEmission {
+            content,
+            tool_calls,
+        }
+    }
+
+    fn collect_stream_emission_on_finish(
+        &self,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+    ) -> StreamEmission {
+        let mut content = None;
+        let mut tool_calls = None;
+
+        {
+            let outer = seq.deref();
+            let mut data = outer.deref_mut();
+            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
+
+            if should_parse_tools {
+                if let Some(parser) = data.stream_tool_parser.as_mut() {
+                    if matches!(parser.state(), ParserState::Buffering) {
+                        match parser.finalize_buffered_tool_calls() {
+                            Some(BufferedFinalizeResult::ToolCalls(mut parsed)) => {
+                                data.pending_tool_calls.append(&mut parsed);
+                            }
+                            Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
+                                if !buffer.is_empty() {
+                                    content = Some(buffer);
+                                }
+                            }
+                            None => {}
+                        }
+                    }
+                }
+            }
+
+            let pending = std::mem::take(&mut data.pending_tool_calls);
+            if !pending.is_empty() {
+                tool_calls = Some(pending);
+            }
+        }
+
+        StreamEmission {
+            content,
+            tool_calls,
+        }
+    }
+
+    fn send_stream_emission(
+        &self,
+        rank: usize,
+        sender: &Sender<ChatResponse>,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+        emission: StreamEmission,
+        finish_reason: Option<String>,
+    ) {
+        let should_log_free_blocks =
+            finish_reason.is_none() && emission.tool_calls.is_none() && emission.content.is_some();
+        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+        let chunk = if let Some(tool_calls) = emission.tool_calls {
+            self.get_stream_response(
+                group.request_id.clone(),
+                get_created_time_secs(),
+                None,
+                Some(
+                    tool_calls
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, call)| call.with_index(idx))
+                        .collect(),
+                ),
+                Some("tool_calls".to_string()),
+                pipeline,
+            )
+        } else {
+            self.get_stream_response(
+                group.request_id.clone(),
+                group.arrival_time,
+                emission.content,
+                None,
+                finish_reason,
+                pipeline,
+            )
+        };
+
+        if matches!(
+            chunk.choices.first(),
+            Some(choice) if choice.delta.tool_calls.is_some()
+        ) {
+            tracing::info!("Sending final tool call chunk: {:?}", chunk);
+        }
+
+        let ret = sender.send(ChatResponse::Chunk(chunk));
+        if ret.is_err() {
+            warn!(
+                "Send stream response error! (sequence id {})",
+                seq.deref().get_id()
+            );
+            seq.deref_mut().set_finish_reason("abort".to_string());
+        } else if should_log_free_blocks && seq.deref_mut().get_len() % 1000 == 0 {
+            self.scheduler.print_free_blocks();
         }
     }
 
@@ -1402,6 +1626,10 @@ impl LLMEngine {
                 match result_ {
                     Either::Left(logprobs) => {
                         let seq = Self::primary_sequence(group);
+                        let should_finish_tool_calls = {
+                            let e = engine.read();
+                            e.should_finish_tool_calls_for_token(rank, group, &seq, logprobs.token)
+                        };
                         if seq.deref().is_prompt() {
                             let e = engine.read();
                             e.scheduler.print_free_blocks();
@@ -1431,178 +1659,40 @@ impl LLMEngine {
                         }
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
-                            let (pipeline, _) = e.get_pipeline(rank).unwrap();
-                            let token_str = &logprobs.bytes;
-
-                            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
-                            let mut content_to_send: Option<String> = None;
-                            {
-                                let outer = seq.deref();
-                                let mut data = outer.deref_mut();
-
-                                if should_parse_tools {
-                                    if data.stream_tool_parser.is_none() {
-                                        data.stream_tool_parser =
-                                            Some(StreamToolParser::new_with_config(
-                                                &pipeline.tool_model_type,
-                                                pipeline.tool_parser_model_id.clone(),
-                                                pipeline.tool_config.clone(),
-                                                group.tools.clone(),
-                                                pipeline.enforce_parser.clone(),
-                                            ));
-                                    }
-                                    if let Some(parser) = data.stream_tool_parser.as_mut() {
-                                        match parser.process_token(logprobs.token, token_str) {
-                                            StreamResult::Content(text) => {
-                                                if !text.is_empty() {
-                                                    content_to_send = Some(text);
-                                                }
-                                            }
-                                            StreamResult::Buffering => {}
-                                            StreamResult::FlushBuffer(text) => {
-                                                if !text.is_empty() {
-                                                    content_to_send = Some(text);
-                                                }
-                                            }
-                                            StreamResult::ToolCalls(calls) => {
-                                                data.pending_tool_calls.extend(calls);
-                                            }
-                                        }
-                                    }
-                                } else if !token_str.is_empty() {
-                                    content_to_send = Some(token_str.clone());
-                                }
-                            }
-
-                            if let Some(content) = content_to_send {
-                                let chunk = e.get_stream_response(
-                                    group.request_id.clone(),
-                                    group.arrival_time,
-                                    Some(content),
-                                    None,
-                                    None,
-                                    pipeline,
-                                );
-                                let ret = sender.send(ChatResponse::Chunk(chunk));
-                                if ret.is_err() {
-                                    warn!(
-                                        "Send stream response error! (sequence id {})",
-                                        seq.deref().get_id()
-                                    );
-                                    seq.deref_mut().set_finish_reason("abort".to_string());
-                                }
-                                if seq.deref_mut().get_len() % 1000 == 0 {
-                                    e.scheduler.print_free_blocks();
-                                }
+                            let emission = e.collect_stream_emission_for_token(
+                                rank,
+                                group,
+                                &seq,
+                                &logprobs,
+                                should_finish_tool_calls,
+                            );
+                            if emission.tool_calls.is_some() || emission.content.is_some() {
+                                e.send_stream_emission(rank, sender, group, &seq, emission, None);
                             }
                         };
                         seq.deref_mut().add_token(logprobs);
+                        if should_finish_tool_calls {
+                            seq.deref_mut().set_finish_reason("tool_calls".to_string());
+                        }
                     }
                     Either::Right(finish_reason) => {
                         let seq = Self::primary_sequence(group);
-
-                        let mut final_tool_calls = None;
-                        let mut final_content = None;
-                        {
-                            let outer = seq.deref();
-                            let mut data = outer.deref_mut();
-                            let should_parse_tools = group.sampling_params.mcp_mode.is_some();
-
-                            if should_parse_tools {
-                                if let Some(parser) = data.stream_tool_parser.as_mut() {
-                                    match parser.state() {
-                                        ParserState::Buffering => {
-                                            match parser.finalize_buffered_tool_calls() {
-                                                Some(BufferedFinalizeResult::ToolCalls(
-                                                    mut parsed,
-                                                )) => {
-                                                    data.pending_tool_calls.append(&mut parsed);
-                                                }
-                                                Some(BufferedFinalizeResult::FlushBuffer(
-                                                    buffer,
-                                                )) => {
-                                                    if !buffer.is_empty() {
-                                                        final_content = Some(buffer);
-                                                    }
-                                                }
-                                                None => {}
-                                            }
-                                        }
-                                        ParserState::Normal => {}
-                                    }
-                                }
-                            }
-
-                            let pending = std::mem::take(&mut data.pending_tool_calls);
-                            if !pending.is_empty() {
-                                final_tool_calls = Some(pending);
-                            }
-                        }
-
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
-                            let (pipeline, _) = e.get_pipeline(rank).unwrap();
-
-                            if let Some(tool_calls) = final_tool_calls {
-                                let tool_calls = tool_calls
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(idx, call)| call.with_index(idx))
-                                    .collect::<Vec<_>>();
-                                let mut choices = Vec::new();
-                                let choice = Choice {
-                                    delta: ChoiceData {
-                                        role: "assistant".to_string(),
-                                        content: None,
-                                        tool_calls: Some(tool_calls),
-                                    },
-                                    // If we found a tool call at finish, the reason is likely tool_calls
-                                    finish_reason: Some("tool_calls".to_string()),
-                                    index: 0,
-                                };
-                                choices.push(choice);
-
-                                let chunk = ChatCompletionChunk {
-                                    id: group.request_id.clone(),
-                                    choices,
-                                    created: get_created_time_secs(),
-                                    model: pipeline.name().to_string(),
-                                    object: "chat.completion.chunk",
-                                    system_fingerprint: None,
-                                };
-
-                                tracing::info!("Sending final tool call chunk: {:?}", chunk);
-                                let ret = sender.send(ChatResponse::Chunk(chunk));
-                                if ret.is_err() {
-                                    warn!(
-                                        "Send stream response error! (sequence id {})",
-                                        seq.deref().get_id()
-                                    );
-                                    seq.deref_mut().set_finish_reason("abort".to_string());
-                                }
+                            let emission = e.collect_stream_emission_on_finish(group, &seq);
+                            let stream_finish_reason = if finish_reason == "tool_calls" {
+                                "stop".to_string()
                             } else {
-                                let finish_reason = if finish_reason == "tool_calls" {
-                                    "stop".to_string()
-                                } else {
-                                    finish_reason.clone()
-                                };
-                                let chunk = e.get_stream_response(
-                                    group.request_id.clone(),
-                                    group.arrival_time,
-                                    final_content,
-                                    None,
-                                    Some(finish_reason.clone()),
-                                    pipeline,
-                                );
-                                let ret = sender.send(ChatResponse::Chunk(chunk));
-                                if ret.is_err() {
-                                    warn!(
-                                        "Send stream response error! (sequence id {})",
-                                        seq.deref().get_id()
-                                    );
-                                    seq.deref_mut().set_finish_reason("abort".to_string());
-                                }
-                            }
+                                finish_reason.clone()
+                            };
+                            e.send_stream_emission(
+                                rank,
+                                sender,
+                                group,
+                                &seq,
+                                emission,
+                                Some(stream_finish_reason),
+                            );
                         };
                         seq.deref_mut().set_finish_reason(finish_reason);
                     }

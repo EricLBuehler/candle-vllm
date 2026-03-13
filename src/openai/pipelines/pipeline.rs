@@ -1571,7 +1571,12 @@ impl DefaultPipeline {
                                 });
                             }
                         }
-                        return Right("tool_calls".to_string());
+                        return Left(Logprobs {
+                            token: next_token,
+                            logprob: 0.0,
+                            top_logprobs: Vec::<TopLogprob>::new(),
+                            bytes: text,
+                        });
                     }
                     if self.json_end_token_id == Some(next_token) {
                         let seq = group.get_seqs().values().next().unwrap();
@@ -1584,7 +1589,12 @@ impl DefaultPipeline {
                         output_tokens.push(next_token);
                         if let Ok(decoded) = self.tokenizer.decode(&output_tokens, true) {
                             if self.tool_call_regex.is_match(&decoded) {
-                                return Right("tool_calls".to_string());
+                                return Left(Logprobs {
+                                    token: next_token,
+                                    logprob: 0.0,
+                                    top_logprobs: Vec::<TopLogprob>::new(),
+                                    bytes: text,
+                                });
                             }
                         }
                     }

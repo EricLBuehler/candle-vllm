@@ -217,7 +217,12 @@ impl DaemonManager {
         streams: &mut Vec<LocalStream>,
         message: &MessageType,
     ) -> std::io::Result<()> {
-        let serialized = bincode::serialize(message).expect("Serialization failed");
+        let serialized = bincode::serialize(message).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("local IPC serialize failed: {e}"),
+            )
+        })?;
         for stream in streams.iter_mut() {
             stream.write_all(&(serialized.len() as u32).to_le_bytes())?;
             stream.write_all(&serialized)?;
@@ -239,7 +244,12 @@ impl DaemonManager {
     //intra-node communication
     #[cfg(feature = "mpi")]
     pub fn send_mpi(&self, message: &MessageType) -> std::io::Result<()> {
-        let serialized = bincode::serialize(message).expect("Serialization failed");
+        let serialized = bincode::serialize(message).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("mpi serialize failed: {e}"),
+            )
+        })?;
         let msg_len = serialized.len() as u64;
 
         let world = self.mpi_world.as_ref().unwrap();
@@ -282,9 +292,15 @@ impl DaemonManager {
 
         let mut serialized = vec![0u8; length];
         stream.read_exact(&mut serialized)?;
-        let message: MessageType =
-            bincode::deserialize(&serialized).expect("Deserialization failed");
-        // Send acknowledgment
+        let message: MessageType = bincode::deserialize(&serialized).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "local IPC deserialize failed ({} bytes): {e}",
+                    serialized.len()
+                ),
+            )
+        })?;
         stream.write_all(&[1])?;
         stream.flush()?;
         Ok(message)
@@ -303,8 +319,12 @@ impl DaemonManager {
         let mut serialized = vec![0u8; msg_len];
         world.broadcast_into(0, &mut serialized[..]);
 
-        let message: MessageType =
-            bincode::deserialize(&serialized).expect("Deserialization failed");
+        let message: MessageType = bincode::deserialize(&serialized).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("mpi deserialize failed ({} bytes): {e}", serialized.len()),
+            )
+        })?;
         Ok(message)
     }
 
