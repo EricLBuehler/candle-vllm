@@ -273,6 +273,26 @@ impl LLMEngine {
             return Ok(());
         }
 
+        let mut restore_candidates = Vec::new();
+        for group in groups {
+            for seq in Self::ordered_group_sequences(group) {
+                let seq_id = seq.deref().get_id();
+                let cached_tokens = seq.deref().get_num_cached_tokens();
+                if cached_tokens == 0 {
+                    continue;
+                }
+                if self.restored_prefix_sequences.read().contains(&seq_id) {
+                    continue;
+                }
+                restore_candidates.push(seq_id);
+            }
+        }
+
+        if !restore_candidates.is_empty() {
+            let (pipeline, _) = self.get_pipeline(rank).unwrap();
+            pipeline.ensure_mamba_slots_for_sequences(&restore_candidates)?;
+        }
+
         for group in groups {
             for seq in Self::ordered_group_sequences(group) {
                 let seq_id = seq.deref().get_id();
