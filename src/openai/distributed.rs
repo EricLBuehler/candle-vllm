@@ -235,6 +235,51 @@ impl MergedParallelColumnLinear {
             output_splits: None,
         }
     }
+
+    pub fn from_packed_local(
+        packed_weight: Tensor,
+        packed_bias: Option<Tensor>,
+        output_splits: Vec<usize>,
+    ) -> Self {
+        let linear = LinearX::Linear(Linear::new(packed_weight, None));
+        Self {
+            linears: vec![TensorParallelColumnLinear { linear, bias: None }],
+            biases: vec![packed_bias],
+            output_splits: Some(output_splits),
+        }
+    }
+
+    pub fn from_packed_local_fp8(
+        packed_weight: Tensor,
+        packed_scale: Tensor,
+        packed_bias: Option<Tensor>,
+        block_size: Vec<usize>,
+        sm_version: usize,
+        output_splits: Vec<usize>,
+    ) -> Self {
+        #[cfg(feature = "cutlass")]
+        let packed_scale = if sm_version >= 100 {
+            packed_scale.t().unwrap()
+        } else if sm_version >= 90 {
+            packed_scale.t().unwrap().contiguous().unwrap()
+        } else {
+            packed_scale
+        };
+
+        let linear = LinearX::LnFp8(LnFp8 {
+            weight: packed_weight,
+            weight_scale: packed_scale,
+            bias: None,
+            weight_block_size: block_size,
+            sm_version,
+        });
+        Self {
+            linears: vec![TensorParallelColumnLinear { linear, bias: None }],
+            biases: vec![packed_bias],
+            output_splits: Some(output_splits),
+        }
+    }
+
     pub fn forward(&self, x: &Tensor) -> Result<Vec<Tensor>> {
         if let Some(output_splits) = &self.output_splits {
             if self.linears.len() != 1 {

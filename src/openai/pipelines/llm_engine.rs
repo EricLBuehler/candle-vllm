@@ -1120,11 +1120,7 @@ impl LLMEngine {
 
             if is_prompt {
                 let mut e = engine.write();
-                let prefill_chunk_size = if cfg!(feature = "flashattn") {
-                    e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE / 2)
-                } else {
-                    e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE)
-                };
+                let prefill_chunk_size = e.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
 
                 if prefill_chunk_size > 0 {
                     e.capture_mamba_prefix_states_for_prefill_progress(
@@ -1849,11 +1845,7 @@ impl LLMEngine {
         let mut max_seqlen_q = 0;
         let mut max_seqlen_k = 0;
         let mut slot_mapping = Vec::new();
-        let chunk_size = if cfg!(feature = "flashattn") {
-            self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE / 2)
-        } else {
-            self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE)
-        };
+        let chunk_size = self.prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE);
         let mut max_context_len = 0;
         for group in groups {
             for seq in Self::ordered_group_sequences(group) {
