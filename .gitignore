@@ -10,4 +10,5 @@ kernels/src/lib.rs
 /Cargo.lock
 *.lock
 CLAUDE.md
+AGENTS.md
 .claude/

@@ -579,7 +579,8 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
         }
         let max_num_blocks = (self.max_model_len + self.block_size - 1) / self.block_size;
         let input_batch = input_ids.dim(0)?;
-        let require_exact_batch = input_metadata.mamba_slot_mapping.is_some();
+        let require_exact_batch = input_metadata.mamba_slot_mapping.is_some()
+            || input_metadata.flashinfer_metadata.is_some();
         if let Some(graph_vars) = &self.graph_vars {
             let selected_batch = if require_exact_batch {
                 graph_vars

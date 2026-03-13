@@ -2324,15 +2324,10 @@ impl LLMEngine {
         let flashinfer_metadata = if self.flashinfer_kv_params_for_rank(rank)?.is_some() {
             #[cfg(all(feature = "cuda", feature = "graph"))]
             let use_cuda_graph = {
-                let require_exact_graph = mamba_slot_mapping.is_some();
                 let (pipeline, _) = self.get_pipeline(rank).ok_or_else(|| {
                     candle_core::Error::msg(format!("missing pipeline for rank {rank}"))
                 })?;
-                if require_exact_graph {
-                    pipeline.capturer.is_exact_captured(length)
-                } else {
-                    pipeline.capturer.is_captured(length)
-                }
+                pipeline.capturer.is_exact_captured(length)
             };
             #[cfg(not(all(feature = "cuda", feature = "graph")))]
             let use_cuda_graph = false;

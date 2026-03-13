@@ -1266,11 +1266,12 @@ impl DefaultPipeline {
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let _ = set_fp8_linear_is_prefill(input_metadata.is_prefill);
+        let _fp8_linear_prefill_guard = set_fp8_linear_is_prefill(input_metadata.is_prefill);
         #[cfg(all(feature = "cuda", feature = "graph"))]
         if !input_metadata.is_prefill {
             let input_batch = input_tokens.dim(0)?;
-            let require_exact_graph = input_metadata.mamba_slot_mapping.is_some();
+            let require_exact_graph = input_metadata.mamba_slot_mapping.is_some()
+                || input_metadata.flashinfer_metadata.is_some();
             let can_replay = if require_exact_graph {
                 self.capturer.is_exact_captured(input_batch)
             } else {
@@ -1363,7 +1364,7 @@ impl DefaultPipeline {
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let _ = set_fp8_linear_is_prefill(input_metadata.is_prefill);
+        let _fp8_linear_prefill_guard = set_fp8_linear_is_prefill(input_metadata.is_prefill);
         match &self.model {
             LLMModel::Llama(llama) => {
                 llama.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
