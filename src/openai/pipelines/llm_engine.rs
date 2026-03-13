@@ -1002,58 +1002,17 @@ impl LLMEngine {
         }
     }
 
-    fn should_finish_tool_calls_for_token(
-        &self,
-        rank: usize,
-        group: &Arc<SequenceGroup>,
-        seq: &Arc<Sequence>,
-        token: u32,
-    ) -> bool {
-        if group.sampling_params.mcp_mode.is_none() {
-            return false;
-        }
-
-        let (pipeline, _) = self.get_pipeline(rank).unwrap();
-        if pipeline.tool_call_end_token_ids.contains(&token) {
-            return if pipeline.tool_call_start_token_ids.is_empty() {
-                true
-            } else {
-                seq.deref()
-                    .get_output_tokens()
-                    .iter()
-                    .any(|output| pipeline.tool_call_start_token_ids.contains(&output.token))
-            };
-        }
-
-        if pipeline.json_end_token_id == Some(token) {
-            let mut output_tokens: Vec<u32> = seq
-                .deref()
-                .get_output_tokens()
-                .iter()
-                .map(|output| output.token)
-                .collect();
-            output_tokens.push(token);
-            if let Ok(decoded) = pipeline.tokenizer().decode(&output_tokens, true) {
-                return pipeline.tool_call_regex.is_match(&decoded);
-            }
-        }
-
-        false
-    }
-
     fn collect_stream_emission_for_token(
         &self,
         rank: usize,
         group: &Arc<SequenceGroup>,
         seq: &Arc<Sequence>,
         logprobs: &Logprobs,
-        should_finish_tool_calls: bool,
     ) -> StreamEmission {
         let (pipeline, _) = self.get_pipeline(rank).unwrap();
         let token_str = &logprobs.bytes;
         let should_parse_tools = group.sampling_params.mcp_mode.is_some();
         let mut content = None;
-        let mut tool_calls = None;
 
         {
             let outer = seq.deref();
@@ -1082,29 +1041,6 @@ impl LLMEngine {
                         }
                     }
                 }
-
-                if should_finish_tool_calls {
-                    if let Some(parser) = data.stream_tool_parser.as_mut() {
-                        if matches!(parser.state(), ParserState::Buffering) {
-                            match parser.finalize_buffered_tool_calls() {
-                                Some(BufferedFinalizeResult::ToolCalls(mut parsed)) => {
-                                    data.pending_tool_calls.append(&mut parsed);
-                                }
-                                Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
-                                    if !buffer.is_empty() {
-                                        content = Some(buffer);
-                                    }
-                                }
-                                None => {}
-                            }
-                        }
-                    }
-                    let pending = std::mem::take(&mut data.pending_tool_calls);
-                    if !pending.is_empty() {
-                        tool_calls = Some(pending);
-                        content = None;
-                    }
-                }
             } else if !token_str.is_empty() {
                 content = Some(token_str.clone());
             }
@@ -1112,8 +1048,49 @@ impl LLMEngine {
 
         StreamEmission {
             content,
-            tool_calls,
+            tool_calls: None,
         }
+    }
+
+    fn apply_pending_finish_logprobs(
+        &self,
+        rank: usize,
+        group: &Arc<SequenceGroup>,
+        seq: &Arc<Sequence>,
+    ) {
+        let pending = {
+            let outer = seq.deref();
+            let mut data = outer.deref_mut();
+            data.pending_finish_logprobs.take()
+        };
+
+        let Some(logprobs) = pending else {
+            return;
+        };
+
+        if group.sampling_params.mcp_mode.is_some() {
+            let (pipeline, _) = self.get_pipeline(rank).unwrap();
+            let outer = seq.deref();
+            let mut data = outer.deref_mut();
+            if data.stream_tool_parser.is_none() {
+                data.stream_tool_parser = Some(StreamToolParser::new_with_config(
+                    &pipeline.tool_model_type,
+                    pipeline.tool_parser_model_id.clone(),
+                    pipeline.tool_config.clone(),
+                    group.tools.clone(),
+                    pipeline.enforce_parser.clone(),
+                ));
+            }
+            if let Some(parser) = data.stream_tool_parser.as_mut() {
+                if let StreamResult::ToolCalls(calls) =
+                    parser.process_token(logprobs.token, &logprobs.bytes)
+                {
+                    data.pending_tool_calls.extend(calls);
+                }
+            }
+        }
+
+        seq.deref_mut().add_token(logprobs);
     }
 
     fn collect_stream_emission_on_finish(
@@ -1626,10 +1603,6 @@ impl LLMEngine {
                 match result_ {
                     Either::Left(logprobs) => {
                         let seq = Self::primary_sequence(group);
-                        let should_finish_tool_calls = {
-                            let e = engine.read();
-                            e.should_finish_tool_calls_for_token(rank, group, &seq, logprobs.token)
-                        };
                         if seq.deref().is_prompt() {
                             let e = engine.read();
                             e.scheduler.print_free_blocks();
@@ -1659,24 +1632,20 @@ impl LLMEngine {
                         }
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
-                            let emission = e.collect_stream_emission_for_token(
-                                rank,
-                                group,
-                                &seq,
-                                &logprobs,
-                                should_finish_tool_calls,
-                            );
+                            let emission =
+                                e.collect_stream_emission_for_token(rank, group, &seq, &logprobs);
                             if emission.tool_calls.is_some() || emission.content.is_some() {
                                 e.send_stream_emission(rank, sender, group, &seq, emission, None);
                             }
                         };
                         seq.deref_mut().add_token(logprobs);
-                        if should_finish_tool_calls {
-                            seq.deref_mut().set_finish_reason("tool_calls".to_string());
-                        }
                     }
                     Either::Right(finish_reason) => {
                         let seq = Self::primary_sequence(group);
+                        {
+                            let e = engine.read();
+                            e.apply_pending_finish_logprobs(rank, group, &seq);
+                        }
                         if let Some(sender) = &group.sender {
                             let e = engine.read();
                             let emission = e.collect_stream_emission_on_finish(group, &seq);

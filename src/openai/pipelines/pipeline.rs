@@ -1227,6 +1227,16 @@ impl DefaultPipeline {
             config.architectures.as_ref().unwrap()[0].clone()
         };
         let tool_parser_model_id = tool_parser_model_id.unwrap_or_else(|| pipeline_name.clone());
+        let tool_markers = [
+            tool_config.start_token_str.as_str(),
+            tool_config.end_token_str.as_str(),
+        ];
+        let mut conversation = conversation;
+        conversation.set_escape_tokens(DefaultConversation::collect_escape_tokens(
+            &tokenizer,
+            &tool_markers,
+        ));
+        conversation.set_preserve_tokens(Vec::new());
         Ok(Self {
             model,
             tokenizer,
@@ -1571,12 +1581,15 @@ impl DefaultPipeline {
                                 });
                             }
                         }
-                        return Left(Logprobs {
+                        let finish_logprobs = Logprobs {
                             token: next_token,
                             logprob: 0.0,
                             top_logprobs: Vec::<TopLogprob>::new(),
                             bytes: text,
-                        });
+                        };
+                        let seq = group.get_seqs().values().next().unwrap();
+                        seq.deref_mut().deref_mut().pending_finish_logprobs = Some(finish_logprobs);
+                        return Right("tool_calls".to_string());
                     }
                     if self.json_end_token_id == Some(next_token) {
                         let seq = group.get_seqs().values().next().unwrap();
@@ -1589,12 +1602,15 @@ impl DefaultPipeline {
                         output_tokens.push(next_token);
                         if let Ok(decoded) = self.tokenizer.decode(&output_tokens, true) {
                             if self.tool_call_regex.is_match(&decoded) {
-                                return Left(Logprobs {
+                                let finish_logprobs = Logprobs {
                                     token: next_token,
                                     logprob: 0.0,
                                     top_logprobs: Vec::<TopLogprob>::new(),
                                     bytes: text,
-                                });
+                                };
+                                seq.deref_mut().deref_mut().pending_finish_logprobs =
+                                    Some(finish_logprobs);
+                                return Right("tool_calls".to_string());
                             }
                         }
                     }

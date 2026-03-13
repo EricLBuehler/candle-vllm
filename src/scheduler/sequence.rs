@@ -42,6 +42,7 @@ pub struct SequenceData {
     pub in_code_block: bool,
     pub stream_tool_parser: Option<StreamToolParser>,
     pub pending_tool_calls: Vec<ToolCall>,
+    pub pending_finish_logprobs: Option<Logprobs>,
 }
 
 impl SequenceData {
@@ -59,6 +60,7 @@ impl SequenceData {
             in_code_block: false,
             stream_tool_parser: None,
             pending_tool_calls: Vec::new(),
+            pending_finish_logprobs: None,
         }
     }
 
