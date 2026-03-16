@@ -43,7 +43,7 @@ use rayon::iter::ParallelIterator;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, VecDeque},
     iter::zip,
     sync::Arc,
 };
@@ -84,7 +84,6 @@ pub struct LLMEngine {
     #[cfg(feature = "nccl")]
     pub daemon_manager: RwLock<Option<DaemonManager>>,
     prefill_chunk_size: Option<usize>,
-    restored_prefix_sequences: RwLock<HashSet<usize>>,
     pub exit_flag: Arc<AtomicBool>,
     last_decoding_throughput_log_ms: usize,
 }
@@ -112,72 +111,15 @@ impl LLMEngine {
         Self::primary_sequence(group).deref().get_id()
     }
 
-    fn fallback_sequence_to_full_prefill(
-        &mut self,
-        sequence: &Sequence,
-        seq_id: usize,
-        cached_tokens: usize,
-        reason: &str,
-    ) {
-        let _ = self.restored_prefix_sequences.write().remove(&seq_id);
-        let rebuilt = self
-            .scheduler
-            .block_engine
-            .fallback_sequence_to_full_prefill(sequence);
-        if rebuilt {
-            tracing::warn!(
-                "Seq {} {} (cached {} tokens); rebuilt block table and falling back to full prefill",
-                seq_id,
-                reason,
-                cached_tokens
-            );
-        } else {
-            tracing::warn!(
-                "Seq {} {} (cached {} tokens); unable to rebuild block table due memory pressure, keeping cached prefill",
-                seq_id,
-                reason,
-                cached_tokens
-            );
-        }
-    }
-
     fn capture_mamba_prefix_states_for_prefill_progress(
         &mut self,
         groups: &VecDeque<Arc<SequenceGroup>>,
         chunk_size: usize,
         rank: usize,
     ) -> Result<()> {
-        if groups.is_empty() || chunk_size == 0 {
-            return Ok(());
-        }
-
-        let mut captures = Vec::new();
-        for group in groups {
-            for seq in Self::ordered_group_sequences(group) {
-                let seq_id = seq.deref().get_id();
-                let prompt_len = seq.deref().get_prompt_len();
-                let num_cached_tokens = seq.deref().get_num_cached_tokens();
-                if prompt_len == 0 || num_cached_tokens >= prompt_len {
-                    continue;
-                }
-
-                let processed_tokens =
-                    if prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len {
-                        prompt_len
-                    } else {
-                        num_cached_tokens + chunk_size
-                    };
-
-                if let Some(hash) = self
-                    .scheduler
-                    .block_engine
-                    .prefix_hash_for_sequence(&seq, processed_tokens)
-                {
-                    captures.push((seq_id, hash));
-                }
-            }
-        }
-
+        let captures = self
+            .scheduler
+            .collect_prefill_mamba_captures(groups, chunk_size);
         if captures.is_empty() {
             return Ok(());
         }
@@ -185,24 +127,22 @@ impl LLMEngine {
         let mut captured_hashes = Vec::new();
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
-            for (seq_id, hash) in captures {
-                match pipeline.capture_mamba_prefix_state(seq_id, hash) {
-                    Ok(true) => captured_hashes.push(hash),
+            for capture in captures {
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
+                    Ok(true) => captured_hashes.push(capture.hash),
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
                             "Failed to capture prefill mamba prefix state for seq {} hash {}: {}",
-                            seq_id,
-                            hash,
+                            capture.seq_id,
+                            capture.hash,
                             e
                         );
                     }
                 }
             }
         }
-        for hash in captured_hashes {
-            self.scheduler.block_engine.record_mamba_prefix_hash(hash);
-        }
+        self.scheduler.record_mamba_prefix_hashes(captured_hashes);
         Ok(())
     }
 
@@ -211,37 +151,7 @@ impl LLMEngine {
         groups: &VecDeque<Arc<SequenceGroup>>,
         rank: usize,
     ) -> Result<()> {
-        if groups.is_empty() {
-            return Ok(());
-        }
-
-        let block_size = self.cache_config.block_size;
-        let stride_blocks = crate::mamba_snapshot_block_stride_blocks();
-        let mut captures = Vec::new();
-        for group in groups {
-            for seq in Self::ordered_group_sequences(group) {
-                if seq.deref().is_finished() {
-                    continue;
-                }
-                let seq_id = seq.deref().get_id();
-                let seq_len = seq.deref().get_len();
-                if seq_len < block_size || seq_len % block_size != 0 {
-                    continue;
-                }
-                let full_blocks = seq_len / block_size;
-                if stride_blocks > 1 && full_blocks % stride_blocks != 0 {
-                    continue;
-                }
-                if let Some(hash) = self
-                    .scheduler
-                    .block_engine
-                    .prefix_hash_for_sequence(&seq, seq_len)
-                {
-                    captures.push((seq_id, hash));
-                }
-            }
-        }
-
+        let captures = self.scheduler.collect_decode_mamba_captures(groups);
         if captures.is_empty() {
             return Ok(());
         }
@@ -249,24 +159,22 @@ impl LLMEngine {
         let mut captured_hashes = Vec::new();
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
-            for (seq_id, hash) in captures {
-                match pipeline.capture_mamba_prefix_state(seq_id, hash) {
-                    Ok(true) => captured_hashes.push(hash),
+            for capture in captures {
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
+                    Ok(true) => captured_hashes.push(capture.hash),
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
                             "Failed to capture decode mamba prefix state for seq {} hash {}: {}",
-                            seq_id,
-                            hash,
+                            capture.seq_id,
+                            capture.hash,
                             e
                         );
                     }
                 }
             }
         }
-        for hash in captured_hashes {
-            self.scheduler.block_engine.record_mamba_prefix_hash(hash);
-        }
+        self.scheduler.record_mamba_prefix_hashes(captured_hashes);
         Ok(())
     }
 
@@ -275,90 +183,38 @@ impl LLMEngine {
         groups: &VecDeque<Arc<SequenceGroup>>,
         rank: usize,
     ) -> Result<()> {
-        if groups.is_empty() {
+        let restore_plans = self.scheduler.prepare_prompt_mamba_restores(groups);
+        if restore_plans.is_empty() {
             return Ok(());
         }
 
-        let mut restore_candidates = Vec::new();
-        for group in groups {
-            for seq in Self::ordered_group_sequences(group) {
-                let seq_id = seq.deref().get_id();
-                let cached_tokens = seq.deref().get_num_cached_tokens();
-                if cached_tokens == 0 {
-                    continue;
-                }
-                if self.restored_prefix_sequences.read().contains(&seq_id) {
-                    continue;
-                }
-                restore_candidates.push(seq_id);
-            }
-        }
-
-        if !restore_candidates.is_empty() {
+        {
             let (pipeline, _) = self.get_pipeline(rank).unwrap();
+            let restore_candidates = restore_plans
+                .iter()
+                .map(|plan| plan.seq_id)
+                .collect::<Vec<_>>();
             pipeline.ensure_mamba_slots_for_sequences(&restore_candidates)?;
         }
 
-        for group in groups {
-            for seq in Self::ordered_group_sequences(group) {
-                let seq_id = seq.deref().get_id();
-                let cached_tokens = seq.deref().get_num_cached_tokens();
-                if cached_tokens == 0 {
-                    continue;
-                }
-                if self.restored_prefix_sequences.read().contains(&seq_id) {
-                    continue;
-                }
-                if let Some(hash) = self
-                    .scheduler
-                    .block_engine
-                    .prefix_hash_for_sequence(&seq, cached_tokens)
-                {
-                    let has_snapshot = {
-                        let (pipeline, _) = self.get_pipeline(rank).unwrap();
-                        pipeline.has_mamba_prefix_state(hash)?
-                    };
-                    if !has_snapshot {
-                        self.scheduler
-                            .block_engine
-                            .invalidate_mamba_prefix_hash(hash);
-                        self.fallback_sequence_to_full_prefill(
-                            &seq,
-                            seq_id,
-                            cached_tokens,
-                            &format!("missing mamba snapshot for hash {}", hash),
-                        );
-                        continue;
-                    }
+        for restore in restore_plans {
+            let has_snapshot = {
+                let (pipeline, _) = self.get_pipeline(rank).unwrap();
+                pipeline.has_mamba_prefix_state(restore.hash)?
+            };
+            if !has_snapshot {
+                self.scheduler.handle_missing_mamba_snapshot(&restore);
+                continue;
+            }
 
-                    let restored = {
-                        let (pipeline, _) = self.get_pipeline(rank).unwrap();
-                        pipeline.restore_mamba_prefix_state(seq_id, hash)?
-                    };
-                    if !restored {
-                        self.fallback_sequence_to_full_prefill(
-                            &seq,
-                            seq_id,
-                            cached_tokens,
-                            &format!("failed to restore mamba snapshot for hash {}", hash),
-                        );
-                    } else {
-                        self.restored_prefix_sequences.write().insert(seq_id);
-                    }
-                } else {
-                    tracing::warn!(
-                        "Seq {} has {} cached tokens but no prefix hash; fallback to full prefill",
-                        seq_id,
-                        cached_tokens
-                    );
-                    self.fallback_sequence_to_full_prefill(
-                        &seq,
-                        seq_id,
-                        cached_tokens,
-                        "has no prefix hash",
-                    );
-                    continue;
-                };
+            let restored = {
+                let (pipeline, _) = self.get_pipeline(rank).unwrap();
+                pipeline.restore_mamba_prefix_state(restore.seq_id, restore.hash)?
+            };
+            if restored {
+                self.scheduler.mark_mamba_restored(restore.seq_id);
+            } else {
+                self.scheduler.handle_failed_mamba_restore(&restore);
             }
         }
 
@@ -366,45 +222,32 @@ impl LLMEngine {
     }
 
     fn free_finished_sequence_groups_and_sync_mamba(&mut self, rank: usize) {
-        let mut captures = Vec::new();
-        let released_ids = self
+        let sync = self
             .scheduler
-            .free_finished_sequence_groups_with(|seq_id, hash| {
-                if let Some(hash) = hash {
-                    captures.push((seq_id, hash));
-                }
-            });
+            .free_finished_sequence_groups_and_collect_mamba();
 
         let mut captured_hashes = Vec::new();
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
-            for (seq_id, hash) in captures {
-                match pipeline.capture_mamba_prefix_state(seq_id, hash) {
-                    Ok(true) => captured_hashes.push(hash),
+            for capture in sync.captures {
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
+                    Ok(true) => captured_hashes.push(capture.hash),
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
                             "Failed to capture mamba prefix state for seq {} hash {}: {}",
-                            seq_id,
-                            hash,
+                            capture.seq_id,
+                            capture.hash,
                             e
                         );
                     }
                 }
             }
         }
-        for hash in captured_hashes {
-            self.scheduler.block_engine.record_mamba_prefix_hash(hash);
-        }
-        {
-            let mut restored = self.restored_prefix_sequences.write();
-            for seq_id in &released_ids {
-                let _ = restored.remove(seq_id);
-            }
-        }
+        self.scheduler.record_mamba_prefix_hashes(captured_hashes);
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
-            for seq_id in released_ids {
+            for seq_id in sync.released_ids {
                 pipeline.release_sequence_state(seq_id);
             }
         }
@@ -512,7 +355,7 @@ impl LLMEngine {
             let _ = device.as_cuda_device().unwrap().bind_to_thread();
             pipeline.warmup_capture(Some(&cache_engine.get_kv_cache()))?;
         }
-        self.restored_prefix_sequences.write().clear();
+        self.scheduler.reset_mamba_state();
         Ok(())
     }
 
@@ -648,7 +491,6 @@ impl LLMEngine {
             sync_notifies: HashMap::new(),
             senders: HashMap::new(),
             prefill_chunk_size,
-            restored_prefix_sequences: RwLock::new(HashSet::new()),
             exit_flag: Arc::new(AtomicBool::new(false)),
             last_decoding_throughput_log_ms: 0,
         }));
