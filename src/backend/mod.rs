@@ -1,7 +1,6 @@
 mod cache;
 pub mod gguf;
 pub mod gptq;
-// mod paged_attention;
 #[cfg(feature = "cuda")]
 pub fn get_or_load_func(
     ptx_file: &'static str,
@@ -37,7 +36,6 @@ pub use cache::*;
 #[cfg(feature = "cuda")]
 use candle_core::{cuda_backend::cudarc::driver::CudaFunction, CudaDevice};
 pub use gptq::*;
-// pub use paged_attention::*;
 pub use std::ops::Deref;
 pub mod custom_ops;
 #[cfg(all(feature = "cuda", feature = "graph"))]
