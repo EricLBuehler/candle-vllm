@@ -24,6 +24,8 @@ cargo run --features cuda,nccl,graph,flashinfer,cutlass --release -- --m Qwen/Qw
 
 If you are serving a different model, replace `--m` or use `--w` / `--f`.
 
+`--gpu-memory-fraction` now means "use this fraction of the GPU memory still free after the model has loaded" for KV/cache budgeting.
+
 ## 2) Find the served model name
 
 OpenCode should use the actual model name exposed by the server, validate if accessible.

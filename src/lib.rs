@@ -176,19 +176,14 @@ pub struct HybridMambaCachePlan {
 const DEFAULT_HYBRID_MAMBA_FRACTION: f32 = 0.1;
 
 #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
-fn compute_kvcache_budget_bytes(
-    total_bytes: usize,
-    used_bytes: usize,
-    fraction: f32,
-) -> Result<usize> {
+fn compute_kvcache_budget_bytes(free_bytes: usize, fraction: f32) -> Result<usize> {
     if !(0.0 < fraction && fraction <= 1.0) {
         return Err(candle::Error::msg(format!(
             "gpu_memory_fraction must be in (0, 1], got {fraction}"
         )));
     }
 
-    let fraction_budget = ((total_bytes as f64) * (fraction as f64)).round() as usize;
-    Ok(fraction_budget.saturating_sub(used_bytes))
+    Ok(((free_bytes as f64) * (fraction as f64)).round() as usize)
 }
 
 pub fn query_device_memory(device: &Device) -> Result<DeviceMemoryReport> {
@@ -236,8 +231,7 @@ pub fn query_device_memory_for_devices(devices: &[&Device]) -> Result<Vec<Device
 
 pub fn detect_kvcache_mem_gpu_mb(device: &Device, gpu_memory_fraction: f32) -> Result<usize> {
     let report = query_device_memory(device)?;
-    let budget_bytes =
-        compute_kvcache_budget_bytes(report.total_bytes, report.used_bytes, gpu_memory_fraction)?;
+    let budget_bytes = compute_kvcache_budget_bytes(report.free_bytes, gpu_memory_fraction)?;
 
     let budget_mb = budget_bytes / SIZE_IN_MB;
     if budget_mb == 0 {
@@ -257,14 +251,10 @@ pub fn detect_kvcache_mem_gpu_mb_for_devices(
     let mut min_budget_mb: Option<usize> = None;
     let reports = query_device_memory_for_devices(devices)?;
     for (rank, report) in reports.iter().enumerate() {
-        let budget_bytes = compute_kvcache_budget_bytes(
-            report.total_bytes,
-            report.used_bytes,
-            gpu_memory_fraction,
-        )?;
+        let budget_bytes = compute_kvcache_budget_bytes(report.free_bytes, gpu_memory_fraction)?;
         let budget_mb = budget_bytes / SIZE_IN_MB;
         tracing::info!(
-            "Rank {} GPU memory after model load: total {:.2} GB, free {:.2} GB, used {:.2} GB, gpu_memory_fraction {:.0}%, usable combined cache budget {:.2} GB",
+            "Rank {} GPU memory after model load: total {:.2} GB, free {:.2} GB, used {:.2} GB, gpu_memory_fraction {:.0}% of remaining memory, usable combined cache budget {:.2} GB",
             rank,
             report.total_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
             report.free_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
@@ -392,17 +382,15 @@ mod tests {
 
     #[test]
     fn test_compute_kvcache_budget_bytes() {
-        let total = 1000usize;
-        let used = 300usize;
-        let budget = compute_kvcache_budget_bytes(total, used, 0.9).unwrap();
-        assert_eq!(budget, 600);
+        let free = 700usize;
+        let budget = compute_kvcache_budget_bytes(free, 0.9).unwrap();
+        assert_eq!(budget, 630);
     }
 
     #[test]
     fn test_compute_kvcache_budget_bytes_clamps_to_zero() {
-        let total = 1000usize;
-        let used = 950usize;
-        let budget = compute_kvcache_budget_bytes(total, used, 0.9).unwrap();
+        let free = 0usize;
+        let budget = compute_kvcache_budget_bytes(free, 0.9).unwrap();
         assert_eq!(budget, 0);
     }
 }
