@@ -1,5 +1,8 @@
 use super::requests::Messages;
-use super::requests::{ChatCompletionRequest, EmbeddingRequest, EmbeddingType, EncodingFormat};
+use super::requests::{
+    normalize_empty_openai_tool_results, ChatCompletionRequest, EmbeddingRequest, EmbeddingType,
+    EncodingFormat,
+};
 use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{ChatResponse, Streamer, StreamingStatus};
@@ -198,6 +201,11 @@ pub async fn chat_completions(
     State(data): State<Arc<OpenAIServerData>>,
     request: Json<ChatCompletionRequest>,
 ) -> ChatResponder {
+    let mut request = request.0;
+    if let Messages::Chat(messages) = &mut request.messages {
+        normalize_empty_openai_tool_results(messages);
+    }
+
     #[cfg(feature = "nccl")]
     use crate::openai::communicator::DaemonManager;
     #[cfg(feature = "nccl")]

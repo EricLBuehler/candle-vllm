@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+pub const EMPTY_TOOL_RESULT_ACK: &str = "Tool executed successfully with no textual output.";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
@@ -19,6 +21,25 @@ pub enum Messages {
     Chat(Vec<ChatMessage>),
     Map(Vec<HashMap<String, String>>),
     Literal(String),
+}
+
+fn extract_text_from_content(content: Option<&String>) -> String {
+    content.cloned().unwrap_or_default()
+}
+
+pub fn normalize_empty_openai_tool_results(messages: &mut [ChatMessage]) {
+    for msg in messages {
+        if msg.role != "tool" {
+            continue;
+        }
+
+        let is_empty = extract_text_from_content(msg.content.as_ref())
+            .trim()
+            .is_empty();
+        if is_empty {
+            msg.content = Some(EMPTY_TOOL_RESULT_ACK.to_string());
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
