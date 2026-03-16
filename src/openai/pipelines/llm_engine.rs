@@ -1187,6 +1187,7 @@ impl LLMEngine {
                                 }
                             }
 
+                            let mut buffered_finish_content = String::new();
                             if matches!(parser.state(), ParserState::Buffering) {
                                 match parser.finalize_buffered_tool_calls() {
                                     Some(BufferedFinalizeResult::ToolCalls(mut parsed)) => {
@@ -1194,11 +1195,27 @@ impl LLMEngine {
                                     }
                                     Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
                                         if !buffer.is_empty() {
-                                            accumulated.push_str(&buffer);
+                                            buffered_finish_content.push_str(&buffer);
                                         }
                                     }
                                     None => {}
                                 }
+                            }
+
+                            if pending_tool_calls.is_empty() {
+                                let mut reparsed = parser.reparse_accumulated_output();
+                                if !reparsed.is_empty() {
+                                    warn!(
+                                        "Recovered {} tool call(s) from full-output fallback parse",
+                                        reparsed.len()
+                                    );
+                                    pending_tool_calls.append(&mut reparsed);
+                                }
+                            }
+
+                            if pending_tool_calls.is_empty() && !buffered_finish_content.is_empty()
+                            {
+                                accumulated.push_str(&buffered_finish_content);
                             }
 
                             if pending_tool_calls.is_empty() {

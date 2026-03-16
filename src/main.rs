@@ -196,6 +196,12 @@ fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Resul
         .map_err(candle_core::Error::wrap)
 }
 
+async fn bind_api_listener(bind_addr: &str) -> Result<tokio::net::TcpListener> {
+    tokio::net::TcpListener::bind(bind_addr).await.map_err(|e| {
+        candle_core::Error::msg(format!("Failed to bind API server to {bind_addr}: {e}"))
+    })
+}
+
 #[tokio::main]
 #[allow(unused_mut)]
 async fn main() -> Result<()> {
@@ -624,38 +630,6 @@ async fn main() -> Result<()> {
         daemon_manager.as_mut().unwrap().mpi_sync();
     }
 
-    if global_rank == 0 {
-        warn!(
-            "Maximum Model Length (affected by {} and the number of ranks):",
-            kvcache_budget_desc
-        );
-        println!("-> Total KV cache tokens: {}", kvcached_tokens);
-        for batch in [1, 2, 3, 4] {
-            println!(
-                "-> Batch {}: {}",
-                batch,
-                std::cmp::min(kvcached_tokens / batch, max_model_len)
-            );
-        }
-        let ip = local_ip().unwrap_or("127.0.0.1".parse().unwrap());
-        let local_url = format!("http://localhost:{port}/v1/");
-        let lan_url = format!("http://{ip}:{port}/v1/");
-
-        println!(
-            "\n🧠 API server running at:\n\t{} (Local Access) \n\t{} (Remote Access)\n",
-            local_url.cyan().bold(),
-            lan_url.cyan().bold(),
-        );
-
-        println!("");
-        println!(
-            "🛑 {}",
-            format!("EXIT: Ctrl+C to quit. If unresponsive: Ctrl+P → Ctrl+Q (last resort).")
-                .bold()
-                .red()
-        );
-    }
-
     let cors_layer = CorsLayer::new()
         .allow_methods([Method::GET, Method::POST])
         .allow_headers([http::header::CONTENT_TYPE])
@@ -694,15 +668,46 @@ async fn main() -> Result<()> {
         .layer(cors_layer)
         .with_state(Arc::new(server_data));
 
-    let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
-        .await
-        .map_err(candle_core::Error::wrap)?;
+    let bind_addr = format!("{host}:{port}");
+    let listener = bind_api_listener(&bind_addr).await?;
+
+    if global_rank == 0 {
+        warn!(
+            "Maximum Model Length (affected by {} and the number of ranks):",
+            kvcache_budget_desc
+        );
+        println!("-> Total KV cache tokens: {}", kvcached_tokens);
+        for batch in [1, 2, 3, 4] {
+            println!(
+                "-> Batch {}: {}",
+                batch,
+                std::cmp::min(kvcached_tokens / batch, max_model_len)
+            );
+        }
+        let ip = local_ip().unwrap_or("127.0.0.1".parse().unwrap());
+        let local_url = format!("http://localhost:{port}/v1/");
+        let lan_url = format!("http://{ip}:{port}/v1/");
+
+        println!(
+            "\n🧠 API server running at:\n\t{} (Local Access) \n\t{} (Remote Access)\n",
+            local_url.cyan().bold(),
+            lan_url.cyan().bold(),
+        );
+
+        println!("");
+        println!(
+            "🛑 {}",
+            format!("EXIT: Ctrl+C to quit. If unresponsive: Ctrl+P → Ctrl+Q (last resort).")
+                .bold()
+                .red()
+        );
+    }
 
     let mut tasks = Vec::new();
     tasks.push(tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            eprintln!("Chat API server error: {e:?}");
-        }
+        axum::serve(listener, app).await.map_err(|e| {
+            candle_core::Error::msg(format!("Chat API server error on {bind_addr}: {e}"))
+        })
     }));
 
     // Usage example: https://github.com/guoqingbao/rustchatui/blob/main/ReadMe.md
@@ -710,13 +715,13 @@ async fn main() -> Result<()> {
         tasks.push(tokio::spawn(async move {
             start_ui_server((args.port - 1) as u16, Some(args.port as u16), None, None)
                 .await
-                .unwrap();
+                .map_err(candle_core::Error::wrap)
         }));
     }
 
-    futures::future::try_join_all(tasks)
-        .await
-        .map_err(candle_core::Error::wrap)?;
+    for task in tasks {
+        task.await.map_err(candle_core::Error::wrap)??;
+    }
 
     Ok(())
 }

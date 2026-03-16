@@ -146,19 +146,45 @@ impl LLMEngine {
             let should_parse_tools = group.sampling_params.mcp_mode.is_some();
 
             if should_parse_tools {
+                let pending_was_empty = data.pending_tool_calls.is_empty();
                 if let Some(parser) = data.stream_tool_parser.as_mut() {
-                    if matches!(parser.state(), ParserState::Buffering) {
-                        match parser.finalize_buffered_tool_calls() {
-                            Some(BufferedFinalizeResult::ToolCalls(mut parsed)) => {
-                                data.pending_tool_calls.append(&mut parsed);
-                            }
-                            Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
-                                if !buffer.is_empty() {
-                                    content = Some(buffer);
+                    let (mut finalized_calls, buffered_content, mut reparsed_calls) = {
+                        let mut buffered_content = None;
+                        let mut finalized_calls = Vec::new();
+                        let mut reparsed_calls = Vec::new();
+
+                        if matches!(parser.state(), ParserState::Buffering) {
+                            match parser.finalize_buffered_tool_calls() {
+                                Some(BufferedFinalizeResult::ToolCalls(parsed)) => {
+                                    finalized_calls = parsed;
                                 }
+                                Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
+                                    if !buffer.is_empty() {
+                                        buffered_content = Some(buffer);
+                                    }
+                                }
+                                None => {}
                             }
-                            None => {}
                         }
+
+                        if pending_was_empty && finalized_calls.is_empty() {
+                            reparsed_calls = parser.reparse_accumulated_output();
+                        }
+
+                        (finalized_calls, buffered_content, reparsed_calls)
+                    };
+
+                    data.pending_tool_calls.append(&mut finalized_calls);
+                    if !reparsed_calls.is_empty() {
+                        warn!(
+                            "Recovered {} tool call(s) from full-output fallback parse",
+                            reparsed_calls.len()
+                        );
+                        data.pending_tool_calls.append(&mut reparsed_calls);
+                    }
+
+                    if data.pending_tool_calls.is_empty() {
+                        content = buffered_content;
                     }
                 }
             }
