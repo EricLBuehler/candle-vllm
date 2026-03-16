@@ -83,7 +83,7 @@ struct Args {
     #[arg(long = "mem", default_value_t = 4096)]
     kvcache_mem_gpu: usize,
 
-    /// Auto-size GPU KV cache after model load using `fraction * total_gpu_mem - current_usage`.
+    /// Auto-size GPU KV cache after model load using `fraction * remaining_gpu_mem`.
     /// Defaults to 0.8 with `flashattn`, otherwise 0.7, and takes priority over `--mem` on CUDA/Metal.
     #[arg(long)]
     gpu_memory_fraction: Option<f32>,
@@ -200,7 +200,6 @@ fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Resul
 #[allow(unused_mut)]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let mem_was_explicit = std::env::args().any(|arg| arg == "--mem" || arg.starts_with("--mem="));
     if !args.log {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
@@ -403,19 +402,7 @@ async fn main() -> Result<()> {
             requested_gpu_memory_fraction,
         ) {
             Ok(detected) => {
-                let floored = if mem_was_explicit {
-                    detected
-                } else {
-                    detected.max(args.kvcache_mem_gpu)
-                };
-                if floored != detected {
-                    warn!(
-                    "Auto-detected KV cache budget {} MB is below the default fixed floor {} MB; using the floor.",
-                    detected,
-                    args.kvcache_mem_gpu
-                );
-                }
-                let mut effective_kvcache_mem_gpu = floored;
+                let mut effective_kvcache_mem_gpu = detected;
                 let mut mamba_cache_budget_bytes = 0usize;
                 if let Some(estimate) = candle_vllm::estimate_hybrid_mamba_cache(
                     &first_config,
@@ -423,14 +410,14 @@ async fn main() -> Result<()> {
                     num_shards,
                 ) {
                     if let Some(plan) = candle_vllm::plan_hybrid_mamba_cache(
-                        floored * 1024 * 1024,
+                        detected * 1024 * 1024,
                         estimate,
                         args.max_num_seqs.max(16),
                         args.prefix_cache,
                     ) {
                         let reserved_mamba_mb = plan.budget_bytes.div_ceil(1024 * 1024);
-                        if reserved_mamba_mb < floored {
-                            effective_kvcache_mem_gpu = floored - reserved_mamba_mb;
+                        if reserved_mamba_mb < detected {
+                            effective_kvcache_mem_gpu = detected - reserved_mamba_mb;
                             mamba_cache_budget_bytes = plan.budget_bytes;
                             info!(
                             "Reserved {:.2} GB of the combined GPU cache budget for hybrid mamba/GDN ({} active slot target, {} prefix slot target); KV cache budget is now {:.2} GB",
@@ -443,13 +430,13 @@ async fn main() -> Result<()> {
                             warn!(
                             "Hybrid mamba reservation {:.2} GB would consume the entire combined cache budget {:.2} GB; skipping upfront reservation.",
                             plan.budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
-                            floored as f64 / 1024.0,
+                            detected as f64 / 1024.0,
                         );
                         }
                     }
                 }
                 info!(
-                "Using auto-detected KV cache budget of {} MB per rank (gpu_memory_fraction={})",
+                "Using auto-detected KV cache budget of {} MB per rank (gpu_memory_fraction={} of post-load free GPU memory)",
                 effective_kvcache_mem_gpu, requested_gpu_memory_fraction
             );
                 (
@@ -642,7 +629,8 @@ async fn main() -> Result<()> {
             "Maximum Model Length (affected by {} and the number of ranks):",
             kvcache_budget_desc
         );
-        for batch in [1, 8] {
+        println!("-> Total KV cache tokens: {}", kvcached_tokens);
+        for batch in [1, 2, 3, 4] {
             println!(
                 "-> Batch {}: {}",
                 batch,

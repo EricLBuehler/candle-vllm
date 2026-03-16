@@ -40,7 +40,6 @@ pub struct EngineBuilder {
     max_num_seqs: usize,
     block_size: usize,
     kvcache_mem_gpu: usize,
-    kvcache_mem_gpu_explicit: bool,
     gpu_memory_fraction: Option<f32>,
     kvcache_mem_cpu: usize,
     temperature: Option<f32>,
@@ -64,7 +63,6 @@ impl EngineBuilder {
             max_num_seqs: 16,
             block_size: 64,
             kvcache_mem_gpu: 4096,
-            kvcache_mem_gpu_explicit: false,
             gpu_memory_fraction: Some(if cfg!(feature = "flashattn") {
                 0.8
             } else {
@@ -118,7 +116,6 @@ impl EngineBuilder {
 
     pub fn with_kvcache_mem_gpu(mut self, kvcache_mem_gpu: usize) -> Self {
         self.kvcache_mem_gpu = kvcache_mem_gpu;
-        self.kvcache_mem_gpu_explicit = true;
         self
     }
 
@@ -232,25 +229,20 @@ impl EngineBuilder {
             Some(gpu_memory_fraction) => {
                 let detected =
                     crate::detect_kvcache_mem_gpu_mb_for_devices(&devices, gpu_memory_fraction)?;
-                let floored = if self.kvcache_mem_gpu_explicit {
-                    detected
-                } else {
-                    detected.max(self.kvcache_mem_gpu)
-                };
-                let mut effective_kvcache_mem_gpu = floored;
+                let mut effective_kvcache_mem_gpu = detected;
                 let mut mamba_cache_budget_bytes = 0usize;
                 if let Some(estimate) =
                     crate::estimate_hybrid_mamba_cache(&first_config, first_model_dtype, num_shards)
                 {
                     if let Some(plan) = crate::plan_hybrid_mamba_cache(
-                        floored * 1024 * 1024,
+                        detected * 1024 * 1024,
                         estimate,
                         self.max_num_seqs.max(16),
                         false,
                     ) {
                         let reserved_mamba_mb = plan.budget_bytes.div_ceil(1024 * 1024);
-                        if reserved_mamba_mb < floored {
-                            effective_kvcache_mem_gpu = floored - reserved_mamba_mb;
+                        if reserved_mamba_mb < detected {
+                            effective_kvcache_mem_gpu = detected - reserved_mamba_mb;
                             mamba_cache_budget_bytes = plan.budget_bytes;
                         }
                     }
