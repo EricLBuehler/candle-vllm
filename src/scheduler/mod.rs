@@ -9,6 +9,7 @@ pub mod block_engine;
 /// actually allocates the KV cache for the CPU and GPU. It is used by the LLMEngine to execute
 /// operations issued by the scheduler.
 pub mod cache_engine;
+pub mod mamba;
 pub mod prefix_cache;
 pub mod sequence;
 use tracing::warn;
@@ -26,6 +27,7 @@ use std::{
 
 use crate::scheduler::{block_engine::AllocStatus, sequence::SequenceStatus};
 
+use self::mamba::MambaState;
 use self::{
     block_engine::BlockEngine, cache_engine::CacheConfig, prefix_cache::PrefixCacheConfig,
     sequence::SequenceGroup,
@@ -50,6 +52,7 @@ pub struct Scheduler {
     swapped_out: VecDeque<Arc<SequenceGroup>>,
     config: SchedulerConfig,
     pub block_engine: BlockEngine,
+    mamba_state: MambaState,
     is_last_prefill: bool,
 }
 
@@ -74,6 +77,7 @@ impl Scheduler {
                 prefix_cache_cfg,
                 require_mamba_prefix_snapshots,
             ),
+            mamba_state: MambaState::default(),
             is_last_prefill: false,
         }
     }
