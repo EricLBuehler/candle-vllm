@@ -437,8 +437,12 @@ impl Engine {
 
     pub async fn generate_request(
         &self,
-        request: ChatCompletionRequest,
+        mut request: ChatCompletionRequest,
     ) -> Result<ChatCompletionResponse> {
+        if let Messages::Chat(messages) = &mut request.messages {
+            crate::openai::requests::normalize_empty_openai_tool_results(messages);
+        }
+
         let (prompt, tokenizer) = {
             let e = self.engine.read();
             let (pipeline, _) = e.get_pipeline(0).unwrap();
