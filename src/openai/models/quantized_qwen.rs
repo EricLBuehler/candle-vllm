@@ -86,7 +86,7 @@ impl GGUFQWen {
             rope_theta,
             rope_local_base_freq: None,
             bos_token_id: Some(super::TokenID(Either::Left(Some(151644)))),
-            eos_token_id: super::TokenID(Either::Left(Some(151645))),
+            eos_token_id: Some(super::TokenID(Either::Left(Some(151645)))),
             max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,

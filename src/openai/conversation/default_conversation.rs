@@ -266,6 +266,7 @@ impl DefaultConversation {
                     Message {
                         role: "system".to_string(),
                         content: msg,
+                        num_images: 0,
                         tool_calls: None,
                         tool_call_id: None,
                     },
@@ -283,6 +284,7 @@ impl DefaultConversation {
         self.messages.push(Message {
             role,
             content,
+            num_images: 0,
             tool_calls: None,
             tool_call_id: None,
         });
@@ -298,6 +300,7 @@ impl DefaultConversation {
         self.messages.push(Message {
             role,
             content,
+            num_images: 0,
             tool_calls: tool_calls.map(|calls| {
                 calls
                     .iter()
@@ -306,6 +309,10 @@ impl DefaultConversation {
             }),
             tool_call_id,
         });
+    }
+
+    pub fn append_template_message(&mut self, message: Message) {
+        self.messages.push(message);
     }
 
     pub fn get_roles(&self) -> &(String, String) {

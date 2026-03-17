@@ -104,11 +104,12 @@ pub struct Gemma3Config {
 
 impl Gemma3 {
     pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
-        let config = match std::fs::read(filename.clone()) {
+        let (config, raw) = match std::fs::read(filename.clone()) {
             Ok(f) => {
                 let config: Gemma3Config =
                     serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
-                config
+                let raw = String::from_utf8(f).map_err(candle_core::Error::wrap)?;
+                (config, raw)
             }
             Err(e) => panic!("Unable to load config file {:?}", e),
         };
@@ -148,6 +149,10 @@ impl Gemma3 {
         } else {
             isq
         };
+        let top_level_quant_config = serde_json::from_str::<serde_json::Value>(&raw)
+            .ok()
+            .and_then(|root| root.get("quantization_config").cloned())
+            .and_then(|v| serde_json::from_value::<QuantConfig>(v).ok());
 
         let config = Config {
             architectures: config.architectures,
@@ -162,7 +167,7 @@ impl Gemma3 {
             rope_theta: config.text_config.rope_theta,
             rope_local_base_freq: Some(config.text_config.rope_local_base_freq),
             bos_token_id: Some(bos_token_id),
-            eos_token_id,
+            eos_token_id: Some(eos_token_id),
             max_seq_len: config.text_config.max_position_embeddings,
             sliding_window: config.text_config.sliding_window,
             sliding_window_pattern: Some(config.text_config.sliding_window_pattern),
@@ -179,11 +184,15 @@ impl Gemma3 {
             custom_stop_tokens: None,
             attn_logit_softcapping: config.text_config.attn_logit_softcapping,
             final_logit_softcapping: config.text_config.final_logit_softcapping,
-            quantization_config: config.text_config.quantization_config.clone(),
+            quantization_config: config
+                .text_config
+                .quantization_config
+                .clone()
+                .or(top_level_quant_config),
             moe_config: None,
             isq_quant: quant,
             fp8_kvcache: None,
-            extra_config_json: None,
+            extra_config_json: Some(raw),
         };
         Ok(config)
     }
@@ -422,7 +431,14 @@ impl Gemma3 {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        self.forward_inner(input_ids, input_positions, kv_caches, input_metadata, false)
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            false,
+        )
     }
 
     pub fn forward_embedding(
@@ -432,7 +448,53 @@ impl Gemma3 {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        self.forward_inner(input_ids, input_positions, kv_caches, input_metadata, true)
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            true,
+        )
+    }
+
+    pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        let xs = self.embed_tokens.forward(input_ids)?;
+        xs.broadcast_mul(&Tensor::new((self.hidden_size as f64).sqrt(), xs.device())?)
+    }
+
+    pub fn forward_embeds(
+        &self,
+        input_embeds: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        self.forward_inner(
+            input_embeds,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            true,
+            false,
+        )
+    }
+
+    pub fn forward_embeds_hidden(
+        &self,
+        input_embeds: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        self.forward_inner(
+            input_embeds,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            true,
+            true,
+        )
     }
 
     fn forward_inner(
@@ -441,6 +503,7 @@ impl Gemma3 {
         input_positions: &Tensor,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
+        embedded_inputs: bool,
         return_hidden: bool,
     ) -> Result<Tensor> {
         let seqlens = if input_metadata.cu_seqlens_q.is_some() {
@@ -456,8 +519,11 @@ impl Gemma3 {
         let (attention_mask, sliding_attention_mask) =
             self.create_attention_masks(&seqlens, input_positions, input_metadata.is_prefill)?;
 
-        let xs = self.embed_tokens.forward(input_ids)?;
-        let mut xs = (xs * (self.hidden_size as f64).sqrt())?;
+        let mut xs = if embedded_inputs {
+            input_ids.to_owned()
+        } else {
+            self.embed_forward(input_ids)?
+        };
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
                 let mask = if layer.sliding_window.is_some() {
@@ -506,5 +572,13 @@ impl Gemma3 {
 
     pub fn get_config(&self) -> &Config {
         &self.cfg
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    pub fn get_vocab_size(&self) -> usize {
+        self.cfg.vocab_size
     }
 }

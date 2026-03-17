@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.5.6"
+version = "0.6.0"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -45,7 +45,7 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.4.3", rev = "c5f0de5" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.4.3", rev = "f8669be" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 lazy_static = {version = "1.4.0"}
 interprocess = "2.2.2"
@@ -72,6 +72,8 @@ openai-protocol = "1.2.0"
 crossbeam = "0.8.4"
 colored = { version = "3.0.0" }
 local-ip-address = "0.6.5"
+image = { version = "0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+bytemuck = "1.23.2"
 
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]

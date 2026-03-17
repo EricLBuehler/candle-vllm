@@ -1,11 +1,13 @@
 pub mod deepseek;
 pub mod gemma;
 pub mod gemma3;
+pub mod gemma3_vl;
 pub mod glm4;
 pub mod layers;
 pub mod linear;
 pub mod llama;
 pub mod mistral;
+pub mod mistral3_vl;
 pub mod phi2;
 pub mod phi4;
 pub mod quantized_glm4;
@@ -17,6 +19,7 @@ pub mod qwen;
 pub mod qwen3_5;
 pub mod qwen3_5_moe;
 pub mod qwen3_moe;
+pub mod qwen3_vl;
 pub mod stable_lm;
 pub mod utils;
 pub mod yi;
@@ -212,7 +215,7 @@ pub struct Config {
     pub rope_theta: f64,
     pub rope_local_base_freq: Option<f64>,
     pub bos_token_id: Option<TokenID>,
-    pub eos_token_id: TokenID,
+    pub eos_token_id: Option<TokenID>,
     #[serde(default = "max_seq_len")]
     pub max_seq_len: usize,
     pub original_max_position_embeddings: Option<usize>,
@@ -222,6 +225,7 @@ pub struct Config {
     pub hidden_activation: Option<candle_nn::Activation>,
     #[serde(default = "tie_word_embeddings")]
     pub tie_word_embeddings: bool,
+    #[serde(alias = "rope_parameters")]
     pub rope_scaling: Option<HashMap<String, ScalingValue>>,
     pub max_position_embeddings: Option<usize>,
     pub attention_bias: Option<bool>,
@@ -249,11 +253,17 @@ impl Config {
             if let Some(ScalingValue::Single(v)) = scaling.get("partial_rotary_factor") {
                 self.partial_rotary_factor = Some(*v as f32);
             }
+            if let Some(ScalingValue::Single(v)) = scaling.get("original_max_position_embeddings") {
+                self.original_max_position_embeddings = Some(*v as usize);
+            }
         }
         if let Some(raw) = self.extra_config_json.as_ref() {
             if let Ok(root) = serde_json::from_str::<serde_json::Value>(raw) {
                 let cfg_root = root.get("text_config").unwrap_or(&root);
-                if let Some(rope_params) = cfg_root.get("rope_parameters") {
+                if let Some(rope_params) = cfg_root
+                    .get("rope_parameters")
+                    .or_else(|| cfg_root.get("rope_scaling"))
+                {
                     if let Some(v) = rope_params.get("rope_theta").and_then(|v| v.as_f64()) {
                         self.rope_theta = v;
                     }
@@ -262,6 +272,12 @@ impl Config {
                         .and_then(|v| v.as_f64())
                     {
                         self.partial_rotary_factor = Some(v as f32);
+                    }
+                    if let Some(v) = rope_params
+                        .get("original_max_position_embeddings")
+                        .and_then(|v| v.as_u64())
+                    {
+                        self.original_max_position_embeddings = Some(v as usize);
                     }
                 }
             }

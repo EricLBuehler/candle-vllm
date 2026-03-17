@@ -7,6 +7,7 @@ use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
 use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
+use crate::openai::multimodal::{build_messages_and_images, ImageData};
 use crate::openai::{resolve_tools_for_request, ResolvedToolConfig};
 use crate::tools::ToolFormat;
 use axum::response::sse::KeepAlive;
@@ -43,54 +44,30 @@ async fn get_gen_prompt(
     data: &OpenAIServerData,
     request: &ChatCompletionRequest,
     tool_config: &ResolvedToolConfig,
-) -> Result<String, APIError> {
+) -> Result<(String, Option<ImageData>), APIError> {
     let mut model = data.model.write();
     let pipeline = model
         .get_mut_pipeline(0)
         .ok_or(APIError::new("Missing pipeline".to_string()))?;
     let mut conversation = pipeline.0.get_conversation().clone();
+    let mut image_data = None;
 
     match &request.messages {
         Messages::Literal(msg) => {
             conversation.append_message("user".to_string(), msg.clone());
         }
         Messages::Chat(messages) => {
-            for message in messages {
+            let (render_messages, images) =
+                build_messages_and_images(messages, pipeline.0.image_config.as_ref())
+                    .map_err(APIError::from)?;
+            image_data = images;
+            for message in render_messages {
                 let role = message.role.as_str();
                 if role == "system" {
-                    if let Some(content) = &message.content {
-                        conversation.set_system_message(Some(content.clone()));
-                    }
+                    conversation.set_system_message(Some(message.content.clone()));
                     continue;
                 }
-
-                if role == "tool" {
-                    let content = message.content.clone().unwrap_or_default();
-                    let trimmed = content.trim();
-                    if !trimmed.is_empty() {
-                        conversation.append_message_with_tool_metadata(
-                            role.to_string(),
-                            trimmed.to_string(),
-                            None,
-                            message.tool_call_id.clone(),
-                        );
-                    }
-                    continue;
-                }
-
-                if role == "assistant" && message.tool_calls.is_some() {
-                    conversation.append_message_with_tool_metadata(
-                        role.to_string(),
-                        message.content.clone().unwrap_or_default(),
-                        message.tool_calls.clone(),
-                        None,
-                    );
-                    continue;
-                }
-
-                if let Some(content) = &message.content {
-                    conversation.append_message(role.to_string(), content.clone());
-                }
+                conversation.append_template_message(message);
             }
         }
         Messages::Map(messages) => {
@@ -134,7 +111,10 @@ async fn get_gen_prompt(
         conversation.set_system_message(Some(new_system));
     }
 
-    Ok(conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools))
+    Ok((
+        conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools),
+        image_data,
+    ))
 }
 
 async fn check_length(
@@ -232,7 +212,7 @@ pub async fn chat_completions(
         Err(e) => return ChatResponder::ValidationError(e),
     };
 
-    let prompt = match get_gen_prompt(&data, &request, &tool_config).await {
+    let (prompt, image_data) = match get_gen_prompt(&data, &request, &tool_config).await {
         Ok(p) => p,
         Err(e) => return ChatResponder::ValidationError(e),
     };
@@ -338,6 +318,7 @@ pub async fn chat_completions(
                     EncodingFormat::default(),
                     EmbeddingType::default(),
                     tool_config.tools.clone(),
+                    image_data,
                     if stream_request {
                         Some(Arc::new(response_tx))
                     } else {
@@ -506,6 +487,7 @@ pub async fn create_embeddings(
                     request.encoding_format.clone(),
                     request.embedding_type.clone(),
                     Vec::new(),
+                    None,
                     Some(Arc::new(response_tx)),
                     None,
                 );

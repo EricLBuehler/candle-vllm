@@ -5,10 +5,40 @@ use serde::{Deserialize, Serialize};
 pub const EMPTY_TOOL_RESULT_ACK: &str = "Tool executed successfully with no textual output.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ImageUrlContent {
+    Url(String),
+    Object {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum MessageContent {
+    #[serde(alias = "input_text", alias = "text")]
+    Text { text: String },
+    #[serde(alias = "image_url")]
+    ImageUrl { image_url: ImageUrlContent },
+    #[serde(alias = "image_base64")]
+    ImageBase64 { image_base64: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContentType {
+    PureText(String),
+    Single(MessageContent),
+    Multi(Vec<MessageContent>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     #[serde(default)]
-    pub content: Option<String>,
+    pub content: Option<MessageContentType>,
     #[serde(default)]
     pub tool_calls: Option<Vec<crate::tools::ToolCall>>,
     #[serde(default)]
@@ -23,8 +53,23 @@ pub enum Messages {
     Literal(String),
 }
 
-fn extract_text_from_content(content: Option<&String>) -> String {
-    content.cloned().unwrap_or_default()
+fn extract_text_from_content(content: Option<&MessageContentType>) -> String {
+    match content {
+        Some(MessageContentType::PureText(text)) => text.clone(),
+        Some(MessageContentType::Single(item)) => match item {
+            MessageContent::Text { text } => text.clone(),
+            _ => String::new(),
+        },
+        Some(MessageContentType::Multi(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                MessageContent::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(" "),
+        None => String::new(),
+    }
 }
 
 pub fn normalize_empty_openai_tool_results(messages: &mut [ChatMessage]) {
@@ -37,7 +82,9 @@ pub fn normalize_empty_openai_tool_results(messages: &mut [ChatMessage]) {
             .trim()
             .is_empty();
         if is_empty {
-            msg.content = Some(EMPTY_TOOL_RESULT_ACK.to_string());
+            msg.content = Some(MessageContentType::PureText(
+                EMPTY_TOOL_RESULT_ACK.to_string(),
+            ));
         }
     }
 }

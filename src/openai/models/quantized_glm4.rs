@@ -89,7 +89,7 @@ impl GGUFGLM4 {
             rope_theta,
             rope_local_base_freq: None,
             bos_token_id: None,
-            eos_token_id: super::TokenID(Either::Left(None)),
+            eos_token_id: Some(super::TokenID(Either::Left(None))),
             max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,

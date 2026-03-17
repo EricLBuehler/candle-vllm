@@ -95,11 +95,13 @@ pub struct TaskData {
     pub encoding_format: requests::EncodingFormat,
     pub embedding_type: requests::EmbeddingType,
     pub tools: Vec<Tool>,
+    pub images: Option<multimodal::ImageData>,
 }
 
 pub mod conversation;
 pub mod logits_processor;
 pub mod models;
+pub mod multimodal;
 pub mod openai_server;
 pub mod pipelines;
 pub mod utils;

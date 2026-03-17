@@ -131,9 +131,7 @@ impl ScalingRotaryEmbedding {
                     //for missing original_max_position_embeddings, we assume the original was max_position_embeddings / factor
                     *cfg.max_position_embeddings.as_ref().unwrap() as f64 / *factor
                 } else {
-                    candle_core::bail!(
-                        "original_max_position_embeddings must be set in rope_scaling or cfg"
-                    );
+                    cfg.max_position_embeddings.unwrap_or(cfg.max_seq_len) as f64
                 };
 
             if let Some(ScalingValue::String(rope_type)) = rope_scaling.get("rope_type") {

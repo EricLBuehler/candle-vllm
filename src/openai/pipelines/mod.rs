@@ -37,6 +37,51 @@ fn _make_tensor_with_pad<D: WithDType>(
 macro_rules! graph_model_wrapper {
     ($model:expr, $device:expr, $( $variant:ident ),+ $(,)?) => {
         match &$model {
+            LLMModel::Qwen3VL(m) => {
+                let model_arc = Arc::clone(&m);
+                let closure = move |input_ids: &Tensor,
+                                    positions: &Tensor,
+                                    kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+                                    input_metadata: &InputMetadata| {
+                    let _fp8_linear_prefill_guard =
+                        crate::openai::models::linear::set_fp8_linear_is_prefill(
+                            input_metadata.is_prefill,
+                        );
+                    model_arc.forward(input_ids, positions, kv_caches, input_metadata, None)
+                };
+                let boxed_closure: Box<ModelFn> = Box::new(closure);
+                CudaGraphWrapper::new(boxed_closure, $device.as_cuda_device()?.clone().into())
+            },
+            LLMModel::Gemma3VL(m) => {
+                let model_arc = Arc::clone(&m);
+                let closure = move |input_ids: &Tensor,
+                                    positions: &Tensor,
+                                    kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+                                    input_metadata: &InputMetadata| {
+                    let _fp8_linear_prefill_guard =
+                        crate::openai::models::linear::set_fp8_linear_is_prefill(
+                            input_metadata.is_prefill,
+                        );
+                    model_arc.forward(input_ids, positions, kv_caches, input_metadata, None)
+                };
+                let boxed_closure: Box<ModelFn> = Box::new(closure);
+                CudaGraphWrapper::new(boxed_closure, $device.as_cuda_device()?.clone().into())
+            },
+            LLMModel::Mistral3VL(m) => {
+                let model_arc = Arc::clone(&m);
+                let closure = move |input_ids: &Tensor,
+                                    positions: &Tensor,
+                                    kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+                                    input_metadata: &InputMetadata| {
+                    let _fp8_linear_prefill_guard =
+                        crate::openai::models::linear::set_fp8_linear_is_prefill(
+                            input_metadata.is_prefill,
+                        );
+                    model_arc.forward(input_ids, positions, kv_caches, input_metadata, None)
+                };
+                let boxed_closure: Box<ModelFn> = Box::new(closure);
+                CudaGraphWrapper::new(boxed_closure, $device.as_cuda_device()?.clone().into())
+            },
             $(
                 LLMModel::$variant(m) => {
                     let model_arc = Arc::clone(&m);

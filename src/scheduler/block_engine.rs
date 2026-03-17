@@ -1,6 +1,6 @@
 use std::{
     collections::{hash_map::Entry, HashMap, HashSet, VecDeque},
-    hash::Hash,
+    hash::{Hash, Hasher},
     marker::PhantomData,
     ops::Deref,
     sync::{Arc, Mutex, MutexGuard},
@@ -8,6 +8,7 @@ use std::{
 
 use super::prefix_cache::{PrefixCache, PrefixCacheConfig, PrefixMatch};
 use super::sequence::{Sequence, SequenceGroup};
+use crate::openai::multimodal::ImageData;
 
 pub struct LogicalTokenBlock {
     tokens: Vec<u32>,
@@ -204,6 +205,14 @@ pub struct BlockEngine {
 }
 
 impl BlockEngine {
+    fn image_prefix_seed(images: &ImageData) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        images.raw.hash(&mut hasher);
+        images.shape.hash(&mut hasher);
+        images.patches.hash(&mut hasher);
+        hasher.finish()
+    }
+
     #[must_use]
     pub fn new(
         block_size: usize,
@@ -252,7 +261,14 @@ impl BlockEngine {
         let num_required_blocks = if let Some(prefix_cache) = self.prefix_cache.as_mut() {
             let seq = seq_group.get_seqs().values().nth(0).unwrap();
             let tokens = seq.deref().deref().get_token_ids();
-            let PrefixMatch { matched_blocks, .. } = prefix_cache.match_prefix(&tokens);
+            let seed = seq
+                .deref()
+                .deref()
+                .get_images()
+                .as_ref()
+                .map(Self::image_prefix_seed);
+            let PrefixMatch { matched_blocks, .. } =
+                prefix_cache.match_prefix_with_seed(&tokens, seed);
             let full_blocks = tokens.len() / block_size;
             let matched_blocks = if matched_blocks == full_blocks
                 && tokens.len() % block_size == 0
@@ -360,7 +376,12 @@ impl BlockEngine {
             tokens.len(),
             full_blocks
         );
-        let evicted = prefix_cache.insert_prefix(&tokens, &blocks);
+        let seed = sequence
+            .deref()
+            .get_images()
+            .as_ref()
+            .map(Self::image_prefix_seed);
+        let evicted = prefix_cache.insert_prefix_with_seed(&tokens, &blocks, seed);
         if !evicted.is_empty() {
             tracing::info!("Prefix cache evicted {} blocks after insert", evicted.len());
         }
@@ -410,7 +431,12 @@ impl BlockEngine {
         if full_blocks == 0 {
             return None;
         }
-        prefix_cache.hash_for_blocks(&tokens, full_blocks)
+        let seed = sequence
+            .deref()
+            .get_images()
+            .as_ref()
+            .map(Self::image_prefix_seed);
+        prefix_cache.hash_for_blocks_with_seed(&tokens, full_blocks, seed)
     }
 
     pub fn record_mamba_prefix_hash(&mut self, hash: u64) {
@@ -641,10 +667,16 @@ impl BlockEngine {
             let tokens = seq.deref().deref().get_token_ids();
             let valid_hashes = self.valid_mamba_prefix_hashes.clone();
             if let Some(prefix_cache) = self.prefix_cache.as_mut() {
+                let seed = seq
+                    .deref()
+                    .deref()
+                    .get_images()
+                    .as_ref()
+                    .map(Self::image_prefix_seed);
                 let PrefixMatch {
                     matched_blocks,
                     last_hash,
-                } = prefix_cache.match_prefix(&tokens);
+                } = prefix_cache.match_prefix_with_seed(&tokens, seed);
                 let full_blocks = tokens.len() / block_size;
                 let raw_matched_blocks = if matched_blocks == full_blocks
                     && tokens.len() % block_size == 0
@@ -734,7 +766,7 @@ mod tests {
         tokens: Vec<u32>,
     ) -> (SequenceGroup, Arc<Sequence>) {
         let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
-            &tokens, seq_id, block_size,
+            &tokens, seq_id, block_size, None,
         ))));
         let sampling_params = SamplingParams::new(
             1,
