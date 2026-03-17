@@ -103,8 +103,8 @@ impl VisionAttention {
             q_batches.push(q_applied.transpose(0, 1)?.unsqueeze(0)?);
             k_batches.push(k_applied.transpose(0, 1)?.unsqueeze(0)?);
         }
-        q = Tensor::cat(&q_batches.iter().collect::<Vec<_>>(), 0)?;
-        k = Tensor::cat(&k_batches.iter().collect::<Vec<_>>(), 0)?;
+        q = Tensor::cat(&q_batches.iter().collect::<Vec<_>>(), 0)?.contiguous()?;
+        k = Tensor::cat(&k_batches.iter().collect::<Vec<_>>(), 0)?.contiguous()?;
 
         let attn = (q.matmul(&k.transpose(2, 3)?)? * self.scale)?;
         let attn = if let Some(mask) = mask {
