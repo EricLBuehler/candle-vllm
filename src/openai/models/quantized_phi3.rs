@@ -169,7 +169,7 @@ impl GGUFPhi3 {
             rope_theta,
             rope_local_base_freq: None,
             bos_token_id: Some(super::TokenID(Either::Left(Some(1)))),
-            eos_token_id: super::TokenID(Either::Left(Some(2))),
+            eos_token_id: Some(super::TokenID(Either::Left(Some(2)))),
             max_seq_len,
             sliding_window: None,
             sliding_window_pattern: None,

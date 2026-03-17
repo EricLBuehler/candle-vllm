@@ -167,7 +167,7 @@ impl Gemma3 {
             rope_theta: config.text_config.rope_theta,
             rope_local_base_freq: Some(config.text_config.rope_local_base_freq),
             bos_token_id: Some(bos_token_id),
-            eos_token_id,
+            eos_token_id: Some(eos_token_id),
             max_seq_len: config.text_config.max_position_embeddings,
             sliding_window: config.text_config.sliding_window,
             sliding_window_pattern: Some(config.text_config.sliding_window_pattern),

@@ -2,47 +2,14 @@ use super::{attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, 
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, rms_norm, Comm, ReplicatedLinear, VarBuilder};
 use crate::openai::models::mask::get_attention_causal_mask;
-use crate::openai::models::QuantConfig;
-use crate::openai::models::TokenID;
 use crate::InputMetadata;
 use candle_core::{DType, Device, Module, Result, Tensor};
-use candle_nn::{Activation, RmsNorm};
-use either::Either;
+use candle_nn::RmsNorm;
 use parking_lot::RwLock;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-
-#[derive(serde::Deserialize, Debug, Clone)]
-pub struct MistralTextConfig {
-    pub(crate) vocab_size: usize,
-    pub(crate) hidden_size: usize,
-    pub(crate) intermediate_size: usize,
-    pub(crate) num_hidden_layers: usize,
-    pub(crate) num_attention_heads: usize,
-    pub(crate) num_key_value_heads: usize,
-    pub(crate) head_dim: usize,
-    pub(crate) max_position_embeddings: usize,
-    pub(crate) original_max_position_embeddings: Option<usize>,
-    pub(crate) rms_norm_eps: f64,
-    #[serde(default)]
-    pub(crate) tie_word_embeddings: bool,
-    pub(crate) rope_theta: f64,
-    #[serde(default)]
-    pub(crate) attention_bias: bool,
-    pub(crate) hidden_act: Option<Activation>,
-    pub(crate) sliding_window: Option<usize>,
-    pub(crate) quantization_config: Option<QuantConfig>,
-}
-
-#[derive(serde::Deserialize, Debug, Clone)]
-pub struct Mistral3Config {
-    pub architectures: Option<Vec<String>>,
-    pub bos_token_id: Option<TokenID>,
-    pub eos_token_id: Option<TokenID>,
-    pub text_config: MistralTextConfig,
-}
 
 impl Mistral {
     pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
@@ -67,66 +34,7 @@ impl Mistral {
     }
 
     pub fn load_text_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
-        let config = match std::fs::read(filename.clone()) {
-            Ok(f) => {
-                let config: Mistral3Config =
-                    serde_json::from_slice(&f).map_err(candle_core::Error::wrap)?;
-                config
-            }
-            Err(e) => panic!("Unable to load config file {:?}", e),
-        };
-
-        let bos_token_id = config
-            .bos_token_id
-            .unwrap_or(super::TokenID(Either::Left(Some(1))));
-
-        let eos_token_id = config
-            .eos_token_id
-            .unwrap_or(super::TokenID(Either::Left(Some(2))));
-
-        let quant = if config.text_config.quantization_config.is_some() {
-            None
-        } else {
-            isq
-        };
-
-        let config = Config {
-            architectures: config.architectures,
-            hidden_size: config.text_config.hidden_size,
-            head_dim: Some(config.text_config.head_dim),
-            intermediate_size: config.text_config.intermediate_size,
-            vocab_size: config.text_config.vocab_size,
-            num_hidden_layers: config.text_config.num_hidden_layers,
-            num_attention_heads: config.text_config.num_attention_heads,
-            num_key_value_heads: Some(config.text_config.num_key_value_heads),
-            rms_norm_eps: config.text_config.rms_norm_eps,
-            rope_theta: config.text_config.rope_theta,
-            rope_local_base_freq: None,
-            bos_token_id: Some(bos_token_id),
-            eos_token_id,
-            max_seq_len: config.text_config.max_position_embeddings,
-            sliding_window: config.text_config.sliding_window,
-            sliding_window_pattern: None,
-            hidden_act: Some(config.text_config.hidden_act.unwrap_or(Activation::Silu)),
-            hidden_activation: None,
-            tie_word_embeddings: config.text_config.tie_word_embeddings,
-            rope_scaling: None,
-            max_position_embeddings: Some(config.text_config.max_position_embeddings),
-            original_max_position_embeddings: config.text_config.original_max_position_embeddings,
-            attention_bias: Some(config.text_config.attention_bias),
-            partial_rotary_factor: None,
-            qk_layernorm: false,
-            use_qkv_bias: None,
-            custom_stop_tokens: None,
-            attn_logit_softcapping: None,
-            final_logit_softcapping: None,
-            quantization_config: config.text_config.quantization_config.clone(),
-            moe_config: None,
-            isq_quant: quant,
-            fp8_kvcache: None,
-            extra_config_json: None,
-        };
-        Ok(config)
+        Self::load_config(filename, isq)
     }
 }
 
@@ -206,14 +114,24 @@ impl Mistral {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
-        let vb_m = if cfg.architectures.is_some()
-            && cfg.architectures.as_ref().unwrap()[0] == "Mistral3ForConditionalGeneration"
-        {
-            //text model in multimodal weights
-            vb.pp("language_model.model")
+        Self::new_with_prefix(vb, cfg, dtype, device, comm, progress_reporter, None)
+    }
+
+    pub fn new_with_prefix(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        prefix: Option<String>,
+    ) -> Result<Self> {
+        let vb_root = if let Some(prefix) = prefix {
+            vb.pp(prefix.trim_end_matches('.'))
         } else {
-            vb.pp("model")
+            vb.clone()
         };
+        let vb_m = vb_root.pp("model");
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, true)?);
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
@@ -229,12 +147,10 @@ impl Mistral {
         let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
-            if cfg.architectures.is_some()
-                && cfg.architectures.as_ref().unwrap()[0] == "Mistral3ForConditionalGeneration"
-            {
-                vb.pp("language_model.lm_head")
+            if cfg.tie_word_embeddings {
+                vb_m.pp("embed_tokens")
             } else {
-                vb.pp("lm_head")
+                vb_root.pp("lm_head")
             },
             &None,
             &None,

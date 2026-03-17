@@ -1105,16 +1105,17 @@ impl DefaultLoader {
                 }
 
                 let mut stop_token_ids = Vec::<u32>::new();
-                match &config.eos_token_id {
-                    //eos_token defined in the config
-                    TokenID(Either::Left(eos_token)) => {
-                        if let Some(tk) = eos_token {
-                            stop_token_ids.push(*tk);
+                if let Some(eos_token_id) = &config.eos_token_id {
+                    match eos_token_id {
+                        TokenID(Either::Left(eos_token)) => {
+                            if let Some(tk) = eos_token {
+                                stop_token_ids.push(*tk);
+                            }
                         }
-                    }
-                    TokenID(Either::Right(eos_token_list)) => {
-                        if let Some(tks) = eos_token_list {
-                            stop_token_ids.extend(tks)
+                        TokenID(Either::Right(eos_token_list)) => {
+                            if let Some(tks) = eos_token_list {
+                                stop_token_ids.extend(tks)
+                            }
                         }
                     }
                 }

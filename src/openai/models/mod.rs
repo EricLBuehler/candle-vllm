@@ -215,7 +215,7 @@ pub struct Config {
     pub rope_theta: f64,
     pub rope_local_base_freq: Option<f64>,
     pub bos_token_id: Option<TokenID>,
-    pub eos_token_id: TokenID,
+    pub eos_token_id: Option<TokenID>,
     #[serde(default = "max_seq_len")]
     pub max_seq_len: usize,
     pub original_max_position_embeddings: Option<usize>,

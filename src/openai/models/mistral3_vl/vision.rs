@@ -36,18 +36,20 @@ impl VisionRotaryEmbedding {
     }
 
     fn apply(&self, q: &Tensor, k: &Tensor, positions: &Tensor) -> Result<(Tensor, Tensor)> {
-        let cos = self.cos.index_select(positions, 0)?;
-        let sin = self.sin.index_select(positions, 0)?;
-        Ok((
-            candle_nn::rotary_emb::rope(q, &cos, &sin)?,
-            candle_nn::rotary_emb::rope(k, &cos, &sin)?,
-        ))
+        use attention_rs::fused_rope::FusedRope;
+
+        let q = q.contiguous()?;
+        let k = k.contiguous()?;
+        FusedRope::apply_inplace(&q, &k, &self.cos, &self.sin, positions, false)?;
+        Ok((q, k))
     }
 }
 
 struct VisionAttention {
-    qkv: ReplicatedLinear,
-    proj: ReplicatedLinear,
+    q_proj: ReplicatedLinear,
+    k_proj: ReplicatedLinear,
+    v_proj: ReplicatedLinear,
+    o_proj: ReplicatedLinear,
     num_heads: usize,
     head_dim: usize,
     scale: f64,
@@ -57,15 +59,10 @@ impl VisionAttention {
     fn new(dim: usize, num_heads: usize, vb: VarBuilderX) -> Result<Self> {
         let head_dim = dim / num_heads;
         Ok(Self {
-            qkv: ReplicatedLinear::load_b(dim, dim * 3, true, vb.pp("attention"), &None, &None)?,
-            proj: ReplicatedLinear::load_b(
-                dim,
-                dim,
-                true,
-                vb.pp("attention.out_proj"),
-                &None,
-                &None,
-            )?,
+            q_proj: ReplicatedLinear::load_no_bias(dim, dim, vb.pp("q_proj"), &None, &None)?,
+            k_proj: ReplicatedLinear::load_no_bias(dim, dim, vb.pp("k_proj"), &None, &None)?,
+            v_proj: ReplicatedLinear::load_no_bias(dim, dim, vb.pp("v_proj"), &None, &None)?,
+            o_proj: ReplicatedLinear::load_no_bias(dim, dim, vb.pp("o_proj"), &None, &None)?,
             num_heads,
             head_dim,
             scale: 1.0 / (head_dim as f64).sqrt(),
@@ -80,34 +77,34 @@ impl VisionAttention {
         mask: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (bsz, seq_len, _) = xs.dims3()?;
-        let qkv = self.qkv.forward(xs)?;
-        let q = qkv
-            .narrow(D::Minus1, 0, self.num_heads * self.head_dim)?
+        let q = self
+            .q_proj
+            .forward(xs)?
             .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
-        let k = qkv
-            .narrow(
-                D::Minus1,
-                self.num_heads * self.head_dim,
-                self.num_heads * self.head_dim,
-            )?
+        let k = self
+            .k_proj
+            .forward(xs)?
             .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
-        let v = qkv
-            .narrow(
-                D::Minus1,
-                self.num_heads * self.head_dim * 2,
-                self.num_heads * self.head_dim,
-            )?
+        let v = self
+            .v_proj
+            .forward(xs)?
             .reshape((bsz, seq_len, self.num_heads, self.head_dim))?;
 
         let mut q = q.transpose(1, 2)?.contiguous()?;
         let mut k = k.transpose(1, 2)?.contiguous()?;
         let v = v.transpose(1, 2)?.contiguous()?;
 
-        let q_rot = q.i(0)?.transpose(0, 1)?;
-        let k_rot = k.i(0)?.transpose(0, 1)?;
-        let (q_applied, k_applied) = rotary.apply(&q_rot, &k_rot, positions)?;
-        q = q.slice_assign(&[0..1], &q_applied.transpose(0, 1)?.unsqueeze(0)?)?;
-        k = k.slice_assign(&[0..1], &k_applied.transpose(0, 1)?.unsqueeze(0)?)?;
+        let mut q_batches = Vec::with_capacity(bsz);
+        let mut k_batches = Vec::with_capacity(bsz);
+        for batch_idx in 0..bsz {
+            let q_rot = q.i(batch_idx)?.transpose(0, 1)?;
+            let k_rot = k.i(batch_idx)?.transpose(0, 1)?;
+            let (q_applied, k_applied) = rotary.apply(&q_rot, &k_rot, positions)?;
+            q_batches.push(q_applied.transpose(0, 1)?.unsqueeze(0)?);
+            k_batches.push(k_applied.transpose(0, 1)?.unsqueeze(0)?);
+        }
+        q = Tensor::cat(&q_batches.iter().collect::<Vec<_>>(), 0)?;
+        k = Tensor::cat(&k_batches.iter().collect::<Vec<_>>(), 0)?;
 
         let attn = (q.matmul(&k.transpose(2, 3)?)? * self.scale)?;
         let attn = if let Some(mask) = mask {
@@ -122,32 +119,38 @@ impl VisionAttention {
             seq_len,
             self.num_heads * self.head_dim,
         ))?;
-        self.proj.forward(&y)
+        self.o_proj.forward(&y)
     }
 }
 
 struct VisionMlp {
-    fc1: ReplicatedLinear,
-    fc2: ReplicatedLinear,
+    gate_proj: ReplicatedLinear,
+    up_proj: ReplicatedLinear,
+    down_proj: ReplicatedLinear,
     act: candle_nn::Activation,
 }
 
 impl VisionMlp {
     fn new(cfg: &VisionConfig, vb: VarBuilderX) -> Result<Self> {
         Ok(Self {
-            fc1: ReplicatedLinear::load_b(
+            gate_proj: ReplicatedLinear::load_no_bias(
                 cfg.hidden_size,
                 cfg.intermediate_size,
-                true,
-                vb.pp("feed_forward.fc1"),
+                vb.pp("gate_proj"),
                 &None,
                 &None,
             )?,
-            fc2: ReplicatedLinear::load_b(
+            up_proj: ReplicatedLinear::load_no_bias(
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                vb.pp("up_proj"),
+                &None,
+                &None,
+            )?,
+            down_proj: ReplicatedLinear::load_no_bias(
                 cfg.intermediate_size,
                 cfg.hidden_size,
-                true,
-                vb.pp("feed_forward.fc2"),
+                vb.pp("down_proj"),
                 &None,
                 &None,
             )?,
@@ -156,7 +159,9 @@ impl VisionMlp {
     }
 
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        self.fc2.forward(&self.fc1.forward(xs)?.apply(&self.act)?)
+        let gate = self.gate_proj.forward(xs)?.apply(&self.act)?;
+        let up = self.up_proj.forward(xs)?;
+        self.down_proj.forward(&(gate * up)?)
     }
 }
 
@@ -175,7 +180,7 @@ impl AttentionLayer {
             attention: VisionAttention::new(
                 cfg.hidden_size,
                 cfg.num_attention_heads,
-                vb.pp("self_attn"),
+                vb.pp("attention"),
             )?,
             post_norm: rms_norm(cfg.hidden_size, 1e-5, vb.pp("ffn_norm"), dtype, false)?,
         })
@@ -208,7 +213,7 @@ impl Transformer {
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for idx in 0..cfg.num_hidden_layers {
             layers.push(AttentionLayer::new(
-                vb.pp(format!("transformer.layers.{idx}")),
+                vb.pp(format!("layers.{idx}")),
                 cfg,
                 dtype,
             )?);
@@ -254,7 +259,7 @@ impl VisionModel {
             false,
         )?;
         let ln_pre = rms_norm(cfg.hidden_size, 1e-5, vb.pp("ln_pre"), dtype, false)?;
-        let transformer = Transformer::new(vb.clone(), cfg, dtype)?;
+        let transformer = Transformer::new(vb.pp("transformer"), cfg, dtype)?;
         let rotary = VisionRotaryEmbedding::new(cfg, vb.device(), dtype)?;
         Ok(Self {
             patch_conv,

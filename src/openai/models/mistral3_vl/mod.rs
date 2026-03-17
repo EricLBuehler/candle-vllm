@@ -159,8 +159,15 @@ impl Mistral3ForConditionalGeneration {
             dtype,
         )?;
         let mmproj = MultiModalProjector::new(&cfg, vb.pp("multi_modal_projector"), dtype)?;
-        let text_model =
-            Mistral::new(vb, &cfg.text_config, dtype, device, comm, progress_reporter)?;
+        let text_model = Mistral::new_with_prefix(
+            vb,
+            &cfg.text_config,
+            dtype,
+            device,
+            comm,
+            progress_reporter,
+            Some("language_model".to_string()),
+        )?;
 
         Ok(Self {
             text_model,
