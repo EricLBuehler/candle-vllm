@@ -1,4 +1,5 @@
 use crate::openai::models::Config;
+use crate::openai::multimodal::build_messages_and_images;
 use crate::openai::pipelines::llm_engine::LLMEngine;
 use crate::openai::pipelines::pipeline::DefaultLoader;
 use crate::openai::requests::Messages;
@@ -435,7 +436,7 @@ impl Engine {
             crate::openai::requests::normalize_empty_openai_tool_results(messages);
         }
 
-        let (prompt, tokenizer) = {
+        let (prompt, tokenizer, image_data) = {
             let e = self.engine.read();
             let (pipeline, _) = e.get_pipeline(0).unwrap();
 
@@ -444,6 +445,7 @@ impl Engine {
 
             // tokenizer is inside DefaultPipeline
             let mut conversation = pipeline.conversation.clone();
+            let mut image_data = None;
 
             // Logic to get prompt from messages
             // We need to access `messages` from request.
@@ -452,29 +454,15 @@ impl Engine {
                     conversation.append_message("user".to_string(), msg.clone());
                 }
                 Messages::Chat(messages) => {
-                    for message in messages {
-                        let role = message.role.as_str();
-                        if role == "system" {
-                            if let Some(content) = &message.content {
-                                conversation.set_system_message(Some(content.clone()));
-                            }
-                            continue;
-                        }
-
-                        if role == "tool" {
-                            let tool_call_id = message.tool_call_id.as_deref().unwrap_or("unknown");
-                            let content = message.content.clone().unwrap_or_default();
-                            let trimmed = content.trim();
-                            if !trimmed.is_empty() {
-                                let prompt =
-                                    format!("[Tool Result for {}]: {}", tool_call_id, trimmed);
-                                conversation.append_message(role.to_string(), prompt);
-                            }
-                            continue;
-                        }
-
-                        if let Some(content) = &message.content {
-                            conversation.append_message(role.to_string(), content.clone());
+                    let (render_messages, images) =
+                        build_messages_and_images(messages, pipeline.image_config.as_ref())
+                            .map_err(candle_core::Error::wrap)?;
+                    image_data = images;
+                    for message in render_messages {
+                        if message.role == "system" {
+                            conversation.set_system_message(Some(message.content.clone()));
+                        } else {
+                            conversation.append_template_message(message);
                         }
                     }
                 }
@@ -514,7 +502,7 @@ impl Engine {
 
             let prompt =
                 conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools);
-            (prompt, pipeline.tokenizer.clone())
+            (prompt, pipeline.tokenizer.clone(), image_data)
         };
 
         let request_id = format!("cmpl-{}", uuid::Uuid::new_v4());
@@ -570,6 +558,7 @@ impl Engine {
                 crate::openai::requests::EncodingFormat::default(),
                 crate::openai::requests::EmbeddingType::default(),
                 request.tools.clone().unwrap_or_default(),
+                image_data,
                 None, // streamer
                 Some(req_notify.clone()), // Use the local notify
             );
@@ -672,6 +661,7 @@ impl Engine {
                 request.encoding_format.clone(),
                 request.embedding_type.clone(),
                 Vec::new(),
+                None,
                 Some(std::sync::Arc::new(tx)),
                 None,
             );

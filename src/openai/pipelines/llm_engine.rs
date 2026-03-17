@@ -23,6 +23,8 @@ use crate::FlashInferKvParams;
 use crate::{
     openai::{
         models::Config,
+        multimodal::compute_image_slice,
+        multimodal::ImageData,
         responses::{
             ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionUsageResponse, Choice,
             ChoiceData, EmbeddingData, EmbeddingOutput, EmbeddingResponse, EmbeddingUsage,
@@ -39,7 +41,7 @@ use crate::{
     },
     InputMetadata,
 };
-use candle_core::{Device, Result, Tensor};
+use candle_core::{Result, Tensor};
 use either::Either;
 use flume::Sender;
 use parking_lot::RwLock;
@@ -658,6 +660,7 @@ impl LLMEngine {
                 task.seq_id,
                 task.group_id,
                 &task.prompt,
+                task.images.clone(),
                 &task.request_id,
                 task.created,
                 &task.sampling_params,
@@ -720,7 +723,7 @@ impl LLMEngine {
     fn ensure_flashinfer_decode_plan(
         &self,
         rank: usize,
-        device: &Device,
+        device: &candle_core::Device,
         input_batch: usize,
         metadata: &mut InputMetadata,
     ) -> Result<()> {
@@ -871,6 +874,38 @@ impl LLMEngine {
             metadata,
         } = prepared;
 
+        let images: Option<ImageData> = if is_prompt_request {
+            let seq = Self::primary_sequence(&scheduled[0]);
+            let seq_guard = seq.deref();
+            let seq_images = seq_guard.get_images();
+            let seq_token_ids = seq_guard.get_token_ids();
+            let seq_num_cached_tokens = seq_guard.get_num_cached_tokens();
+            drop(seq_guard);
+            if let Some(images) = seq_images {
+                if scheduled.len() > 1 {
+                    candle_core::bail!(
+                        "multimodal prefill does not support batching multiple sequence groups"
+                    );
+                }
+                if images.image_idx == -1 {
+                    None
+                } else {
+                    compute_image_slice(&seq_token_ids, seq_num_cached_tokens, &images).map(
+                        |(image_idx, token_offset)| {
+                            let mut images = images.clone();
+                            images.image_idx = image_idx;
+                            images.image_token_offset = token_offset;
+                            images
+                        },
+                    )
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let logits = if is_embedding {
             pipeline.forward_embedding(
                 tokens,
@@ -884,6 +919,7 @@ impl LLMEngine {
                 &positions,
                 Some(&cache_engine.get_kv_cache()),
                 &metadata,
+                images.as_ref(),
             )?
         };
 
@@ -1323,6 +1359,7 @@ impl LLMEngine {
         seq_id: usize,
         group_id: usize,
         prompt: &Vec<u32>,
+        images: Option<ImageData>,
         request_id: &str,
         created: SystemTime,
         sampling_params: &SamplingParams,
@@ -1337,6 +1374,7 @@ impl LLMEngine {
             prompt,
             seq_id,
             self.cache_config.block_size,
+            images,
         ))));
         SequenceGroup::new(
             &[seq],
@@ -1365,6 +1403,7 @@ impl LLMEngine {
         encoding_format: crate::openai::requests::EncodingFormat,
         embedding_type: crate::openai::requests::EmbeddingType,
         tools: Vec<crate::tools::Tool>,
+        images: Option<ImageData>,
         sender: Option<Arc<Sender<ChatResponse>>>,
         sync_notify: Option<Arc<Notify>>,
     ) {
@@ -1403,6 +1442,7 @@ impl LLMEngine {
             encoding_format,
             embedding_type,
             tools,
+            images,
         };
         let mut waiting_tasks = self.waiting_tasks.write();
         waiting_tasks.push(task);

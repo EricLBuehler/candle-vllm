@@ -105,6 +105,7 @@ impl MultiprocessRunner {
                 task.seq_id,
                 task.group_id,
                 &task.prompt,
+                task.images.clone(),
                 &task.request_id,
                 task.created,
                 &task.sampling_params,

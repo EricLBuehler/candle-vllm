@@ -13,6 +13,7 @@ use crate::openai::distributed::{
     embedding, rms_norm_x, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
+use crate::openai::models::layers::deepstack::ApplyDeepStack;
 use crate::openai::models::layers::moe::{FusedMoe, FusedMoeFp8, FusedMoeISQ};
 use crate::openai::models::linear::LinearX as Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
@@ -374,6 +375,7 @@ pub struct Qwen3_5MoE {
     device: Device,
     dtype: DType,
     cfg: Config,
+    vocab_size: usize,
 }
 
 impl Qwen3_5MoE {
@@ -385,8 +387,22 @@ impl Qwen3_5MoE {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
+        Self::new_with_prefix(vb, cfg, dtype, device, comm, progress_reporter, None)
+    }
+
+    pub fn new_with_prefix(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        prefix: Option<String>,
+    ) -> Result<Self> {
         let text_backbone = resolve_text_backbone(&vb, cfg.tie_word_embeddings);
-        let vb_m = if text_backbone.use_root_builder {
+        let vb_m = if let Some(prefix) = prefix {
+            vb.pp(prefix.trim_end_matches('.'))
+        } else if text_backbone.use_root_builder {
             vb.clone()
         } else {
             vb.pp(text_backbone.prefix)
@@ -491,7 +507,12 @@ impl Qwen3_5MoE {
             device: device.clone(),
             dtype,
             cfg: cfg.clone(),
+            vocab_size: cfg.vocab_size,
         })
+    }
+
+    pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        self.embed_tokens.forward(input_ids)
     }
 
     pub fn forward(
@@ -501,7 +522,16 @@ impl Qwen3_5MoE {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        self.forward_inner(input_ids, input_positions, kv_caches, input_metadata, false)
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            &None,
+            &None,
+            false,
+        )
     }
 
     pub fn forward_embedding(
@@ -511,7 +541,16 @@ impl Qwen3_5MoE {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        self.forward_inner(input_ids, input_positions, kv_caches, input_metadata, true)
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            &None,
+            &None,
+            true,
+        )
     }
 
     fn forward_inner(
@@ -520,6 +559,9 @@ impl Qwen3_5MoE {
         input_positions: &Tensor,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
+        embedded_inputs: bool,
+        visual_pos_masks: &Option<Tensor>,
+        deepstack_visual_embeds: &Option<Vec<Tensor>>,
         return_hidden: bool,
     ) -> Result<Tensor> {
         let seqlens = resolve_input_seqlens(input_metadata)?;
@@ -533,7 +575,11 @@ impl Qwen3_5MoE {
             input_metadata.is_prefill,
         );
 
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = if embedded_inputs {
+            input_ids.to_owned()
+        } else {
+            self.embed_forward(input_ids)?
+        };
 
         let mut mamba_cache = self.mamba_cache.write();
         let seq_slots = resolve_mamba_seq_slots(
@@ -545,7 +591,7 @@ impl Qwen3_5MoE {
         )?;
 
         let mut kv_cache_idx = 0usize;
-        for layer in self.layers.iter() {
+        for (idx, layer) in self.layers.iter().enumerate() {
             let cache = if layer.is_full_attention() {
                 if let Some(kv_caches) = kv_caches {
                     let c = &kv_caches[kv_cache_idx];
@@ -567,6 +613,12 @@ impl Qwen3_5MoE {
                 &mut mamba_cache,
                 &seq_slots,
             )?;
+            if let (Some(pos_mask), Some(deepstacks)) = (visual_pos_masks, deepstack_visual_embeds)
+            {
+                if idx < deepstacks.len() {
+                    xs = xs.apply_deep_stack(pos_mask, &deepstacks[idx])?;
+                }
+            }
         }
 
         if !seqlens.is_empty() && !return_hidden {
@@ -583,6 +635,28 @@ impl Qwen3_5MoE {
         self.lm_head
             .forward(&xs.to_dtype(self.dtype)?)?
             .to_dtype(DType::F32)
+    }
+
+    pub fn forward_with_deepstack(
+        &self,
+        input_ids: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        embedded_inputs: bool,
+        visual_pos_masks: &Option<Tensor>,
+        deepstack_visual_embeds: &Option<Vec<Tensor>>,
+    ) -> Result<Tensor> {
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            embedded_inputs,
+            visual_pos_masks,
+            deepstack_visual_embeds,
+            false,
+        )
     }
 
     pub fn release_sequence_state(&self, sequence_id: usize) {
@@ -631,6 +705,14 @@ impl Qwen3_5MoE {
 
     pub fn reset_mamba_cache(&self) -> Result<()> {
         self.mamba_cache.write().reset_all()
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    pub fn get_vocab_size(&self) -> usize {
+        self.vocab_size
     }
 
     pub fn get_config(&self) -> &Config {

@@ -59,6 +59,10 @@ impl PrefixCache {
     }
 
     pub fn match_prefix(&mut self, tokens: &[u32]) -> PrefixMatch {
+        self.match_prefix_with_seed(tokens, None)
+    }
+
+    pub fn match_prefix_with_seed(&mut self, tokens: &[u32], seed: Option<u64>) -> PrefixMatch {
         if !self.enabled() {
             return PrefixMatch {
                 matched_blocks: 0,
@@ -75,7 +79,7 @@ impl PrefixCache {
         }
 
         let mut matched = 0usize;
-        let mut parent_hash = 0u64;
+        let mut parent_hash = seed.unwrap_or(0u64);
         let mut last_hash = None;
         for block_tokens in tokens.chunks(self.block_size).take(full_blocks) {
             let hash = Self::hash_block(parent_hash, block_tokens);
@@ -126,10 +130,19 @@ impl PrefixCache {
     }
 
     pub fn hash_for_blocks(&self, tokens: &[u32], full_blocks: usize) -> Option<u64> {
+        self.hash_for_blocks_with_seed(tokens, full_blocks, None)
+    }
+
+    pub fn hash_for_blocks_with_seed(
+        &self,
+        tokens: &[u32],
+        full_blocks: usize,
+        seed: Option<u64>,
+    ) -> Option<u64> {
         if !self.enabled() || full_blocks == 0 {
             return None;
         }
-        let mut parent_hash = 0u64;
+        let mut parent_hash = seed.unwrap_or(0u64);
         let mut last_hash = None;
         for block_tokens in tokens.chunks(self.block_size).take(full_blocks) {
             let hash = Self::hash_block(parent_hash, block_tokens);
@@ -144,6 +157,15 @@ impl PrefixCache {
         tokens: &[u32],
         blocks: &[Arc<PhysicalTokenBlock>],
     ) -> Vec<Arc<PhysicalTokenBlock>> {
+        self.insert_prefix_with_seed(tokens, blocks, None)
+    }
+
+    pub fn insert_prefix_with_seed(
+        &mut self,
+        tokens: &[u32],
+        blocks: &[Arc<PhysicalTokenBlock>],
+        seed: Option<u64>,
+    ) -> Vec<Arc<PhysicalTokenBlock>> {
         if !self.enabled() {
             return Vec::new();
         }
@@ -154,7 +176,7 @@ impl PrefixCache {
             return Vec::new();
         }
 
-        let mut parent_hash = None;
+        let mut parent_hash = seed;
         for (block, block_tokens) in blocks
             .iter()
             .zip(tokens.chunks(self.block_size))

@@ -258,7 +258,14 @@ impl Mistral {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        self.forward_inner(input_ids, input_positions, kv_caches, input_metadata, false)
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            false,
+        )
     }
 
     pub fn forward_embedding(
@@ -268,7 +275,35 @@ impl Mistral {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        self.forward_inner(input_ids, input_positions, kv_caches, input_metadata, true)
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            true,
+        )
+    }
+
+    pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        self.embed_tokens.forward(input_ids)
+    }
+
+    pub fn forward_embeds(
+        &self,
+        input_embeds: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        self.forward_inner(
+            input_embeds,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            true,
+            false,
+        )
     }
 
     fn forward_inner(
@@ -277,6 +312,7 @@ impl Mistral {
         input_positions: &Tensor,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
+        embedded_inputs: bool,
         return_hidden: bool,
     ) -> Result<Tensor> {
         let seqlens = if input_metadata.cu_seqlens_q.is_some() && !return_hidden {
@@ -297,7 +333,11 @@ impl Mistral {
             self.cfg.sliding_window,
             input_metadata.is_prefill,
         );
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = if embedded_inputs {
+            input_ids.to_owned()
+        } else {
+            self.embed_forward(input_ids)?
+        };
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
                 xs = layer.forward(
@@ -334,5 +374,13 @@ impl Mistral {
 
     pub fn get_config(&self) -> &Config {
         &self.cfg
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    pub fn get_vocab_size(&self) -> usize {
+        self.cfg.vocab_size
     }
 }

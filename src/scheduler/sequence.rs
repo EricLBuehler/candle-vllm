@@ -4,6 +4,7 @@ use std::{
 };
 
 use super::block_engine::LogicalTokenBlock;
+use crate::openai::multimodal::ImageData;
 use crate::openai::sampling_params::{Logprobs, SamplingParams};
 use crate::openai::streaming::ChatResponse;
 use crate::tools::stream_parser::StreamToolParser;
@@ -43,10 +44,11 @@ pub struct SequenceData {
     pub stream_tool_parser: Option<StreamToolParser>,
     pub pending_tool_calls: Vec<ToolCall>,
     pub pending_finish_logprobs: Option<Logprobs>,
+    pub images: Option<ImageData>,
 }
 
 impl SequenceData {
-    pub fn new(prompt_token_ids: Vec<u32>) -> Self {
+    pub fn new(prompt_token_ids: Vec<u32>, images: Option<ImageData>) -> Self {
         Self {
             prompt_token_ids,
             output_token_ids: Vec::new(),
@@ -61,6 +63,7 @@ impl SequenceData {
             stream_tool_parser: None,
             pending_tool_calls: Vec::new(),
             pending_finish_logprobs: None,
+            images,
         }
     }
 
@@ -88,9 +91,14 @@ pub struct _Sequence {
 }
 
 impl _Sequence {
-    pub fn new(prompt_token_ids: &Vec<u32>, seq_id: usize, block_size: usize) -> Self {
+    pub fn new(
+        prompt_token_ids: &Vec<u32>,
+        seq_id: usize,
+        block_size: usize,
+        images: Option<ImageData>,
+    ) -> Self {
         let mut this = Self {
-            data: RwLock::new(SequenceData::new(prompt_token_ids.clone())),
+            data: RwLock::new(SequenceData::new(prompt_token_ids.clone(), images)),
             seq_id,
             logical_token_blocks: Vec::new(),
             block_size,
@@ -227,6 +235,14 @@ impl _Sequence {
 
     pub fn set_num_cached_tokens(&mut self, num_cached_tokens: usize) {
         self.deref_mut().num_cached_tokens = num_cached_tokens;
+    }
+
+    pub fn get_images(&self) -> Option<ImageData> {
+        self.deref().images.clone()
+    }
+
+    pub fn set_images(&mut self, images: Option<ImageData>) {
+        self.deref_mut().images = images;
     }
 }
 

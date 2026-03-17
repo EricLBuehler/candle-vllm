@@ -6,6 +6,7 @@ use crate::backend::progress::{progress_worker, ProgressLike, ProgressReporter};
 use crate::openai::logits_processor::LogitsProcessor;
 use crate::openai::models::linear::set_fp8_linear_is_prefill;
 use crate::openai::models::TokenID;
+use crate::openai::multimodal::{get_image_config, ImageProcessConfig};
 use crate::openai::requests::StopTokens;
 use crate::openai::sampling_params::{GenerationConfig, Logprobs, TopLogprob};
 use crate::openai::{BosEosToken, TokenizerConfig};
@@ -19,11 +20,13 @@ use crate::{
             DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
         },
         models::{
-            deepseek::DeepSeek, gemma::Gemma, gemma3::Gemma3, glm4::GLM4, llama::Llama,
-            mistral::Mistral, phi2::Phi2, phi4::Phi4ForCausalLM as Phi4, quantized_glm4::GGUFGLM4,
-            quantized_llama::GGUFLLaMa, quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen,
-            quantized_qwen3_moe::GGUFQWenMoE, qwen::Qwen, qwen3_5::Qwen3_5,
-            qwen3_5_moe::Qwen3_5MoE, qwen3_moe::Qwen3MoE, stable_lm::StableLM, yi::Yi, Config,
+            deepseek::DeepSeek, gemma::Gemma, gemma3::Gemma3,
+            gemma3_vl::Gemma3ForConditionalGeneration, glm4::GLM4, llama::Llama, mistral::Mistral,
+            mistral3_vl::Mistral3ForConditionalGeneration, phi2::Phi2,
+            phi4::Phi4ForCausalLM as Phi4, quantized_glm4::GGUFGLM4, quantized_llama::GGUFLLaMa,
+            quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen, quantized_qwen3_moe::GGUFQWenMoE,
+            qwen::Qwen, qwen3_5::Qwen3_5, qwen3_5_moe::Qwen3_5MoE, qwen3_moe::Qwen3MoE,
+            qwen3_vl::Qwen3VLForConditionalGeneration, stable_lm::StableLM, yi::Yi, Config,
         },
         PipelineConfig,
     },
@@ -57,9 +60,12 @@ pub enum LLMModel {
     Qwen3MoE(Arc<Qwen3MoE>),
     Qwen3_5(Arc<Qwen3_5>),
     Qwen3_5MoE(Arc<Qwen3_5MoE>),
+    Qwen3VL(Arc<Qwen3VLForConditionalGeneration>),
     Gemma(Arc<Gemma>),
     Gemma3(Arc<Gemma3>),
+    Gemma3VL(Arc<Gemma3ForConditionalGeneration>),
     Mistral(Arc<Mistral>),
+    Mistral3VL(Arc<Mistral3ForConditionalGeneration>),
     Yi(Arc<Yi>),
     StableLM(Arc<StableLM>),
     GLM4(Arc<GLM4>),
@@ -74,13 +80,15 @@ pub enum LLMModel {
 fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
     match model {
         LLMModel::Llama(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
-        LLMModel::Qwen(_) | LLMModel::Qwen3_5(_) | LLMModel::QWenGGUF(_) => ToolModelType::Qwen,
+        LLMModel::Qwen(_) | LLMModel::Qwen3_5(_) | LLMModel::Qwen3VL(_) | LLMModel::QWenGGUF(_) => {
+            ToolModelType::Qwen
+        }
         LLMModel::Qwen3MoE(_) | LLMModel::Qwen3_5MoE(_) | LLMModel::QWenGGUFMoE(_) => {
             ToolModelType::Qwen3MoE
         }
         LLMModel::Gemma(_) => ToolModelType::Gemma,
-        LLMModel::Gemma3(_) => ToolModelType::Gemma3,
-        LLMModel::Mistral(_) => ToolModelType::Mistral,
+        LLMModel::Gemma3(_) | LLMModel::Gemma3VL(_) => ToolModelType::Gemma3,
+        LLMModel::Mistral(_) | LLMModel::Mistral3VL(_) => ToolModelType::Mistral,
         LLMModel::Yi(_) => ToolModelType::Yi,
         LLMModel::StableLM(_) => ToolModelType::StableLM,
         LLMModel::GLM4(_) | LLMModel::GLM4GGUF(_) => ToolModelType::GLM4,
@@ -110,6 +118,7 @@ pub struct DefaultPipeline {
     pub tool_model_type: ToolModelType,
     pub tool_parser_model_id: String,
     pub enforce_parser: Option<String>,
+    pub image_config: Option<ImageProcessConfig>,
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
 }
@@ -587,11 +596,15 @@ impl DefaultLoader {
                 "LlamaForCausalLM" => Llama::load_config(&cfile, isq.clone())?,
                 "PhiForCausalLM" | "Phi2ForCausalLM" => Phi2::load_config(&cfile, isq.clone())?,
                 "Phi3ForCausalLM" | "Phi4ForCausalLM" => Phi4::load_config(&cfile, isq.clone())?,
-                "Qwen2ForCausalLM" | "Qwen3ForCausalLM" => Qwen::load_config(&cfile, isq.clone())?,
+                "Qwen2ForCausalLM" | "Qwen3ForCausalLM" | "Qwen3VLForConditionalGeneration" => {
+                    Qwen::load_config(&cfile, isq.clone())?
+                }
                 "Qwen3_5ForCausalLM" | "Qwen3_5ForConditionalGeneration" => {
                     Qwen3_5::load_config(&cfile, isq.clone())?
                 }
-                "Qwen2MoeForCausalLM" | "Qwen3MoeForCausalLM" => {
+                "Qwen2MoeForCausalLM"
+                | "Qwen3MoeForCausalLM"
+                | "Qwen3VLMoeForConditionalGeneration" => {
                     Qwen3MoE::load_config(&cfile, isq.clone())?
                 }
                 "Qwen3_5MoeForCausalLM" | "Qwen3_5MoeForConditionalGeneration" => {
@@ -616,18 +629,6 @@ impl DefaultLoader {
             };
             config.fp8_kvcache = Some(kv_cache_dtype == DType::U8);
             info!("Model {:?}", config);
-
-            if matches!(
-                arch.as_str(),
-                "Qwen3_5ForConditionalGeneration"
-                    | "Qwen3_5MoeForConditionalGeneration"
-                    | "Qwen3NextForConditionalGeneration"
-            ) {
-                warn!(
-                    "Architecture {} is multimodal; candle-vllm currently supports only the text model backbone for Qwen3.5.",
-                    arch
-                );
-            }
 
             info!("Loading {} model.", arch);
             let handle = progress_worker(
@@ -738,7 +739,7 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Qwen,
                         ),
-                        "Qwen3_5ForCausalLM" | "Qwen3_5ForConditionalGeneration" => (
+                        "Qwen3_5ForCausalLM" => (
                             LLMModel::Qwen3_5(Arc::new(
                                 Qwen3_5::new(
                                     vb,
@@ -757,6 +758,25 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Qwen,
                         ),
+                        "Qwen3_5ForConditionalGeneration" => (
+                            LLMModel::Qwen3VL(Arc::new(
+                                Qwen3VLForConditionalGeneration::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .map_err(|e| {
+                                    candle_core::Error::msg(format!(
+                                        "Failed to load Qwen3-VL model for arch {} on rank {}: {}",
+                                        arch, rank, e
+                                    ))
+                                })?,
+                            )),
+                            SeparatorStyle::Qwen,
+                        ),
                         "Qwen2MoeForCausalLM" | "Qwen3MoeForCausalLM" => (
                             LLMModel::Qwen3MoE(Arc::new(
                                 Qwen3MoE::new(
@@ -771,10 +791,7 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Qwen,
                         ),
-                        "Qwen3_5MoeForCausalLM"
-                        | "Qwen3_5MoeForConditionalGeneration"
-                        | "Qwen3NextForCausalLM"
-                        | "Qwen3NextForConditionalGeneration" => (
+                        "Qwen3_5MoeForCausalLM" | "Qwen3NextForCausalLM" => (
                             LLMModel::Qwen3_5MoE(Arc::new(
                                 Qwen3_5MoE::new(
                                     vb,
@@ -787,6 +804,28 @@ impl DefaultLoader {
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
                                         "Failed to load Qwen3.5-MoE model for arch {} on rank {}: {}",
+                                        arch, rank, e
+                                    ))
+                                })?,
+                            )),
+                            SeparatorStyle::Qwen,
+                        ),
+                        "Qwen3_5MoeForConditionalGeneration"
+                        | "Qwen3NextForConditionalGeneration"
+                        | "Qwen3VLForConditionalGeneration"
+                        | "Qwen3VLMoeForConditionalGeneration" => (
+                            LLMModel::Qwen3VL(Arc::new(
+                                Qwen3VLForConditionalGeneration::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .map_err(|e| {
+                                    candle_core::Error::msg(format!(
+                                        "Failed to load Qwen3-VL model for arch {} on rank {}: {}",
                                         arch, rank, e
                                     ))
                                 })?,
@@ -808,8 +847,8 @@ impl DefaultLoader {
                             SeparatorStyle::Gemma,
                         ),
                         "Gemma3ForConditionalGeneration" => (
-                            LLMModel::Gemma3(Arc::new(
-                                Gemma3::new(
+                            LLMModel::Gemma3VL(Arc::new(
+                                Gemma3ForConditionalGeneration::new(
                                     vb,
                                     &config,
                                     dtype,
@@ -821,7 +860,7 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Gemma,
                         ),
-                        "MistralForCausalLM" | "Mistral3ForConditionalGeneration" => (
+                        "MistralForCausalLM" => (
                             LLMModel::Mistral(Arc::new(
                                 Mistral::new(
                                     vb,
@@ -832,6 +871,25 @@ impl DefaultLoader {
                                     Arc::clone(&reporter),
                                 )
                                 .unwrap(),
+                            )),
+                            SeparatorStyle::Mistral,
+                        ),
+                        "Mistral3ForConditionalGeneration" => (
+                            LLMModel::Mistral3VL(Arc::new(
+                                Mistral3ForConditionalGeneration::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .map_err(|e| {
+                                    candle_core::Error::msg(format!(
+                                        "Failed to load Mistral3-VL model for arch {} on rank {}: {}",
+                                        arch, rank, e
+                                    ))
+                                })?,
                             )),
                             SeparatorStyle::Mistral,
                         ),
@@ -1231,12 +1289,18 @@ impl DefaultPipeline {
             tool_config.start_token_str.as_str(),
             tool_config.end_token_str.as_str(),
         ];
+        let image_config = get_image_config(config)?;
         let mut conversation = conversation;
         conversation.set_escape_tokens(DefaultConversation::collect_escape_tokens(
             &tokenizer,
             &tool_markers,
         ));
-        conversation.set_preserve_tokens(Vec::new());
+        conversation.set_preserve_tokens(
+            image_config
+                .as_ref()
+                .map(|cfg| cfg.prompt_marker_tokens())
+                .unwrap_or_default(),
+        );
         Ok(Self {
             model,
             tokenizer,
@@ -1256,6 +1320,7 @@ impl DefaultPipeline {
             tool_model_type,
             tool_parser_model_id,
             enforce_parser,
+            image_config,
             #[cfg(all(feature = "cuda", feature = "graph"))]
             capturer: GraphCapturer::new(
                 wrapper,
@@ -1275,6 +1340,7 @@ impl DefaultPipeline {
         input_positions: &Tensor,
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
+        images: Option<&crate::openai::multimodal::ImageData>,
     ) -> Result<Tensor> {
         let _fp8_linear_prefill_guard = set_fp8_linear_is_prefill(input_metadata.is_prefill);
         #[cfg(all(feature = "cuda", feature = "graph"))]
@@ -1298,6 +1364,15 @@ impl DefaultPipeline {
                         let _guard = model.lock_mamba_cache_for_graph();
                         self.capturer
                             .replay(&input_tokens, &input_positions, &input_metadata)
+                    }
+                    LLMModel::Qwen3VL(model) => {
+                        if let Some(_guard) = model.lock_mamba_cache_for_graph() {
+                            self.capturer
+                                .replay(&input_tokens, &input_positions, &input_metadata)
+                        } else {
+                            self.capturer
+                                .replay(&input_tokens, &input_positions, &input_metadata)
+                        }
                     }
                     _ => self
                         .capturer
@@ -1328,15 +1403,36 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5MoE(qwen) => {
                 qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::Qwen3VL(qwen) => qwen.forward(
+                &input_tokens,
+                input_positions,
+                kv_cache,
+                input_metadata,
+                images,
+            ),
             LLMModel::Gemma(gemma) => {
                 gemma.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Gemma3(gemma3) => {
                 gemma3.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::Gemma3VL(gemma3) => gemma3.forward(
+                &input_tokens,
+                input_positions,
+                kv_cache,
+                input_metadata,
+                images,
+            ),
             LLMModel::Mistral(mistral) => {
                 mistral.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::Mistral3VL(mistral) => mistral.forward(
+                &input_tokens,
+                input_positions,
+                kv_cache,
+                input_metadata,
+                images,
+            ),
             LLMModel::Yi(yi) => {
                 yi.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -1391,6 +1487,13 @@ impl DefaultPipeline {
             LLMModel::Gemma3(gemma3) => {
                 gemma3.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::Gemma3VL(gemma3) => gemma3.forward_embedding(
+                &input_tokens,
+                input_positions,
+                kv_cache,
+                input_metadata,
+                None,
+            ),
             LLMModel::Qwen(qwen) => {
                 qwen.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -1654,9 +1757,12 @@ impl DefaultPipeline {
             LLMModel::Qwen3MoE(qwen) => qwen.get_config().clone(),
             LLMModel::Qwen3_5(qwen) => qwen.get_config().clone(),
             LLMModel::Qwen3_5MoE(qwen) => qwen.get_config().clone(),
+            LLMModel::Qwen3VL(qwen) => qwen.get_config().clone(),
             LLMModel::Gemma(gemma) => gemma.get_config().clone(),
             LLMModel::Gemma3(gemma3) => gemma3.get_config().clone(),
+            LLMModel::Gemma3VL(gemma3) => gemma3.get_config().clone(),
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
+            LLMModel::Mistral3VL(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
             LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),
             LLMModel::GLM4(glm4) => glm4.get_config().clone(),
@@ -1690,6 +1796,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.release_sequence_state(sequence_id),
             LLMModel::Qwen3_5MoE(model) => model.release_sequence_state(sequence_id),
+            LLMModel::Qwen3VL(model) => model.release_sequence_state(sequence_id),
             _ => {}
         }
     }
@@ -1698,6 +1805,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3_5MoE(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
+            LLMModel::Qwen3VL(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
             _ => Ok(vec![]),
         }
     }
@@ -1706,6 +1814,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.get_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3_5MoE(model) => model.get_mamba_slots_for_sequences(sequence_ids),
+            LLMModel::Qwen3VL(model) => model.get_mamba_slots_for_sequences(sequence_ids),
             _ => Ok(vec![]),
         }
     }
@@ -1714,6 +1823,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.has_mamba_slot_for_sequence(sequence_id),
             LLMModel::Qwen3_5MoE(model) => model.has_mamba_slot_for_sequence(sequence_id),
+            LLMModel::Qwen3VL(model) => model.has_mamba_slot_for_sequence(sequence_id),
             _ => false,
         }
     }
@@ -1722,6 +1832,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.preallocate_mamba_cache(max_num_seqs),
             LLMModel::Qwen3_5MoE(model) => model.preallocate_mamba_cache(max_num_seqs),
+            LLMModel::Qwen3VL(model) => model.preallocate_mamba_cache(max_num_seqs),
             _ => Ok(()),
         }
     }
@@ -1730,6 +1841,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.set_mamba_prefix_cache_capacity(capacity),
             LLMModel::Qwen3_5MoE(model) => model.set_mamba_prefix_cache_capacity(capacity),
+            LLMModel::Qwen3VL(model) => model.set_mamba_prefix_cache_capacity(capacity),
             _ => {}
         }
     }
@@ -1738,6 +1850,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.capture_mamba_prefix_state(seq_id, hash),
             LLMModel::Qwen3_5MoE(model) => model.capture_mamba_prefix_state(seq_id, hash),
+            LLMModel::Qwen3VL(model) => model.capture_mamba_prefix_state(seq_id, hash),
             _ => Ok(false),
         }
     }
@@ -1746,6 +1859,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => Ok(model.has_mamba_prefix_state(hash)),
             LLMModel::Qwen3_5MoE(model) => Ok(model.has_mamba_prefix_state(hash)),
+            LLMModel::Qwen3VL(model) => Ok(model.has_mamba_prefix_state(hash)),
             _ => Ok(true),
         }
     }
@@ -1754,6 +1868,7 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Qwen3_5(model) => model.restore_mamba_prefix_state(seq_id, hash),
             LLMModel::Qwen3_5MoE(model) => model.restore_mamba_prefix_state(seq_id, hash),
+            LLMModel::Qwen3VL(model) => model.restore_mamba_prefix_state(seq_id, hash),
             _ => Ok(true),
         }
     }
@@ -1768,6 +1883,7 @@ impl DefaultPipeline {
                 match &self.model {
                     LLMModel::Qwen3_5(model) => model.reset_mamba_cache()?,
                     LLMModel::Qwen3_5MoE(model) => model.reset_mamba_cache()?,
+                    LLMModel::Qwen3VL(model) => model.reset_mamba_cache()?,
                     _ => {}
                 }
                 Ok(())

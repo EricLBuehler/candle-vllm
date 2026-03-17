@@ -3,6 +3,7 @@ use super::{
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, rms_norm, Comm, ReplicatedLinear, VarBuilder};
+use crate::openai::models::layers::deepstack::ApplyDeepStack;
 use crate::openai::models::mask::get_attention_causal_mask;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
@@ -102,6 +103,7 @@ pub struct Qwen {
     device: Device,
     dtype: DType,
     cfg: Config,
+    vocab_size: usize,
 }
 
 impl Qwen {
@@ -113,10 +115,24 @@ impl Qwen {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
-        let (vb_m, tie_word_embeddings) = if !vb.contains_tensor("model.embed_tokens.weight")
+        Self::new_with_prefix(vb, cfg, dtype, device, comm, progress_reporter, None)
+    }
+
+    pub fn new_with_prefix(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        prefix: Option<String>,
+    ) -> Result<Self> {
+        let (vb_m, tie_word_embeddings) = if let Some(prefix) = prefix {
+            (vb.pp(prefix.trim_end_matches('.')), cfg.tie_word_embeddings)
+        } else if !vb.contains_tensor("model.embed_tokens.weight")
             && vb.contains_tensor("embed_tokens.weight")
         {
-            (vb.clone(), true) // in case there is no lm_head in embedding models
+            (vb.clone(), true)
         } else {
             (vb.pp("model"), cfg.tie_word_embeddings)
         };
@@ -152,7 +168,12 @@ impl Qwen {
             device: device.clone(),
             dtype,
             cfg: cfg.clone(),
+            vocab_size: cfg.vocab_size,
         })
+    }
+
+    pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        self.embed_tokens.forward(input_ids)
     }
 
     pub fn forward(
@@ -162,7 +183,16 @@ impl Qwen {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        self.forward_inner(input_ids, input_positions, kv_caches, input_metadata, false)
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            &None,
+            &None,
+            false,
+        )
     }
 
     pub fn forward_embedding(
@@ -172,7 +202,16 @@ impl Qwen {
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        self.forward_inner(input_ids, input_positions, kv_caches, input_metadata, true)
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            &None,
+            &None,
+            true,
+        )
     }
 
     fn forward_inner(
@@ -181,6 +220,9 @@ impl Qwen {
         input_positions: &Tensor,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
+        embedded_inputs: bool,
+        visual_pos_masks: &Option<Tensor>,
+        deepstack_visual_embeds: &Option<Vec<Tensor>>,
         return_hidden: bool,
     ) -> Result<Tensor> {
         let seqlens = if input_metadata.cu_seqlens_q.is_some() {
@@ -201,27 +243,47 @@ impl Qwen {
             self.cfg.sliding_window,
             input_metadata.is_prefill,
         );
-        let mut xs = self.embed_tokens.forward(input_ids)?;
+        let mut xs = if embedded_inputs {
+            input_ids.to_owned()
+        } else {
+            self.embed_forward(input_ids)?
+        };
 
         if let Some(kv_caches) = kv_caches {
-            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
+            for ((k_cache, v_cache), (idx, layer)) in
+                zip(kv_caches.iter(), self.layers.iter().enumerate())
+            {
                 xs = layer.forward(
                     &xs,
                     attention_mask.as_ref(),
                     input_positions,
                     Some((k_cache, v_cache)),
                     input_metadata,
-                )?
+                )?;
+                if let (Some(pos_mask), Some(deepstacks)) =
+                    (visual_pos_masks, deepstack_visual_embeds)
+                {
+                    if idx < deepstacks.len() {
+                        xs = xs.apply_deep_stack(pos_mask, &deepstacks[idx])?;
+                    }
+                }
             }
         } else {
-            for layer in self.layers.iter() {
+            for (idx, layer) in self.layers.iter().enumerate() {
                 xs = layer.forward(
                     &xs,
                     attention_mask.as_ref(),
                     input_positions,
                     None,
                     input_metadata,
-                )?
+                )?;
+                if let (Some(pos_mask), Some(deepstacks)) =
+                    (visual_pos_masks, deepstack_visual_embeds)
+                {
+                    if idx < deepstacks.len() {
+                        xs = xs.apply_deep_stack(pos_mask, &deepstacks[idx])?;
+                    }
+                }
             }
         }
 
@@ -236,6 +298,36 @@ impl Qwen {
             return Ok(xs);
         }
         self.lm_head.forward(&xs)?.to_dtype(DType::F32)
+    }
+
+    pub fn forward_with_deepstack(
+        &self,
+        input_ids: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        embedded_inputs: bool,
+        visual_pos_masks: &Option<Tensor>,
+        deepstack_visual_embeds: &Option<Vec<Tensor>>,
+    ) -> Result<Tensor> {
+        self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            embedded_inputs,
+            visual_pos_masks,
+            deepstack_visual_embeds,
+            false,
+        )
+    }
+
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
+
+    pub fn get_vocab_size(&self) -> usize {
+        self.vocab_size
     }
 
     pub fn get_config(&self) -> &Config {

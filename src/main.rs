@@ -641,10 +641,15 @@ async fn main() -> Result<()> {
         .route(
             "/v1/models",
             get(|State(data): State<Arc<OpenAIServerData>>| async move {
-                let model_name = {
+                let (model_name, modalities) = {
                     let engine = data.model.read();
                     let (pipeline, _) = engine.get_pipeline(0).unwrap();
-                    pipeline.name().to_string()
+                    let modalities = if pipeline.image_config.is_some() {
+                        vec!["text", "image"]
+                    } else {
+                        vec!["text", "embedding"]
+                    };
+                    (pipeline.name().to_string(), modalities)
                 };
                 Json(json!({
                     "object": "list",
@@ -657,7 +662,8 @@ async fn main() -> Result<()> {
                                 .unwrap()
                                 .as_millis() as i64,
                             "owned_by": "candle-vllm",
-                            "permission": []
+                            "permission": [],
+                            "modalities": modalities,
                         }
                     ]
                 }))
