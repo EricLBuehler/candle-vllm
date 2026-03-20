@@ -84,7 +84,7 @@ struct Args {
     kvcache_mem_gpu: usize,
 
     /// Auto-size GPU KV cache after model load using `fraction * remaining_gpu_mem`.
-    /// Defaults to 0.8 with `flashattn`, otherwise 0.7, and takes priority over `--mem` on CUDA/Metal.
+    /// Defaults to 0.7 and takes priority over `--mem` on CUDA/Metal.
     #[arg(long)]
     gpu_memory_fraction: Option<f32>,
 
@@ -394,13 +394,7 @@ async fn main() -> Result<()> {
         .expect("at least one pipeline must be loaded");
     let first_config = first_pipeline.get_model_config();
     let first_model_dtype = first_pipeline.dtype;
-    let requested_gpu_memory_fraction =
-        args.gpu_memory_fraction
-            .unwrap_or(if cfg!(feature = "flashattn") {
-                0.8
-            } else {
-                0.7
-            });
+    let requested_gpu_memory_fraction = args.gpu_memory_fraction.unwrap_or(0.7);
     let explicit_gpu_memory_fraction = args.gpu_memory_fraction.is_some();
     let (kvcache_mem_gpu, mamba_cache_budget_bytes, kvcache_budget_desc) =
         match candle_vllm::detect_kvcache_mem_gpu_mb_for_devices(

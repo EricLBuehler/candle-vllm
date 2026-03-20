@@ -287,7 +287,7 @@ impl BlockEngine {
 
         if self.num_gpu_blocks < num_required_blocks {
             AllocStatus::Impossible
-        } else if num_free_gpu_blocks > num_required_blocks {
+        } else if num_free_gpu_blocks >= num_required_blocks {
             AllocStatus::Ok
         } else {
             AllocStatus::Later

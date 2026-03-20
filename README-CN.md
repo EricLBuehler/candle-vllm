@@ -132,14 +132,14 @@ cargo install --features metal --path .
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.5-27B-FP8（或使用 `--w` 指定本地模型路径）
 
@@ -632,7 +632,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     <summary>显示详情</summary>
     `--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算，默认值为 `4096` MB。
 
-    `--gpu-memory-fraction` 提供一个更轻量的自动模式。模型加载完成后，candle-vllm 会探测每张已加载的 CUDA 或 Metal 设备，并按以下公式计算 KV Cache 预算：
+    `--gpu-memory-fraction` 提供一个更轻量的自动模式。不显式指定时，默认值为 `0.7`。模型加载完成后，candle-vllm 会探测每张已加载的 CUDA 或 Metal 设备，并按以下公式计算 KV Cache 预算：
 
     ```
     gpu_memory_fraction * total_gpu_memory - current_memory_usage
@@ -641,7 +641,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     多卡场景下，会取所有 rank 中最小的结果作为每个 rank 的 KV Cache 预算。例如：
 
     ```
-    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.85
+    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.7
     ```
 
     当你需要显式固定缓存预算时，用 `--mem`。当你希望服务根据模型加载后的可用显存自动调整时，用 `--gpu-memory-fraction`。

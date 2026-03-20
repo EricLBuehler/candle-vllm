@@ -64,11 +64,7 @@ impl EngineBuilder {
             max_num_seqs: 16,
             block_size: 64,
             kvcache_mem_gpu: 4096,
-            gpu_memory_fraction: Some(if cfg!(feature = "flashattn") {
-                0.8
-            } else {
-                0.7
-            }),
+            gpu_memory_fraction: Some(0.7),
             kvcache_mem_cpu: 128,
             temperature: None,
             top_p: None,
