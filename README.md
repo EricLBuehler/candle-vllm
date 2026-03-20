@@ -135,14 +135,14 @@ cargo install --features metal --path .
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.85 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.5-27B-FP8 (or `--w` specify local model path)
 
@@ -638,7 +638,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     <summary>Show details</summary>
     The `--mem` (`kvcache-mem-gpu`) parameter sets a fixed KV cache budget in MB. By default this is `4096` MB.
 
-    The `--gpu-memory-fraction` parameter is a lighter-weight auto mode. After the model finishes loading, candle-vllm probes each loaded CUDA or Metal device and computes the KV cache budget as:
+    The `--gpu-memory-fraction` parameter is a lighter-weight auto mode. When omitted, it defaults to `0.7`. After the model finishes loading, candle-vllm probes each loaded CUDA or Metal device and computes the KV cache budget as:
 
     ```
     gpu_memory_fraction * remaining_gpu_memory_after_model_load
@@ -647,7 +647,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     This means the fraction directly controls how much of the free GPU memory left after model load can be used for the combined GPU cache budget. The minimum detected budget across ranks is used as the KV cache budget per rank. For example:
 
     ```
-    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.85
+    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.7
     ```
 
     Use `--mem` when you want an explicit fixed budget. Use `--gpu-memory-fraction` when you want the server to adapt to the currently available GPU memory after model load.
