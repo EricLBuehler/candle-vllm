@@ -62,7 +62,7 @@ impl EngineBuilder {
             fp8_kvcache: None,
             device_ids: None,
             max_num_seqs: 16,
-            block_size: 64,
+            block_size: if cfg!(feature = "cuda") { 64 } else { 32 },
             kvcache_mem_gpu: 4096,
             gpu_memory_fraction: Some(0.7),
             kvcache_mem_cpu: 128,

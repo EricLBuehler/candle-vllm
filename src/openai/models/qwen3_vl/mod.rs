@@ -348,10 +348,15 @@ impl Qwen3VLForConditionalGeneration {
         }
     }
 
-    pub fn capture_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
+    pub fn capture_mamba_prefix_state(
+        &self,
+        seq_id: usize,
+        hash: u64,
+        preserve: bool,
+    ) -> Result<bool> {
         match &self.text_model {
-            Qwen3TextModel::Dense35(m) => m.capture_mamba_prefix_state(seq_id, hash),
-            Qwen3TextModel::MoE35(m) => m.capture_mamba_prefix_state(seq_id, hash),
+            Qwen3TextModel::Dense35(m) => m.capture_mamba_prefix_state(seq_id, hash, preserve),
+            Qwen3TextModel::MoE35(m) => m.capture_mamba_prefix_state(seq_id, hash, preserve),
             _ => Ok(true),
         }
     }

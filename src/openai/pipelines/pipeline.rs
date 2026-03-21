@@ -1847,11 +1847,16 @@ impl DefaultPipeline {
         }
     }
 
-    pub fn capture_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
+    pub fn capture_mamba_prefix_state(
+        &self,
+        seq_id: usize,
+        hash: u64,
+        preserve: bool,
+    ) -> Result<bool> {
         match &self.model {
-            LLMModel::Qwen3_5(model) => model.capture_mamba_prefix_state(seq_id, hash),
-            LLMModel::Qwen3_5MoE(model) => model.capture_mamba_prefix_state(seq_id, hash),
-            LLMModel::Qwen3VL(model) => model.capture_mamba_prefix_state(seq_id, hash),
+            LLMModel::Qwen3_5(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
+            LLMModel::Qwen3_5MoE(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
+            LLMModel::Qwen3VL(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
             _ => Ok(false),
         }
     }

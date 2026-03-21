@@ -479,8 +479,15 @@ impl Qwen3_5 {
         self.mamba_cache.write().set_prefix_cache_capacity(capacity);
     }
 
-    pub fn capture_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
-        self.mamba_cache.write().capture_prefix_state(seq_id, hash)
+    pub fn capture_mamba_prefix_state(
+        &self,
+        seq_id: usize,
+        hash: u64,
+        preserve: bool,
+    ) -> Result<bool> {
+        self.mamba_cache
+            .write()
+            .capture_prefix_state(seq_id, hash, preserve)
     }
 
     pub fn has_mamba_prefix_state(&self, hash: u64) -> bool {

@@ -54,8 +54,8 @@ struct Args {
     max_num_seqs: usize,
 
     /// Size of a block
-    #[arg(long, default_value_t = 64)]
-    block_size: usize,
+    #[arg(long)]
+    block_size: Option<usize>,
 
     /// if weight_path is passed, it will ignore the model_id
     #[arg(long = "m")]
@@ -279,6 +279,9 @@ async fn main() -> Result<()> {
         }
     }
 
+    let block_size = args
+        .block_size
+        .unwrap_or(if cfg!(feature = "cuda") { 64 } else { 32 });
     let logger: ftail::Ftail = ftail::Ftail::new();
     let host = args.host;
     let mut port = args.port;
@@ -305,7 +308,7 @@ async fn main() -> Result<()> {
                     kv_cache_dtype,
                     gguf,
                     args.isq.clone(),
-                    args.block_size,
+                    block_size,
                     args.max_num_seqs,
                     vec![device_ids[local_rank]],
                     Some(id),
@@ -331,7 +334,7 @@ async fn main() -> Result<()> {
                     kv_cache_dtype,
                     gguf,
                     args.isq.clone(),
-                    args.block_size,
+                    block_size,
                     args.max_num_seqs,
                     device_ids,
                     None,
@@ -368,7 +371,7 @@ async fn main() -> Result<()> {
                     kv_cache_dtype,
                     gguf,
                     args.isq.clone(),
-                    args.block_size,
+                    block_size,
                     args.max_num_seqs,
                     device_ids,
                     None,
@@ -469,7 +472,7 @@ async fn main() -> Result<()> {
             let mut cache_cfg = candle_vllm::get_cache_config(
                 kvcache_mem_gpu,
                 args.kvcache_mem_cpu, //dummy 512MB for cpu
-                args.block_size,
+                block_size,
                 &cfg,
                 kv_cache_dtype,
                 num_shards,

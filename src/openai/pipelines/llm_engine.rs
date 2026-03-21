@@ -105,6 +105,18 @@ pub struct LLMEngine {
 }
 
 impl LLMEngine {
+    fn effective_mamba_prefix_capacity(
+        prefix_cache_enabled: bool,
+        mamba_slot_capacity: usize,
+    ) -> usize {
+        if !prefix_cache_enabled || mamba_slot_capacity == 0 {
+            return 0;
+        }
+        // Keep a larger snapshot pool than active slots so prompt/chunk-prefill
+        // boundaries survive decode-time snapshot churn when prefix cache is hot.
+        mamba_slot_capacity.saturating_mul(2)
+    }
+
     fn ordered_group_sequences(group: &Arc<SequenceGroup>) -> Vec<Arc<Sequence>> {
         let mut seqs = group
             .get_seqs()
@@ -144,7 +156,7 @@ impl LLMEngine {
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in captures {
-                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, true) {
                     Ok(true) => captured_hashes.push(capture.hash),
                     Ok(false) => {}
                     Err(e) => {
@@ -176,7 +188,7 @@ impl LLMEngine {
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in captures {
-                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, false) {
                     Ok(true) => captured_hashes.push(capture.hash),
                     Ok(false) => {}
                     Err(e) => {
@@ -246,7 +258,7 @@ impl LLMEngine {
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in sync.captures {
-                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, false) {
                     Ok(true) => captured_hashes.push(capture.hash),
                     Ok(false) => {}
                     Err(e) => {
@@ -401,7 +413,10 @@ impl LLMEngine {
             crate::estimate_hybrid_mamba_cache(config, model_dtype, num_shards);
         let require_mamba_prefix_snapshots = hybrid_mamba_estimate.is_some();
         let mut mamba_slot_capacity = scheduler_config.max_num_seqs.max(MIN_MAMBA_SLOT_CAPACITY);
-        let mut mamba_prefix_capacity = 0usize;
+        let mut mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
+            scheduler_config.prefix_cache.enabled,
+            mamba_slot_capacity,
+        );
 
         if let Some(estimate) = hybrid_mamba_estimate {
             let stride_blocks = crate::mamba_snapshot_block_stride_blocks();
@@ -431,11 +446,21 @@ impl LLMEngine {
                 let planned_total_slots =
                     cache_config.mamba_cache_budget_bytes / estimate.slot_bytes;
                 if planned_total_slots >= mamba_slot_capacity {
-                    mamba_prefix_capacity = if scheduler_config.prefix_cache.enabled {
-                        planned_total_slots.saturating_sub(mamba_slot_capacity)
-                    } else {
-                        0
-                    };
+                    let prefix_budget_slots =
+                        planned_total_slots.saturating_sub(mamba_slot_capacity);
+                    if prefix_budget_slots == 0 && mamba_prefix_capacity > 0 {
+                        info!(
+                            "Hybrid mamba planned budget leaves 0 explicit snapshot slot(s); using auto prefix-state capacity {}.",
+                            mamba_prefix_capacity
+                        );
+                    } else if mamba_prefix_capacity > prefix_budget_slots {
+                        warn!(
+                            "Capping hybrid mamba prefix-state cache from {} to {} entries by planned budget.",
+                            mamba_prefix_capacity,
+                            prefix_budget_slots
+                        );
+                        mamba_prefix_capacity = prefix_budget_slots;
+                    }
                 } else if planned_total_slots > 0 {
                     warn!(
                         "Hybrid mamba planned budget only fits {} total slot(s), below the target active minimum {}; using the largest safe active capacity instead.",
@@ -443,19 +468,26 @@ impl LLMEngine {
                         mamba_slot_capacity
                     );
                     mamba_slot_capacity = planned_total_slots;
-                    mamba_prefix_capacity = 0;
+                    mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
+                        scheduler_config.prefix_cache.enabled,
+                        mamba_slot_capacity,
+                    );
                 } else {
                     warn!(
                         "Hybrid mamba planned budget is smaller than one slot; falling back to 1 active slot."
                     );
                     mamba_slot_capacity = 1;
-                    mamba_prefix_capacity = 0;
+                    mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
+                        scheduler_config.prefix_cache.enabled,
+                        mamba_slot_capacity,
+                    );
                 }
 
                 let active_bytes = mamba_slot_capacity.saturating_mul(estimate.slot_bytes);
                 let prefix_budget_bytes = cache_config
                     .mamba_cache_budget_bytes
                     .saturating_sub(active_bytes);
+                let actual_prefix_bytes = mamba_prefix_capacity.saturating_mul(estimate.slot_bytes);
 
                 info!(
                     "Hybrid mamba cache sizing: {} active slot(s), {} prefix snapshot slot(s), {:.2} MB/slot, {} GDN layer(s), planned mamba budget {:.2} GB, min free GPU memory after KV {:.2} GB",
@@ -469,12 +501,17 @@ impl LLMEngine {
                 info!(
                     "Hybrid mamba memory split: active {:.2} GB, prefix snapshots {:.2} GB",
                     active_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                    actual_prefix_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                );
+                info!(
+                    "Hybrid mamba planned prefix snapshot budget: {:.2} GB",
                     prefix_budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
                 );
             } else {
                 warn!(
-                    "Hybrid mamba budget was not reserved in the combined cache budget; using fallback active slot capacity {}.",
-                    mamba_slot_capacity
+                    "Hybrid mamba budget was not reserved in the combined cache budget; using fallback active slot capacity {} and auto prefix-state capacity {}.",
+                    mamba_slot_capacity,
+                    mamba_prefix_capacity
                 );
             }
         }
@@ -787,6 +824,7 @@ impl LLMEngine {
         Ok(())
     }
 
+    #[allow(unused)]
     fn bind_rank_to_thread(&self, rank: usize) {
         #[cfg(feature = "cuda")]
         {
