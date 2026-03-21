@@ -996,7 +996,7 @@ impl LLMEngine {
                 }
             }
         }
-        let is_multiprocess = self.daemon_manager.read().is_some();
+        let is_multiprocess = self.multi_process;
         if !is_multiprocess {
             let downgraded = self.validate_scheduled_prompt_mamba_prefix_states(
                 &scheduler_outputs.scheduled,
