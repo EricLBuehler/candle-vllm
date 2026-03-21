@@ -202,6 +202,8 @@ pub struct BlockEngine {
     prefix_cache: Option<PrefixCache>,
     require_mamba_prefix_snapshots: bool,
     valid_mamba_prefix_hashes: HashSet<u64>,
+    prefix_block_id_by_mamba_hash: HashMap<u64, usize>,
+    mamba_hashes_by_prefix_block_id: HashMap<usize, HashSet<u64>>,
 }
 
 impl BlockEngine {
@@ -237,6 +239,8 @@ impl BlockEngine {
             prefix_cache,
             require_mamba_prefix_snapshots,
             valid_mamba_prefix_hashes: HashSet::new(),
+            prefix_block_id_by_mamba_hash: HashMap::new(),
+            mamba_hashes_by_prefix_block_id: HashMap::new(),
         }
     }
 
@@ -385,6 +389,11 @@ impl BlockEngine {
         if !evicted.is_empty() {
             tracing::info!("Prefix cache evicted {} blocks after insert", evicted.len());
         }
+        let evicted_block_ids = evicted
+            .iter()
+            .map(|block| block.deref_mut().block_id)
+            .collect::<Vec<_>>();
+        self.handle_mamba_prefix_evicted_blocks(&evicted_block_ids);
         for block in evicted {
             self.release_block(block);
         }
@@ -405,6 +414,11 @@ impl BlockEngine {
             if evicted.is_empty() {
                 break;
             }
+            let evicted_block_ids = evicted
+                .iter()
+                .map(|block| block.deref_mut().block_id)
+                .collect::<Vec<_>>();
+            self.handle_mamba_prefix_evicted_blocks(&evicted_block_ids);
             total_evicted += evicted.len();
             for block in evicted {
                 self.release_block(block);
@@ -439,12 +453,63 @@ impl BlockEngine {
         prefix_cache.hash_for_blocks_with_seed(&tokens, full_blocks, seed)
     }
 
-    pub fn record_mamba_prefix_hash(&mut self, hash: u64) {
+    pub fn prefix_block_id_for_sequence(
+        &self,
+        sequence: &Sequence,
+        full_blocks: usize,
+    ) -> Option<usize> {
+        if full_blocks == 0 {
+            return None;
+        }
+        self.block_tables
+            .get(&sequence.deref().get_id())
+            .and_then(|table| table.get(full_blocks.saturating_sub(1)))
+            .map(|block| block.deref_mut().block_id)
+    }
+
+    pub fn record_mamba_prefix_capture(&mut self, hash: u64, block_id: usize) {
+        if let Some(old_block_id) = self.prefix_block_id_by_mamba_hash.insert(hash, block_id) {
+            if old_block_id != block_id {
+                if let Some(hashes) = self.mamba_hashes_by_prefix_block_id.get_mut(&old_block_id) {
+                    hashes.remove(&hash);
+                    if hashes.is_empty() {
+                        self.mamba_hashes_by_prefix_block_id.remove(&old_block_id);
+                    }
+                }
+            }
+        }
         self.valid_mamba_prefix_hashes.insert(hash);
+        self.mamba_hashes_by_prefix_block_id
+            .entry(block_id)
+            .or_default()
+            .insert(hash);
     }
 
     pub fn invalidate_mamba_prefix_hash(&mut self, hash: u64) {
         self.valid_mamba_prefix_hashes.remove(&hash);
+        if let Some(block_id) = self.prefix_block_id_by_mamba_hash.remove(&hash) {
+            if let Some(hashes) = self.mamba_hashes_by_prefix_block_id.get_mut(&block_id) {
+                hashes.remove(&hash);
+                if hashes.is_empty() {
+                    self.mamba_hashes_by_prefix_block_id.remove(&block_id);
+                }
+            }
+        }
+    }
+
+    fn handle_mamba_prefix_evicted_blocks(&mut self, evicted_block_ids: &[usize]) {
+        if evicted_block_ids.is_empty() {
+            return;
+        }
+
+        for &block_id in evicted_block_ids {
+            if let Some(hashes) = self.mamba_hashes_by_prefix_block_id.remove(&block_id) {
+                for hash in hashes {
+                    self.valid_mamba_prefix_hashes.remove(&hash);
+                    self.prefix_block_id_by_mamba_hash.remove(&hash);
+                }
+            }
+        }
     }
 
     fn resolve_valid_mamba_matched_blocks(

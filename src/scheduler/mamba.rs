@@ -16,6 +16,7 @@ pub struct MambaState {
 pub struct MambaPrefixCapture {
     pub seq_id: usize,
     pub hash: u64,
+    pub block_id: usize,
 }
 
 #[derive(Clone)]
@@ -55,18 +56,35 @@ impl Scheduler {
                     continue;
                 }
 
+                // Chunked prefill keeps the live mamba slot for the running sequence, so
+                // intermediate chunk snapshots are not needed to resume the same request.
+                // Only capture the chunk that actually finishes prompt prefill.
                 let processed_tokens =
                     if prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len {
                         prompt_len
                     } else {
-                        num_cached_tokens + chunk_size
+                        continue;
                     };
+                let full_blocks = processed_tokens / self.block_engine.get_block_size();
+                if full_blocks == 0 {
+                    continue;
+                }
 
                 if let Some(hash) = self
                     .block_engine
                     .prefix_hash_for_sequence(&seq, processed_tokens)
                 {
-                    captures.push(MambaPrefixCapture { seq_id, hash });
+                    let Some(block_id) = self
+                        .block_engine
+                        .prefix_block_id_for_sequence(&seq, full_blocks)
+                    else {
+                        continue;
+                    };
+                    captures.push(MambaPrefixCapture {
+                        seq_id,
+                        hash,
+                        block_id,
+                    });
                 }
             }
         }
@@ -99,7 +117,17 @@ impl Scheduler {
                     continue;
                 }
                 if let Some(hash) = self.block_engine.prefix_hash_for_sequence(&seq, seq_len) {
-                    captures.push(MambaPrefixCapture { seq_id, hash });
+                    let Some(block_id) = self
+                        .block_engine
+                        .prefix_block_id_for_sequence(&seq, full_blocks)
+                    else {
+                        continue;
+                    };
+                    captures.push(MambaPrefixCapture {
+                        seq_id,
+                        hash,
+                        block_id,
+                    });
                 }
             }
         }
@@ -177,20 +205,25 @@ impl Scheduler {
         );
     }
 
-    pub fn record_mamba_prefix_hashes<I>(&mut self, hashes: I)
+    pub fn record_mamba_prefix_captures<I>(&mut self, captures: I)
     where
-        I: IntoIterator<Item = u64>,
+        I: IntoIterator<Item = MambaPrefixCapture>,
     {
-        for hash in hashes {
-            self.block_engine.record_mamba_prefix_hash(hash);
+        for capture in captures {
+            self.block_engine
+                .record_mamba_prefix_capture(capture.hash, capture.block_id);
         }
     }
 
     pub fn free_finished_sequence_groups_and_collect_mamba(&mut self) -> FinishedMambaSync {
         let mut captures = Vec::new();
-        let released_ids = self.free_finished_sequence_groups_with(|seq_id, hash| {
-            if let Some(hash) = hash {
-                captures.push(MambaPrefixCapture { seq_id, hash });
+        let released_ids = self.free_finished_sequence_groups_with(|seq_id, hash, block_id| {
+            if let (Some(hash), Some(block_id)) = (hash, block_id) {
+                captures.push(MambaPrefixCapture {
+                    seq_id,
+                    hash,
+                    block_id,
+                });
             }
         });
 

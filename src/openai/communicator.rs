@@ -105,6 +105,9 @@ pub enum MessageType {
     Start,
     Data(Vec<TaskData>),
     Sample(Vec<TaskSampleData>),
+    PromptCacheStatusRequest(Vec<usize>),
+    PromptCacheStatusReply(Vec<(usize, usize, bool)>),
+    MambaPromptFallback(Vec<usize>),
     Continue,
     Abort(Vec<usize>),
     Finish,
@@ -346,6 +349,50 @@ impl DaemonManager {
             );
             DaemonManager::receive_local(self.main_stream.as_mut().unwrap())
         }
+    }
+
+    pub fn send_to_main(&mut self, message: &MessageType) -> std::io::Result<()> {
+        assert!(
+            DaemonManager::is_daemon(),
+            "must be called in the daemon processes!"
+        );
+        assert!(
+            self.main_stream.is_some(),
+            "not connected to the main process!"
+        );
+        let stream = self.main_stream.as_mut().unwrap();
+        let serialized = bincode::serialize(message).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("local IPC serialize failed: {e}"),
+            )
+        })?;
+        stream.write_all(&(serialized.len() as u32).to_le_bytes())?;
+        stream.write_all(&serialized)?;
+        stream.flush()?;
+        let mut ack_buf = [0u8; 1];
+        stream.read_exact(&mut ack_buf)?;
+        if ack_buf[0] != 1 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "Unexpected acknowledgment value from main process",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn receive_from_daemons(&mut self) -> std::io::Result<Vec<MessageType>> {
+        assert!(
+            !DaemonManager::is_daemon(),
+            "must be called in the main process!"
+        );
+        assert!(self.daemon_streams.is_some(), "No daemon process found!");
+        let streams = self.daemon_streams.as_mut().unwrap();
+        let mut messages = Vec::with_capacity(streams.len());
+        for stream in streams.iter_mut() {
+            messages.push(DaemonManager::receive_local(stream)?);
+        }
+        Ok(messages)
     }
 
     //inter-node communication

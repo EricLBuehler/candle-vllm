@@ -127,6 +127,164 @@ impl MultiprocessRunner {
         }
     }
 
+    fn sync_prompt_cache_decisions(
+        &self,
+        scheduled: &std::collections::VecDeque<Arc<crate::scheduler::sequence::SequenceGroup>>,
+    ) -> Result<()> {
+        if scheduled.is_empty() {
+            return Ok(());
+        }
+        let is_prompt = LLMEngine::primary_sequence(scheduled.front().unwrap())
+            .deref()
+            .is_prompt();
+        if !is_prompt {
+            return Ok(());
+        }
+
+        if Self::is_master_rank() {
+            let local_statuses = {
+                let mut e = self.engine.write();
+                e.planned_prompt_cache_statuses(scheduled, self.rank)?
+            };
+            let seq_ids = local_statuses
+                .iter()
+                .map(|(seq_id, _, _)| *seq_id)
+                .collect::<Vec<_>>();
+            {
+                let e = self.engine.read();
+                let mut daemon_manager = e.daemon_manager.write();
+                daemon_manager
+                    .as_mut()
+                    .unwrap()
+                    .send_message(&MessageType::PromptCacheStatusRequest(seq_ids.clone()))
+                    .map_err(candle_core::Error::wrap)?;
+            }
+            let local_by_seq = local_statuses
+                .into_iter()
+                .map(|(seq_id, cached_tokens, available)| (seq_id, (cached_tokens, available)))
+                .collect::<HashMap<_, _>>();
+            let mut fallback_seq_ids = Vec::new();
+            {
+                let e = self.engine.read();
+                let mut daemon_manager = e.daemon_manager.write();
+                let replies = daemon_manager
+                    .as_mut()
+                    .unwrap()
+                    .receive_from_daemons()
+                    .map_err(candle_core::Error::wrap)?;
+                let daemon_statuses = replies
+                    .into_iter()
+                    .map(|reply| match reply {
+                        MessageType::PromptCacheStatusReply(statuses) => Ok(statuses),
+                        other => Err(candle_core::Error::msg(format!(
+                            "Unexpected daemon reply during prompt cache sync: {other:?}"
+                        ))),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                for seq_id in seq_ids {
+                    let Some((local_cached_tokens, local_available)) = local_by_seq.get(&seq_id)
+                    else {
+                        continue;
+                    };
+                    let keep = *local_cached_tokens > 0
+                        && *local_available
+                        && daemon_statuses.iter().all(|statuses| {
+                            statuses.iter().any(
+                                |(daemon_seq_id, daemon_cached_tokens, daemon_available)| {
+                                    *daemon_seq_id == seq_id
+                                        && *daemon_cached_tokens == *local_cached_tokens
+                                        && *daemon_available
+                                },
+                            )
+                        });
+                    if !keep {
+                        fallback_seq_ids.push(seq_id);
+                    }
+                }
+            }
+            if !fallback_seq_ids.is_empty() {
+                tracing::warn!(
+                    "Prompt cache fallback decided by main process for seqs {:?}",
+                    fallback_seq_ids
+                );
+            }
+            {
+                let e = self.engine.read();
+                let mut daemon_manager = e.daemon_manager.write();
+                daemon_manager
+                    .as_mut()
+                    .unwrap()
+                    .send_message(&MessageType::MambaPromptFallback(fallback_seq_ids.clone()))
+                    .map_err(candle_core::Error::wrap)?;
+            }
+            if !fallback_seq_ids.is_empty() {
+                let mut e = self.engine.write();
+                e.apply_prompt_mamba_fallbacks(scheduled, &fallback_seq_ids)?;
+            }
+        } else {
+            let request = {
+                let e = self.engine.read();
+                let mut daemon_manager = e.daemon_manager.write();
+                daemon_manager
+                    .as_mut()
+                    .unwrap()
+                    .receive_message()
+                    .map_err(candle_core::Error::wrap)?
+            };
+            let MessageType::PromptCacheStatusRequest(seq_ids) = request else {
+                candle_core::bail!(
+                    "Unexpected master message during prompt cache sync: {:?}",
+                    request
+                );
+            };
+            let local_statuses = {
+                let mut e = self.engine.write();
+                e.planned_prompt_cache_statuses(scheduled, self.rank)?
+            };
+            let reply = seq_ids
+                .into_iter()
+                .map(|seq_id| {
+                    local_statuses
+                        .iter()
+                        .find(|(local_seq_id, _, _)| *local_seq_id == seq_id)
+                        .copied()
+                        .unwrap_or((seq_id, 0, false))
+                })
+                .collect::<Vec<_>>();
+            {
+                let e = self.engine.read();
+                let mut daemon_manager = e.daemon_manager.write();
+                daemon_manager
+                    .as_mut()
+                    .unwrap()
+                    .send_to_main(&MessageType::PromptCacheStatusReply(reply))
+                    .map_err(candle_core::Error::wrap)?;
+            }
+            let fallback_seq_ids = {
+                let e = self.engine.read();
+                let mut daemon_manager = e.daemon_manager.write();
+                let message = daemon_manager
+                    .as_mut()
+                    .unwrap()
+                    .receive_message()
+                    .map_err(candle_core::Error::wrap)?;
+                let MessageType::MambaPromptFallback(seq_ids) = message else {
+                    candle_core::bail!(
+                        "Unexpected master message during prompt cache fallback sync: {:?}",
+                        message
+                    );
+                };
+                seq_ids
+            };
+            if !fallback_seq_ids.is_empty() {
+                let mut e = self.engine.write();
+                e.apply_prompt_mamba_fallbacks(scheduled, &fallback_seq_ids)?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn sample_results(
         &self,
         logits: &candle_core::Tensor,
@@ -323,6 +481,8 @@ impl MultiprocessRunner {
             if scheduled.is_empty() {
                 continue;
             }
+
+            self.sync_prompt_cache_decisions(&scheduled)?;
 
             let mut batch = self
                 .engine
