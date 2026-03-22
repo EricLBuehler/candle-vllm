@@ -232,12 +232,12 @@ impl Scheduler {
     }
 
     pub fn free_finished_sequence_groups(&mut self) -> Vec<usize> {
-        self.free_finished_sequence_groups_with(|_, _| {})
+        self.free_finished_sequence_groups_with(|_, _, _| {})
     }
 
     pub fn free_finished_sequence_groups_with<F>(&mut self, mut on_finished: F) -> Vec<usize>
     where
-        F: FnMut(usize, Option<u64>),
+        F: FnMut(usize, Option<u64>, Option<usize>),
     {
         let mut to_free = Vec::new();
         let mut released_ids = Vec::new();
@@ -257,10 +257,14 @@ impl Scheduler {
         for group in to_free {
             for seq in group.get_seqs().values() {
                 let seq_id = seq.deref().get_id();
+                let full_blocks = seq.deref().get_len() / self.block_engine.get_block_size();
+                let block_id = self
+                    .block_engine
+                    .prefix_block_id_for_sequence(seq, full_blocks);
                 let hash = self
                     .block_engine
                     .prefix_hash_for_sequence(seq, seq.deref().get_len());
-                on_finished(seq_id, hash);
+                on_finished(seq_id, hash, block_id);
                 released_ids.push(seq_id);
             }
             self._free(&group, true);

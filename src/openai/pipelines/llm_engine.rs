@@ -105,6 +105,90 @@ pub struct LLMEngine {
 }
 
 impl LLMEngine {
+    #[cfg(feature = "nccl")]
+    pub(crate) fn planned_prompt_cache_statuses(
+        &mut self,
+        scheduled: &VecDeque<Arc<SequenceGroup>>,
+        rank: usize,
+    ) -> Result<Vec<(usize, usize, bool)>> {
+        if scheduled.is_empty() || !Self::primary_sequence(&scheduled[0]).deref().is_prompt() {
+            return Ok(Vec::new());
+        }
+
+        let restore_plans = self.scheduler.prepare_prompt_mamba_restores(scheduled);
+        let restore_by_seq = restore_plans
+            .into_iter()
+            .map(|plan| (plan.seq_id, plan))
+            .collect::<HashMap<_, _>>();
+        let (pipeline, _) = self.get_pipeline(rank).unwrap();
+        let mut statuses = Vec::new();
+        for group in scheduled {
+            for seq in Self::ordered_group_sequences(group) {
+                let seq_id = seq.deref().get_id();
+                let cached_tokens = seq.deref().get_num_cached_tokens();
+                let available = if cached_tokens == 0 {
+                    true
+                } else if pipeline.has_mamba_slot_for_sequence(seq_id) {
+                    true
+                } else if let Some(plan) = restore_by_seq.get(&seq_id) {
+                    pipeline.has_mamba_prefix_state(plan.hash)?
+                } else {
+                    false
+                };
+                statuses.push((seq_id, cached_tokens, available));
+            }
+        }
+        Ok(statuses)
+    }
+
+    #[cfg(feature = "nccl")]
+    pub(crate) fn apply_prompt_mamba_fallbacks(
+        &mut self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+        fallback_seq_ids: &[usize],
+    ) -> Result<()> {
+        if fallback_seq_ids.is_empty() {
+            return Ok(());
+        }
+
+        let fallback_ids = fallback_seq_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        let restore_by_seq = self
+            .scheduler
+            .prepare_prompt_mamba_restores(groups)
+            .into_iter()
+            .map(|plan| (plan.seq_id, plan.clone()))
+            .collect::<HashMap<_, _>>();
+
+        for group in groups {
+            for seq in Self::ordered_group_sequences(group) {
+                let seq_id = seq.deref().get_id();
+                if !fallback_ids.contains(&seq_id) {
+                    continue;
+                }
+                if let Some(restore) = restore_by_seq.get(&seq_id) {
+                    self.scheduler.handle_missing_mamba_snapshot(restore);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn effective_mamba_prefix_capacity(
+        prefix_cache_enabled: bool,
+        mamba_slot_capacity: usize,
+    ) -> usize {
+        if !prefix_cache_enabled || mamba_slot_capacity == 0 {
+            return 0;
+        }
+        // Keep a larger snapshot pool than active slots so prompt/chunk-prefill
+        // boundaries survive decode-time snapshot churn when prefix cache is hot.
+        mamba_slot_capacity.saturating_mul(2)
+    }
+
     fn ordered_group_sequences(group: &Arc<SequenceGroup>) -> Vec<Arc<Sequence>> {
         let mut seqs = group
             .get_seqs()
@@ -140,12 +224,12 @@ impl LLMEngine {
             return Ok(());
         }
 
-        let mut captured_hashes = Vec::new();
+        let mut captured = Vec::new();
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in captures {
-                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
-                    Ok(true) => captured_hashes.push(capture.hash),
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, false) {
+                    Ok(true) => captured.push(capture),
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
@@ -158,7 +242,7 @@ impl LLMEngine {
                 }
             }
         }
-        self.scheduler.record_mamba_prefix_hashes(captured_hashes);
+        self.scheduler.record_mamba_prefix_captures(captured);
         Ok(())
     }
 
@@ -172,12 +256,12 @@ impl LLMEngine {
             return Ok(());
         }
 
-        let mut captured_hashes = Vec::new();
+        let mut captured = Vec::new();
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in captures {
-                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
-                    Ok(true) => captured_hashes.push(capture.hash),
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, false) {
+                    Ok(true) => captured.push(capture),
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
@@ -190,7 +274,7 @@ impl LLMEngine {
                 }
             }
         }
-        self.scheduler.record_mamba_prefix_hashes(captured_hashes);
+        self.scheduler.record_mamba_prefix_captures(captured);
         Ok(())
     }
 
@@ -199,7 +283,29 @@ impl LLMEngine {
         groups: &VecDeque<Arc<SequenceGroup>>,
         rank: usize,
     ) -> Result<()> {
-        let restore_plans = self.scheduler.prepare_prompt_mamba_restores(groups);
+        let mut restore_plans = self.scheduler.prepare_prompt_mamba_restores(groups);
+        if restore_plans.is_empty() {
+            return Ok(());
+        }
+
+        // Chunked-prefill continuations keep their live mamba slot and state.
+        // Skip snapshot restore for those sequences and only restore requests
+        // that need their prefix state materialized into a fresh slot.
+        let resident_seq_ids = {
+            let (pipeline, _) = self.get_pipeline(rank).unwrap();
+            restore_plans
+                .iter()
+                .filter_map(|plan| {
+                    pipeline
+                        .has_mamba_slot_for_sequence(plan.seq_id)
+                        .then_some(plan.seq_id)
+                })
+                .collect::<std::collections::HashSet<_>>()
+        };
+        for seq_id in &resident_seq_ids {
+            self.scheduler.mark_mamba_restored(*seq_id);
+        }
+        restore_plans.retain(|plan| !resident_seq_ids.contains(&plan.seq_id));
         if restore_plans.is_empty() {
             return Ok(());
         }
@@ -229,6 +335,11 @@ impl LLMEngine {
             };
             if restored {
                 self.scheduler.mark_mamba_restored(restore.seq_id);
+                tracing::info!(
+                    "Restored mamba prefix state on rank {} for seq {}",
+                    rank,
+                    restore.seq_id,
+                );
             } else {
                 self.scheduler.handle_failed_mamba_restore(&restore);
             }
@@ -242,12 +353,12 @@ impl LLMEngine {
             .scheduler
             .free_finished_sequence_groups_and_collect_mamba();
 
-        let mut captured_hashes = Vec::new();
+        let mut captured = Vec::new();
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in sync.captures {
-                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash) {
-                    Ok(true) => captured_hashes.push(capture.hash),
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, true) {
+                    Ok(true) => captured.push(capture),
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
@@ -260,13 +371,46 @@ impl LLMEngine {
                 }
             }
         }
-        self.scheduler.record_mamba_prefix_hashes(captured_hashes);
+        self.scheduler.record_mamba_prefix_captures(captured);
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for seq_id in sync.released_ids {
                 pipeline.release_sequence_state(seq_id);
             }
         }
+    }
+
+    fn validate_scheduled_prompt_mamba_prefix_states(
+        &mut self,
+        scheduled: &VecDeque<Arc<SequenceGroup>>,
+        rank: usize,
+    ) -> Result<usize> {
+        if scheduled.is_empty() || !Self::primary_sequence(&scheduled[0]).deref().is_prompt() {
+            return Ok(0);
+        }
+
+        let restore_plans = self.scheduler.prepare_prompt_mamba_restores(scheduled);
+        if restore_plans.is_empty() {
+            return Ok(0);
+        }
+
+        let mut downgraded = 0usize;
+        for restore in restore_plans {
+            let has_snapshot = {
+                let (pipeline, _) = self.get_pipeline(rank).unwrap();
+                if pipeline.has_mamba_slot_for_sequence(restore.seq_id) {
+                    true
+                } else {
+                    pipeline.has_mamba_prefix_state(restore.hash)?
+                }
+            };
+            if !has_snapshot {
+                self.scheduler.handle_missing_mamba_snapshot(&restore);
+                downgraded += 1;
+            }
+        }
+
+        Ok(downgraded)
     }
 
     fn may_log_decoding_throughput(
@@ -401,7 +545,10 @@ impl LLMEngine {
             crate::estimate_hybrid_mamba_cache(config, model_dtype, num_shards);
         let require_mamba_prefix_snapshots = hybrid_mamba_estimate.is_some();
         let mut mamba_slot_capacity = scheduler_config.max_num_seqs.max(MIN_MAMBA_SLOT_CAPACITY);
-        let mut mamba_prefix_capacity = 0usize;
+        let mut mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
+            scheduler_config.prefix_cache.enabled,
+            mamba_slot_capacity,
+        );
 
         if let Some(estimate) = hybrid_mamba_estimate {
             let stride_blocks = crate::mamba_snapshot_block_stride_blocks();
@@ -431,11 +578,21 @@ impl LLMEngine {
                 let planned_total_slots =
                     cache_config.mamba_cache_budget_bytes / estimate.slot_bytes;
                 if planned_total_slots >= mamba_slot_capacity {
-                    mamba_prefix_capacity = if scheduler_config.prefix_cache.enabled {
-                        planned_total_slots.saturating_sub(mamba_slot_capacity)
-                    } else {
-                        0
-                    };
+                    let prefix_budget_slots =
+                        planned_total_slots.saturating_sub(mamba_slot_capacity);
+                    if prefix_budget_slots == 0 && mamba_prefix_capacity > 0 {
+                        info!(
+                            "Hybrid mamba planned budget leaves 0 explicit snapshot slot(s); using auto prefix-state capacity {}.",
+                            mamba_prefix_capacity
+                        );
+                    } else if mamba_prefix_capacity > prefix_budget_slots {
+                        warn!(
+                            "Capping hybrid mamba prefix-state cache from {} to {} entries by planned budget.",
+                            mamba_prefix_capacity,
+                            prefix_budget_slots
+                        );
+                        mamba_prefix_capacity = prefix_budget_slots;
+                    }
                 } else if planned_total_slots > 0 {
                     warn!(
                         "Hybrid mamba planned budget only fits {} total slot(s), below the target active minimum {}; using the largest safe active capacity instead.",
@@ -443,19 +600,26 @@ impl LLMEngine {
                         mamba_slot_capacity
                     );
                     mamba_slot_capacity = planned_total_slots;
-                    mamba_prefix_capacity = 0;
+                    mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
+                        scheduler_config.prefix_cache.enabled,
+                        mamba_slot_capacity,
+                    );
                 } else {
                     warn!(
                         "Hybrid mamba planned budget is smaller than one slot; falling back to 1 active slot."
                     );
                     mamba_slot_capacity = 1;
-                    mamba_prefix_capacity = 0;
+                    mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
+                        scheduler_config.prefix_cache.enabled,
+                        mamba_slot_capacity,
+                    );
                 }
 
                 let active_bytes = mamba_slot_capacity.saturating_mul(estimate.slot_bytes);
                 let prefix_budget_bytes = cache_config
                     .mamba_cache_budget_bytes
                     .saturating_sub(active_bytes);
+                let actual_prefix_bytes = mamba_prefix_capacity.saturating_mul(estimate.slot_bytes);
 
                 info!(
                     "Hybrid mamba cache sizing: {} active slot(s), {} prefix snapshot slot(s), {:.2} MB/slot, {} GDN layer(s), planned mamba budget {:.2} GB, min free GPU memory after KV {:.2} GB",
@@ -469,12 +633,17 @@ impl LLMEngine {
                 info!(
                     "Hybrid mamba memory split: active {:.2} GB, prefix snapshots {:.2} GB",
                     active_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                    actual_prefix_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+                );
+                info!(
+                    "Hybrid mamba planned prefix snapshot budget: {:.2} GB",
                     prefix_budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
                 );
             } else {
                 warn!(
-                    "Hybrid mamba budget was not reserved in the combined cache budget; using fallback active slot capacity {}.",
-                    mamba_slot_capacity
+                    "Hybrid mamba budget was not reserved in the combined cache budget; using fallback active slot capacity {} and auto prefix-state capacity {}.",
+                    mamba_slot_capacity,
+                    mamba_prefix_capacity
                 );
             }
         }
@@ -787,6 +956,7 @@ impl LLMEngine {
         Ok(())
     }
 
+    #[allow(unused)]
     fn bind_rank_to_thread(&self, rank: usize) {
         #[cfg(feature = "cuda")]
         {
@@ -811,6 +981,19 @@ impl LLMEngine {
                             .to_string(),
                     ));
                 }
+            }
+        }
+        let is_multiprocess = self.multi_process;
+        if !is_multiprocess {
+            let downgraded = self.validate_scheduled_prompt_mamba_prefix_states(
+                &scheduler_outputs.scheduled,
+                rank,
+            )?;
+            if downgraded > 0 {
+                warn!(
+                    "Prefill fallback: {} sequence(s) downgraded to full prefill due to missing mamba snapshots.",
+                    downgraded
+                );
             }
         }
         self.execute_scheduler_ops(&scheduler_outputs, rank)?;
