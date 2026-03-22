@@ -316,11 +316,6 @@ impl LLMEngine {
                 .iter()
                 .map(|plan| plan.seq_id)
                 .collect::<Vec<_>>();
-            tracing::info!(
-                "Preparing mamba restore slots on rank {} for prompt seqs {:?}",
-                rank,
-                restore_candidates
-            );
             pipeline.ensure_mamba_slots_for_sequences(&restore_candidates)?;
         }
 
@@ -334,13 +329,6 @@ impl LLMEngine {
                 continue;
             }
 
-            tracing::info!(
-                "Restoring mamba prefix state on rank {} for seq {} hash {} (cached {} tokens)",
-                rank,
-                restore.seq_id,
-                restore.hash,
-                restore.cached_tokens
-            );
             let restored = {
                 let (pipeline, _) = self.get_pipeline(rank).unwrap();
                 pipeline.restore_mamba_prefix_state(restore.seq_id, restore.hash)?
@@ -348,10 +336,9 @@ impl LLMEngine {
             if restored {
                 self.scheduler.mark_mamba_restored(restore.seq_id);
                 tracing::info!(
-                    "Restored mamba prefix state on rank {} for seq {} hash {}",
+                    "Restored mamba prefix state on rank {} for seq {}",
                     rank,
                     restore.seq_id,
-                    restore.hash
                 );
             } else {
                 self.scheduler.handle_failed_mamba_restore(&restore);
