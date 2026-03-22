@@ -271,8 +271,10 @@ impl BlockEngine {
                 .get_images()
                 .as_ref()
                 .map(Self::image_prefix_seed);
-            let PrefixMatch { matched_blocks, .. } =
-                prefix_cache.match_prefix_with_seed(&tokens, seed);
+            let PrefixMatch {
+                matched_blocks,
+                last_hash,
+            } = prefix_cache.match_prefix_with_seed(&tokens, seed);
             let full_blocks = tokens.len() / block_size;
             let matched_blocks = if matched_blocks == full_blocks
                 && tokens.len() % block_size == 0
@@ -282,6 +284,13 @@ impl BlockEngine {
             } else {
                 matched_blocks
             };
+            let matched_blocks = Self::resolve_valid_mamba_matched_blocks(
+                self.require_mamba_prefix_snapshots,
+                &self.valid_mamba_prefix_hashes,
+                prefix_cache,
+                matched_blocks,
+                last_hash,
+            );
             let logical_blocks = seq_group.get_total_logical_token_blocks();
             logical_blocks.saturating_sub(matched_blocks)
         } else {
@@ -439,6 +448,12 @@ impl BlockEngine {
         let prefix_cache = self.prefix_cache.as_ref()?;
         if !prefix_cache.enabled() {
             return None;
+        }
+        let num_cached = sequence.deref().get_num_cached_tokens();
+        if let Some(hash) = sequence.deref().get_mamba_prefix_hash() {
+            if num_cached > 0 && processed_tokens <= num_cached {
+                return Some(hash);
+            }
         }
         let tokens = sequence.deref().get_token_ids();
         let full_blocks = processed_tokens.min(tokens.len()) / self.block_size;
@@ -751,7 +766,7 @@ impl BlockEngine {
                 } else {
                     matched_blocks
                 };
-                let matched_blocks = Self::resolve_valid_mamba_matched_blocks(
+                let mut matched_blocks = Self::resolve_valid_mamba_matched_blocks(
                     self.require_mamba_prefix_snapshots,
                     &valid_hashes,
                     prefix_cache,
@@ -765,6 +780,23 @@ impl BlockEngine {
                         raw_matched_blocks
                     );
                 }
+                if matched_blocks > 0 {
+                    let mut matched_hash = None;
+                    if let Some(hash) = last_hash {
+                        let hashes = prefix_cache.hashes_for_match(hash);
+                        if hashes.len() >= matched_blocks {
+                            matched_hash = Some(hashes[matched_blocks - 1]);
+                        } else {
+                            matched_blocks = 0;
+                        }
+                    } else {
+                        matched_blocks = 0;
+                    }
+                    seq.deref_mut().set_mamba_prefix_hash(matched_hash);
+                } else {
+                    seq.deref_mut().set_mamba_prefix_hash(None);
+                }
+
                 cached_tokens = matched_blocks * block_size;
                 if matched_blocks > 0 {
                     tracing::info!(
@@ -796,6 +828,8 @@ impl BlockEngine {
             seq.deref_mut().set_num_cached_tokens(cached_tokens);
             let table = block_table.clone();
             if idx > 0 {
+                let hash = (*seqs[0]).deref().get_mamba_prefix_hash();
+                seq.deref_mut().set_mamba_prefix_hash(hash);
                 for block in &table {
                     block.deref_mut().refcount += 1;
                 }

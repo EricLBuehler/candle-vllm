@@ -45,6 +45,7 @@ pub struct SequenceData {
     pub pending_tool_calls: Vec<ToolCall>,
     pub pending_finish_logprobs: Option<Logprobs>,
     pub images: Option<ImageData>,
+    pub mamba_prefix_hash: Option<u64>,
 }
 
 impl SequenceData {
@@ -64,6 +65,7 @@ impl SequenceData {
             pending_tool_calls: Vec::new(),
             pending_finish_logprobs: None,
             images,
+            mamba_prefix_hash: None,
         }
     }
 
@@ -243,6 +245,14 @@ impl _Sequence {
 
     pub fn set_images(&mut self, images: Option<ImageData>) {
         self.deref_mut().images = images;
+    }
+
+    pub fn get_mamba_prefix_hash(&self) -> Option<u64> {
+        self.deref().mamba_prefix_hash
+    }
+
+    pub fn set_mamba_prefix_hash(&mut self, hash: Option<u64>) {
+        self.deref_mut().mamba_prefix_hash = hash;
     }
 }
 
