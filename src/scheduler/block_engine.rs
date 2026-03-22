@@ -296,7 +296,11 @@ impl BlockEngine {
         } else {
             seq_group.get_total_logical_token_blocks()
         };
-        let num_free_gpu_blocks = *self.gpu_allocator.get_num_free_blocks();
+        let mut num_free_gpu_blocks = *self.gpu_allocator.get_num_free_blocks();
+        if num_free_gpu_blocks < num_required_blocks {
+            self.evict_prefix_cache_until_free(num_required_blocks);
+            num_free_gpu_blocks = *self.gpu_allocator.get_num_free_blocks();
+        }
 
         if self.num_gpu_blocks < num_required_blocks {
             AllocStatus::Impossible
