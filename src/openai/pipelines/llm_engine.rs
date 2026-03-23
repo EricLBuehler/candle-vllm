@@ -52,7 +52,7 @@ use rayon::iter::ParallelIterator;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     iter::zip,
     sync::Arc,
 };
@@ -204,6 +204,61 @@ impl LLMEngine {
             .into_iter()
             .next()
             .expect("sequence group must contain at least one sequence")
+    }
+
+    fn disconnected_stream_sequence_ids(scheduled: &VecDeque<Arc<SequenceGroup>>) -> Vec<usize> {
+        scheduled
+            .iter()
+            .filter_map(|group| {
+                let sender = group.sender.as_ref()?;
+                if sender.is_disconnected() {
+                    Some(Self::primary_sequence(group).deref().get_id())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    fn abort_sequences_and_prune_scheduled(
+        &mut self,
+        scheduled: &mut VecDeque<Arc<SequenceGroup>>,
+        seq_ids: &[usize],
+    ) -> Vec<u32> {
+        if seq_ids.is_empty() {
+            return (0..scheduled.len()).map(|idx| idx as u32).collect();
+        }
+
+        let aborted_seq_ids = self.scheduler.abort_sequences(seq_ids);
+        if aborted_seq_ids.is_empty() {
+            return (0..scheduled.len()).map(|idx| idx as u32).collect();
+        }
+
+        let aborted_set = aborted_seq_ids.iter().copied().collect::<HashSet<_>>();
+        let mut kept_indices = Vec::with_capacity(scheduled.len());
+        let mut kept_groups = VecDeque::with_capacity(scheduled.len());
+        for (idx, group) in scheduled.iter().enumerate() {
+            let seq_id = Self::primary_sequence(group).deref().get_id();
+            if aborted_set.contains(&seq_id) {
+                warn!(
+                    "Aborting disconnected streaming request {} during prompt prefill (seq {})",
+                    group.request_id, seq_id
+                );
+                continue;
+            }
+            kept_indices.push(idx as u32);
+            kept_groups.push_back(Arc::clone(group));
+        }
+        *scheduled = kept_groups;
+        kept_indices
+    }
+
+    fn select_logits_rows(logits: &Tensor, row_indices: &[u32]) -> Result<Tensor> {
+        let batch_size = row_indices.len();
+        logits.index_select(
+            &Tensor::from_vec(row_indices.to_vec(), (batch_size,), logits.device())?,
+            0,
+        )
     }
 
     #[cfg(feature = "nccl")]
@@ -820,7 +875,24 @@ impl LLMEngine {
             waiting_tasks.clone()
         };
 
-        for task in &send_tasks {
+        let mut active_tasks = Vec::with_capacity(send_tasks.len());
+        for task in send_tasks {
+            let disconnected = self
+                .senders
+                .get(&task.request_id)
+                .and_then(|sender| sender.as_ref())
+                .is_some_and(|sender| sender.is_disconnected());
+            if disconnected {
+                warn!(
+                    "Dropping disconnected streaming request {} before scheduling",
+                    task.request_id
+                );
+                continue;
+            }
+            active_tasks.push(task);
+        }
+
+        for task in &active_tasks {
             let sender: Option<Sender<ChatResponse>> = self
                 .senders
                 .get(&task.request_id)
@@ -845,7 +917,7 @@ impl LLMEngine {
         }
 
         self.waiting_tasks.write().clear();
-        send_tasks
+        active_tasks
     }
 
     pub fn get_pipeline(&self, rank: usize) -> Option<&(Box<DefaultPipeline>, CacheEngine)> {
