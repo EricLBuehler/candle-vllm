@@ -21,7 +21,7 @@ type SrcBlockFrom = usize;
 type DstBlocksTo = Vec<usize>;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 
@@ -342,6 +342,47 @@ impl Scheduler {
             .map(|&i| Arc::clone(&scheduled[i as usize]))
             .collect();
         (finished_indices, finished_groups)
+    }
+
+    pub fn abort_sequences(&mut self, seq_ids: &[usize]) -> Vec<usize> {
+        if seq_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let seq_id_set = seq_ids.iter().copied().collect::<HashSet<_>>();
+        let groups_to_abort = self
+            .waiting
+            .iter()
+            .chain(self.running.iter())
+            .chain(self.swapped_out.iter())
+            .filter(|group| {
+                group
+                    .get_seqs()
+                    .values()
+                    .any(|seq| seq_id_set.contains(&seq.deref().get_id()))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        let mut aborted_seq_ids = Vec::new();
+        let mut aborted_group_ids = HashSet::new();
+        for group in groups_to_abort {
+            if !aborted_group_ids.insert(*group.get_id()) {
+                continue;
+            }
+
+            for seq in group.get_seqs().values() {
+                let seq_id = seq.deref().get_id();
+                if seq_id_set.contains(&seq_id) {
+                    aborted_seq_ids.push(seq_id);
+                }
+            }
+            self._abort_seq_group(&group);
+        }
+
+        aborted_seq_ids.sort_unstable();
+        aborted_seq_ids.dedup();
+        aborted_seq_ids
     }
 }
 

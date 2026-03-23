@@ -489,6 +489,28 @@ impl MultiprocessRunner {
                 .write()
                 .execute_scheduled_batch(&scheduled, self.rank)?;
 
+            if batch.is_prompt && !batch.is_embedding {
+                let aborted_sequences = if self.rank == 0 {
+                    LLMEngine::disconnected_stream_sequence_ids(&scheduled)
+                } else {
+                    Vec::new()
+                };
+                self.sync_abort_sequences(&scheduled, aborted_sequences.clone());
+                if !aborted_sequences.is_empty() {
+                    let kept_indices = {
+                        let mut e = self.engine.write();
+                        e.abort_sequences_and_prune_scheduled(&mut scheduled, &aborted_sequences)
+                    };
+                    if self.rank == 0 {
+                        if scheduled.is_empty() {
+                            self.engine.read().clear_current_scheduled_groups();
+                            continue;
+                        }
+                        batch.logits = LLMEngine::select_logits_rows(&batch.logits, &kept_indices)?;
+                    }
+                }
+            }
+
             if self.rank != 0 {
                 self.engine.read().clear_current_scheduled_groups();
                 continue;
