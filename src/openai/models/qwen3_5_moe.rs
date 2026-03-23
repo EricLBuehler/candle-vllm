@@ -703,7 +703,7 @@ impl Qwen3_5MoE {
     }
 
     pub fn has_mamba_prefix_state(&self, hash: u64) -> bool {
-        self.mamba_cache.read().has_prefix_state(hash)
+        self.mamba_cache.write().has_prefix_state(hash)
     }
 
     pub fn restore_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
