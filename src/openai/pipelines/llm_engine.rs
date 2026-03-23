@@ -228,7 +228,7 @@ impl LLMEngine {
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in captures {
-                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, false) {
+                match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, true) {
                     Ok(true) => captured.push(capture),
                     Ok(false) => {}
                     Err(e) => {

@@ -56,15 +56,13 @@ impl Scheduler {
                     continue;
                 }
 
-                // Chunked prefill keeps the live mamba slot for the running sequence, so
-                // intermediate chunk snapshots are not needed to resume the same request.
-                // Only capture the chunk that actually finishes prompt prefill.
-                let processed_tokens =
-                    if prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len {
-                        prompt_len
-                    } else {
-                        continue;
-                    };
+                // Capture every chunk-prefill boundary so future requests can restore
+                // mamba state at the nearest shared prefix length, not just the final
+                // prompt boundary.
+                let processed_tokens = (num_cached_tokens + chunk_size).min(prompt_len);
+                if processed_tokens <= num_cached_tokens {
+                    continue;
+                }
                 let full_blocks = processed_tokens / self.block_engine.get_block_size();
                 if full_blocks == 0 {
                     continue;
