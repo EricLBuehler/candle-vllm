@@ -12,6 +12,9 @@ use tool_parser::{
     ParserFactory, ToolParser as ExternalToolParser,
 };
 
+const INVALID_TOOL_CALL_NAME: &str = "__invalid_tool_call__";
+const INVALID_TOOL_CALL_RAW_ARGUMENT_KEY: &str = "_raw_tool_call";
+
 /// Convert our local Tool to openai_protocol::Tool for the tool-parser crate.
 fn to_openai_tools(tools: &[crate::tools::Tool]) -> Vec<openai_protocol::common::Tool> {
     tools
@@ -563,7 +566,14 @@ impl StreamToolParser {
                     let tool_calls =
                         futures::executor::block_on(self.build_tool_calls_with_fallback());
                     let result = if tool_calls.is_empty() {
-                        if had_partial {
+                        let invalid_tool_calls =
+                            self.build_invalid_tool_calls_from_buffer(&self.buffer);
+                        if !invalid_tool_calls.is_empty() {
+                            tracing::warn!(
+                                "Unable to fully parse tool call; forwarding raw tool-call payload to client"
+                            );
+                            StreamResult::ToolCalls(invalid_tool_calls)
+                        } else if had_partial {
                             tracing::warn!(
                                 "End marker seen but tool call still incomplete; continuing"
                             );
@@ -623,6 +633,13 @@ impl StreamToolParser {
                     "Dropping buffered bare tool-call marker at stream end without flushing text"
                 );
                 return Some(BufferedFinalizeResult::FlushBuffer(String::new()));
+            }
+            let invalid_tool_calls = self.build_invalid_tool_calls_from_buffer(&buffered_text);
+            if !invalid_tool_calls.is_empty() {
+                tracing::warn!(
+                    "Buffered tool call could not be finalized; forwarding raw tool-call payload to client"
+                );
+                return Some(BufferedFinalizeResult::ToolCalls(invalid_tool_calls));
             }
             tracing::warn!("Buffered tool call could not be finalized; flushing buffered text");
             Some(BufferedFinalizeResult::FlushBuffer(buffered_text))
@@ -791,6 +808,118 @@ impl StreamToolParser {
             return fallback_calls;
         }
         streaming_calls
+    }
+
+    fn build_invalid_tool_calls_from_buffer(&self, buffer: &str) -> Vec<ToolCall> {
+        let trimmed = buffer.trim();
+        if trimmed.is_empty() {
+            return Vec::new();
+        }
+
+        let looks_like_tool_call = self.parser.has_tool_markers(trimmed)
+            || self.contains_tool_markup(trimmed)
+            || (!self.config.start_token_str.is_empty()
+                && trimmed.contains(&self.config.start_token_str))
+            || (!self.config.end_token_str.is_empty()
+                && trimmed.contains(&self.config.end_token_str))
+            || trimmed.contains("<function=")
+            || trimmed.contains("<parameter=");
+        if !looks_like_tool_call {
+            return Vec::new();
+        }
+
+        if let Some(call) = self.invalid_tool_call_from_xml_buffer(trimmed) {
+            return vec![call];
+        }
+        if let Some(call) = self.invalid_tool_call_from_json_buffer(trimmed) {
+            return vec![call];
+        }
+
+        let payload = self.strip_tool_tags(trimmed);
+        let raw_payload = payload.trim();
+        if raw_payload.is_empty() {
+            return Vec::new();
+        }
+        vec![crate::tools::new_tool_call(
+            crate::tools::generate_tool_call_id(),
+            INVALID_TOOL_CALL_NAME,
+            serde_json::json!({
+                INVALID_TOOL_CALL_RAW_ARGUMENT_KEY: raw_payload,
+            })
+            .to_string(),
+        )]
+    }
+
+    fn invalid_tool_call_from_json_buffer(&self, buffer: &str) -> Option<ToolCall> {
+        let payload = self.strip_tool_tags(buffer);
+        let payload = payload.trim();
+        if payload.is_empty() || payload.contains("<function=") {
+            return None;
+        }
+
+        let value = serde_json::from_str::<Value>(payload).ok()?;
+        let object = value.as_object()?;
+        let name = object
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .unwrap_or(INVALID_TOOL_CALL_NAME);
+        let arguments = object
+            .get("arguments")
+            .and_then(|arguments| match arguments {
+                Value::String(raw) => Some(raw.clone()),
+                other => serde_json::to_string(other).ok(),
+            })
+            .unwrap_or_else(|| {
+                serde_json::json!({
+                    INVALID_TOOL_CALL_RAW_ARGUMENT_KEY: payload,
+                })
+                .to_string()
+            });
+
+        Some(crate::tools::new_tool_call(
+            crate::tools::generate_tool_call_id(),
+            name,
+            arguments,
+        ))
+    }
+
+    fn invalid_tool_call_from_xml_buffer(&self, buffer: &str) -> Option<ToolCall> {
+        let function_name = Self::extract_xml_function_name(buffer)
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| INVALID_TOOL_CALL_NAME.to_string());
+        if function_name.is_empty() {
+            return None;
+        }
+
+        let recovered = if function_name == INVALID_TOOL_CALL_NAME {
+            Map::new()
+        } else {
+            Self::extract_xml_parameters_for_function(buffer, &function_name)
+                .into_iter()
+                .map(|(key, value)| (key, Value::String(value)))
+                .collect::<Map<String, Value>>()
+        };
+        let arguments = if recovered.is_empty() {
+            let payload = self.strip_tool_tags(buffer);
+            let raw_payload = payload.trim();
+            if raw_payload.is_empty() {
+                return None;
+            }
+            serde_json::json!({
+                INVALID_TOOL_CALL_RAW_ARGUMENT_KEY: raw_payload,
+            })
+            .to_string()
+        } else {
+            Value::Object(recovered).to_string()
+        };
+
+        Some(crate::tools::new_tool_call(
+            crate::tools::generate_tool_call_id(),
+            function_name,
+            arguments,
+        ))
     }
 
     async fn has_strict_complete_tool_call(&self) -> bool {
@@ -1228,6 +1357,23 @@ impl StreamToolParser {
         }
         recovered
     }
+
+    fn extract_xml_function_name(buffer: &str) -> Option<String> {
+        let open_tag = "<function=";
+        let start = buffer.rfind(open_tag)?;
+        let section = &buffer[start + open_tag.len()..];
+        let end = section.find('>')?;
+        let name = section[..end]
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_string())
+        }
+    }
 }
 
 fn repair_streamed_json_arguments(raw: &str) -> String {
@@ -1425,6 +1571,87 @@ mod tests {
                 assert!(calls[0].function.arguments.contains("AGENTS.md"));
             }
             other => panic!("Expected tool-call recovery, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_finalize_preserves_invalid_tool_call_payload() {
+        let tools = vec![crate::tools::function_tool("glob", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3.5-coder".into(),
+            ToolConfig::for_model_type(&ToolModelType::Qwen),
+            tools,
+            None,
+        );
+
+        match parser.process_token(151657, "<tool_call>") {
+            StreamResult::Buffering => {}
+            other => panic!("Expected Buffering on start tag, got {:?}", other),
+        }
+        match parser.process_token(0, r#"{"arguments": {"pattern": "AGENTS.md"}}"#) {
+            StreamResult::Buffering => {}
+            other => panic!(
+                "Expected Buffering on malformed JSON payload, got {:?}",
+                other
+            ),
+        }
+
+        match parser.finalize_buffered_tool_calls() {
+            Some(BufferedFinalizeResult::ToolCalls(calls)) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].function.name, INVALID_TOOL_CALL_NAME);
+                assert!(calls[0]
+                    .function
+                    .arguments
+                    .contains(INVALID_TOOL_CALL_RAW_ARGUMENT_KEY));
+                assert!(calls[0].function.arguments.contains("AGENTS.md"));
+            }
+            other => panic!("Expected invalid tool call passthrough, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_end_marker_then_finalize_preserves_invalid_tool_call_payload() {
+        let tools = vec![crate::tools::function_tool("glob", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3.5-coder".into(),
+            ToolConfig::for_model_type(&ToolModelType::Qwen),
+            tools,
+            None,
+        );
+
+        match parser.process_token(151657, "<tool_call>") {
+            StreamResult::Buffering => {}
+            other => panic!("Expected Buffering on start tag, got {:?}", other),
+        }
+        match parser.process_token(0, r#"{"arguments": {"pattern": "AGENTS.md"}}"#) {
+            StreamResult::Buffering => {}
+            other => panic!(
+                "Expected Buffering on malformed JSON payload, got {:?}",
+                other
+            ),
+        }
+
+        match parser.process_token(151658, "</tool_call>") {
+            StreamResult::Buffering => {}
+            other => panic!(
+                "Expected confirmation buffering on first end marker, got {:?}",
+                other
+            ),
+        }
+
+        match parser.finalize_buffered_tool_calls() {
+            Some(BufferedFinalizeResult::ToolCalls(calls)) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].function.name, INVALID_TOOL_CALL_NAME);
+                assert!(calls[0].function.arguments.contains("AGENTS.md"));
+            }
+            other => panic!(
+                "Expected invalid tool call passthrough after finalize, got {:?}",
+                other
+            ),
         }
     }
 }

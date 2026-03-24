@@ -3,8 +3,9 @@ use std::sync::Arc;
 use flume::Sender;
 
 use super::{
-    BufferedFinalizeResult, ChatCompletionChunk, Choice, ChoiceData, DefaultPipeline, LLMEngine,
-    Logprobs, ParserState, Sequence, SequenceGroup, StreamEmission, StreamResult, StreamToolParser,
+    BufferedFinalizeResult, ChatCompletionChunk, ChatCompletionUsageResponse, Choice, ChoiceData,
+    DefaultPipeline, LLMEngine, Logprobs, ParserState, Sequence, SequenceGroup, StreamEmission,
+    StreamResult, StreamToolParser,
 };
 use crate::openai::{streaming::ChatResponse, utils::get_created_time_secs};
 use tracing::warn;
@@ -17,6 +18,7 @@ impl LLMEngine {
         content: Option<String>,
         tool_calls: Option<Vec<crate::tools::ToolCall>>,
         finish_reason: Option<String>,
+        usage: Option<ChatCompletionUsageResponse>,
         pipeline: &DefaultPipeline,
     ) -> ChatCompletionChunk {
         let mut choices = Vec::new();
@@ -38,6 +40,7 @@ impl LLMEngine {
             model: pipeline.name().to_string(),
             object: "chat.completion.chunk",
             system_fingerprint: None,
+            usage,
         }
     }
 
@@ -226,6 +229,7 @@ impl LLMEngine {
                         .collect(),
                 ),
                 Some("tool_calls".to_string()),
+                None,
                 pipeline,
             )
         } else {
@@ -235,6 +239,7 @@ impl LLMEngine {
                 emission.content,
                 None,
                 finish_reason,
+                None,
                 pipeline,
             )
         };

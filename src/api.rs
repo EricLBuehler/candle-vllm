@@ -557,6 +557,7 @@ impl Engine {
                 image_data,
                 None, // streamer
                 Some(req_notify.clone()), // Use the local notify
+                false,
             );
             self.notify.notify_one();
         }
@@ -660,6 +661,7 @@ impl Engine {
                 None,
                 Some(std::sync::Arc::new(tx)),
                 None,
+                false,
             );
             self.notify.notify_one();
         }

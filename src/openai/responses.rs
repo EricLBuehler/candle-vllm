@@ -104,6 +104,8 @@ pub struct ChatCompletionChunk {
     pub model: String,
     pub object: &'static str,
     pub system_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ChatCompletionUsageResponse>,
 }
 
 trait ErrorToResponse: Serialize {

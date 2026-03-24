@@ -907,6 +907,7 @@ mod tests {
             EmbeddingType::Last,
             Vec::new(),
             None,
+            false,
         );
         (group, seq)
     }

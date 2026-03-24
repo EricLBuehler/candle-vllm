@@ -911,6 +911,7 @@ impl LLMEngine {
                 task.embedding_type.clone(),
                 task.tools.clone(),
                 sender,
+                task.include_usage,
             );
             tracing::debug!("Main process: add_sequence to group {}", task.group_id);
             self.scheduler.add_sequence(seq_group);
@@ -1592,6 +1593,20 @@ impl LLMEngine {
                             seq.deref().get_id()
                         );
                         self.scheduler.print_free_blocks();
+                        if group.include_usage {
+                            if let Some((pipeline, _)) = self.get_pipeline(0usize) {
+                                let usage_chunk = self.get_stream_response(
+                                    group.request_id.clone(),
+                                    usage.created,
+                                    None,
+                                    None,
+                                    None,
+                                    Some(usage.clone()),
+                                    pipeline,
+                                );
+                                let _ = sender.send(ChatResponse::Chunk(usage_chunk));
+                            }
+                        }
                         let _ = sender.send(ChatResponse::Done);
                     } else {
                         aborted_sequences.push(seq.deref().get_id());
@@ -1624,6 +1639,7 @@ impl LLMEngine {
         embedding_type: crate::openai::requests::EmbeddingType,
         tools: Vec<crate::tools::Tool>,
         sender: Option<Sender<ChatResponse>>,
+        include_usage: bool,
     ) -> SequenceGroup {
         let seq = Arc::new(Sequence(std::sync::RwLock::new(_Sequence::new(
             prompt,
@@ -1644,6 +1660,7 @@ impl LLMEngine {
             embedding_type,
             tools,
             sender,
+            include_usage,
         )
     }
 
@@ -1661,6 +1678,7 @@ impl LLMEngine {
         images: Option<ImageData>,
         sender: Option<Arc<Sender<ChatResponse>>>,
         sync_notify: Option<Arc<Notify>>,
+        include_usage: bool,
     ) {
         let prompt_len = prompt.len();
         let sync_notify = sync_notify.clone();
@@ -1698,6 +1716,7 @@ impl LLMEngine {
             embedding_type,
             tools,
             images,
+            include_usage,
         };
         let mut waiting_tasks = self.waiting_tasks.write();
         waiting_tasks.push(task);

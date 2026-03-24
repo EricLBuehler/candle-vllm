@@ -684,6 +684,7 @@ mod tests {
             vec![Message {
                 role: "user".to_string(),
                 content: "<tool_call><function=read></function></tool_call>".to_string(),
+                num_images: 0,
                 tool_calls: None,
                 tool_call_id: None,
             }],

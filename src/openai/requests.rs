@@ -96,6 +96,12 @@ pub enum StopTokens {
     Single(String),
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StreamOptions {
+    #[serde(default)]
+    pub include_usage: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
     pub model: Option<String>,
@@ -110,6 +116,8 @@ pub struct ChatCompletionRequest {
     pub stop: Option<StopTokens>,
     #[serde(default)]
     pub stream: Option<bool>, //false
+    #[serde(default)]
+    pub stream_options: Option<StreamOptions>,
     #[serde(default)]
     pub presence_penalty: Option<f32>, //0.0
     pub repeat_last_n: Option<usize>, //0.0
@@ -151,6 +159,7 @@ impl Default for ChatCompletionRequest {
             max_tokens: None,
             stop: None,
             stream: None,
+            stream_options: None,
             presence_penalty: None,
             repeat_last_n: None,
             frequency_penalty: None,
@@ -223,5 +232,28 @@ pub struct EmbeddingRequest {
 impl Default for EncodingFormat {
     fn default() -> Self {
         Self::Float
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChatCompletionRequest;
+
+    #[test]
+    fn chat_completion_request_reads_stream_options() {
+        let request: ChatCompletionRequest = serde_json::from_str(
+            r#"{
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": true,
+                "stream_options": {"include_usage": true}
+            }"#,
+        )
+        .expect("request should deserialize");
+
+        assert_eq!(request.stream, Some(true));
+        assert_eq!(
+            request.stream_options.map(|options| options.include_usage),
+            Some(true)
+        );
     }
 }
