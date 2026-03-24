@@ -310,6 +310,7 @@ pub struct SequenceGroup {
     pub embedding_type: crate::openai::requests::EmbeddingType,
     pub tools: Vec<Tool>,
     pub sender: Option<Sender<ChatResponse>>,
+    pub include_usage: bool,
     // Tool call and reasoning tracking
     pub accumulated_output: String,
     pub tool_call_state: ToolCallState,
@@ -333,6 +334,7 @@ impl SequenceGroup {
         embedding_type: crate::openai::requests::EmbeddingType,
         tools: Vec<Tool>,
         sender: Option<Sender<ChatResponse>>,
+        include_usage: bool,
     ) -> Self {
         let mut seq_map = HashMap::new();
         for seq in seqs {
@@ -351,6 +353,7 @@ impl SequenceGroup {
             embedding_type,
             tools,
             sender,
+            include_usage,
             accumulated_output: "".to_string(),
             tool_call_state: ToolCallState::Normal,
             tool_call_buffer: String::new(),

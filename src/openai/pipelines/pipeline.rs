@@ -10,7 +10,7 @@ use crate::openai::multimodal::{get_image_config, ImageProcessConfig};
 use crate::openai::requests::StopTokens;
 use crate::openai::sampling_params::{GenerationConfig, Logprobs, TopLogprob};
 use crate::openai::{BosEosToken, TokenizerConfig};
-use crate::scheduler::sequence::SequenceGroup;
+use crate::scheduler::sequence::{Sequence, SequenceGroup};
 use crate::tools::stream_parser::{ToolConfig, ToolModelType};
 #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
 use crate::FlashInferKvParams;
@@ -1210,6 +1210,36 @@ impl DefaultLoader {
 }
 
 impl DefaultPipeline {
+    fn output_contains_tool_call_start(&self, seq: &Arc<Sequence>) -> bool {
+        if !self.tool_call_start_token_ids.is_empty() {
+            return seq
+                .deref()
+                .get_output_tokens()
+                .iter()
+                .any(|logprob| self.tool_call_start_token_ids.contains(&logprob.token));
+        }
+        if self.tool_config.start_token_str.is_empty() {
+            return false;
+        }
+
+        let mut generated = String::new();
+        for logprob in seq.deref().get_output_tokens() {
+            generated.push_str(&logprob.bytes);
+        }
+        generated.contains(&self.tool_config.start_token_str)
+    }
+
+    fn is_nested_tool_call_start(&self, seq: &Arc<Sequence>, next_token: u32, text: &str) -> bool {
+        let next_is_start = if !self.tool_call_start_token_ids.is_empty() {
+            self.tool_call_start_token_ids.contains(&next_token)
+        } else {
+            !self.tool_config.start_token_str.is_empty()
+                && text.contains(&self.tool_config.start_token_str)
+        };
+
+        next_is_start && self.output_contains_tool_call_start(seq)
+    }
+
     pub fn new(
         model: LLMModel,
         tokenizer: Tokenizer,
@@ -1670,12 +1700,10 @@ impl DefaultPipeline {
                     && custom_stop_tokens[i].contains(&text.trim().to_string());
 
                 if group.sampling_params.mcp_mode.is_some() {
+                    let seq = group.get_seqs().values().next().unwrap();
                     if self.tool_call_end_token_ids.contains(&next_token) {
                         if !self.tool_call_start_token_ids.is_empty() {
-                            let seq = group.get_seqs().values().next().unwrap();
-                            let has_start = seq.deref().get_output_tokens().iter().any(|logprob| {
-                                self.tool_call_start_token_ids.contains(&logprob.token)
-                            });
+                            let has_start = self.output_contains_tool_call_start(seq);
                             if !has_start {
                                 return Left(Logprobs {
                                     token: next_token,
@@ -1691,12 +1719,24 @@ impl DefaultPipeline {
                             top_logprobs: Vec::<TopLogprob>::new(),
                             bytes: text,
                         };
-                        let seq = group.get_seqs().values().next().unwrap();
+                        seq.deref_mut().deref_mut().pending_finish_logprobs = Some(finish_logprobs);
+                        return Right("tool_calls".to_string());
+                    }
+                    if self.is_nested_tool_call_start(seq, next_token, &text) {
+                        warn!(
+                            "Nested tool-call start marker detected for request {}; finishing current tool call early",
+                            group.request_id
+                        );
+                        let finish_logprobs = Logprobs {
+                            token: next_token,
+                            logprob: 0.0,
+                            top_logprobs: Vec::<TopLogprob>::new(),
+                            bytes: text,
+                        };
                         seq.deref_mut().deref_mut().pending_finish_logprobs = Some(finish_logprobs);
                         return Right("tool_calls".to_string());
                     }
                     if self.json_end_token_id == Some(next_token) {
-                        let seq = group.get_seqs().values().next().unwrap();
                         let mut output_tokens: Vec<u32> = seq
                             .deref()
                             .get_output_tokens()

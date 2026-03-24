@@ -96,6 +96,7 @@ pub struct TaskData {
     pub embedding_type: requests::EmbeddingType,
     pub tools: Vec<Tool>,
     pub images: Option<multimodal::ImageData>,
+    pub include_usage: bool,
 }
 
 pub mod conversation;

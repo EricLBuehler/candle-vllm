@@ -292,6 +292,10 @@ pub async fn chat_completions(
     let data_clone = data.clone();
     let request_id_clone = request_id.clone();
     let stream_request = request.stream.is_some_and(|x| x);
+    let include_usage = request
+        .stream_options
+        .as_ref()
+        .is_some_and(|options| options.include_usage);
     let model_name = match current_model_name(&data) {
         Ok(current) => resolve_response_model_name(request.model.as_deref(), &current),
         Err(e) => return ChatResponder::ModelError(e),
@@ -325,6 +329,7 @@ pub async fn chat_completions(
                         None
                     },
                     sync_completion_notify,
+                    include_usage,
                 );
                 model.notify.notify_one();
             }
@@ -490,6 +495,7 @@ pub async fn create_embeddings(
                     None,
                     Some(Arc::new(response_tx)),
                     None,
+                    false,
                 );
                 model.notify.notify_one();
             }

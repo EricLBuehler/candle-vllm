@@ -115,6 +115,7 @@ impl MultiprocessRunner {
                 task.embedding_type,
                 task.tools.clone(),
                 None,
+                task.include_usage,
             );
             tracing::debug!("Daemon process: add_sequence to group {}", task.group_id);
             e.scheduler.add_sequence(seq_group);
