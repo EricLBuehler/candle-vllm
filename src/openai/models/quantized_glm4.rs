@@ -120,6 +120,7 @@ impl GGUFGLM4 {
         device: &Device,
         dtype: DType,
         kv_cache_dtype: DType,
+        yarn_scaling_factor: Option<f64>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -177,7 +178,7 @@ impl GGUFGLM4 {
             None
         };
 
-        let cfg = GGUFGLM4::into_config(
+        let mut cfg = GGUFGLM4::into_config(
             embedding_length,
             head_dim,
             0,
@@ -190,6 +191,7 @@ impl GGUFGLM4 {
             partial_rotary_factor,
             kv_cache_dtype,
         );
+        cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
             DType::F32,
             &cfg,

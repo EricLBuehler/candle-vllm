@@ -245,6 +245,113 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn derive_yarn_parameters(factor: f64) -> (f64, f64, f64, f64) {
+        let factor = factor.max(1.0);
+
+        let beta_fast = if factor <= 4.0 {
+            32.0
+        } else {
+            32.0 * (factor / 4.0).sqrt()
+        };
+        let beta_slow = 1.0;
+        let extrapolation_factor = if factor > 8.0 {
+            1.0 + 0.05 * (factor - 8.0).sqrt()
+        } else {
+            1.0
+        };
+        let attn_factor = 1.0;
+
+        (beta_fast, beta_slow, extrapolation_factor, attn_factor)
+    }
+
+    fn base_max_position_embeddings(&self) -> usize {
+        self.max_position_embeddings.unwrap_or(self.max_seq_len)
+    }
+
+    pub fn apply_static_rope_scaling(
+        yarn_scaling_factor: Option<f64>,
+        max_position_embeddings: usize,
+    ) -> Option<HashMap<String, ScalingValue>> {
+        if let Some(factor) = yarn_scaling_factor {
+            let (beta_fast, beta_slow, extrapolation_factor, attn_factor) =
+                Self::derive_yarn_parameters(factor);
+
+            return Some(HashMap::from([
+                (
+                    "rope_type".to_string(),
+                    ScalingValue::String("yarn".to_string()),
+                ),
+                ("factor".to_string(), ScalingValue::Single(factor)),
+                (
+                    "original_max_position_embeddings".to_string(),
+                    ScalingValue::Single(max_position_embeddings as f64),
+                ),
+                ("beta_fast".to_string(), ScalingValue::Single(beta_fast)),
+                ("beta_slow".to_string(), ScalingValue::Single(beta_slow)),
+                (
+                    "extrapolation_factor".to_string(),
+                    ScalingValue::Single(extrapolation_factor),
+                ),
+                ("attn_factor".to_string(), ScalingValue::Single(attn_factor)),
+            ]));
+        }
+
+        None
+    }
+
+    pub fn effective_max_seq_len(&self) -> usize {
+        let base_max_position_embeddings = self.base_max_position_embeddings();
+        let Some(rope_scaling) = &self.rope_scaling else {
+            return base_max_position_embeddings;
+        };
+
+        let rope_type = rope_scaling
+            .get("rope_type")
+            .or_else(|| rope_scaling.get("type"))
+            .and_then(|value| match value {
+                ScalingValue::String(value) => Some(value.as_str()),
+                _ => None,
+            });
+        let factor = rope_scaling.get("factor").and_then(|value| match value {
+            ScalingValue::Single(value) => Some(*value),
+            _ => None,
+        });
+        let original_max_position_embeddings = rope_scaling
+            .get("original_max_position_embeddings")
+            .and_then(|value| match value {
+                ScalingValue::Single(value) => Some(*value),
+                _ => None,
+            })
+            .or_else(|| {
+                self.original_max_position_embeddings
+                    .map(|value| value as f64)
+            });
+
+        match (rope_type, factor, original_max_position_embeddings) {
+            (Some("yarn"), Some(factor), Some(original_max_position_embeddings))
+                if factor > 1.0 =>
+            {
+                std::cmp::max(
+                    base_max_position_embeddings,
+                    (original_max_position_embeddings * factor).round() as usize,
+                )
+            }
+            _ => base_max_position_embeddings,
+        }
+    }
+
+    pub fn apply_runtime_rope_overrides(&mut self, yarn_scaling_factor: Option<f64>) {
+        if let Some(scaling) = Self::apply_static_rope_scaling(
+            yarn_scaling_factor,
+            self.base_max_position_embeddings(),
+        ) {
+            self.rope_scaling = Some(scaling);
+        }
+
+        self.apply_rope_overrides();
+        self.max_seq_len = self.effective_max_seq_len();
+    }
+
     fn apply_rope_overrides(&mut self) {
         if let Some(scaling) = &self.rope_scaling {
             if let Some(ScalingValue::Single(v)) = scaling.get("rope_theta") {
@@ -329,6 +436,7 @@ impl Config {
                     };
                 config.extra_config_json = Some(raw);
                 config.apply_rope_overrides();
+                config.max_seq_len = config.effective_max_seq_len();
                 Ok(config)
             }
             Err(e) => panic!(
@@ -366,6 +474,79 @@ impl Config {
                 e
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, ScalingValue};
+    use std::collections::HashMap;
+
+    fn test_config(max_position_embeddings: usize) -> Config {
+        Config {
+            architectures: Some(vec!["Qwen2ForCausalLM".to_string()]),
+            hidden_size: 4096,
+            head_dim: Some(128),
+            intermediate_size: 11008,
+            vocab_size: 151936,
+            num_hidden_layers: 32,
+            num_attention_heads: 32,
+            num_key_value_heads: Some(32),
+            rms_norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            rope_local_base_freq: None,
+            bos_token_id: None,
+            eos_token_id: None,
+            max_seq_len: max_position_embeddings,
+            original_max_position_embeddings: None,
+            sliding_window: None,
+            sliding_window_pattern: None,
+            hidden_act: None,
+            hidden_activation: None,
+            tie_word_embeddings: false,
+            rope_scaling: None,
+            max_position_embeddings: Some(max_position_embeddings),
+            attention_bias: None,
+            partial_rotary_factor: None,
+            qk_layernorm: false,
+            use_qkv_bias: None,
+            custom_stop_tokens: None,
+            attn_logit_softcapping: None,
+            final_logit_softcapping: None,
+            moe_config: None,
+            quantization_config: None,
+            isq_quant: None,
+            fp8_kvcache: None,
+            extra_config_json: None,
+        }
+    }
+
+    #[test]
+    fn test_effective_max_seq_len_scales_yarn_context() {
+        let mut config = test_config(262_144);
+        config.rope_scaling = Some(HashMap::from([
+            (
+                "rope_type".to_string(),
+                ScalingValue::String("yarn".to_string()),
+            ),
+            ("factor".to_string(), ScalingValue::Single(4.0)),
+            (
+                "original_max_position_embeddings".to_string(),
+                ScalingValue::Single(262_144.0),
+            ),
+        ]));
+
+        assert_eq!(config.effective_max_seq_len(), 1_048_576);
+    }
+
+    #[test]
+    fn test_apply_runtime_rope_overrides_updates_effective_max_seq_len() {
+        let mut config = test_config(262_144);
+        config.apply_runtime_rope_overrides(Some(8.0));
+
+        assert_eq!(config.max_position_embeddings, Some(262_144));
+        assert_eq!(config.original_max_position_embeddings, Some(262_144));
+        assert_eq!(config.max_seq_len, 2_097_152);
     }
 }
 

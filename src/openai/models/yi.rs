@@ -24,7 +24,7 @@ impl Yi {
                 .num_key_value_heads
                 .unwrap_or(config.num_attention_heads),
         );
-        config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        config.max_seq_len = config.effective_max_seq_len();
         config.custom_stop_tokens = Some(vec!["<|im_end|>".to_string()]);
         config.isq_quant = if config.quantization_config.is_some() {
             None

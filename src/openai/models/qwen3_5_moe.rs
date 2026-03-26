@@ -40,7 +40,7 @@ impl Qwen3_5MoE {
                 .num_key_value_heads
                 .unwrap_or(config.num_attention_heads),
         );
-        config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        config.max_seq_len = config.effective_max_seq_len();
         config.attention_bias = Some(
             config
                 .use_qkv_bias

@@ -27,6 +27,7 @@
 - 支持Prefix Caching
 - 支持硬件FP8模型推理加速（SM90+, Qwen3系列，Block-wise FP8量化）
 - 支持 Flashinfer 后端
+- 支持通过命令行参数 `--yarn-scaling-factor` 手动设置 YaRN RoPE 缩放因子
 
 ## 支持的模型
 - 目前，candle-vllm支持以下模型结构的推理服务。
@@ -132,14 +133,14 @@ cargo install --features metal --path .
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.5-27B-FP8（或使用 `--w` 指定本地模型路径）
 
@@ -147,7 +148,7 @@ cargo install --features metal --path .
 
     `WEB UI`: --ui-server
 
-    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--gpu-memory-fraction` 会在模型加载完成后按 `fraction * 总显存 - 当前占用显存` 自动计算 KV Cache 大小；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--fp8-kvcache` 参数用于启用 FP8 KV Cache；`--prefix-cache` 启用前缀缓存复用；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--ui-server` 启动内置 Web UI。若要使用 Flash attention 后端，可将示例中的 `flashinfer` 替换为 `flashattn`。
+    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--gpu-memory-fraction` 会在模型加载完成后按 `fraction * 总显存 - 当前占用显存` 自动计算 KV Cache 大小；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--yarn-scaling-factor` 用于手动注入 YaRN RoPE 缩放因子，例如 `4.0`，以在支持的模型上扩展有效上下文长度；`--fp8-kvcache` 参数用于启用 FP8 KV Cache；`--prefix-cache` 启用前缀缓存复用；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--ui-server` 启动内置 Web UI。若要使用 Flash attention 后端，可将示例中的 `flashinfer` 替换为 `flashattn`。
   </details>
 
 ## 如何运行模型？
@@ -175,6 +176,11 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
 
     ```shell
     candle-vllm --m Qwen/Qwen3.5-35B-A3B --ui-server --prefix-cache
+    ```
+
+    **手动设置 YaRN 缩放**
+    ```shell
+    candle-vllm --m Qwen/Qwen3.5-35B-A3B --yarn-scaling-factor 4.0 --ui-server --prefix-cache
     ```
 
     **FP8 模型** (block-wise量化, 通过增加`cutlass`特性构建)

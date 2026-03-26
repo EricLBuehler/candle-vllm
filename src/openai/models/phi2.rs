@@ -28,7 +28,7 @@ impl Phi2 {
                 .num_key_value_heads
                 .unwrap_or(config.num_attention_heads),
         );
-        config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        config.max_seq_len = config.effective_max_seq_len();
         config.isq_quant = if config.quantization_config.is_some() {
             None
         } else {
