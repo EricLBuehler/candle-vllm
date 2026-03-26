@@ -117,6 +117,7 @@ impl GGUFQWen {
         device: &Device,
         dtype: DType,
         kv_cache_dtype: DType,
+        yarn_scaling_factor: Option<f64>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -179,7 +180,7 @@ impl GGUFQWen {
         } else {
             None
         };
-        let cfg = GGUFQWen::into_config(
+        let mut cfg = GGUFQWen::into_config(
             embedding_length,
             head_dim,
             0,
@@ -193,6 +194,7 @@ impl GGUFQWen {
             partial_rotary_factor,
             kv_cache_dtype,
         );
+        cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 
         let mut layers = Vec::with_capacity(block_count);

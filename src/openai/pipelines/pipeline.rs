@@ -128,6 +128,7 @@ pub struct DefaultLoader {
     weight_path: Option<String>,
     weight_file: Option<String>,
     enforce_parser: Option<String>,
+    yarn_scaling_factor: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -163,12 +164,14 @@ impl DefaultLoader {
         weight_path: Option<String>,
         weight_file: Option<String>,
         enforce_parser: Option<String>,
+        yarn_scaling_factor: Option<f64>,
     ) -> Self {
         Self {
             model_id,
             weight_path,
             weight_file,
             enforce_parser,
+            yarn_scaling_factor,
         }
     }
 
@@ -489,6 +492,7 @@ impl DefaultLoader {
                         &device,
                         dtype,
                         kv_cache_dtype,
+                        self.yarn_scaling_factor,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -506,6 +510,7 @@ impl DefaultLoader {
                         &device,
                         dtype,
                         kv_cache_dtype,
+                        self.yarn_scaling_factor,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -523,6 +528,7 @@ impl DefaultLoader {
                         &device,
                         dtype,
                         kv_cache_dtype,
+                        self.yarn_scaling_factor,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -540,6 +546,7 @@ impl DefaultLoader {
                         &device,
                         dtype,
                         kv_cache_dtype,
+                        self.yarn_scaling_factor,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -557,6 +564,7 @@ impl DefaultLoader {
                         &device,
                         dtype,
                         kv_cache_dtype,
+                        self.yarn_scaling_factor,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -574,6 +582,7 @@ impl DefaultLoader {
                         &device,
                         dtype,
                         kv_cache_dtype,
+                        self.yarn_scaling_factor,
                         Arc::clone(&reporter),
                     )
                     .map_err(candle_core::Error::wrap)?;
@@ -627,6 +636,12 @@ impl DefaultLoader {
                 }
                 _ => panic!("Model not supported!"),
             };
+            if !matches!(
+                arch.as_str(),
+                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM"
+            ) {
+                config.apply_runtime_rope_overrides(self.yarn_scaling_factor);
+            }
             config.fp8_kvcache = Some(kv_cache_dtype == DType::U8);
             info!("Model {:?}", config);
 

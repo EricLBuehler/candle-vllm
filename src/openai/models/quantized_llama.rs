@@ -196,6 +196,7 @@ impl GGUFLLaMa {
         device: &Device,
         dtype: DType,
         kv_cache_dtype: DType,
+        yarn_scaling_factor: Option<f64>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let md_get = |s: &str| match ct.metadata.get(s) {
@@ -266,7 +267,7 @@ impl GGUFLLaMa {
         } else {
             None
         };
-        let cfg = GGUFLLaMa::into_config(
+        let mut cfg = GGUFLLaMa::into_config(
             embedding_length,
             head_dim,
             0,
@@ -280,6 +281,7 @@ impl GGUFLLaMa {
             partial_rotary_factor,
             kv_cache_dtype,
         );
+        cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
             DType::F32,
             &cfg,

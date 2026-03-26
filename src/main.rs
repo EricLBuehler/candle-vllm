@@ -161,6 +161,10 @@ struct Args {
     /// Force a specific tool parser backend (for example: qwen, qwen_coder, json, mistral).
     #[arg(long)]
     enforce_parser: Option<String>,
+
+    /// YARN RoPE scaling factor (explicit override, no auto-calculation)
+    #[arg(long)]
+    yarn_scaling_factor: Option<f64>,
 }
 
 fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Result<()> {
@@ -217,6 +221,7 @@ async fn main() -> Result<()> {
         args.weight_path,
         args.weight_file,
         args.enforce_parser.clone(),
+        args.yarn_scaling_factor,
     ));
 
     let (paths, gguf) = loader.prepare_model_weights(args.hf_token, args.hf_token_path)?;

@@ -24,7 +24,7 @@ impl StableLM {
                 .num_key_value_heads
                 .unwrap_or(config.num_attention_heads),
         );
-        config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        config.max_seq_len = config.effective_max_seq_len();
         config.partial_rotary_factor = Some(config.partial_rotary_factor.unwrap_or(0.25));
         config.use_qkv_bias = Some(config.use_qkv_bias.unwrap_or(false));
         config.isq_quant = if config.quantization_config.is_some() {

@@ -32,7 +32,7 @@ impl Phi4ForCausalLM {
                 .num_key_value_heads
                 .unwrap_or(config.num_attention_heads),
         );
-        config.max_seq_len = config.max_position_embeddings.unwrap_or(config.max_seq_len);
+        config.max_seq_len = config.effective_max_seq_len();
         config.isq_quant = if config.quantization_config.is_some() {
             None
         } else {
@@ -50,6 +50,10 @@ struct Phi4RotaryEmbedding {
 }
 
 impl Phi4RotaryEmbedding {
+    fn effective_max_seq_len(cfg: &Config) -> usize {
+        cfg.effective_max_seq_len()
+    }
+
     fn rope_scaling_array(
         value: &ScalingValue,
         expected_len: usize,
@@ -74,7 +78,7 @@ impl Phi4RotaryEmbedding {
         let dim = cfg
             .head_dim
             .unwrap_or(cfg.hidden_size / cfg.num_attention_heads);
-        let max_seq_len = cfg.max_position_embeddings.unwrap_or(cfg.max_seq_len);
+        let max_seq_len = Self::effective_max_seq_len(cfg);
         let rope_theta = cfg.rope_theta;
 
         let rotary_dim = cfg
@@ -243,6 +247,79 @@ impl Phi4RotaryEmbedding {
         } else {
             self.normal_emb.apply_rotary_emb(q, k, input_positions)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Phi4RotaryEmbedding;
+    use crate::openai::models::{Config, ScalingValue};
+    use std::collections::HashMap;
+
+    fn test_config(max_position_embeddings: usize) -> Config {
+        Config {
+            architectures: Some(vec!["Phi4ForCausalLM".to_string()]),
+            hidden_size: 4096,
+            head_dim: Some(128),
+            intermediate_size: 14336,
+            vocab_size: 1000,
+            num_hidden_layers: 40,
+            num_attention_heads: 32,
+            num_key_value_heads: Some(8),
+            rms_norm_eps: 1e-5,
+            rope_theta: 10000.0,
+            rope_local_base_freq: None,
+            bos_token_id: None,
+            eos_token_id: None,
+            max_seq_len: max_position_embeddings,
+            original_max_position_embeddings: None,
+            sliding_window: None,
+            sliding_window_pattern: None,
+            hidden_act: None,
+            hidden_activation: None,
+            tie_word_embeddings: false,
+            rope_scaling: None,
+            max_position_embeddings: Some(max_position_embeddings),
+            attention_bias: None,
+            partial_rotary_factor: None,
+            qk_layernorm: false,
+            use_qkv_bias: None,
+            custom_stop_tokens: None,
+            attn_logit_softcapping: None,
+            final_logit_softcapping: None,
+            moe_config: None,
+            quantization_config: None,
+            isq_quant: None,
+            fp8_kvcache: None,
+            extra_config_json: None,
+        }
+    }
+
+    #[test]
+    fn test_effective_max_seq_len_uses_scaled_rope_length() {
+        let mut config = test_config(262_144);
+        config.rope_scaling = Some(HashMap::from([
+            (
+                "rope_type".to_string(),
+                ScalingValue::String("yarn".to_string()),
+            ),
+            ("factor".to_string(), ScalingValue::Single(8.0)),
+            (
+                "original_max_position_embeddings".to_string(),
+                ScalingValue::Single(262_144.0),
+            ),
+        ]));
+
+        assert_eq!(
+            Phi4RotaryEmbedding::effective_max_seq_len(&config),
+            2_097_152
+        );
+    }
+
+    #[test]
+    fn test_effective_max_seq_len_preserves_unscaled_config_length() {
+        let config = test_config(131_072);
+        assert_eq!(Phi4RotaryEmbedding::effective_max_seq_len(&config), 131_072);
     }
 }
 

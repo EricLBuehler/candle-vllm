@@ -50,6 +50,7 @@ pub struct EngineBuilder {
     frequency_penalty: Option<f32>,
     presence_penalty: Option<f32>,
     prefill_chunk_size: Option<usize>,
+    yarn_scaling_factor: Option<f64>,
 }
 
 impl EngineBuilder {
@@ -73,6 +74,7 @@ impl EngineBuilder {
             frequency_penalty: None,
             presence_penalty: None,
             prefill_chunk_size: None,
+            yarn_scaling_factor: None,
         }
     }
 
@@ -155,6 +157,11 @@ impl EngineBuilder {
         self
     }
 
+    pub fn with_yarn_scaling_factor(mut self, factor: f64) -> Self {
+        self.yarn_scaling_factor = Some(factor);
+        self
+    }
+
     pub async fn build_async(self) -> Result<Engine> {
         let (model_id, weight_path, weight_file) = match self.repo {
             ModelRepo::ModelID((model_id, filename)) => (
@@ -174,6 +181,7 @@ impl EngineBuilder {
             weight_path.clone(),
             weight_file.clone(),
             None,
+            self.yarn_scaling_factor,
         ));
 
         // Use cached token if available, or try to load safely without prompt (api mode should not block on stdin)

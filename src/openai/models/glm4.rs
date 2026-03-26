@@ -28,7 +28,12 @@ impl GLM4 {
                 .num_key_value_heads
                 .unwrap_or(config.num_attention_heads),
         );
-        config.max_seq_len = config.max_position_embeddings.unwrap_or(32768);
+        config.max_seq_len =
+            if config.max_position_embeddings.is_some() || config.rope_scaling.is_some() {
+                config.effective_max_seq_len()
+            } else {
+                32768
+            };
         config.attention_bias = Some(config.attention_bias.unwrap_or(false));
         config.bos_token_id = Some(
             config
