@@ -1,3 +1,4 @@
+use super::conversation::RenderedPromptRepairer;
 use super::requests::Messages;
 use super::requests::{
     normalize_empty_openai_tool_results, ChatCompletionRequest, EmbeddingRequest, EmbeddingType,
@@ -111,10 +112,19 @@ async fn get_gen_prompt(
         conversation.set_system_message(Some(new_system));
     }
 
-    Ok((
-        conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools),
-        image_data,
-    ))
+    let enable_thinking = request.thinking.unwrap_or(false);
+    let mut prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
+
+    if model.scheduler.prefix_cache_enabled() {
+        if let Some(repaired) =
+            RenderedPromptRepairer::from_conversation(&conversation, enable_thinking)
+                .and_then(|r| r.repair(&prompt))
+        {
+            prompt = repaired;
+        }
+    }
+
+    Ok((prompt, image_data))
 }
 
 async fn check_length(

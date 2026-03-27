@@ -319,6 +319,14 @@ impl DefaultConversation {
         &self.roles
     }
 
+    pub fn template_source(&self) -> Option<&str> {
+        self.chat_template.as_deref()
+    }
+
+    pub fn eos_token(&self) -> Option<&str> {
+        self.eos_token.as_deref()
+    }
+
     pub fn clear_message(&mut self) {
         self.messages.clear()
     }
