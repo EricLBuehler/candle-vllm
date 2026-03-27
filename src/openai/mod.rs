@@ -45,6 +45,39 @@ pub struct PipelineConfig {
     pub generation_cfg: Option<GenerationConfig>,
 }
 
+impl PipelineConfig {
+    pub fn apply_kv_cache_limit(
+        &mut self,
+        cache_config: &crate::scheduler::cache_engine::CacheConfig,
+    ) {
+        self.max_model_len = resolve_final_max_model_len(self.max_model_len, cache_config);
+        self.default_max_tokens = self.default_max_tokens.min(self.max_model_len);
+    }
+}
+
+pub fn kv_cache_capacity_tokens(
+    cache_config: &crate::scheduler::cache_engine::CacheConfig,
+) -> usize {
+    cache_config
+        .num_gpu_blocks
+        .map(|blocks| blocks.saturating_mul(cache_config.block_size))
+        .unwrap_or(0)
+}
+
+pub fn resolve_final_max_model_len(
+    model_max_len: usize,
+    cache_config: &crate::scheduler::cache_engine::CacheConfig,
+) -> usize {
+    let kv_cache_capacity = kv_cache_capacity_tokens(cache_config);
+    let kv_cache_capacity = if kv_cache_capacity == 0 {
+        model_max_len
+    } else {
+        kv_cache_capacity
+    };
+
+    model_max_len.min(kv_cache_capacity)
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct MaxModelLen(
     #[serde(with = "either::serde_untagged")] pub Either<Option<usize>, Option<f64>>,
