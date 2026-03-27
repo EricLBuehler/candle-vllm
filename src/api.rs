@@ -508,8 +508,21 @@ impl Engine {
                 conversation.set_system_message(Some(new_system));
             }
 
-            let prompt =
-                conversation.get_prompt(request.thinking.unwrap_or(false), &tool_config.tools);
+            let enable_thinking = request.thinking.unwrap_or(false);
+            let mut prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
+
+            if e.scheduler.prefix_cache_enabled() {
+                if let Some(repaired) =
+                    crate::openai::conversation::RenderedPromptRepairer::from_conversation(
+                        &conversation,
+                        enable_thinking,
+                    )
+                    .and_then(|r| r.repair(&prompt))
+                {
+                    prompt = repaired;
+                }
+            }
+
             (prompt, pipeline.tokenizer.clone(), image_data)
         };
 
