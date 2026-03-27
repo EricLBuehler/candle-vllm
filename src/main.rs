@@ -12,7 +12,7 @@ use candle_vllm::openai::openai_server::{chat_completions, create_embeddings};
 use candle_vllm::openai::pipelines::llm_engine::LLMEngine;
 use candle_vllm::openai::pipelines::pipeline::DefaultLoader;
 use candle_vllm::openai::sampling_params::GenerationConfig;
-use candle_vllm::openai::OpenAIServerData;
+use candle_vllm::openai::{kv_cache_capacity_tokens, OpenAIServerData};
 use candle_vllm::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use candle_vllm::scheduler::prefix_cache::PrefixCacheConfig;
 use candle_vllm::scheduler::SchedulerConfig;
@@ -567,10 +567,12 @@ async fn main() -> Result<()> {
         pipeline_config.generation_cfg.as_mut().unwrap().min_p = args.min_p;
     }
 
+    pipeline_config.apply_kv_cache_limit(&cache_config);
+
     info!("Pipeline config {:?}", pipeline_config);
 
     let max_model_len = pipeline_config.max_model_len;
-    let kvcached_tokens = cache_config.num_gpu_blocks.unwrap() * cache_config.block_size;
+    let kvcached_tokens = kv_cache_capacity_tokens(&cache_config);
 
     let mcp_manager_config = if let Some(path) = &args.mcp_config {
         match candle_vllm::mcp::McpManagerConfig::from_file(path) {
@@ -666,6 +668,7 @@ async fn main() -> Result<()> {
                             "owned_by": "candle-vllm",
                             "permission": [],
                             "modalities": modalities,
+                            "max_model_len": data.pipeline_config.max_model_len,
                         }
                     ]
                 }))

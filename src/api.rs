@@ -5,6 +5,7 @@ use crate::openai::pipelines::pipeline::DefaultLoader;
 use crate::openai::requests::Messages;
 use crate::openai::resolve_tools_for_request;
 use crate::openai::sampling_params::{GenerationConfig, SamplingParams};
+use crate::openai::PipelineConfig;
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use crate::scheduler::prefix_cache::PrefixCacheConfig;
 use crate::scheduler::SchedulerConfig;
@@ -324,22 +325,25 @@ impl EngineBuilder {
             self.prefill_chunk_size,
         )?;
 
+        let mut pipeline_config = PipelineConfig {
+            max_model_len: config.max_seq_len,
+            default_max_tokens: config.max_seq_len / 5, // Approximate default
+            generation_cfg: Some(GenerationConfig {
+                temperature: self.temperature,
+                top_k: self.top_k,
+                top_p: self.top_p,
+                min_p: self.min_p,
+                frequency_penalty: self.frequency_penalty,
+                presence_penalty: self.presence_penalty,
+            }),
+        };
+        pipeline_config.apply_kv_cache_limit(&cache_config);
+
         // Return the Engine wrapper
         Ok(Engine {
             engine,
             notify,
-            pipeline_config: crate::openai::PipelineConfig {
-                max_model_len: config.max_seq_len,
-                default_max_tokens: config.max_seq_len / 5, // Approximate default
-                generation_cfg: Some(GenerationConfig {
-                    temperature: self.temperature,
-                    top_k: self.top_k,
-                    top_p: self.top_p,
-                    min_p: self.min_p,
-                    frequency_penalty: self.frequency_penalty,
-                    presence_penalty: self.presence_penalty,
-                }),
-            },
+            pipeline_config,
             _runtime: None,
         })
     }
