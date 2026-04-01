@@ -53,6 +53,8 @@ pub struct ChatCompletionUsageResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatChoiceData {
     pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     pub role: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<crate::tools::ToolCall>>,
@@ -84,7 +86,10 @@ pub struct ChatCompletionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChoiceData {
     pub content: Option<String>,
-    pub role: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<crate::tools::ToolCall>>,
 }

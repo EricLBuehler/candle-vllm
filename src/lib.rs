@@ -150,8 +150,20 @@ pub fn get_cache_config(
 }
 
 const SIZE_IN_MB: usize = 1024 * 1024;
-pub const MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV: &str = "VLLM_RS_MAMBA_SNAPSHOT_STRIDE_BLOCKS";
-pub const DEFAULT_MAMBA_SNAPSHOT_BLOCK_STRIDE: usize = 8;
+pub const MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV: &str = "CANDLE_VLLM_MAMBA_SNAPSHOT_STRIDE_BLOCKS";
+pub const DEFAULT_MAMBA_SNAPSHOT_BLOCK_STRIDE: usize = 1;
+
+pub const STREAM_AS_REASONING_CONTENT_ENV: &str = "CANDLE_VLLM_STREAM_AS_REASONING_CONTENT";
+
+static STREAM_AS_REASONING_CONTENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+pub fn stream_as_reasoning_content() -> bool {
+    *STREAM_AS_REASONING_CONTENT.get_or_init(|| {
+        std::env::var(STREAM_AS_REASONING_CONTENT_ENV)
+            .map(|v| !matches!(v.trim().to_lowercase().as_str(), "0" | "false" | "no"))
+            .unwrap_or(true)
+    })
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct DeviceMemoryReport {

@@ -7,8 +7,6 @@
   <a href="./README-CN.md">简体中文</a> |
 </p>
 
-[![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
-
 Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
 
 ## Features
@@ -154,7 +152,15 @@ cargo install --features metal --path .
     where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * remaining_gpu_memory`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--yarn-scaling-factor` manually injects a YaRN RoPE scaling factor such as `4.0` to extend the effective context window for supported models; `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
   </details>
 
-
+## 📚 Docs
+- [Rust Crate Usage](docs/rust_crate.md)
+- [Embedding Model Usage](docs/embedding.md)
+- [MCP & Tool Calling](docs/mcp_tool_calling.md)
+- [Tool Call Parsing](docs/tool_parsing.md)
+- [Prefix Cache](docs/prefix_cache.md)
+- [Multimodal Model Usage](docs/multimodal.md)
+- [Work with OpenCode](docs/opencode.md)
+- [Work with Kilo Code](docs/kilocode.md)
 
 ## How to serve models?
 
@@ -421,13 +427,6 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
 
     Note: The exact NUMA binding sequence may vary depending on your hardware configuration.
   </details>
-
-## 📚 Additional Docs
-- [Rust Crate Usage](docs/rust_crate.md)
-- [Embedding Model Usage](docs/embedding.md)
-- [MCP & Tool Calling](docs/mcp_tool_calling.md)
-- [Prefix Cache](docs/prefix_cache.md)
-- [Work with OpenCode](docs/opencode.md)
 
 ## How to send request(s) to the backend?
 

@@ -11,6 +11,8 @@ pub struct Message {
     #[serde(default)]
     pub num_images: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
@@ -22,6 +24,7 @@ impl Message {
             role,
             content,
             num_images,
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         }

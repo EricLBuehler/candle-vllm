@@ -44,6 +44,9 @@ pub struct SequenceData {
     pub stream_tool_parser: Option<StreamToolParser>,
     pub pending_tool_calls: Vec<ToolCall>,
     pub pending_finish_logprobs: Option<Logprobs>,
+    pub suppressed_tool_markup: String,
+    pub prompt_replay_consumed: bool,
+    pub stream_role_sent: bool,
     pub images: Option<ImageData>,
     pub mamba_prefix_hash: Option<u64>,
 }
@@ -64,6 +67,9 @@ impl SequenceData {
             stream_tool_parser: None,
             pending_tool_calls: Vec::new(),
             pending_finish_logprobs: None,
+            suppressed_tool_markup: String::new(),
+            prompt_replay_consumed: false,
+            stream_role_sent: false,
             images,
             mamba_prefix_hash: None,
         }
@@ -317,6 +323,10 @@ pub struct SequenceGroup {
     pub tool_call_buffer: String,
     pub active_reasoning_end: Option<String>,
     pub in_code_block: bool,
+    /// Token IDs from the generation-prompt suffix (e.g. `<think>\n`) that
+    /// should be replayed through the streaming tool parser before the first
+    /// real decoded token, so the parser sees the reasoning start marker.
+    pub prompt_replay_token_ids: Option<Vec<u32>>,
 }
 
 impl SequenceGroup {
@@ -359,6 +369,7 @@ impl SequenceGroup {
             tool_call_buffer: String::new(),
             active_reasoning_end: None,
             in_code_block: false,
+            prompt_replay_token_ids: None,
         }
     }
 

@@ -3,7 +3,6 @@
 //! Ported from vllm.rs server/parser.rs with tool-parser crate integration.
 
 use super::{Tool, ToolCall};
-pub use openai_protocol::common::{Function, FunctionCallResponse as FunctionCall};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use tokenizers::Tokenizer;
@@ -11,9 +10,6 @@ use tool_parser::{
     types::{StreamingParseResult, ToolCallItem},
     ParserFactory, ToolParser as ExternalToolParser,
 };
-
-const INVALID_TOOL_CALL_NAME: &str = "__invalid_tool_call__";
-const INVALID_TOOL_CALL_RAW_ARGUMENT_KEY: &str = "_raw_tool_call";
 
 /// Convert our local Tool to openai_protocol::Tool for the tool-parser crate.
 fn to_openai_tools(tools: &[crate::tools::Tool]) -> Vec<openai_protocol::common::Tool> {
@@ -285,12 +281,88 @@ const REASONING_MARKERS: &[(&str, &str)] = &[
     ("<thought>", "</thought>"),
 ];
 
+pub fn reasoning_markers() -> &'static [(&'static str, &'static str)] {
+    REASONING_MARKERS
+}
+
 pub fn detect_prefilled_reasoning_end_marker(prompt: &str) -> Option<String> {
     let trimmed = prompt.trim_end();
     for &(start, end) in REASONING_MARKERS {
         if trimmed.ends_with(start) {
             return Some(end.to_string());
         }
+    }
+    None
+}
+
+/// Strip all reasoning start/end markers from a text fragment.
+/// Used by the reasoning content router to remove markers before sending to client.
+pub fn strip_reasoning_markers(text: &str) -> String {
+    let mut result = text.to_string();
+    for &(open, close) in REASONING_MARKERS {
+        result = result.replace(open, "");
+        result = result.replace(close, "");
+    }
+    result
+}
+
+/// Strip all reasoning blocks (matched start/end pairs) from text.
+/// Unmatched opening markers are also removed up to the end of the string.
+pub fn strip_reasoning_blocks(text: &str) -> String {
+    let mut result = text.to_string();
+    for &(start, end) in REASONING_MARKERS {
+        loop {
+            let Some(start_idx) = result.find(start) else {
+                break;
+            };
+            let inner_start = start_idx + start.len();
+            if let Some(end_rel) = result[inner_start..].find(end) {
+                let end_idx = inner_start + end_rel + end.len();
+                result.replace_range(start_idx..end_idx, "");
+            } else {
+                result.truncate(start_idx);
+                break;
+            }
+        }
+    }
+    result
+}
+
+/// Extract reasoning content from text containing reasoning blocks.
+/// Returns `(reasoning_content, remaining_content)` if any matched pair is found.
+pub fn extract_reasoning_content(content: &str) -> Option<(String, String)> {
+    for &(open, close) in REASONING_MARKERS {
+        if !content.contains(open) || !content.contains(close) {
+            continue;
+        }
+        let mut reasoning_parts: Vec<&str> = Vec::new();
+        let mut search_from = 0;
+        let mut last_close_end = 0;
+
+        while let Some(open_idx) = content[search_from..].find(open) {
+            let abs_open = search_from + open_idx;
+            let inner_start = abs_open + open.len();
+            let Some(close_rel) = content[inner_start..].find(close) else {
+                break;
+            };
+            let abs_close = inner_start + close_rel;
+            let block = content[inner_start..abs_close].trim_matches('\n');
+            if !block.is_empty() {
+                reasoning_parts.push(block);
+            }
+            last_close_end = abs_close + close.len();
+            search_from = last_close_end;
+        }
+
+        if last_close_end == 0 {
+            continue;
+        }
+
+        let reasoning = reasoning_parts.join("\n");
+        let remaining = content[last_close_end..]
+            .trim_start_matches('\n')
+            .to_string();
+        return Some((reasoning, remaining));
     }
     None
 }
@@ -312,6 +384,7 @@ pub struct StreamToolParser {
     streaming_calls: Vec<StreamingToolCallState>,
     accumulated_output: String,
     active_reasoning_end: Option<String>,
+    detect_tools_in_reasoning: bool,
     in_code_block: bool,
     saw_buffer_parse_activity: bool,
     buffer_had_parse_activity: bool,
@@ -387,6 +460,7 @@ impl StreamToolParser {
             streaming_calls: Vec::new(),
             accumulated_output: String::new(),
             active_reasoning_end: None,
+            detect_tools_in_reasoning: false,
             in_code_block: false,
             saw_buffer_parse_activity: false,
             buffer_had_parse_activity: false,
@@ -407,8 +481,14 @@ impl StreamToolParser {
     pub fn set_initial_reasoning_end_marker(&mut self, end_marker: Option<String>) {
         self.active_reasoning_end = end_marker;
     }
+    pub fn set_detect_tools_in_reasoning(&mut self, enabled: bool) {
+        self.detect_tools_in_reasoning = enabled;
+    }
     pub fn in_code_block(&self) -> bool {
         self.in_code_block
+    }
+    pub fn accumulated_output_without_reasoning(&self) -> String {
+        strip_reasoning_blocks(&self.accumulated_output)
     }
     pub fn state(&self) -> &ParserState {
         &self.state
@@ -454,11 +534,7 @@ impl StreamToolParser {
         std::mem::take(&mut self.saw_buffer_parse_activity)
     }
 
-    pub fn process_token(&mut self, token_id: u32, token_text: &str) -> StreamResult {
-        self.saw_buffer_parse_activity = false;
-        self.accumulated_output.push_str(token_text);
-
-        // Track code blocks
+    fn update_code_block_state(&mut self, _token_text: &str) {
         let mut code_block_count = 0;
         for line in self.accumulated_output.lines() {
             if line.trim().starts_with("```") {
@@ -466,8 +542,9 @@ impl StreamToolParser {
             }
         }
         self.in_code_block = code_block_count % 2 == 1;
+    }
 
-        // Track reasoning blocks
+    fn update_reasoning_state(&mut self, token_text: &str) {
         if self.active_reasoning_end.is_none() {
             for &(start, end) in REASONING_MARKERS {
                 if token_text.contains(start) || self.accumulated_output.ends_with(start) {
@@ -480,10 +557,85 @@ impl StreamToolParser {
                 self.active_reasoning_end = None;
             }
         }
+    }
+
+    fn mask_tool_envelopes(text: &str, start_tag: &str, end_tag: &str) -> String {
+        if start_tag.is_empty() || end_tag.is_empty() {
+            return text.to_string();
+        }
+        let mut result = text.to_string();
+        loop {
+            let Some(s) = result.find(start_tag) else {
+                break;
+            };
+            let inner = s + start_tag.len();
+            if let Some(e_rel) = result[inner..].find(end_tag) {
+                let e = inner + e_rel + end_tag.len();
+                let mask = " ".repeat(e - s);
+                result.replace_range(s..e, &mask);
+            } else {
+                break;
+            }
+        }
+        result
+    }
+
+    fn resync_reasoning_and_code_block_state(&mut self) {
+        let text = Self::mask_tool_envelopes(
+            &self.accumulated_output,
+            &self.config.start_token_str,
+            &self.config.end_token_str,
+        );
+
+        let mut code_block_count = 0;
+        for line in text.lines() {
+            if line.trim().starts_with("```") {
+                code_block_count += 1;
+            }
+        }
+        self.in_code_block = code_block_count % 2 == 1;
+
+        self.active_reasoning_end = None;
+        for &(start, end) in REASONING_MARKERS {
+            let mut open = false;
+            let mut search_from = 0;
+            while let Some(idx) = text[search_from..].find(start) {
+                let abs = search_from + idx;
+                let after = abs + start.len();
+                if let Some(close_rel) = text[after..].find(end) {
+                    search_from = after + close_rel + end.len();
+                    open = false;
+                } else {
+                    open = true;
+                    break;
+                }
+            }
+            if open {
+                self.active_reasoning_end = Some(end.to_string());
+                break;
+            }
+        }
+    }
+
+    pub fn process_token(&mut self, token_id: u32, token_text: &str) -> StreamResult {
+        self.saw_buffer_parse_activity = false;
+        self.accumulated_output.push_str(token_text);
+
+        // Only track reasoning and code-block state while in Normal mode.
+        // During Buffering the token content is tool-call payload (JSON, XML)
+        // which may contain strings like `</think>` or "```" that must not
+        // corrupt the reasoning/code-block tracking used for Normal-mode gating.
+        if !matches!(self.state, ParserState::Buffering) {
+            self.update_code_block_state(token_text);
+            self.update_reasoning_state(token_text);
+        }
 
         match self.state.clone() {
             ParserState::Normal => {
-                if self.in_reasoning() || self.in_code_block {
+                if self.in_code_block {
+                    return StreamResult::Content(token_text.to_string());
+                }
+                if self.in_reasoning() && !self.detect_tools_in_reasoning {
                     return StreamResult::Content(token_text.to_string());
                 }
                 if self.is_start_token(token_id, token_text) {
@@ -566,14 +718,7 @@ impl StreamToolParser {
                     let tool_calls =
                         futures::executor::block_on(self.build_tool_calls_with_fallback());
                     let result = if tool_calls.is_empty() {
-                        let invalid_tool_calls =
-                            self.build_invalid_tool_calls_from_buffer(&self.buffer);
-                        if !invalid_tool_calls.is_empty() {
-                            tracing::warn!(
-                                "Unable to fully parse tool call; forwarding raw tool-call payload to client"
-                            );
-                            StreamResult::ToolCalls(invalid_tool_calls)
-                        } else if had_partial {
+                        if had_partial {
                             tracing::warn!(
                                 "End marker seen but tool call still incomplete; continuing"
                             );
@@ -596,6 +741,7 @@ impl StreamToolParser {
                     self.pending_end_marker_candidate = false;
                     self.buffer_started_from_special_token = false;
                     self.buffer_saw_non_marker_content = false;
+                    self.resync_reasoning_and_code_block_state();
                     return result;
                 }
                 StreamResult::Buffering
@@ -613,9 +759,8 @@ impl StreamToolParser {
         let tool_calls = futures::executor::block_on(self.build_tool_calls_with_fallback());
         let recoverable = !strict_complete
             && !tool_calls.is_empty()
-            && !self.has_ambiguous_incomplete_end_marker()
-            && (self.can_recover_incomplete_buffered_tool_calls()
-                || self.can_recover_fallback_buffered_tool_calls());
+            && self.can_recover_incomplete_buffered_tool_calls()
+            && !self.has_ambiguous_incomplete_end_marker();
 
         self.parser.reset();
         self.buffer.clear();
@@ -626,6 +771,7 @@ impl StreamToolParser {
         let drop_bare_start_marker = self.should_drop_bare_start_marker();
         self.buffer_started_from_special_token = false;
         self.buffer_saw_non_marker_content = false;
+        self.resync_reasoning_and_code_block_state();
 
         if tool_calls.is_empty() || (!strict_complete && !recoverable) {
             if drop_bare_start_marker {
@@ -633,13 +779,6 @@ impl StreamToolParser {
                     "Dropping buffered bare tool-call marker at stream end without flushing text"
                 );
                 return Some(BufferedFinalizeResult::FlushBuffer(String::new()));
-            }
-            let invalid_tool_calls = self.build_invalid_tool_calls_from_buffer(&buffered_text);
-            if !invalid_tool_calls.is_empty() {
-                tracing::warn!(
-                    "Buffered tool call could not be finalized; forwarding raw tool-call payload to client"
-                );
-                return Some(BufferedFinalizeResult::ToolCalls(invalid_tool_calls));
             }
             tracing::warn!("Buffered tool call could not be finalized; flushing buffered text");
             Some(BufferedFinalizeResult::FlushBuffer(buffered_text))
@@ -669,7 +808,9 @@ impl StreamToolParser {
         self.pending_end_marker_candidate = false;
         self.buffer_started_from_special_token = false;
         self.buffer_saw_non_marker_content = false;
-        std::mem::take(&mut self.buffer)
+        let buf = std::mem::take(&mut self.buffer);
+        self.resync_reasoning_and_code_block_state();
+        buf
     }
 
     pub fn reparse_accumulated_output(&self) -> Vec<ToolCall> {
@@ -735,6 +876,9 @@ impl StreamToolParser {
         if self.config.has_start_tokens() {
             return self.config.start_token_ids.contains(&id);
         }
+        if self.config.start_token_str.is_empty() {
+            return false;
+        }
         let current_line = self.accumulated_output.rsplit('\n').next().unwrap_or("");
         let candidate = current_line.trim_start_matches(|c| c == ' ' || c == '\t' || c == '\r');
         if candidate.starts_with(&self.config.start_token_str) {
@@ -749,6 +893,9 @@ impl StreamToolParser {
     fn is_end_token(&self, id: u32, text: &str) -> bool {
         if self.config.has_end_tokens() {
             return self.config.end_token_ids.contains(&id);
+        }
+        if self.config.end_token_str.is_empty() {
+            return false;
         }
         if self.parse_strategy == "mistral_list" && self.config.end_token_str == "]" {
             return false;
@@ -810,118 +957,6 @@ impl StreamToolParser {
         streaming_calls
     }
 
-    fn build_invalid_tool_calls_from_buffer(&self, buffer: &str) -> Vec<ToolCall> {
-        let trimmed = buffer.trim();
-        if trimmed.is_empty() {
-            return Vec::new();
-        }
-
-        let looks_like_tool_call = self.parser.has_tool_markers(trimmed)
-            || self.contains_tool_markup(trimmed)
-            || (!self.config.start_token_str.is_empty()
-                && trimmed.contains(&self.config.start_token_str))
-            || (!self.config.end_token_str.is_empty()
-                && trimmed.contains(&self.config.end_token_str))
-            || trimmed.contains("<function=")
-            || trimmed.contains("<parameter=");
-        if !looks_like_tool_call {
-            return Vec::new();
-        }
-
-        if let Some(call) = self.invalid_tool_call_from_xml_buffer(trimmed) {
-            return vec![call];
-        }
-        if let Some(call) = self.invalid_tool_call_from_json_buffer(trimmed) {
-            return vec![call];
-        }
-
-        let payload = self.strip_tool_tags(trimmed);
-        let raw_payload = payload.trim();
-        if raw_payload.is_empty() {
-            return Vec::new();
-        }
-        vec![crate::tools::new_tool_call(
-            crate::tools::generate_tool_call_id(),
-            INVALID_TOOL_CALL_NAME,
-            serde_json::json!({
-                INVALID_TOOL_CALL_RAW_ARGUMENT_KEY: raw_payload,
-            })
-            .to_string(),
-        )]
-    }
-
-    fn invalid_tool_call_from_json_buffer(&self, buffer: &str) -> Option<ToolCall> {
-        let payload = self.strip_tool_tags(buffer);
-        let payload = payload.trim();
-        if payload.is_empty() || payload.contains("<function=") {
-            return None;
-        }
-
-        let value = serde_json::from_str::<Value>(payload).ok()?;
-        let object = value.as_object()?;
-        let name = object
-            .get("name")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|name| !name.is_empty())
-            .unwrap_or(INVALID_TOOL_CALL_NAME);
-        let arguments = object
-            .get("arguments")
-            .and_then(|arguments| match arguments {
-                Value::String(raw) => Some(raw.clone()),
-                other => serde_json::to_string(other).ok(),
-            })
-            .unwrap_or_else(|| {
-                serde_json::json!({
-                    INVALID_TOOL_CALL_RAW_ARGUMENT_KEY: payload,
-                })
-                .to_string()
-            });
-
-        Some(crate::tools::new_tool_call(
-            crate::tools::generate_tool_call_id(),
-            name,
-            arguments,
-        ))
-    }
-
-    fn invalid_tool_call_from_xml_buffer(&self, buffer: &str) -> Option<ToolCall> {
-        let function_name = Self::extract_xml_function_name(buffer)
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| INVALID_TOOL_CALL_NAME.to_string());
-        if function_name.is_empty() {
-            return None;
-        }
-
-        let recovered = if function_name == INVALID_TOOL_CALL_NAME {
-            Map::new()
-        } else {
-            Self::extract_xml_parameters_for_function(buffer, &function_name)
-                .into_iter()
-                .map(|(key, value)| (key, Value::String(value)))
-                .collect::<Map<String, Value>>()
-        };
-        let arguments = if recovered.is_empty() {
-            let payload = self.strip_tool_tags(buffer);
-            let raw_payload = payload.trim();
-            if raw_payload.is_empty() {
-                return None;
-            }
-            serde_json::json!({
-                INVALID_TOOL_CALL_RAW_ARGUMENT_KEY: raw_payload,
-            })
-            .to_string()
-        } else {
-            Value::Object(recovered).to_string()
-        };
-
-        Some(crate::tools::new_tool_call(
-            crate::tools::generate_tool_call_id(),
-            function_name,
-            arguments,
-        ))
-    }
-
     async fn has_strict_complete_tool_call(&self) -> bool {
         if !self.has_complete_tool_envelope() {
             return false;
@@ -971,18 +1006,6 @@ impl StreamToolParser {
             args.is_empty()
                 || serde_json::from_str::<Value>(&self.finalize_streamed_arguments(args)).is_ok()
         })
-    }
-
-    fn can_recover_fallback_buffered_tool_calls(&self) -> bool {
-        let trimmed = self.buffer.trim();
-        if trimmed.is_empty() {
-            return false;
-        }
-        if !self.config.start_token_str.is_empty() && trimmed.contains(&self.config.start_token_str)
-        {
-            return true;
-        }
-        self.parser.has_tool_markers(trimmed)
     }
 
     fn should_prefer_fallback_tool_calls(
@@ -1357,23 +1380,6 @@ impl StreamToolParser {
         }
         recovered
     }
-
-    fn extract_xml_function_name(buffer: &str) -> Option<String> {
-        let open_tag = "<function=";
-        let start = buffer.rfind(open_tag)?;
-        let section = &buffer[start + open_tag.len()..];
-        let end = section.find('>')?;
-        let name = section[..end]
-            .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
-            .trim();
-        if name.is_empty() {
-            None
-        } else {
-            Some(name.to_string())
-        }
-    }
 }
 
 fn repair_streamed_json_arguments(raw: &str) -> String {
@@ -1466,6 +1472,32 @@ mod tests {
             StreamResult::Content(s) => assert_eq!(s, "Hello world"),
             _ => panic!("Expected Content"),
         }
+    }
+
+    #[test]
+    fn test_empty_tool_markers_do_not_trigger_buffering() {
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3".into(),
+            ToolConfig {
+                start_token_ids: HashSet::new(),
+                end_token_ids: HashSet::new(),
+                start_token_str: String::new(),
+                end_token_str: String::new(),
+            },
+            Vec::new(),
+            None,
+        );
+
+        match parser.process_token(248069, "</think>") {
+            StreamResult::Content(text) => assert_eq!(text, "</think>"),
+            other => panic!("Expected Content for empty-marker parser, got {:?}", other),
+        }
+        match parser.process_token(1825, "AG") {
+            StreamResult::Content(text) => assert_eq!(text, "AG"),
+            other => panic!("Expected Content for empty-marker parser, got {:?}", other),
+        }
+        assert!(!matches!(parser.state(), ParserState::Buffering));
     }
 
     #[test]
@@ -1575,7 +1607,7 @@ mod tests {
     }
 
     #[test]
-    fn test_finalize_preserves_invalid_tool_call_payload() {
+    fn test_finalize_flushes_unrecoverable_tool_call_payload() {
         let tools = vec![crate::tools::function_tool("glob", "desc").build()];
         let mut parser = StreamToolParser::new_with_config(
             &ToolModelType::Qwen,
@@ -1598,21 +1630,275 @@ mod tests {
         }
 
         match parser.finalize_buffered_tool_calls() {
-            Some(BufferedFinalizeResult::ToolCalls(calls)) => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].function.name, INVALID_TOOL_CALL_NAME);
-                assert!(calls[0]
-                    .function
-                    .arguments
-                    .contains(INVALID_TOOL_CALL_RAW_ARGUMENT_KEY));
-                assert!(calls[0].function.arguments.contains("AGENTS.md"));
+            Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
+                assert!(buffer.contains("AGENTS.md"));
             }
-            other => panic!("Expected invalid tool call passthrough, got {:?}", other),
+            other => panic!("Expected buffered text flush, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_end_marker_then_finalize_preserves_invalid_tool_call_payload() {
+    fn test_reasoning_state_tracking() {
+        let tools = vec![crate::tools::function_tool("test", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3".into(),
+            ToolConfig::for_model_type(&ToolModelType::Qwen),
+            tools,
+            None,
+        );
+        assert!(!parser.in_reasoning());
+
+        parser.process_token(0, "<think>");
+        assert!(parser.in_reasoning());
+
+        parser.process_token(0, "Let me think about this");
+        assert!(parser.in_reasoning());
+
+        parser.process_token(0, "</think>");
+        assert!(!parser.in_reasoning());
+    }
+
+    #[test]
+    fn test_reasoning_then_tool_call() {
+        let tools = vec![crate::tools::function_tool("search", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3".into(),
+            ToolConfig::for_model_type(&ToolModelType::Qwen),
+            tools,
+            None,
+        );
+        parser.set_detect_tools_in_reasoning(true);
+
+        match parser.process_token(0, "<think>") {
+            StreamResult::Content(_) => {}
+            other => panic!("Expected Content for think open, got {:?}", other),
+        }
+        assert!(parser.in_reasoning());
+
+        match parser.process_token(0, "I should search for this") {
+            StreamResult::Content(text) => assert_eq!(text, "I should search for this"),
+            other => panic!("Expected Content in reasoning, got {:?}", other),
+        }
+
+        match parser.process_token(0, "</think>") {
+            StreamResult::Content(_) => {}
+            other => panic!("Expected Content for think close, got {:?}", other),
+        }
+        assert!(!parser.in_reasoning());
+
+        match parser.process_token(151657, "<tool_call>") {
+            StreamResult::Buffering => {}
+            other => panic!("Expected Buffering on tool start, got {:?}", other),
+        }
+
+        match parser.process_token(0, r#"{"name": "search", "arguments": {"q": "test"}}"#) {
+            StreamResult::Buffering => {}
+            other => panic!("Expected Buffering on JSON, got {:?}", other),
+        }
+
+        match parser.process_token(151658, "</tool_call>") {
+            StreamResult::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].function.name, "search");
+            }
+            other => panic!("Expected ToolCalls, got {:?}", other),
+        }
+
+        assert!(!parser.in_reasoning());
+    }
+
+    #[test]
+    fn test_reasoning_state_not_corrupted_during_buffering() {
+        let tools = vec![crate::tools::function_tool("test", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3".into(),
+            ToolConfig::for_model_type(&ToolModelType::Qwen),
+            tools,
+            None,
+        );
+        parser.set_detect_tools_in_reasoning(true);
+
+        parser.process_token(0, "<think>");
+        assert!(parser.in_reasoning());
+
+        parser.process_token(0, "thinking...");
+        parser.process_token(0, "</think>");
+        assert!(!parser.in_reasoning());
+
+        match parser.process_token(151657, "<tool_call>") {
+            StreamResult::Buffering => {}
+            other => panic!("Expected Buffering, got {:?}", other),
+        }
+
+        // </think> inside tool JSON payload must not flip reasoning state
+        parser.process_token(0, r#"{"name": "test", "arguments": {"text": "</think>"}}"#);
+        assert!(!parser.in_reasoning());
+
+        match parser.process_token(151658, "</tool_call>") {
+            StreamResult::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].function.name, "test");
+            }
+            other => panic!("Expected ToolCalls, got {:?}", other),
+        }
+
+        // After tool call completes, reasoning state should be resynced correctly
+        assert!(!parser.in_reasoning());
+    }
+
+    #[test]
+    fn test_tool_call_suppressed_during_active_reasoning() {
+        let tools = vec![crate::tools::function_tool("test", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3".into(),
+            ToolConfig::for_model_type(&ToolModelType::Qwen),
+            tools,
+            None,
+        );
+        // detect_tools_in_reasoning defaults to false
+        assert!(!parser.detect_tools_in_reasoning);
+
+        parser.process_token(0, "<think>");
+        assert!(parser.in_reasoning());
+
+        // Tool-call-like text inside reasoning should NOT trigger buffering
+        match parser.process_token(0, "I could use <tool_call> here") {
+            StreamResult::Content(text) => {
+                assert!(text.contains("<tool_call>"));
+            }
+            other => panic!(
+                "Expected Content (tool suppressed in reasoning), got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn test_prefilled_reasoning_end_marker() {
+        assert_eq!(
+            detect_prefilled_reasoning_end_marker("Hello <think>"),
+            Some("</think>".to_string())
+        );
+        assert_eq!(
+            detect_prefilled_reasoning_end_marker("Hello <|think|>"),
+            Some("<|/think|>".to_string())
+        );
+        assert_eq!(detect_prefilled_reasoning_end_marker("Hello world"), None);
+    }
+
+    #[test]
+    fn test_strip_reasoning_markers() {
+        assert_eq!(strip_reasoning_markers("<think>hello</think>"), "hello");
+        assert_eq!(strip_reasoning_markers("<|think|>hello<|/think|>"), "hello");
+        assert_eq!(
+            strip_reasoning_markers("no markers here"),
+            "no markers here"
+        );
+        assert_eq!(strip_reasoning_markers("<think>"), "");
+        assert_eq!(strip_reasoning_markers("</think>"), "");
+    }
+
+    #[test]
+    fn test_extract_reasoning_content() {
+        let (reasoning, remaining) =
+            extract_reasoning_content("<think>I should search</think>\nHere is the answer")
+                .unwrap();
+        assert_eq!(reasoning, "I should search");
+        assert_eq!(remaining, "Here is the answer");
+
+        let (reasoning, remaining) =
+            extract_reasoning_content("<think>Only reasoning</think>").unwrap();
+        assert_eq!(reasoning, "Only reasoning");
+        assert_eq!(remaining, "");
+
+        assert!(extract_reasoning_content("No reasoning markers here").is_none());
+    }
+
+    #[test]
+    fn test_strip_reasoning_blocks() {
+        assert_eq!(
+            strip_reasoning_blocks("<think>reasoning</think>content"),
+            "content"
+        );
+        assert_eq!(
+            strip_reasoning_blocks("prefix<think>reasoning</think>suffix"),
+            "prefixsuffix"
+        );
+        // Unmatched opening marker strips to end
+        assert_eq!(strip_reasoning_blocks("before<think>unmatched"), "before");
+    }
+
+    #[test]
+    fn test_accumulated_output_without_reasoning() {
+        let tools = vec![crate::tools::function_tool("test", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3".into(),
+            ToolConfig::for_model_type(&ToolModelType::Qwen),
+            tools,
+            None,
+        );
+
+        parser.process_token(0, "<think>reasoning</think>");
+        parser.process_token(151657, "<tool_call>");
+        parser.process_token(0, r#"{"name": "test", "arguments": {}}"#);
+        parser.process_token(151658, "</tool_call>");
+
+        let without = parser.accumulated_output_without_reasoning();
+        assert!(!without.contains("<think>"));
+        assert!(!without.contains("reasoning"));
+        assert!(without.contains("<tool_call>"));
+    }
+
+    #[test]
+    fn test_resync_reasoning_after_tool_call() {
+        let tools = vec![crate::tools::function_tool("test", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Qwen,
+            "qwen3".into(),
+            ToolConfig::for_model_type(&ToolModelType::Qwen),
+            tools,
+            None,
+        );
+        parser.set_detect_tools_in_reasoning(true);
+
+        // Start reasoning
+        parser.process_token(0, "<think>");
+        assert!(parser.in_reasoning());
+
+        // Close reasoning
+        parser.process_token(0, "</think>");
+        assert!(!parser.in_reasoning());
+
+        // Enter tool call buffering
+        match parser.process_token(151657, "<tool_call>") {
+            StreamResult::Buffering => {}
+            other => panic!("Expected Buffering, got {:?}", other),
+        }
+
+        // Complete tool call
+        parser.process_token(0, r#"{"name": "test", "arguments": {}}"#);
+        match parser.process_token(151658, "</tool_call>") {
+            StreamResult::ToolCalls(_) => {}
+            other => panic!("Expected ToolCalls, got {:?}", other),
+        }
+
+        // After tool call, reasoning state should be correctly resynced
+        assert!(!parser.in_reasoning());
+
+        // New content after tool call should be normal content
+        match parser.process_token(0, "After tool call") {
+            StreamResult::Content(text) => assert_eq!(text, "After tool call"),
+            other => panic!("Expected Content after tool call, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_end_marker_then_finalize_flushes_unrecoverable_tool_call_payload() {
         let tools = vec![crate::tools::function_tool("glob", "desc").build()];
         let mut parser = StreamToolParser::new_with_config(
             &ToolModelType::Qwen,
@@ -1643,13 +1929,11 @@ mod tests {
         }
 
         match parser.finalize_buffered_tool_calls() {
-            Some(BufferedFinalizeResult::ToolCalls(calls)) => {
-                assert_eq!(calls.len(), 1);
-                assert_eq!(calls[0].function.name, INVALID_TOOL_CALL_NAME);
-                assert!(calls[0].function.arguments.contains("AGENTS.md"));
+            Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
+                assert!(buffer.contains("AGENTS.md"));
             }
             other => panic!(
-                "Expected invalid tool call passthrough after finalize, got {:?}",
+                "Expected buffered text flush after finalize, got {:?}",
                 other
             ),
         }

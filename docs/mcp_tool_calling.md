@@ -1,44 +1,57 @@
-# MCP Tool Calling in candle-vllm
+# MCP Integration and Tool Calling
 
-`candle-vllm` now supports the Model Context Protocol (MCP) and OpenAI-compatible tool calling. This allows Large Language Models (LLMs) served by `candle-vllm` to interact with external tools and resources.
+`candle-vllm` supports Model Context Protocol (MCP) integration and OpenAI-style tool calling.
 
-## Features
+Important: `candle-vllm` follows the standard OpenAI tool-calling flow. The server injects tools and parses model-emitted tool calls, but clients are still responsible for executing the tools and sending tool results back in the next request.
 
-- **OpenAI-Compatible Tool Calling**: Parse and execute tool calls using standard OpenAI API format.
-- **MCP Client**: Connect to MCP servers to dynamically load tools and resources.
-- **Multiple MCP Servers**: Configure multiple MCP servers via a configuration file or CLI arguments.
-- **Prompt Injection**: Automatically injects available tools into the system prompt.
+## Overview
 
-## Usage
+Implemented capabilities:
 
-### 1. Enable Tool Calling in Requests
+- stdio MCP servers
+- multiple MCP servers from config
+- OpenAI-style `tools` requests
+- streaming and non-streaming tool parsing
+- tool result validation on follow-up requests
 
-When making a request to `/v1/chat/completions`, you can include `tools` definitions manually, or rely on the server to inject MCP tools if configured.
+## Tool calling workflow
 
-**Proprietary Tools (OpenAI Style):**
+1. Configure MCP servers with CLI flags or an MCP config file.
+2. `candle-vllm` loads tool definitions and injects them into the prompt.
+3. The model emits a tool call.
+4. The response finishes with `finish_reason="tool_calls"`.
+5. The client executes the tool and sends the result back as a `role="tool"` message with the matching `tool_call_id`.
+
+## Request example
+
 ```json
 {
-  "model": "qwen2.5-7b",
-  "messages": [{"role": "user", "content": "What's the weather?"}],
+  "model": "default",
+  "messages": [
+    {"role": "user", "content": "List files in the current directory"}
+  ],
   "tools": [
     {
       "type": "function",
       "function": {
-        "name": "get_weather",
-        "description": "Get current weather",
-        "parameters": { ... }
+        "name": "list_files",
+        "description": "List files in a directory",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string"}
+          },
+          "required": ["path"]
+        }
       }
     }
   ]
 }
 ```
 
-**MCP Tools:**
-If you have configured MCP servers, `candle-vllm` will automatically fetch available tools and inject them into the system prompt. The model will then be able to generate tool calls for them.
+## Response shape
 
-### 2. Handling Tool Calls
-
-The server will return tool calls in the response:
+When the model calls a tool, the assistant response returns `tool_calls`:
 
 ```json
 {
@@ -51,46 +64,46 @@ The server will return tool calls in the response:
             "id": "call_123",
             "type": "function",
             "function": {
-              "name": "filesystem_read_file",
-              "arguments": "{\"path\": \"/home/user/workspace/README.md\"}"
+              "name": "list_files",
+              "arguments": "{\"path\":\".\"}"
             }
           }
         ]
-      }
+      },
+      "finish_reason": "tool_calls"
     }
   ]
 }
 ```
 
-**Note:** Currently, `candle-vllm` acts as an OpenAI-compatible *inference server*. It parses tool calls but does typically not execute them automatically (unless configured as an agent, which is experimental). The client application is responsible for executing the tool call and sending the result back to the model if using the standard OpenAI flow.
+The follow-up tool result must be sent back as:
 
-However, the internal `McpClientManager` facilitates checking tools and could be extended for server-side execution in future updates.
-
-## Supported Models
-
-Tool calling relies on the model's ability to output structured calls. We support:
-- OpenAI-compatible (XML/JSON format, with `<tool_call>` and `</tool_call>` flags, and `tool_calls` response chunk)
-
-## TODO
-
-Internal MCP tool call execution (like vLLM.rs)
-
-### Configuration
-
-#### CLI Arguments
-
-You can connect to a local MCP server (stdio transport) using CLI arguments:
-
-```bash
-cargo run --release -- --port 2000 --mcp-command "npx" --mcp-args "-y @modelcontextprotocol/server-filesystem /path/to/allow"
+```json
+{
+  "role": "tool",
+  "tool_call_id": "call_123",
+  "content": "file1\nfile2\nfile3"
+}
 ```
 
-- `--mcp-command`: The command to run the MCP server (e.g., `npx`, `uvx`, `python`).
-- `--mcp-args`: Arguments for the command.
+## Configuration
 
-#### Configuration File
+### CLI
 
-For more complex setups, use a configuration file (JSON):
+- `--mcp-command`: executable for a single stdio MCP server
+- `--mcp-args`: arguments for the MCP server command
+- `--mcp-config`: JSON config file for one or more MCP servers
+- `--enforce-parser`: override the model-selected tool parser
+
+Single-server example:
+
+```bash
+cargo run --release -- --p 8000 \
+  --mcp-command npx \
+  --mcp-args "-y @modelcontextprotocol/server-filesystem /tmp"
+```
+
+### Config file
 
 ```json
 {
@@ -98,19 +111,34 @@ For more complex setups, use a configuration file (JSON):
     "filesystem": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user/workspace"]
-    },
-    "github": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "your-token"
-      }
     }
   }
 }
 ```
 
 Run with:
+
 ```bash
-cargo run --release -- --port 2000 --mcp-config mcp_config.json
+cargo run --release -- --p 8000 --mcp-config mcp_config.json
+```
+
+## Reasoning-content routing
+
+For tool-enabled requests, `CANDLE_VLLM_STREAM_AS_REASONING_CONTENT` controls whether streamed reasoning is emitted in OpenAI-style `reasoning_content` chunks.
+
+```bash
+export CANDLE_VLLM_STREAM_AS_REASONING_CONTENT=1
+```
+
+Set it to `0`, `false`, or `no` to keep reasoning in ordinary `content`
+instead.
+
+## Troubleshooting
+
+- If tool calls are malformed for a specific model, try `--enforce-parser`.
+- For Qwen coder models, `--enforce-parser qwen_coder` is usually the best choice.
+- To inspect exact request/stream output while debugging clients:
+
+```bash
+export CANDLE_VLLM_CHAT_LOGGER=1
 ```

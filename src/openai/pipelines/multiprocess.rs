@@ -101,7 +101,7 @@ impl MultiprocessRunner {
     fn add_remote_tasks(engine: &Arc<RwLock<LLMEngine>>, data: Vec<TaskData>) {
         let mut e = engine.write();
         for task in data {
-            let seq_group = e.create_sequence_group(
+            let mut seq_group = e.create_sequence_group(
                 task.seq_id,
                 task.group_id,
                 &task.prompt,
@@ -117,6 +117,12 @@ impl MultiprocessRunner {
                 None,
                 task.include_usage,
             );
+            if task.prefilled_reasoning_end.is_some() {
+                seq_group.active_reasoning_end = task.prefilled_reasoning_end.clone();
+            }
+            if let Some(replay_ids) = e.match_prompt_replay_candidate(&task.prompt) {
+                seq_group.prompt_replay_token_ids = Some(replay_ids);
+            }
             tracing::debug!("Daemon process: add_sequence to group {}", task.group_id);
             e.scheduler.add_sequence(seq_group);
         }

@@ -1,103 +1,76 @@
-# Embedding Support
+# Embedding Usage
 
-`candle-vllm` supports an OpenAI-compatible `/v1/embeddings` endpoint. This allows you to generate vector embeddings for input text using supported LLM architectures.
+`candle-vllm` exposes an OpenAI-compatible `POST /v1/embeddings` endpoint for text-capable models that implement embedding forward passes in this repo.
 
-## Supported Models
+## Start the server
 
-Currently, the following model architectures support embedding generation:
-- **Llama** (e.g., Llama 2, Llama 3)
-- **Mistral** (e.g., Mistral 7B)
-- **Phi-3** (e.g., Phi-3-mini)
-- **Gemma** (e.g., Gemma 2B/7B)
-- **Qwen** (e.g., Qwen1.5, Qwen2)
-- **Qwen3MoE**
-- **Quantized (GGUF)**:
-    - **Llama**
-    - **Phi-3**
-    - **Qwen**
-    - **Qwen3MoE**
-    - **GLM4**
-
-attempting to use other models for embeddings will result in an error.
-## Run embedding model
-
-Run supported models as usual
-```shell
-cargo run --release --features cuda -- --p 8000 --m Qwen/Qwen3-0.6B
-```
-
-## Endpoint
-
-**POST** `/v1/embeddings`
-
-### Request Body
-
-```json
-{
-  "input": "Your text here",
-  "model": "model-id",
-  "encoding_format":"float"
-}
-```
-
-- `input`: The text string or array of tokens (currently only single string supported) to embed.
-- `model`: (Optional) The ID of the model to use.
-
-### Response
-
-```json
-{
-  "object": "list",
-  "data": [
-    {
-      "object": "embedding",
-      "embedding": [ ... vector of floats ... ],
-      "index": 0
-    }
-  ],
-  "model": "model-id",
-  "usage": {
-    "prompt_tokens": 5,
-    "total_tokens": 5
-  }
-}
-```
-
-## Internal Implementation Details
-
-- **Pooling**: Currently, embedding vectors are the hidden states of the **mean of all tokens**. This behavior is typical for many decoder-only embedding models.
-- **Inference**: Embedding requests are processed by the same `LLMEngine` as generation requests. They are treated as prefill-only tasks with `max_tokens=0`, returning the hidden states instead of logits.
-
-## Usage Example
-
-You can use standard OpenAI clients or `curl`:
+CUDA example:
 
 ```bash
-curl http://localhost:2000/v1/embeddings \
-  -H "Content-Type: application/json" \
-  -d '{
-    "input": "Hello world",
-    "model": "default",
-    "encoding_format":"float"
-  }'
+cargo run --release --features cuda -- --m Qwen/Qwen3-0.6B --p 8000
 ```
 
-Or using the Rust API:
+Metal example:
+
+```bash
+cargo run --release --features metal -- --m google/gemma-3-4b-it --p 8000
+```
+
+## Request examples
+
+Float embeddings with mean pooling:
+
+```bash
+curl -X POST http://localhost:8000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input":"hello world","model":"default","embedding_type":"mean","encoding_format":"float"}'
+```
+
+Base64 embeddings with last-token pooling:
+
+```bash
+curl -X POST http://localhost:8000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{"input":["hello","hola"],"embedding_type":"last","encoding_format":"base64"}'
+```
+
+## Request fields
+
+- `input`: a string or string array.
+- `model`: optional; `default` resolves to the loaded model.
+- `embedding_type`: `mean` or `last`.
+- `encoding_format`: `float` or `base64`.
+
+## Notes
+
+- Embedding requests use the same tokenizer and context limits as chat requests.
+- `embedding_type=mean` averages token hidden states.
+- `embedding_type=last` returns the final token hidden state.
+- Responses follow the OpenAI schema: `data[].embedding` and `usage.prompt_tokens`.
+- Unsupported architectures return an error instead of silently falling back.
+
+## Rust API example
 
 ```rust
-let engine = builder.build()?;
+use candle_vllm::api::{EngineBuilder, ModelRepo};
+use candle_vllm::openai::requests::{EmbeddingInput, EmbeddingRequest};
 
-let input = "Hello, world!";
-println!("Embedding input: {}", input);
+#[tokio::main]
+async fn main() -> candle_core::Result<()> {
+    let engine = EngineBuilder::new(ModelRepo::ModelID(("Qwen/Qwen3-0.6B", None)))
+        .build_async()
+        .await?;
 
-let request = EmbeddingRequest {
-    model: Some("default".to_string()),
-    input: EmbeddingInput::String(input.to_string()),
-    encoding_format: Default::default(),
-    embedding_type: Default::default(),
-};
+    let request = EmbeddingRequest {
+        model: Some("default".to_string()),
+        input: EmbeddingInput::String("hello world".to_string()),
+        encoding_format: Default::default(),
+        embedding_type: Default::default(),
+    };
 
-let response = engine.embed(request)?;
-println!("Response object: {:?}", response.object);
-engine.shutdown();
+    let response = engine.embed(request)?;
+    println!("embeddings: {}", response.data.len());
+    engine.shutdown();
+    Ok(())
+}
 ```

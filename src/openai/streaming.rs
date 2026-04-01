@@ -1,9 +1,11 @@
 use super::responses::{ChatCompletionChunk, EmbeddingResponse};
+use crate::openai::logger::ChatCompletionLogger;
 use axum::response::sse::Event;
 use flume::Receiver;
 use futures::Stream;
 use std::{
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -26,6 +28,7 @@ pub enum ChatResponse {
 pub struct Streamer {
     pub rx: Receiver<ChatResponse>,
     pub status: StreamingStatus,
+    pub logger: Option<Arc<ChatCompletionLogger>>,
 }
 
 impl Stream for Streamer {
@@ -37,12 +40,47 @@ impl Stream for Streamer {
         }
         match self.rx.try_recv() {
             Ok(resp) => match resp {
-                ChatResponse::InternalError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
-                ChatResponse::ValidationError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
-                ChatResponse::ModelError(e) => Poll::Ready(Some(Ok(Event::default().data(e)))),
+                ChatResponse::InternalError(e) => {
+                    if let Some(logger) = &self.logger {
+                        logger.log_error(&e);
+                    }
+                    Poll::Ready(Some(Ok(Event::default().data(e))))
+                }
+                ChatResponse::ValidationError(e) => {
+                    if let Some(logger) = &self.logger {
+                        logger.log_error(&e);
+                    }
+                    Poll::Ready(Some(Ok(Event::default().data(e))))
+                }
+                ChatResponse::ModelError(e) => {
+                    if let Some(logger) = &self.logger {
+                        logger.log_error(&e);
+                    }
+                    Poll::Ready(Some(Ok(Event::default().data(e))))
+                }
                 ChatResponse::Chunk(response) => {
                     if self.status != StreamingStatus::Started {
                         self.status = StreamingStatus::Started;
+                    }
+                    if let Some(logger) = &self.logger {
+                        let mut should_log_final_chunk = false;
+                        for choice in &response.choices {
+                            if let Some(content) = choice.delta.content.as_deref() {
+                                logger.log_stream_token(content);
+                            }
+                            if let Some(reasoning) = choice.delta.reasoning_content.as_deref() {
+                                logger.log_stream_token(reasoning);
+                            }
+                            if let Some(tool_calls) = choice.delta.tool_calls.as_deref() {
+                                logger.log_tool_calls("stream", tool_calls);
+                            }
+                            if choice.finish_reason.is_some() {
+                                should_log_final_chunk = true;
+                            }
+                        }
+                        if should_log_final_chunk {
+                            logger.log_stream_end(&response);
+                        }
                     }
                     Poll::Ready(Some(Event::default().json_data(response)))
                 }

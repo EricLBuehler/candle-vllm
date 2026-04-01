@@ -1,30 +1,47 @@
-## Prefix Cache (KV Reuse)
+# Prefix Cache (KV Reuse)
 
-Prefix cache lets candle-vLLM reuse KV cache blocks from prior requests when a new
-prompt shares a prefix. This accelerates consecutive requests with overlapping
-history (e.g., chat sessions that replay the same system + earlier turns).
+Prefix cache lets `candle-vllm` reuse KV cache blocks from prior requests when new prompts share a prefix.
 
-### How it works
-- The scheduler stores KV cache blocks for finished sequences as cacheable prefix blocks.
-- For a new request, it finds the longest cached prefix (block-aligned) and reuses those blocks.
-- The remaining tokens are prefetched as usual, with KV writes continuing after the cached prefix.
+## How it works
 
-Prefix cache is block-granular: only full KV blocks are reused. If the common
-prefix ends mid-block, the tail of that block is recomputed. This keeps the
-implementation simple and safe, while still capturing most real-world reuse.
-When a prompt is fully cached at block boundaries, the last block is recomputed
-to ensure a non-empty prefill step for correct sampling.
+- Finished sequences contribute reusable full KV blocks.
+- New requests find the longest cached block-aligned prefix.
+- Remaining tokens are prefetched normally after the reused prefix.
 
-### Flags
-- `--prefix-cache`: enable prefix cache.
-- `--prefix-cache-max-tokens <N>`: cap the cache size in tokens (rounded down to block size).
+Prefix cache is block-granular. If a shared prefix ends in the middle of a block, the remainder of that block is recomputed. When a prompt is fully cached at block boundaries, the last block is recomputed so the request still has a non-empty prefill step.
 
-If `--prefix-cache-max-tokens` is not set, a default of ~25% of the GPU KV blocks
-is reserved for cached prefixes.
+## Flags
 
-### Notes
-- Prefix cache uses the same KV memory pool as active sequences. A larger cache
-  reduces the maximum number of concurrent tokens available for new requests.
-- With prefix cache enabled, prefill can reuse cached KV even without
-  `flashattn` or `flashinfer` as long as the backend kernels support it.
-- Sliding window attention limits how much cached context is effectively used.
+- `--prefix-cache`: enable prefix cache
+- `--prefix-cache-max-tokens <N>`: cap cache size in tokens, rounded down to block size
+
+If `--prefix-cache-max-tokens` is omitted, the cache defaults to roughly 25% of GPU KV blocks in this project.
+
+## Hybrid Mamba snapshot stride
+
+For hybrid Mamba models, prefix reuse also needs compatible snapshot boundaries.
+Use `CANDLE_VLLM_MAMBA_SNAPSHOT_STRIDE_BLOCKS` to control sparse decode-time snapshot capture (larger stride size useful for limited GPU memory).
+
+```bash
+export CANDLE_VLLM_MAMBA_SNAPSHOT_STRIDE_BLOCKS=1
+```
+
+Behavior:
+
+- Default: `1`
+- Minimum valid value: `1`
+- Effective token stride: `block_size * stride`
+
+Example with `block_size=64` and stride `8`:
+
+- snapshot boundary every `512` tokens
+- hybrid prefix reuse aligns to the nearest captured boundary
+
+This setting only affects decode-time sparse snapshot capture. Prompt/prefill
+snapshot capture remains dense.
+
+## Notes
+
+- Prefix cache shares the same KV memory pool as active sequences.
+- Larger caches reduce maximum concurrent live tokens.
+- Sliding-window attention limits how much cached context is effectively reused.

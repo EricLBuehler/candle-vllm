@@ -284,33 +284,107 @@ impl ToolResult {
 pub struct ToolFormat {}
 
 impl ToolFormat {
+    fn parser_name_for_prompt(
+        tool_config: &crate::tools::stream_parser::ToolConfig,
+        model_type: &crate::tools::stream_parser::ToolModelType,
+        model_id: &str,
+        enforce_parser: Option<&str>,
+    ) -> &'static str {
+        if let Some(name) = enforce_parser.map(str::trim).filter(|s| !s.is_empty()) {
+            return match name {
+                "qwen_coder" => "qwen_coder",
+                "json" => "json",
+                "qwen" => "qwen",
+                "mistral" => "mistral",
+                "llama" => "llama",
+                "glm47_moe" => "glm47_moe",
+                "deepseek" => "deepseek",
+                _ => {
+                    if tool_config.start_token_str.contains("tool_call") {
+                        "qwen"
+                    } else {
+                        "json"
+                    }
+                }
+            };
+        }
+
+        let model_lower = model_id.to_ascii_lowercase();
+        match model_type {
+            crate::tools::stream_parser::ToolModelType::LLaMa => "llama",
+            crate::tools::stream_parser::ToolModelType::Mistral => "mistral",
+            crate::tools::stream_parser::ToolModelType::Qwen
+            | crate::tools::stream_parser::ToolModelType::Qwen3MoE => {
+                if model_lower.contains("coder") || model_lower.contains("qwen3.5") {
+                    "qwen_coder"
+                } else {
+                    "qwen"
+                }
+            }
+            crate::tools::stream_parser::ToolModelType::Gemma
+            | crate::tools::stream_parser::ToolModelType::Gemma3
+            | crate::tools::stream_parser::ToolModelType::GLM4 => "json",
+            crate::tools::stream_parser::ToolModelType::Phi
+            | crate::tools::stream_parser::ToolModelType::Phi4
+            | crate::tools::stream_parser::ToolModelType::Yi
+            | crate::tools::stream_parser::ToolModelType::StableLM => "qwen",
+            crate::tools::stream_parser::ToolModelType::DeepSeek => "deepseek",
+        }
+    }
+
     /// Get tool prompt for a specific tool config (model-aware tags).
     /// Tool definitions are injected by the chat template — this only provides usage instructions.
-    pub fn get_tool_prompt(tool_config: &crate::tools::stream_parser::ToolConfig) -> String {
+    pub fn get_tool_prompt(
+        tool_config: &crate::tools::stream_parser::ToolConfig,
+        model_type: &crate::tools::stream_parser::ToolModelType,
+        model_id: &str,
+        enforce_parser: Option<&str>,
+    ) -> String {
         let start_tag = &tool_config.start_token_str;
         let end_tag = &tool_config.end_token_str;
-        format!(
-            "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW:\n\
-            For each function call, you MUST wrap function name and arguments in {start_tag}{end_tag} tags.\n\n\
-            Do NOT USE ANY code blocks. Required format:\n\
-            {start_tag}\n\
-            {{\"name\": \"<function-name>\", \"arguments\": <args-json-object>}}\n\
-            {end_tag}\n\n\
-            Rules:\n\
-            - Wrap function name and arguments with {start_tag} and {end_tag} tags\n\
-            - Always use the exact {start_tag}{end_tag} format shown above\n\
-            - Do NOT USE ANY code blocks\n\
-            - Tool-use must be placed **at the end** of your response (AFTER reasoning), **top-level**, and not nested within other tags.\n\
-            - Always adhere to this format for the tool use to ensure proper parsing and execution.\n\
-            - The \"name\" and \"arguments\" are necessary fields\n\
-            - MUST FOLLOW the above instruction when using tool call!"
-        )
+        match Self::parser_name_for_prompt(tool_config, model_type, model_id, enforce_parser) {
+            "qwen_coder" => format!(
+                "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW:\n\
+                For each function call, you MUST wrap the function block in {start_tag}{end_tag} tags.\n\n\
+                Do NOT USE ANY code blocks. Required format:\n\
+                {start_tag}\n\
+                <function=<function-name>>\n\
+                <parameter=<required-parameter-1>>value</parameter>\n\
+                <parameter=<required-parameter-2>>value</parameter>\n\
+                </function>\n\
+                {end_tag}\n\n\
+                Rules:\n\
+                - Use XML-style <function=...> and <parameter=...> tags inside {start_tag}{end_tag}\n\
+                - Do NOT emit JSON for tool calls\n\
+                - Required parameters MUST be provided using their own <parameter=...></parameter> blocks\n\
+                - Tool-use must be placed **at the end** of your response (AFTER reasoning), **top-level**, and not nested within other tags.\n\
+                - Do NOT USE ANY code blocks\n\
+                - MUST FOLLOW the above instruction when using tool call!"
+            ),
+            _ => format!(
+                "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW:\n\
+                For each function call, you MUST wrap function name and arguments in {start_tag}{end_tag} tags.\n\n\
+                Do NOT USE ANY code blocks. Required format:\n\
+                {start_tag}\n\
+                {{\"name\": \"<function-name>\", \"arguments\": <args-json-object>}}\n\
+                {end_tag}\n\n\
+                Rules:\n\
+                - Wrap function name and arguments with {start_tag} and {end_tag} tags\n\
+                - Always use the exact {start_tag}{end_tag} format shown above\n\
+                - Do NOT USE ANY code blocks\n\
+                - Tool-use must be placed **at the end** of your response (AFTER reasoning), **top-level**, and not nested within other tags.\n\
+                - Always adhere to this format for the tool use to ensure proper parsing and execution.\n\
+                - The \"name\" and \"arguments\" are necessary fields\n\
+                - MUST FOLLOW the above instruction when using tool call!"
+            ),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::stream_parser::{ToolConfig, ToolModelType};
 
     #[test]
     fn tool_choice_deserializes_string_modes() {
@@ -347,5 +421,32 @@ mod tests {
         let id = generate_tool_call_id();
         assert!(id.starts_with("call_"));
         assert_eq!(id.len(), 5 + 16); // "call_" + 16 hex chars
+    }
+
+    #[test]
+    fn tool_prompt_uses_xml_for_qwen_coder_models() {
+        let prompt = ToolFormat::get_tool_prompt(
+            &ToolConfig::for_model_type(&ToolModelType::Qwen),
+            &ToolModelType::Qwen,
+            "qwen3-coder",
+            None,
+        );
+        assert!(prompt.contains("<function=<function-name>>"));
+        assert!(prompt.contains("<parameter=<required-parameter-1>>value</parameter>"));
+        assert!(prompt.contains("Do NOT emit JSON for tool calls"));
+    }
+
+    #[test]
+    fn tool_prompt_uses_json_for_regular_qwen_models() {
+        let prompt = ToolFormat::get_tool_prompt(
+            &ToolConfig::for_model_type(&ToolModelType::Qwen),
+            &ToolModelType::Qwen,
+            "qwen3-instruct",
+            None,
+        );
+        assert!(
+            prompt.contains("{\"name\": \"<function-name>\", \"arguments\": <args-json-object>}")
+        );
+        assert!(!prompt.contains("Do NOT emit JSON for tool calls"));
     }
 }
