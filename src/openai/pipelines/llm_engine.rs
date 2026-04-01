@@ -128,51 +128,77 @@ impl LLMEngine {
             for seq in Self::ordered_group_sequences(group) {
                 let seq_id = seq.deref().get_id();
                 let cached_tokens = seq.deref().get_num_cached_tokens();
-                let available = if cached_tokens == 0 {
-                    true
+                let supported_cached_tokens = if cached_tokens == 0 {
+                    0
                 } else if pipeline.has_mamba_slot_for_sequence(seq_id) {
-                    true
+                    cached_tokens
                 } else if let Some(plan) = restore_by_seq.get(&seq_id) {
-                    pipeline.has_mamba_prefix_state(plan.hash)?
+                    if pipeline.has_mamba_prefix_state(plan.hash)? {
+                        cached_tokens
+                    } else {
+                        let mut supported = 0;
+                        for (candidate_tokens, hash) in self
+                            .scheduler
+                            .block_engine
+                            .prefix_hash_chain_for_sequence(&seq, cached_tokens)
+                            .into_iter()
+                            .rev()
+                        {
+                            if pipeline.has_mamba_prefix_state(hash)? {
+                                supported = candidate_tokens;
+                                break;
+                            }
+                        }
+                        supported
+                    }
                 } else {
-                    false
+                    0
                 };
-                statuses.push((seq_id, cached_tokens, available));
+                let available = cached_tokens == 0 || supported_cached_tokens > 0;
+                statuses.push((seq_id, supported_cached_tokens, available));
             }
         }
         Ok(statuses)
     }
 
     #[cfg(feature = "nccl")]
-    pub(crate) fn apply_prompt_mamba_fallbacks(
+    pub(crate) fn apply_prompt_mamba_targets(
         &mut self,
         groups: &VecDeque<Arc<SequenceGroup>>,
-        fallback_seq_ids: &[usize],
+        target_cached_tokens: &[(usize, usize)],
     ) -> Result<()> {
-        if fallback_seq_ids.is_empty() {
+        if target_cached_tokens.is_empty() {
             return Ok(());
         }
 
-        let fallback_ids = fallback_seq_ids
+        let target_by_seq = target_cached_tokens
             .iter()
             .copied()
-            .collect::<std::collections::HashSet<_>>();
-        let restore_by_seq = self
-            .scheduler
-            .prepare_prompt_mamba_restores(groups)
-            .into_iter()
-            .map(|plan| (plan.seq_id, plan.clone()))
             .collect::<HashMap<_, _>>();
 
         for group in groups {
             for seq in Self::ordered_group_sequences(group) {
                 let seq_id = seq.deref().get_id();
-                if !fallback_ids.contains(&seq_id) {
+                let current_cached_tokens = seq.deref().get_num_cached_tokens();
+                let Some(target_cached_tokens) = target_by_seq.get(&seq_id).copied() else {
+                    continue;
+                };
+                if target_cached_tokens >= current_cached_tokens {
                     continue;
                 }
-                if let Some(restore) = restore_by_seq.get(&seq_id) {
-                    self.scheduler.handle_missing_mamba_snapshot(restore);
-                }
+
+                let reason = if target_cached_tokens == 0 {
+                    "missing synchronized mamba snapshot"
+                } else {
+                    "using the largest cross-rank mamba snapshot prefix"
+                };
+                self.scheduler.reconcile_sequence_cached_prefix(
+                    &seq,
+                    seq_id,
+                    current_cached_tokens,
+                    target_cached_tokens,
+                    reason,
+                );
             }
         }
 

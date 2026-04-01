@@ -149,6 +149,11 @@ impl MultiprocessRunner {
         }
 
         if Self::is_master_rank() {
+            let current_cached_by_seq = scheduled
+                .iter()
+                .flat_map(LLMEngine::ordered_group_sequences)
+                .map(|seq| (seq.deref().get_id(), seq.deref().get_num_cached_tokens()))
+                .collect::<HashMap<_, _>>();
             let local_statuses = {
                 let mut e = self.engine.write();
                 e.planned_prompt_cache_statuses(scheduled, self.rank)?
@@ -170,7 +175,7 @@ impl MultiprocessRunner {
                 .into_iter()
                 .map(|(seq_id, cached_tokens, available)| (seq_id, (cached_tokens, available)))
                 .collect::<HashMap<_, _>>();
-            let mut fallback_seq_ids = Vec::new();
+            let mut prompt_cache_targets = Vec::new();
             {
                 let e = self.engine.read();
                 let mut daemon_manager = e.daemon_manager.write();
@@ -189,30 +194,42 @@ impl MultiprocessRunner {
                     })
                     .collect::<Result<Vec<_>>>()?;
                 for seq_id in seq_ids {
-                    let Some((local_cached_tokens, local_available)) = local_by_seq.get(&seq_id)
+                    let Some((local_supported_tokens, local_available)) = local_by_seq.get(&seq_id)
                     else {
                         continue;
                     };
-                    let keep = *local_cached_tokens > 0
-                        && *local_available
-                        && daemon_statuses.iter().all(|statuses| {
-                            statuses.iter().any(
-                                |(daemon_seq_id, daemon_cached_tokens, daemon_available)| {
-                                    *daemon_seq_id == seq_id
-                                        && *daemon_cached_tokens == *local_cached_tokens
-                                        && *daemon_available
-                                },
-                            )
-                        });
-                    if !keep {
-                        fallback_seq_ids.push(seq_id);
+                    let mut target_tokens = if *local_available {
+                        *local_supported_tokens
+                    } else {
+                        0
+                    };
+                    for statuses in &daemon_statuses {
+                        let daemon_tokens = statuses
+                            .iter()
+                            .find_map(|(daemon_seq_id, daemon_cached_tokens, daemon_available)| {
+                                (*daemon_seq_id == seq_id).then_some(if *daemon_available {
+                                    *daemon_cached_tokens
+                                } else {
+                                    0
+                                })
+                            })
+                            .unwrap_or(0);
+                        target_tokens = target_tokens.min(daemon_tokens);
+                    }
+                    if target_tokens
+                        < current_cached_by_seq
+                            .get(&seq_id)
+                            .copied()
+                            .unwrap_or_default()
+                    {
+                        prompt_cache_targets.push((seq_id, target_tokens));
                     }
                 }
             }
-            if !fallback_seq_ids.is_empty() {
+            if !prompt_cache_targets.is_empty() {
                 tracing::warn!(
-                    "Prompt cache fallback decided by main process for seqs {:?}",
-                    fallback_seq_ids
+                    "Prompt cache sync decided by main process: {:?}",
+                    prompt_cache_targets
                 );
             }
             {
@@ -221,12 +238,12 @@ impl MultiprocessRunner {
                 daemon_manager
                     .as_mut()
                     .unwrap()
-                    .send_message(&MessageType::MambaPromptFallback(fallback_seq_ids.clone()))
+                    .send_message(&MessageType::PromptCacheSync(prompt_cache_targets.clone()))
                     .map_err(candle_core::Error::wrap)?;
             }
-            if !fallback_seq_ids.is_empty() {
+            if !prompt_cache_targets.is_empty() {
                 let mut e = self.engine.write();
-                e.apply_prompt_mamba_fallbacks(scheduled, &fallback_seq_ids)?;
+                e.apply_prompt_mamba_targets(scheduled, &prompt_cache_targets)?;
             }
         } else {
             let request = {
@@ -267,7 +284,7 @@ impl MultiprocessRunner {
                     .send_to_main(&MessageType::PromptCacheStatusReply(reply))
                     .map_err(candle_core::Error::wrap)?;
             }
-            let fallback_seq_ids = {
+            let prompt_cache_targets = {
                 let e = self.engine.read();
                 let mut daemon_manager = e.daemon_manager.write();
                 let message = daemon_manager
@@ -275,17 +292,17 @@ impl MultiprocessRunner {
                     .unwrap()
                     .receive_message()
                     .map_err(candle_core::Error::wrap)?;
-                let MessageType::MambaPromptFallback(seq_ids) = message else {
+                let MessageType::PromptCacheSync(targets) = message else {
                     candle_core::bail!(
-                        "Unexpected master message during prompt cache fallback sync: {:?}",
+                        "Unexpected master message during prompt cache sync: {:?}",
                         message
                     );
                 };
-                seq_ids
+                targets
             };
-            if !fallback_seq_ids.is_empty() {
+            if !prompt_cache_targets.is_empty() {
                 let mut e = self.engine.write();
-                e.apply_prompt_mamba_fallbacks(scheduled, &fallback_seq_ids)?;
+                e.apply_prompt_mamba_targets(scheduled, &prompt_cache_targets)?;
             }
         }
 
