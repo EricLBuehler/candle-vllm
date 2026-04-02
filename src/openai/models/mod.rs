@@ -1,3 +1,4 @@
+use std::fmt;
 pub mod deepseek;
 pub mod gemma;
 pub mod gemma3;
@@ -48,7 +49,7 @@ pub struct TokenID(
     #[serde(with = "either::serde_untagged")] pub Either<Option<u32>, Option<Vec<u32>>>,
 );
 
-#[derive(Deserialize, PartialEq, Debug, Clone)]
+#[derive(Deserialize, PartialEq, Clone)]
 pub struct QuantConfig {
     pub quant_method: String,
     #[serde(default)]
@@ -67,6 +68,23 @@ pub struct QuantConfig {
     pub desc_act: Option<bool>,
     pub checkpoint_format: Option<String>,
     pub weight_block_size: Option<Vec<usize>>,
+}
+
+impl fmt::Debug for QuantConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QuantConfig")
+            .field("quant_method", &self.quant_method)
+            .field("activation_scheme", &self.activation_scheme)
+            .field("weight_per_tensor", &self.weight_per_tensor)
+            .field("act_per_tensor", &self.act_per_tensor)
+            .field("bits", &self.bits)
+            .field("group_size", &self.group_size)
+            .field("sym", &self.sym)
+            .field("desc_act", &self.desc_act)
+            .field("checkpoint_format", &self.checkpoint_format)
+            .field("weight_block_size", &self.weight_block_size)
+            .finish()
+    }
 }
 
 #[derive(Deserialize, Clone, Debug)]

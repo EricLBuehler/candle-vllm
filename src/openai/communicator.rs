@@ -107,7 +107,7 @@ pub enum MessageType {
     Sample(Vec<TaskSampleData>),
     PromptCacheStatusRequest(Vec<usize>),
     PromptCacheStatusReply(Vec<(usize, usize, bool)>),
-    MambaPromptFallback(Vec<usize>),
+    PromptCacheSync(Vec<(usize, usize)>),
     Continue,
     Abort(Vec<usize>),
     Finish,

@@ -7,8 +7,6 @@
   <a href="./README-CN.md">简体中文</a> |
 </p>
 
-[![Continuous integration](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml/badge.svg)](https://github.com/EricLBuehler/candle-vllm/actions/workflows/ci.yml)
-
 高效、易用的本地大语言模型（LLM）推理与服务平台，提供OpenAI兼容的API服务。
 
 ## 功能特性
@@ -150,6 +148,16 @@ cargo install --features metal --path .
 
     其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--gpu-memory-fraction` 会在模型加载完成后按 `fraction * 总显存 - 当前占用显存` 自动计算 KV Cache 大小；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--yarn-scaling-factor` 用于手动注入 YaRN RoPE 缩放因子，例如 `4.0`，以在支持的模型上扩展有效上下文长度；`--fp8-kvcache` 参数用于启用 FP8 KV Cache；`--prefix-cache` 启用前缀缓存复用；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--ui-server` 启动内置 Web UI。若要使用 Flash attention 后端，可将示例中的 `flashinfer` 替换为 `flashattn`。
   </details>
+
+## 📚 文档
+- [Crate Usage](docs/rust_crate.md)
+- [Embedding模型使用](docs/embedding.md)
+- [MCP & Tool Calling](docs/mcp_tool_calling.md)
+- [Tool Calling解析](docs/tool_parsing.md)
+- [Prefix Cache](docs/prefix_cache.md)
+- [多模态模型使用](docs/multimodal.md)
+- [OpenCode + Candle-vLLM后端](docs/opencode.md)
+- [Kilo Code + Candle-vLLM后端](docs/kilocode.md)
 
 ## 如何运行模型？
 
@@ -411,13 +419,6 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     
     注意： 绑定顺序可能会根据你的硬件配置有所不同。
   </details>
-
-## 📚 其它文档
-- [Crate Usage](docs/rust_crate.md)
-- [Embedding模型使用](docs/embedding.md)
-- [MCP & Tool Calling](docs/mcp_tool_calling.md)
-- [Prefix Cache](docs/prefix_cache.md)
-- [OpenCode + Candle-vLLM后端](docs/opencode.md)
 
 ## 如何向后端发送请求？
 

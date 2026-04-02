@@ -235,6 +235,46 @@ impl Scheduler {
         }
     }
 
+    pub fn reconcile_sequence_cached_prefix(
+        &mut self,
+        sequence: &Sequence,
+        seq_id: usize,
+        current_cached_tokens: usize,
+        target_cached_tokens: usize,
+        reason: &str,
+    ) {
+        if target_cached_tokens >= current_cached_tokens {
+            return;
+        }
+
+        self.mamba_state.restored_prefix_sequences.remove(&seq_id);
+        if target_cached_tokens == 0 {
+            self.fallback_sequence_to_full_prefill(sequence, seq_id, current_cached_tokens, reason);
+            return;
+        }
+
+        let rebuilt = self
+            .block_engine
+            .rebuild_sequence_with_cached_prefix(sequence, target_cached_tokens);
+        if rebuilt {
+            tracing::warn!(
+                "Seq {} {} (cached {} -> {} tokens); rebuilt block table to shorter cached prefix",
+                seq_id,
+                reason,
+                current_cached_tokens,
+                target_cached_tokens
+            );
+        } else {
+            tracing::warn!(
+                "Seq {} {} (cached {} -> {} tokens); unable to rebuild shorter cached prefix due memory pressure, keeping original cached prefill",
+                seq_id,
+                reason,
+                current_cached_tokens,
+                target_cached_tokens
+            );
+        }
+    }
+
     pub fn fallback_sequence_to_full_prefill(
         &mut self,
         sequence: &Sequence,

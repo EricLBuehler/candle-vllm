@@ -11,6 +11,7 @@ use tokenizers::{EncodeInput, Encoding, Tokenizer};
 #[cfg(feature = "nccl")]
 pub mod communicator;
 pub mod distributed;
+pub mod logger;
 pub mod requests;
 pub mod responses;
 pub mod sampling_params;
@@ -130,6 +131,8 @@ pub struct TaskData {
     pub tools: Vec<Tool>,
     pub images: Option<multimodal::ImageData>,
     pub include_usage: bool,
+    #[serde(default)]
+    pub prefilled_reasoning_end: Option<String>,
 }
 
 pub mod conversation;

@@ -442,6 +442,8 @@ impl Engine {
     ) -> Result<ChatCompletionResponse> {
         if let Messages::Chat(messages) = &mut request.messages {
             crate::openai::requests::normalize_empty_openai_tool_results(messages);
+            crate::openai::requests::validate_openai_tool_messages(messages)
+                .map_err(candle_core::Error::wrap)?;
         }
 
         let (prompt, tokenizer, image_data) = {
@@ -481,15 +483,29 @@ impl Engine {
                         {
                             if role == "system" {
                                 conversation.set_system_message(Some(content.clone()));
+                            } else {
+                                use crate::openai::conversation::Message;
+                                conversation.append_template_message(Message {
+                                    role: role.to_string(),
+                                    content: content.clone(),
+                                    num_images: 0,
+                                    reasoning_content: None,
+                                    tool_calls: None,
+                                    tool_call_id: None,
+                                });
                             }
-                            conversation.append_message(role.to_string(), content.clone());
                         }
                     }
                 }
             };
 
             if !tool_config.tools.is_empty() {
-                let mut tools_prompt = ToolFormat::get_tool_prompt(&pipeline.tool_config);
+                let mut tools_prompt = ToolFormat::get_tool_prompt(
+                    &pipeline.tool_config,
+                    &pipeline.tool_model_type,
+                    &pipeline.tool_parser_model_id,
+                    pipeline.enforce_parser.as_deref(),
+                );
 
                 // Enforce tool_choice=function
                 if let crate::openai::ToolChoiceKind::Function(name) = &tool_config.choice {
@@ -508,20 +524,8 @@ impl Engine {
                 conversation.set_system_message(Some(new_system));
             }
 
-            let enable_thinking = request.thinking.unwrap_or(false);
-            let mut prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
-
-            if e.scheduler.prefix_cache_enabled() {
-                if let Some(repaired) =
-                    crate::openai::conversation::RenderedPromptRepairer::from_conversation(
-                        &conversation,
-                        enable_thinking,
-                    )
-                    .and_then(|r| r.repair(&prompt))
-                {
-                    prompt = repaired;
-                }
-            }
+            let enable_thinking = request.thinking.unwrap_or(true);
+            let prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
 
             (prompt, pipeline.tokenizer.clone(), image_data)
         };
@@ -546,34 +550,41 @@ impl Engine {
         let req_notify = std::sync::Arc::new(tokio::sync::Notify::new());
 
         // Re-add request with req_notify
+        let prefilled_reasoning_end =
+            crate::tools::stream_parser::detect_prefilled_reasoning_end_marker(&prompt);
+
+        let has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
         {
             let mut e = self.engine.write();
+            let mut sampling_params = SamplingParams::new(
+                request.n.unwrap_or(1),
+                request.best_of,
+                request.presence_penalty.unwrap_or(0.0),
+                request.frequency_penalty.unwrap_or(0.0),
+                request.repeat_last_n,
+                request.temperature,
+                request.top_p,
+                request.min_p,
+                request.top_k,
+                request.use_beam_search.unwrap_or(false),
+                1.0,
+                crate::openai::sampling_params::EarlyStoppingCondition::UnlikelyBetterCandidates,
+                request.stop.clone(),
+                request.stop_token_ids.clone().unwrap_or_default(),
+                request.ignore_eos.unwrap_or(false),
+                request.max_tokens.unwrap_or(16),
+                None,
+                None,
+                request.skip_special_tokens.unwrap_or(true),
+                request.thinking,
+            )
+            .map_err(candle_core::Error::msg)?;
+            sampling_params.mcp_mode = if has_tools { Some(true) } else { None };
             e.add_request(
                 token_ids,
                 request_id.clone(),
                 std::time::SystemTime::now(),
-                 SamplingParams::new(
-                    request.n.unwrap_or(1),
-                    request.best_of,
-                    request.presence_penalty.unwrap_or(0.0),
-                    request.frequency_penalty.unwrap_or(0.0),
-                    request.repeat_last_n,
-                    request.temperature,
-                    request.top_p,
-                    request.min_p,
-                    request.top_k,
-                    request.use_beam_search.unwrap_or(false),
-                    1.0,
-                    crate::openai::sampling_params::EarlyStoppingCondition::UnlikelyBetterCandidates,
-                    request.stop.clone(),
-                    request.stop_token_ids.clone().unwrap_or_default(),
-                    request.ignore_eos.unwrap_or(false),
-                    request.max_tokens.unwrap_or(16),
-                    None,
-                    None,
-                    request.skip_special_tokens.unwrap_or(true),
-                    request.thinking,
-                ).map_err(candle_core::Error::msg)?,
+                sampling_params,
                 request.logprobs.unwrap_or(false),
                 false, // is_embedding
                 crate::openai::requests::EncodingFormat::default(),
@@ -581,8 +592,9 @@ impl Engine {
                 request.tools.clone().unwrap_or_default(),
                 image_data,
                 None, // streamer
-                Some(req_notify.clone()), // Use the local notify
+                Some(req_notify.clone()),
                 false,
+                prefilled_reasoning_end,
             );
             self.notify.notify_one();
         }
@@ -603,9 +615,29 @@ impl Engine {
             .map(|(pipeline, _)| pipeline.name().to_string())
             .unwrap_or_else(|| request.model.clone().unwrap_or("default".to_string()));
         if let Some(record) = e.completion_records.get(&request_id) {
+            let mut choices = record.0.clone();
+            if crate::stream_as_reasoning_content() && has_tools {
+                for choice in &mut choices {
+                    if let Some(text) = choice.message.content.take() {
+                        match crate::tools::stream_parser::extract_reasoning_content(&text) {
+                            Some((reasoning, remaining)) => {
+                                choice.message.content = if remaining.is_empty() {
+                                    None
+                                } else {
+                                    Some(remaining)
+                                };
+                                choice.message.reasoning_content = Some(reasoning);
+                            }
+                            None => {
+                                choice.message.content = Some(text);
+                            }
+                        }
+                    }
+                }
+            }
             Ok(ChatCompletionResponse {
                 id: request_id,
-                choices: record.0.clone(),
+                choices,
                 created: record.1.created,
                 model: response_model,
                 object: "chat.completion",
@@ -672,7 +704,6 @@ impl Engine {
                 prompt_tokens,
                 request_id.clone(),
                  std::time::SystemTime::now(),
-                 // Dummy sampling params
                  SamplingParams::new(
                     1, None, 0.0, 0.0, None, None, None, None, None, false, 1.0,
                     crate::openai::sampling_params::EarlyStoppingCondition::UnlikelyBetterCandidates,
@@ -687,6 +718,7 @@ impl Engine {
                 Some(std::sync::Arc::new(tx)),
                 None,
                 false,
+                None,
             );
             self.notify.notify_one();
         }

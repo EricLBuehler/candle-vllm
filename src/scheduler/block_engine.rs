@@ -472,6 +472,58 @@ impl BlockEngine {
         prefix_cache.hash_for_blocks_with_seed(&tokens, full_blocks, seed)
     }
 
+    pub fn exact_prefix_hash_for_sequence(
+        &self,
+        sequence: &Sequence,
+        processed_tokens: usize,
+    ) -> Option<u64> {
+        let prefix_cache = self.prefix_cache.as_ref()?;
+        if !prefix_cache.enabled() {
+            return None;
+        }
+        let tokens = sequence.deref().get_token_ids();
+        let full_blocks = processed_tokens.min(tokens.len()) / self.block_size;
+        if full_blocks == 0 {
+            return None;
+        }
+        let seed = sequence
+            .deref()
+            .get_images()
+            .as_ref()
+            .map(Self::image_prefix_seed);
+        prefix_cache.hash_for_blocks_with_seed(&tokens, full_blocks, seed)
+    }
+
+    pub fn prefix_hash_chain_for_sequence(
+        &self,
+        sequence: &Sequence,
+        processed_tokens: usize,
+    ) -> Vec<(usize, u64)> {
+        let Some(prefix_cache) = self.prefix_cache.as_ref() else {
+            return Vec::new();
+        };
+        if !prefix_cache.enabled() {
+            return Vec::new();
+        }
+        let tokens = sequence.deref().get_token_ids();
+        let full_blocks = processed_tokens.min(tokens.len()) / self.block_size;
+        if full_blocks == 0 {
+            return Vec::new();
+        }
+        let seed = sequence
+            .deref()
+            .get_images()
+            .as_ref()
+            .map(Self::image_prefix_seed);
+        let mut hashes = Vec::with_capacity(full_blocks);
+        for block_count in 1..=full_blocks {
+            if let Some(hash) = prefix_cache.hash_for_blocks_with_seed(&tokens, block_count, seed) {
+                hashes.push((block_count * self.block_size, hash));
+            }
+        }
+        hashes
+    }
+
     pub fn prefix_block_id_for_sequence(
         &self,
         sequence: &Sequence,
@@ -562,6 +614,33 @@ impl BlockEngine {
         valid_blocks
     }
 
+    fn retain_block(&mut self, block: &Arc<PhysicalTokenBlock>) {
+        let (was_zero, is_gpu) = {
+            let mut inner = block.deref_mut();
+            let was_zero = inner.refcount == 0;
+            inner.refcount += 1;
+            (was_zero, inner.is_gpu)
+        };
+        if was_zero {
+            if is_gpu {
+                self.gpu_allocator
+                    .free_blocks
+                    .retain(|candidate| !Arc::ptr_eq(candidate, block));
+            } else {
+                self.cpu_allocator
+                    .free_blocks
+                    .retain(|candidate| !Arc::ptr_eq(candidate, block));
+            }
+        }
+    }
+
+    fn restore_block_table(&mut self, seq_id: usize, table: BlockTable) {
+        for block in &table {
+            self.retain_block(block);
+        }
+        self.block_tables.insert(seq_id, table);
+    }
+
     /// Rebuild a running sequence block table without shared prefix-cache blocks.
     /// Returns false when insufficient free GPU blocks are available for full reallocation.
     pub fn fallback_sequence_to_full_prefill(&mut self, sequence: &Sequence) -> bool {
@@ -581,26 +660,7 @@ impl BlockEngine {
         }
 
         if *self.gpu_allocator.get_num_free_blocks() < logical_blocks {
-            for block in &old_table {
-                let (was_zero, is_gpu) = {
-                    let mut inner = block.deref_mut();
-                    let was_zero = inner.refcount == 0;
-                    inner.refcount += 1;
-                    (was_zero, inner.is_gpu)
-                };
-                if was_zero {
-                    if is_gpu {
-                        self.gpu_allocator
-                            .free_blocks
-                            .retain(|candidate| !Arc::ptr_eq(candidate, block));
-                    } else {
-                        self.cpu_allocator
-                            .free_blocks
-                            .retain(|candidate| !Arc::ptr_eq(candidate, block));
-                    }
-                }
-            }
-            self.block_tables.insert(seq_id, old_table);
+            self.restore_block_table(seq_id, old_table);
             return false;
         }
 
@@ -610,6 +670,81 @@ impl BlockEngine {
         }
         self.block_tables.insert(seq_id, new_table);
         sequence.deref_mut().set_num_cached_tokens(0);
+        sequence.deref_mut().set_mamba_prefix_hash(None);
+        true
+    }
+
+    /// Rebuild a running sequence block table to reuse only the first `cached_tokens`
+    /// of its existing shared prefix blocks, allocating the remainder as fresh GPU blocks.
+    /// Returns false when insufficient GPU blocks are available for the rebuild.
+    pub fn rebuild_sequence_with_cached_prefix(
+        &mut self,
+        sequence: &Sequence,
+        cached_tokens: usize,
+    ) -> bool {
+        if cached_tokens == 0 {
+            return self.fallback_sequence_to_full_prefill(sequence);
+        }
+
+        let seq_id = sequence.deref().get_id();
+        let logical_blocks = sequence.deref().get_logical_token_blocks();
+        let full_blocks = cached_tokens / self.block_size;
+        if full_blocks == 0 || full_blocks > logical_blocks {
+            return self.fallback_sequence_to_full_prefill(sequence);
+        }
+
+        let Some(target_hash) = self.exact_prefix_hash_for_sequence(sequence, cached_tokens) else {
+            return self.fallback_sequence_to_full_prefill(sequence);
+        };
+
+        let Some(old_table) = self.block_tables.remove(&seq_id) else {
+            return false;
+        };
+        if old_table.len() < full_blocks {
+            self.block_tables.insert(seq_id, old_table);
+            return false;
+        }
+
+        let prefix_blocks = old_table
+            .iter()
+            .take(full_blocks)
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for block in &old_table {
+            self.release_block(block.clone());
+        }
+        for block in &prefix_blocks {
+            self.retain_block(block);
+        }
+
+        let suffix_blocks = logical_blocks.saturating_sub(full_blocks);
+        if *self.gpu_allocator.get_num_free_blocks() < suffix_blocks {
+            let _ = self.evict_prefix_cache_until_free(suffix_blocks);
+        }
+
+        if *self.gpu_allocator.get_num_free_blocks() < suffix_blocks {
+            for block in &prefix_blocks {
+                self.release_block(block.clone());
+            }
+            self.restore_block_table(seq_id, old_table);
+            return false;
+        }
+
+        let mut new_table = VecDeque::with_capacity(logical_blocks);
+        for block in prefix_blocks {
+            new_table.push_back(block);
+        }
+        for _ in full_blocks..logical_blocks {
+            new_table.push_back(self.gpu_allocator.allocate());
+        }
+        self.block_tables.insert(seq_id, new_table);
+        sequence
+            .deref_mut()
+            .set_num_cached_tokens(full_blocks * self.block_size);
+        sequence
+            .deref_mut()
+            .set_mamba_prefix_hash(Some(target_hash));
         true
     }
 
@@ -959,5 +1094,43 @@ mod tests {
         let table = engine.block_tables.get(&seq2.deref().get_id()).unwrap();
         assert_eq!(table[0].deref_mut().block_id, cached_block_ids[0]);
         assert_eq!(table[1].deref_mut().block_id, cached_block_ids[1]);
+    }
+
+    #[test]
+    fn rebuild_sequence_with_cached_prefix_shrinks_cached_tokens() {
+        let block_size = 4;
+        let mut engine = BlockEngine::new(
+            block_size,
+            8,
+            8,
+            0,
+            PrefixCacheConfig {
+                enabled: true,
+                max_cached_blocks: 8,
+            },
+            false,
+        );
+
+        let (group, seq) = make_group(
+            1,
+            1,
+            block_size,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        let mut blocks_to_copy = HashMap::new();
+        engine.allocate(&group, &mut blocks_to_copy);
+        seq.deref_mut().set_num_cached_tokens(8);
+
+        let original_table = engine.block_tables.get(&seq.deref().get_id()).unwrap();
+        let original_first_block = original_table[0].deref_mut().block_id;
+        let original_len = original_table.len();
+
+        assert!(engine.rebuild_sequence_with_cached_prefix(&seq, 4));
+
+        let rebuilt_table = engine.block_tables.get(&seq.deref().get_id()).unwrap();
+        assert_eq!(rebuilt_table.len(), original_len);
+        assert_eq!(rebuilt_table[0].deref_mut().block_id, original_first_block);
+        assert_eq!(seq.deref().get_num_cached_tokens(), 4);
+        assert!(seq.deref().get_mamba_prefix_hash().is_some());
     }
 }

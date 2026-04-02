@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +43,8 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<crate::tools::ToolCall>>,
     #[serde(default)]
     pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +89,118 @@ pub fn normalize_empty_openai_tool_results(messages: &mut [ChatMessage]) {
             ));
         }
     }
+}
+
+pub fn validate_openai_tool_messages(messages: &[ChatMessage]) -> Result<(), String> {
+    let mut assistant_tool_call_ids: HashSet<String> = HashSet::new();
+    let mut tool_result_ids_seen: HashSet<String> = HashSet::new();
+    let mut pending_tool_results: Option<HashSet<String>> = None;
+
+    for (idx, msg) in messages.iter().enumerate() {
+        if let Some(expected_results) = pending_tool_results.as_mut() {
+            if msg.role != "tool" {
+                let mut pending_ids = expected_results.iter().cloned().collect::<Vec<_>>();
+                pending_ids.sort();
+                return Err(format!(
+                    "messages[{idx}] must be role=tool to answer pending assistant tool_calls {:?}",
+                    pending_ids
+                ));
+            }
+            if msg.tool_calls.is_some() {
+                return Err(format!(
+                    "messages[{idx}] role=tool must not include tool_calls"
+                ));
+            }
+
+            let call_id = msg.tool_call_id.as_deref().unwrap_or("").trim();
+            if call_id.is_empty() {
+                return Err(format!(
+                    "messages[{idx}] role=tool requires a non-empty tool_call_id"
+                ));
+            }
+            if !tool_result_ids_seen.insert(call_id.to_string()) {
+                return Err(format!(
+                    "messages[{idx}] role=tool has duplicate tool_call_id '{}'",
+                    call_id
+                ));
+            }
+            if !expected_results.remove(call_id) {
+                let mut pending_ids = expected_results.iter().cloned().collect::<Vec<_>>();
+                pending_ids.sort();
+                return Err(format!(
+                    "messages[{idx}] role=tool references unexpected tool_call_id '{}'. pending ids: {:?}",
+                    call_id, pending_ids
+                ));
+            }
+
+            let text = extract_text_from_content(msg.content.as_ref());
+            if text.trim().is_empty() {
+                return Err(format!(
+                    "messages[{idx}] role=tool requires non-empty content"
+                ));
+            }
+            if expected_results.is_empty() {
+                pending_tool_results = None;
+            }
+            continue;
+        }
+
+        match msg.role.as_str() {
+            "assistant" => {
+                if let Some(tool_calls) = &msg.tool_calls {
+                    if tool_calls.is_empty() {
+                        continue;
+                    }
+                    let mut expected_results = HashSet::new();
+                    for (tool_idx, call) in tool_calls.iter().enumerate() {
+                        let call_id = call.id.trim();
+                        if call_id.is_empty() {
+                            return Err(format!(
+                                "messages[{idx}] assistant tool_calls[{tool_idx}] requires a non-empty id"
+                            ));
+                        }
+                        if !expected_results.insert(call_id.to_string()) {
+                            return Err(format!(
+                                "messages[{idx}] assistant tool_call id '{}' is duplicated",
+                                call_id
+                            ));
+                        }
+                        if !assistant_tool_call_ids.insert(call_id.to_string()) {
+                            return Err(format!(
+                                "messages[{idx}] assistant tool_call id '{}' is duplicated",
+                                call_id
+                            ));
+                        }
+                    }
+                    pending_tool_results = Some(expected_results);
+                }
+            }
+            "tool" => {
+                let call_id = msg.tool_call_id.as_deref().unwrap_or("").trim();
+                if !call_id.is_empty() && tool_result_ids_seen.contains(call_id) {
+                    return Err(format!(
+                        "messages[{idx}] role=tool has duplicate tool_call_id '{}'",
+                        call_id
+                    ));
+                }
+                return Err(format!(
+                    "messages[{idx}] role=tool has no preceding assistant tool_calls to answer"
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(pending) = pending_tool_results {
+        let mut pending_ids = pending.into_iter().collect::<Vec<_>>();
+        pending_ids.sort();
+        return Err(format!(
+            "Missing role=tool results for assistant tool_call ids: {:?}",
+            pending_ids
+        ));
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,7 +254,8 @@ pub struct ChatCompletionRequest {
     pub stop_token_ids: Option<Vec<usize>>, //[]
     #[serde(default)]
     pub logprobs: Option<bool>, //false
-    pub thinking: Option<bool>,       //false
+    #[serde(alias = "enable_thinking")]
+    pub thinking: Option<bool>, //false
     #[serde(default)]
     pub tools: Option<Vec<crate::tools::Tool>>,
     #[serde(default)]
@@ -237,7 +352,9 @@ impl Default for EncodingFormat {
 
 #[cfg(test)]
 mod tests {
-    use super::ChatCompletionRequest;
+    use super::{
+        validate_openai_tool_messages, ChatCompletionRequest, ChatMessage, MessageContentType,
+    };
 
     #[test]
     fn chat_completion_request_reads_stream_options() {
@@ -255,5 +372,49 @@ mod tests {
             request.stream_options.map(|options| options.include_usage),
             Some(true)
         );
+    }
+
+    #[test]
+    fn validates_openai_tool_messages_with_known_tool_call_id() {
+        let messages = vec![
+            ChatMessage {
+                role: "assistant".to_string(),
+                content: Some(MessageContentType::PureText(String::new())),
+                tool_calls: Some(vec![crate::tools::ToolCall {
+                    index: None,
+                    id: "call_1".to_string(),
+                    call_type: "function".to_string(),
+                    function: crate::tools::FunctionCall {
+                        name: "test".to_string(),
+                        arguments: "{}".to_string(),
+                    },
+                }]),
+                tool_call_id: None,
+                reasoning_content: None,
+            },
+            ChatMessage {
+                role: "tool".to_string(),
+                content: Some(MessageContentType::PureText("{\"ok\":true}".to_string())),
+                tool_calls: None,
+                tool_call_id: Some("call_1".to_string()),
+                reasoning_content: None,
+            },
+        ];
+
+        assert!(validate_openai_tool_messages(&messages).is_ok());
+    }
+
+    #[test]
+    fn rejects_openai_tool_message_with_no_preceding_assistant_tool_calls() {
+        let messages = vec![ChatMessage {
+            role: "tool".to_string(),
+            content: Some(MessageContentType::PureText("{\"ok\":true}".to_string())),
+            tool_calls: None,
+            tool_call_id: Some("call_1".to_string()),
+            reasoning_content: None,
+        }];
+
+        let err = validate_openai_tool_messages(&messages).unwrap_err();
+        assert!(err.contains("no preceding assistant tool_calls"));
     }
 }

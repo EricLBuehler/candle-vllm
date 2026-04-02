@@ -68,6 +68,7 @@ pub struct PreparedInputs {
 
 pub struct StreamEmission {
     content: Option<String>,
+    reasoning_content: Option<String>,
     tool_calls: Option<Vec<crate::tools::ToolCall>>,
 }
 
@@ -102,6 +103,7 @@ pub struct LLMEngine {
     prefill_chunk_size: Option<usize>,
     pub exit_flag: Arc<AtomicBool>,
     last_decoding_throughput_log_ms: usize,
+    prompt_replay_candidates: Vec<Vec<u32>>,
 }
 
 impl LLMEngine {
@@ -126,51 +128,77 @@ impl LLMEngine {
             for seq in Self::ordered_group_sequences(group) {
                 let seq_id = seq.deref().get_id();
                 let cached_tokens = seq.deref().get_num_cached_tokens();
-                let available = if cached_tokens == 0 {
-                    true
+                let supported_cached_tokens = if cached_tokens == 0 {
+                    0
                 } else if pipeline.has_mamba_slot_for_sequence(seq_id) {
-                    true
+                    cached_tokens
                 } else if let Some(plan) = restore_by_seq.get(&seq_id) {
-                    pipeline.has_mamba_prefix_state(plan.hash)?
+                    if pipeline.has_mamba_prefix_state(plan.hash)? {
+                        cached_tokens
+                    } else {
+                        let mut supported = 0;
+                        for (candidate_tokens, hash) in self
+                            .scheduler
+                            .block_engine
+                            .prefix_hash_chain_for_sequence(&seq, cached_tokens)
+                            .into_iter()
+                            .rev()
+                        {
+                            if pipeline.has_mamba_prefix_state(hash)? {
+                                supported = candidate_tokens;
+                                break;
+                            }
+                        }
+                        supported
+                    }
                 } else {
-                    false
+                    0
                 };
-                statuses.push((seq_id, cached_tokens, available));
+                let available = cached_tokens == 0 || supported_cached_tokens > 0;
+                statuses.push((seq_id, supported_cached_tokens, available));
             }
         }
         Ok(statuses)
     }
 
     #[cfg(feature = "nccl")]
-    pub(crate) fn apply_prompt_mamba_fallbacks(
+    pub(crate) fn apply_prompt_mamba_targets(
         &mut self,
         groups: &VecDeque<Arc<SequenceGroup>>,
-        fallback_seq_ids: &[usize],
+        target_cached_tokens: &[(usize, usize)],
     ) -> Result<()> {
-        if fallback_seq_ids.is_empty() {
+        if target_cached_tokens.is_empty() {
             return Ok(());
         }
 
-        let fallback_ids = fallback_seq_ids
+        let target_by_seq = target_cached_tokens
             .iter()
             .copied()
-            .collect::<std::collections::HashSet<_>>();
-        let restore_by_seq = self
-            .scheduler
-            .prepare_prompt_mamba_restores(groups)
-            .into_iter()
-            .map(|plan| (plan.seq_id, plan.clone()))
             .collect::<HashMap<_, _>>();
 
         for group in groups {
             for seq in Self::ordered_group_sequences(group) {
                 let seq_id = seq.deref().get_id();
-                if !fallback_ids.contains(&seq_id) {
+                let current_cached_tokens = seq.deref().get_num_cached_tokens();
+                let Some(target_cached_tokens) = target_by_seq.get(&seq_id).copied() else {
+                    continue;
+                };
+                if target_cached_tokens >= current_cached_tokens {
                     continue;
                 }
-                if let Some(restore) = restore_by_seq.get(&seq_id) {
-                    self.scheduler.handle_missing_mamba_snapshot(restore);
-                }
+
+                let reason = if target_cached_tokens == 0 {
+                    "missing synchronized mamba snapshot"
+                } else {
+                    "using the largest cross-rank mamba snapshot prefix"
+                };
+                self.scheduler.reconcile_sequence_cached_prefix(
+                    &seq,
+                    seq_id,
+                    current_cached_tokens,
+                    target_cached_tokens,
+                    reason,
+                );
             }
         }
 
@@ -733,7 +761,12 @@ impl LLMEngine {
             prefill_chunk_size,
             exit_flag: Arc::new(AtomicBool::new(false)),
             last_decoding_throughput_log_ms: 0,
+            prompt_replay_candidates: Vec::new(),
         }));
+        {
+            let mut e = engine.write();
+            e.init_prompt_replay_candidates();
+        }
         let engine_clone = engine.clone();
 
         let mut ranks = Vec::<usize>::new();
@@ -897,7 +930,7 @@ impl LLMEngine {
                 .senders
                 .get(&task.request_id)
                 .and_then(|opt_arc_sender| opt_arc_sender.as_ref().map(|arc| arc.as_ref().clone()));
-            let seq_group = self.create_sequence_group(
+            let mut seq_group = self.create_sequence_group(
                 task.seq_id,
                 task.group_id,
                 &task.prompt,
@@ -913,6 +946,17 @@ impl LLMEngine {
                 sender,
                 task.include_usage,
             );
+            if task.prefilled_reasoning_end.is_some() {
+                seq_group.active_reasoning_end = task.prefilled_reasoning_end.clone();
+            }
+            if let Some(replay_ids) = self.match_prompt_replay_candidate(&task.prompt) {
+                tracing::info!(
+                    "Matched prompt replay candidate ({} token(s)) for group {}",
+                    replay_ids.len(),
+                    task.group_id
+                );
+                seq_group.prompt_replay_token_ids = Some(replay_ids);
+            }
             tracing::debug!("Main process: add_sequence to group {}", task.group_id);
             self.scheduler.add_sequence(seq_group);
         }
@@ -930,6 +974,154 @@ impl LLMEngine {
         rank: usize,
     ) -> Option<&mut (Box<DefaultPipeline>, CacheEngine)> {
         self.pipelines.get_mut(&rank)
+    }
+
+    /// Build prompt-replay candidates from the chat template.  Each candidate
+    /// is a token-ID suffix (e.g. the IDs for `<think>\n`) that the template
+    /// appends after the assistant header when `add_generation_prompt` is true.
+    ///
+    /// At request time, if the encoded prompt ends with one of these suffixes
+    /// the matching IDs are stored on the `SequenceGroup` and replayed through
+    /// the streaming tool parser before the first real decoded token, so the
+    /// parser naturally enters reasoning mode.
+    pub fn build_prompt_replay_candidates(
+        tokenizer: &tokenizers::Tokenizer,
+        conversation: &crate::openai::conversation::default_conversation::DefaultConversation,
+        tools: &Vec<crate::tools::Tool>,
+    ) -> Vec<Vec<u32>> {
+        let mut replay_conversation = conversation.clone();
+        replay_conversation.clear_message();
+        replay_conversation.append_template_message(crate::openai::conversation::Message {
+            role: "user".to_string(),
+            content: "__CANDLE_VLLM_REPLAY_PROBE__".to_string(),
+            num_images: 0,
+            reasoning_content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        });
+
+        let mut candidates = Vec::new();
+
+        for enable_thinking in [true, false] {
+            let rendered = match replay_conversation.apply_chat_template(
+                true,
+                enable_thinking,
+                tools,
+            ) {
+                Ok(r) => r,
+                Err(err) => {
+                    tracing::debug!(
+                        "Prompt replay candidate skipped: apply_chat_template(add_generation_prompt=true, enable_thinking={}) failed: {:?}",
+                        enable_thinking,
+                        err
+                    );
+                    continue;
+                }
+            };
+            let Some(replay_suffix) = replay_conversation.generation_prompt_replay_suffix(
+                enable_thinking,
+                tools,
+                &rendered,
+            ) else {
+                tracing::debug!(
+                    "Prompt replay candidate skipped: no replay suffix extracted for enable_thinking={}",
+                    enable_thinking
+                );
+                continue;
+            };
+            let encoding = match tokenizer.encode(replay_suffix.as_str(), true) {
+                Ok(enc) => enc,
+                Err(err) => {
+                    tracing::warn!(
+                        "Prompt replay candidate skipped: tokenizer.encode failed for suffix {:?}: {:?}",
+                        replay_suffix,
+                        err
+                    );
+                    continue;
+                }
+            };
+            let ids = encoding.get_ids().to_vec();
+            if let Some(replay_ids) = Self::trim_prompt_replay_prefix(&ids, tokenizer) {
+                tracing::info!(
+                    "Missing suffix detected {:?} -> {:?}",
+                    replay_suffix,
+                    replay_ids
+                );
+                candidates.push(replay_ids);
+            } else {
+                tracing::warn!(
+                    "Prompt replay suffix extracted but no reasoning-start token was recognized in {:?} -> {:?}. Replay detection disabled for this suffix.",
+                    replay_suffix,
+                    ids
+                );
+            }
+        }
+
+        candidates.sort_by_key(|ids| std::cmp::Reverse(ids.len()));
+        candidates.dedup();
+        candidates
+    }
+
+    fn trim_prompt_replay_prefix(
+        replay_ids: &[u32],
+        tokenizer: &tokenizers::Tokenizer,
+    ) -> Option<Vec<u32>> {
+        let mut reasoning_start_ids = std::collections::HashSet::new();
+        for &(start, _) in crate::tools::stream_parser::reasoning_markers() {
+            for add_special_tokens in [true, false] {
+                if let Ok(encoding) = tokenizer.encode(start, add_special_tokens) {
+                    let ids = encoding.get_ids();
+                    if ids.len() == 1 {
+                        reasoning_start_ids.insert(ids[0]);
+                    }
+                }
+            }
+            if let Some(id) = tokenizer.get_vocab(true).get(start).copied() {
+                reasoning_start_ids.insert(id);
+            }
+        }
+
+        tracing::debug!(
+            "Prompt replay trim candidates: replay_ids={:?}, reasoning_start_ids={:?}",
+            replay_ids,
+            reasoning_start_ids
+        );
+
+        let start_idx = replay_ids
+            .iter()
+            .position(|token_id| reasoning_start_ids.contains(token_id))?;
+        Some(replay_ids[start_idx..].to_vec())
+    }
+
+    /// Check if the prompt token IDs end with one of the replay candidates.
+    pub fn match_prompt_replay_candidate(&self, prompt_token_ids: &[u32]) -> Option<Vec<u32>> {
+        self.prompt_replay_candidates
+            .iter()
+            .find(|candidate| prompt_token_ids.ends_with(candidate.as_slice()))
+            .cloned()
+    }
+
+    /// Initialize prompt replay candidates from the primary pipeline's
+    /// tokenizer and conversation template.  Called once after engine creation.
+    pub fn init_prompt_replay_candidates(&mut self) {
+        let Some((pipeline, _)) = self.get_pipeline(0) else {
+            return;
+        };
+        let tokenizer = pipeline.tokenizer().clone();
+        let conversation = pipeline.conversation.clone();
+        let candidates =
+            Self::build_prompt_replay_candidates(&tokenizer, &conversation, &Vec::new());
+        if !candidates.is_empty() {
+            tracing::info!(
+                "Initialized {} prompt replay candidate(s)",
+                candidates.len()
+            );
+        } else {
+            tracing::warn!(
+                "Initialized 0 prompt replay candidates; missing-suffix replay is disabled for the current tokenizer/chat template"
+            );
+        }
+        self.prompt_replay_candidates = candidates;
     }
 
     #[cfg(feature = "flashinfer")]
@@ -1342,7 +1534,10 @@ impl LLMEngine {
                     if let Some(sender) = &group.sender {
                         let emission =
                             self.collect_stream_emission_for_token(rank, group, &seq, &logprobs);
-                        if emission.tool_calls.is_some() || emission.content.is_some() {
+                        if emission.tool_calls.is_some()
+                            || emission.content.is_some()
+                            || emission.reasoning_content.is_some()
+                        {
                             self.send_stream_emission(rank, sender, group, &seq, emission, None);
                         }
                     }
@@ -1352,19 +1547,19 @@ impl LLMEngine {
                     let seq = Self::primary_sequence(group);
                     self.apply_pending_finish_logprobs(rank, group, &seq);
                     if let Some(sender) = &group.sender {
-                        let emission = self.collect_stream_emission_on_finish(group, &seq);
-                        let stream_finish_reason = if finish_reason == "tool_calls" {
-                            "stop".to_string()
-                        } else {
-                            finish_reason.clone()
-                        };
+                        let emission = self.collect_stream_emission_on_finish(rank, group, &seq);
+                        // When emission contains tool_calls, send_stream_emission
+                        // handles the two-chunk protocol (tool delta + finish) and
+                        // ignores this finish_reason.  For the non-tool branch the
+                        // sampler's finish_reason is forwarded as-is ("stop",
+                        // "length", etc.).
                         self.send_stream_emission(
                             rank,
                             sender,
                             group,
                             &seq,
                             emission,
-                            Some(stream_finish_reason),
+                            Some(finish_reason.clone()),
                         );
                     }
                     seq.deref_mut().set_finish_reason(finish_reason);
@@ -1455,7 +1650,7 @@ impl LLMEngine {
                         let should_parse_tools = group.sampling_params.mcp_mode.is_some();
                         let mut finish_reason = seq.deref_mut().get_finish_reason().clone();
 
-                        let (content, tool_calls) = if should_parse_tools {
+                        let (content, tool_calls, full_accumulated) = if should_parse_tools {
                             let mut parser = StreamToolParser::new_with_config(
                                 &pipeline.tool_model_type,
                                 pipeline.tool_parser_model_id.clone(),
@@ -1463,8 +1658,35 @@ impl LLMEngine {
                                 group.tools.clone(),
                                 pipeline.enforce_parser.clone(),
                             );
+                            if group.active_reasoning_end.is_some() {
+                                parser.set_initial_reasoning_end_marker(
+                                    group.active_reasoning_end.clone(),
+                                );
+                            }
+                            if crate::stream_as_reasoning_content() {
+                                parser.set_detect_tools_in_reasoning(true);
+                            }
                             let mut pending_tool_calls = Vec::new();
                             let mut accumulated = String::new();
+
+                            if let Some(replay_ids) = group.prompt_replay_token_ids.as_ref() {
+                                for &token_id in replay_ids {
+                                    let token_text = pipeline
+                                        .tokenizer()
+                                        .decode(&[token_id], false)
+                                        .unwrap_or_default();
+                                    match parser.process_token(token_id, &token_text) {
+                                        StreamResult::Content(text)
+                                        | StreamResult::FlushBuffer(text) => {
+                                            accumulated.push_str(&text);
+                                        }
+                                        StreamResult::Buffering => {}
+                                        StreamResult::ToolCalls(mut calls) => {
+                                            pending_tool_calls.append(&mut calls);
+                                        }
+                                    }
+                                }
+                            }
 
                             for output in &outputs {
                                 match parser.process_token(output.token, &output.bytes) {
@@ -1502,6 +1724,22 @@ impl LLMEngine {
                                         reparsed.len()
                                     );
                                     pending_tool_calls.append(&mut reparsed);
+                                } else {
+                                    let acc = parser.accumulated_output().to_string();
+                                    let stripped = parser.accumulated_output_without_reasoning();
+                                    if stripped != acc && !stripped.trim().is_empty() {
+                                        let stripped_calls = futures::executor::block_on(
+                                            parser.parse_complete_with_fallback(&stripped),
+                                        );
+                                        if !stripped_calls.is_empty() {
+                                            warn!(
+                                                "Recovered {} tool call(s) from reasoning-stripped fallback parse",
+                                                stripped_calls.len()
+                                            );
+                                            reparsed = stripped_calls;
+                                            pending_tool_calls.append(&mut reparsed);
+                                        }
+                                    }
                                 }
                             }
 
@@ -1510,40 +1748,106 @@ impl LLMEngine {
                                 accumulated.push_str(&buffered_finish_content);
                             }
 
+                            let full_acc = parser.accumulated_output().to_string();
+
                             if pending_tool_calls.is_empty() {
-                                let content = if accumulated.is_empty() {
+                                let fallback_text = if parser.contains_tool_markup(&accumulated) {
+                                    parser.sanitize_tool_markup_for_display(&accumulated)
+                                } else {
+                                    accumulated
+                                };
+                                let content = if fallback_text.is_empty() {
                                     None
                                 } else {
-                                    Some(accumulated)
+                                    Some(fallback_text)
                                 };
-                                (content, None)
+                                (content, None, full_acc)
                             } else {
                                 finish_reason = "tool_calls".to_string();
-                                (None, Some(pending_tool_calls))
+                                (None, Some(pending_tool_calls), full_acc)
                             }
                         } else {
                             let data = outputs
                                 .iter()
                                 .map(|x| x.token.try_into().unwrap())
                                 .collect::<Vec<_>>();
-                            let data = pipeline
+                            let mut data = pipeline
                                 .tokenizer()
                                 .decode(&data, group.sampling_params.skip_special_tokens)
                                 .unwrap();
-                            (Some(data), None)
+                            if let Some(replay_ids) = group.prompt_replay_token_ids.as_ref() {
+                                let replay = pipeline
+                                    .tokenizer()
+                                    .decode(replay_ids, false)
+                                    .unwrap_or_default();
+                                if !replay.is_empty() {
+                                    data = format!("{replay}{data}");
+                                }
+                            }
+                            let full_acc = data.clone();
+                            (Some(data), None, full_acc)
                         };
 
                         if tool_calls.is_none() && finish_reason == "tool_calls" {
                             finish_reason = "stop".to_string();
                         }
 
+                        let has_tool_calls = tool_calls.is_some();
+
+                        // Extract reasoning from the full accumulated output
+                        // so it is available even when tool calls consumed
+                        // the content (setting it to None).
+                        let reasoning_content =
+                            if crate::stream_as_reasoning_content() && should_parse_tools {
+                                if !full_accumulated.is_empty() {
+                                    crate::tools::stream_parser::extract_reasoning_content(
+                                        &full_accumulated,
+                                    )
+                                    .map(|(r, _)| r)
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+
+                        let content = if crate::stream_as_reasoning_content()
+                            && should_parse_tools
+                            && content.is_some()
+                        {
+                            match content {
+                                Some(text) => {
+                                    match crate::tools::stream_parser::extract_reasoning_content(
+                                        &text,
+                                    ) {
+                                        Some((_reasoning, remaining)) => {
+                                            if remaining.is_empty() {
+                                                None
+                                            } else {
+                                                Some(remaining)
+                                            }
+                                        }
+                                        None => Some(text),
+                                    }
+                                }
+                                None => None,
+                            }
+                        } else {
+                            content
+                        };
+
                         choices.push(ChatChoice {
                             message: ChatChoiceData {
                                 role: "assistant".to_string(),
                                 content,
+                                reasoning_content,
                                 tool_calls,
                             },
-                            finish_reason: Some(finish_reason),
+                            finish_reason: Some(if has_tool_calls {
+                                "tool_calls".to_string()
+                            } else {
+                                finish_reason
+                            }),
                             index,
                             logprobs: if group.use_logprobs {
                                 Some(WrapperLogprobs { content: outputs })
@@ -1601,7 +1905,9 @@ impl LLMEngine {
                                     None,
                                     None,
                                     None,
-                                    Some(usage.clone()),
+                                    None,
+                                    None,
+                                    Some(usage),
                                     pipeline,
                                 );
                                 let _ = sender.send(ChatResponse::Chunk(usage_chunk));
@@ -1679,6 +1985,7 @@ impl LLMEngine {
         sender: Option<Arc<Sender<ChatResponse>>>,
         sync_notify: Option<Arc<Notify>>,
         include_usage: bool,
+        prefilled_reasoning_end: Option<String>,
     ) {
         let prompt_len = prompt.len();
         let sync_notify = sync_notify.clone();
@@ -1717,6 +2024,7 @@ impl LLMEngine {
             tools,
             images,
             include_usage,
+            prefilled_reasoning_end,
         };
         let mut waiting_tasks = self.waiting_tasks.write();
         waiting_tasks.push(task);

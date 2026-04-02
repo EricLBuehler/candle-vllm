@@ -865,6 +865,7 @@ pub fn convert_chat_message(
             role,
             content,
             num_images: 0,
+            reasoning_content: msg.reasoning_content.clone(),
             tool_calls: Some(template_calls),
             tool_call_id: None,
         });
@@ -882,6 +883,7 @@ pub fn convert_chat_message(
             role,
             content,
             num_images: 0,
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: msg.tool_call_id.clone(),
         });
@@ -910,7 +912,11 @@ pub fn convert_chat_message(
         }
     }
 
-    Ok(Message::new(role, prompt.trim().to_owned(), images.len()))
+    let mut message = Message::new(role.clone(), prompt.trim().to_owned(), images.len());
+    if role == "assistant" {
+        message.reasoning_content = msg.reasoning_content.clone();
+    }
+    Ok(message)
 }
 
 pub fn build_messages_and_images(

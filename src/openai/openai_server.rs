@@ -1,8 +1,8 @@
-use super::conversation::RenderedPromptRepairer;
+use super::logger::ChatCompletionLogger;
 use super::requests::Messages;
 use super::requests::{
-    normalize_empty_openai_tool_results, ChatCompletionRequest, EmbeddingRequest, EmbeddingType,
-    EncodingFormat,
+    normalize_empty_openai_tool_results, validate_openai_tool_messages, ChatCompletionRequest,
+    EmbeddingRequest, EmbeddingType, EncodingFormat,
 };
 use super::responses::{APIError, ChatCompletionResponse, ChatResponder};
 use super::sampling_params::{EarlyStoppingCondition, SamplingParams};
@@ -10,6 +10,9 @@ use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
 use crate::openai::multimodal::{build_messages_and_images, ImageData};
 use crate::openai::{resolve_tools_for_request, ResolvedToolConfig};
+use crate::tools::stream_parser::{
+    detect_prefilled_reasoning_end_marker, extract_reasoning_content,
+};
 use crate::tools::ToolFormat;
 use axum::response::sse::KeepAlive;
 use axum::{
@@ -86,14 +89,27 @@ async fn get_gen_prompt(
                 if role == "system" {
                     conversation.set_system_message(Some(content.clone()));
                 } else {
-                    conversation.append_message(role.to_string(), content)
+                    use crate::openai::conversation::Message;
+                    conversation.append_template_message(Message {
+                        role: role.to_string(),
+                        content,
+                        num_images: 0,
+                        reasoning_content: None,
+                        tool_calls: None,
+                        tool_call_id: None,
+                    });
                 }
             }
         }
     }
 
     if !tool_config.tools.is_empty() {
-        let mut tools_prompt = ToolFormat::get_tool_prompt(&pipeline.0.tool_config);
+        let mut tools_prompt = ToolFormat::get_tool_prompt(
+            &pipeline.0.tool_config,
+            &pipeline.0.tool_model_type,
+            &pipeline.0.tool_parser_model_id,
+            pipeline.0.enforce_parser.as_deref(),
+        );
 
         // Enforce tool_choice=function by prepending a mandatory instruction
         if let crate::openai::ToolChoiceKind::Function(name) = &tool_config.choice {
@@ -112,17 +128,8 @@ async fn get_gen_prompt(
         conversation.set_system_message(Some(new_system));
     }
 
-    let enable_thinking = request.thinking.unwrap_or(false);
-    let mut prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
-
-    if model.scheduler.prefix_cache_enabled() {
-        if let Some(repaired) =
-            RenderedPromptRepairer::from_conversation(&conversation, enable_thinking)
-                .and_then(|r| r.repair(&prompt))
-        {
-            prompt = repaired;
-        }
-    }
+    let enable_thinking = request.thinking.unwrap_or(true);
+    let prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
 
     Ok((prompt, image_data))
 }
@@ -192,8 +199,15 @@ pub async fn chat_completions(
     request: Json<ChatCompletionRequest>,
 ) -> ChatResponder {
     let mut request = request.0;
+    let logger = ChatCompletionLogger::new();
+    if let Some(ref l) = logger {
+        l.log_request(&request);
+    }
     if let Messages::Chat(messages) = &mut request.messages {
         normalize_empty_openai_tool_results(messages);
+        if let Err(err) = validate_openai_tool_messages(messages) {
+            return ChatResponder::ValidationError(APIError::new(err));
+        }
     }
 
     #[cfg(feature = "nccl")]
@@ -234,6 +248,9 @@ pub async fn chat_completions(
         };
 
     debug!("\n\n\nPrompt {:?}", prompt);
+    if let Some(ref l) = logger {
+        l.log_prompt(&prompt);
+    }
 
     let request_id = format!("cmpl-{}", Uuid::new_v4());
 
@@ -296,6 +313,8 @@ pub async fn chat_completions(
     let has_tools = !tool_config.tools.is_empty();
     sampling_params.mcp_mode = if has_tools { Some(true) } else { None };
 
+    let prefilled_reasoning_end = detect_prefilled_reasoning_end_marker(&prompt);
+
     let (response_tx, rx) = flume::unbounded();
     tracing::info!("{:?}", sampling_params);
 
@@ -320,7 +339,6 @@ pub async fn chat_completions(
     let _ = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
             {
-                //send completion request to inference engine
                 let mut model = data.model.write();
                 model.add_request(
                     token_ids,
@@ -340,6 +358,7 @@ pub async fn chat_completions(
                     },
                     sync_completion_notify,
                     include_usage,
+                    prefilled_reasoning_end,
                 );
                 model.notify.notify_one();
             }
@@ -347,10 +366,14 @@ pub async fn chat_completions(
     });
 
     if stream_request {
+        if let Some(ref l) = logger {
+            l.log_start_response();
+        }
         ChatResponder::Streamer(
             Sse::new(Streamer {
                 rx,
                 status: StreamingStatus::Uninitialized,
+                logger,
             })
             .keep_alive(
                 KeepAlive::new()
@@ -379,8 +402,32 @@ pub async fn chat_completions(
             (record.0.clone(), record.1.clone())
         };
 
-        // Check for tool calls in the output
         let mut final_choices = choices.clone();
+
+        // Extract reasoning content BEFORE tool parsing so that reasoning
+        // blocks are preserved even when tool calls consume the remaining
+        // content.  Without this, tool parsing sets content=None and the
+        // subsequent reasoning extraction finds nothing.
+        if crate::stream_as_reasoning_content() && has_tools {
+            for choice in &mut final_choices {
+                if let Some(text) = choice.message.content.take() {
+                    match extract_reasoning_content(&text) {
+                        Some((reasoning, remaining)) => {
+                            choice.message.content = if remaining.is_empty() {
+                                None
+                            } else {
+                                Some(remaining)
+                            };
+                            choice.message.reasoning_content = Some(reasoning);
+                        }
+                        None => {
+                            choice.message.content = Some(text);
+                        }
+                    }
+                }
+            }
+        }
+
         if has_tools {
             let parser = crate::tools::parser::ToolParser::new();
             for choice in &mut final_choices {
@@ -398,14 +445,18 @@ pub async fn chat_completions(
             }
         }
 
-        ChatResponder::Completion(ChatCompletionResponse {
+        let response = ChatCompletionResponse {
             id: request_id_clone,
             choices: final_choices,
             created: usage.created,
             model: model_name,
             object: "chat.completion",
             usage: usage,
-        })
+        };
+        if let Some(ref l) = logger {
+            l.log_response(&response);
+        }
+        ChatResponder::Completion(response)
     }
 }
 
@@ -506,6 +557,7 @@ pub async fn create_embeddings(
                     Some(Arc::new(response_tx)),
                     None,
                     false,
+                    None,
                 );
                 model.notify.notify_one();
             }
