@@ -20,13 +20,31 @@ use crate::{
             DefaultConversation, DefaultConversationSeparators, SeparatorStyle,
         },
         models::{
-            deepseek::DeepSeek, gemma::Gemma, gemma3::Gemma3,
-            gemma3_vl::Gemma3ForConditionalGeneration, glm4::GLM4, llama::Llama, mistral::Mistral,
-            mistral3_vl::Mistral3ForConditionalGeneration, phi2::Phi2,
-            phi4::Phi4ForCausalLM as Phi4, quantized_glm4::GGUFGLM4, quantized_llama::GGUFLLaMa,
-            quantized_phi3::GGUFPhi3, quantized_qwen::GGUFQWen, quantized_qwen3_moe::GGUFQWenMoE,
-            qwen::Qwen, qwen3_5::Qwen3_5, qwen3_5_moe::Qwen3_5MoE, qwen3_moe::Qwen3MoE,
-            qwen3_vl::Qwen3VLForConditionalGeneration, stable_lm::StableLM, yi::Yi, Config,
+            deepseek::DeepSeek,
+            gemma::Gemma,
+            gemma3::Gemma3,
+            gemma3_vl::Gemma3ForConditionalGeneration,
+            glm4::GLM4,
+            llama::Llama,
+            mistral::Mistral,
+            mistral3_vl::Mistral3ForConditionalGeneration,
+            phi2::Phi2,
+            phi4::Phi4ForCausalLM as Phi4,
+            quantized_glm4::GGUFGLM4,
+            quantized_llama::GGUFLLaMa,
+            quantized_phi3::GGUFPhi3,
+            quantized_qwen::GGUFQWen,
+            quantized_qwen3_5::GGUFQWen3_5,
+            quantized_qwen3_5_moe::GGUFQWen3_5MoE,
+            quantized_qwen3_moe::GGUFQWenMoE,
+            qwen::Qwen,
+            qwen3_5::Qwen3_5,
+            qwen3_5_moe::Qwen3_5MoE,
+            qwen3_moe::Qwen3MoE,
+            qwen3_vl::{Qwen3TextModel, Qwen3VLForConditionalGeneration},
+            stable_lm::StableLM,
+            yi::Yi,
+            Config,
         },
         PipelineConfig,
     },
@@ -74,18 +92,23 @@ pub enum LLMModel {
     Phi3GGUF(Arc<GGUFPhi3>),
     QWenGGUF(Arc<GGUFQWen>),
     QWenGGUFMoE(Arc<GGUFQWenMoE>),
+    QWen3_5GGUF(Arc<GGUFQWen3_5>),
+    QWen3_5GGUFMoE(Arc<GGUFQWen3_5MoE>),
     GLM4GGUF(Arc<GGUFGLM4>),
 }
 
 fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
     match model {
         LLMModel::Llama(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
-        LLMModel::Qwen(_) | LLMModel::Qwen3_5(_) | LLMModel::Qwen3VL(_) | LLMModel::QWenGGUF(_) => {
-            ToolModelType::Qwen
-        }
-        LLMModel::Qwen3MoE(_) | LLMModel::Qwen3_5MoE(_) | LLMModel::QWenGGUFMoE(_) => {
-            ToolModelType::Qwen3MoE
-        }
+        LLMModel::Qwen(_)
+        | LLMModel::Qwen3_5(_)
+        | LLMModel::Qwen3VL(_)
+        | LLMModel::QWenGGUF(_)
+        | LLMModel::QWen3_5GGUF(_) => ToolModelType::Qwen,
+        LLMModel::Qwen3MoE(_)
+        | LLMModel::Qwen3_5MoE(_)
+        | LLMModel::QWenGGUFMoE(_)
+        | LLMModel::QWen3_5GGUFMoE(_) => ToolModelType::Qwen3MoE,
         LLMModel::Gemma(_) => ToolModelType::Gemma,
         LLMModel::Gemma3(_) | LLMModel::Gemma3VL(_) => ToolModelType::Gemma3,
         LLMModel::Mistral(_) | LLMModel::Mistral3VL(_) => ToolModelType::Mistral,
@@ -138,6 +161,7 @@ pub struct DefaultModelPaths {
     pub config_filename: PathBuf,
     pub generation_config_filename: PathBuf,
     pub filenames: Vec<PathBuf>,
+    pub auxiliary_filenames: Vec<PathBuf>,
 }
 
 impl DefaultModelPaths {
@@ -155,6 +179,9 @@ impl DefaultModelPaths {
     }
     fn get_generation_config_filename(&self) -> PathBuf {
         self.generation_config_filename.clone()
+    }
+    fn get_auxiliary_filenames(&self) -> &[PathBuf] {
+        &self.auxiliary_filenames
     }
 }
 
@@ -209,6 +236,78 @@ impl DefaultLoader {
 
         None
     }
+
+    fn is_mmproj_filename(name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        lower.ends_with(".gguf") && lower.starts_with("mmproj")
+    }
+
+    fn mmproj_rank(name: &str, main_filename: Option<&str>) -> i32 {
+        let lower = name.to_ascii_lowercase();
+        let mut score = 0;
+        if let Some(main) = main_filename {
+            let exact = format!("mmproj-{}", main.to_ascii_lowercase());
+            if lower == exact {
+                score += 100;
+            }
+        }
+        if lower.contains("bf16") {
+            score += 30;
+        }
+        if lower.contains("f16") {
+            score += 20;
+        }
+        if lower.contains("f32") {
+            score += 5;
+        }
+        score
+    }
+
+    fn pick_mmproj_filename<'a, I>(candidates: I, main_filename: Option<&str>) -> Option<String>
+    where
+        I: IntoIterator<Item = &'a str>,
+    {
+        candidates
+            .into_iter()
+            .filter(|name| Self::is_mmproj_filename(name))
+            .max_by(|left, right| {
+                let lrank = Self::mmproj_rank(left, main_filename);
+                let rrank = Self::mmproj_rank(right, main_filename);
+                lrank.cmp(&rrank).then_with(|| left.cmp(right))
+            })
+            .map(ToString::to_string)
+    }
+
+    fn find_local_mmproj_file(main_file: &Path) -> Option<PathBuf> {
+        let dir = main_file.parent()?;
+        let main_name = main_file.file_name()?.to_str()?;
+        let mut candidates = Vec::new();
+        for entry in std::fs::read_dir(dir).ok()? {
+            let path = entry.ok()?.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if Self::is_mmproj_filename(name) {
+                candidates.push(path);
+            }
+        }
+        candidates.into_iter().max_by(|left, right| {
+            let lname = left
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            let rname = right
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default();
+            let lrank = Self::mmproj_rank(lname, Some(main_name));
+            let rrank = Self::mmproj_rank(rname, Some(main_name));
+            lrank.cmp(&rrank).then_with(|| lname.cmp(rname))
+        })
+    }
 }
 
 impl DefaultLoader {
@@ -247,24 +346,35 @@ impl DefaultLoader {
                     } else {
                         "".into()
                     },
+                    auxiliary_filenames: vec![],
                 },
                 false,
             ),
             //model in a quantized file (gguf/ggml format)
             (None, path, Some(file)) => (
-                DefaultModelPaths {
-                    tokenizer_filename: PathBuf::new(),
-                    tokenizer_config_filename: PathBuf::new(),
-                    config_filename: PathBuf::new(),
-                    filenames: {
-                        let path = path.clone().unwrap_or("".to_string());
-                        if Path::new(&path).join(file).exists() {
-                            vec![Path::new(&path).join(file)]
-                        } else {
-                            panic!("Model file not found {file}");
-                        }
-                    },
-                    generation_config_filename: "".into(),
+                {
+                    let path = path.clone().unwrap_or_default();
+                    let main_file = Path::new(&path).join(file);
+                    if !main_file.exists() {
+                        panic!("Model file not found {file}");
+                    }
+                    let auxiliary_filenames = Self::find_local_mmproj_file(&main_file)
+                        .map(|p| {
+                            info!(
+                                "Found auxiliary GGUF file for multimodal model: {}",
+                                p.display()
+                            );
+                            vec![p]
+                        })
+                        .unwrap_or_default();
+                    DefaultModelPaths {
+                        tokenizer_filename: PathBuf::new(),
+                        tokenizer_config_filename: PathBuf::new(),
+                        config_filename: PathBuf::new(),
+                        filenames: vec![main_file],
+                        generation_config_filename: "".into(),
+                        auxiliary_filenames,
+                    }
                 },
                 true,
             ),
@@ -375,6 +485,7 @@ impl DefaultLoader {
             config_filename,
             filenames,
             generation_config_filename,
+            auxiliary_filenames: vec![],
         })
     }
 
@@ -388,16 +499,36 @@ impl DefaultLoader {
         let filename = self.weight_file.clone().unwrap();
         let api = hf_hub::api::sync::Api::new().unwrap();
         let revision = revision.unwrap_or("main".to_string());
+        let repo = api.repo(hf_hub::Repo::with_revision(
+            self.model_id.clone().unwrap(),
+            hf_hub::RepoType::Model,
+            revision.to_string(),
+        ));
+
+        let repo_info = repo.info().map_err(candle_core::Error::wrap)?;
+        let mmproj_name = Self::pick_mmproj_filename(
+            repo_info.siblings.iter().map(|s| s.rfilename.as_str()),
+            Some(&filename),
+        );
+
         let mut filenames = vec![];
-        let filename = api
-            .repo(hf_hub::Repo::with_revision(
-                self.model_id.clone().unwrap(),
-                hf_hub::RepoType::Model,
-                revision.to_string(),
-            ))
+        let downloaded = repo
             .get(filename.as_str())
             .map_err(candle_core::Error::wrap)?;
-        filenames.push(filename);
+        filenames.push(downloaded);
+
+        let mut auxiliary_filenames = Vec::new();
+        if let Some(mmproj_name) = mmproj_name {
+            info!(
+                "Downloading auxiliary GGUF file {} from repo {}",
+                mmproj_name,
+                self.model_id.as_ref().unwrap(),
+            );
+            let mmproj_path = repo
+                .get(mmproj_name.as_str())
+                .map_err(candle_core::Error::wrap)?;
+            auxiliary_filenames.push(mmproj_path);
+        }
 
         Ok(DefaultModelPaths {
             tokenizer_filename: "".into(),
@@ -405,6 +536,7 @@ impl DefaultLoader {
             config_filename: "".into(),
             filenames,
             generation_config_filename: "".into(),
+            auxiliary_filenames,
         })
     }
 
@@ -470,6 +602,8 @@ impl DefaultLoader {
                         | "qwen3"
                         | "qwen2moe"
                         | "qwen3moe"
+                        | "qwen35"
+                        | "qwen35moe"
                         | "glm4"
                 ) {
                     panic!("Model arch {} not supported!", arch);
@@ -574,6 +708,106 @@ impl DefaultLoader {
                         cfg,
                         SeparatorStyle::Qwen,
                     )
+                }
+                "qwen35" => {
+                    let model = GGUFQWen3_5::from_gguf(
+                        &content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        kv_cache_dtype,
+                        self.yarn_scaling_factor,
+                        Arc::clone(&reporter),
+                    )
+                    .map_err(candle_core::Error::wrap)?;
+                    let cfg = model.get_config().clone();
+                    let aux_files = paths.get_auxiliary_filenames();
+                    if let Some(aux_path) = aux_files.first() {
+                        info!(
+                            "Loading GGUF multimodal vision tower from {}",
+                            aux_path.display()
+                        );
+                        let gguf_info = {
+                            let mut r = std::fs::File::open(path.clone())
+                                .map_err(candle_core::Error::wrap)?;
+                            let mut readers = vec![&mut r];
+                            let ct =
+                                crate::backend::gguf::Content::from_readers(&mut readers).unwrap();
+                            crate::backend::gguf::get_gguf_info(&ct)
+                                .map_err(candle_core::Error::wrap)?
+                        };
+                        let text_model = Qwen3TextModel::Dense35GGUF(model);
+                        let (vl_model, vl_cfg) = Qwen3VLForConditionalGeneration::from_gguf(
+                            text_model,
+                            &cfg,
+                            aux_path,
+                            &gguf_info.tokenizer,
+                            dtype,
+                            &device,
+                        )?;
+                        (
+                            LLMModel::Qwen3VL(Arc::new(vl_model)),
+                            vl_cfg,
+                            SeparatorStyle::Qwen,
+                        )
+                    } else {
+                        warn!("No auxiliary GGUF mmproj file found. Vision is disabled; running in text-only mode.");
+                        (
+                            LLMModel::QWen3_5GGUF(Arc::new(model)),
+                            cfg,
+                            SeparatorStyle::Qwen,
+                        )
+                    }
+                }
+                "qwen35moe" => {
+                    let model = GGUFQWen3_5MoE::from_gguf(
+                        &content,
+                        &mut file,
+                        &device,
+                        dtype,
+                        kv_cache_dtype,
+                        self.yarn_scaling_factor,
+                        Arc::clone(&reporter),
+                    )
+                    .map_err(candle_core::Error::wrap)?;
+                    let cfg = model.get_config().clone();
+                    let aux_files = paths.get_auxiliary_filenames();
+                    if let Some(aux_path) = aux_files.first() {
+                        info!(
+                            "Loading GGUF multimodal vision tower from {}",
+                            aux_path.display()
+                        );
+                        let gguf_info = {
+                            let mut r = std::fs::File::open(path.clone())
+                                .map_err(candle_core::Error::wrap)?;
+                            let mut readers = vec![&mut r];
+                            let ct =
+                                crate::backend::gguf::Content::from_readers(&mut readers).unwrap();
+                            crate::backend::gguf::get_gguf_info(&ct)
+                                .map_err(candle_core::Error::wrap)?
+                        };
+                        let text_model = Qwen3TextModel::MoE35GGUF(model);
+                        let (vl_model, vl_cfg) = Qwen3VLForConditionalGeneration::from_gguf(
+                            text_model,
+                            &cfg,
+                            aux_path,
+                            &gguf_info.tokenizer,
+                            dtype,
+                            &device,
+                        )?;
+                        (
+                            LLMModel::Qwen3VL(Arc::new(vl_model)),
+                            vl_cfg,
+                            SeparatorStyle::Qwen,
+                        )
+                    } else {
+                        warn!("No auxiliary GGUF mmproj file found. Vision is disabled; running in text-only mode.");
+                        (
+                            LLMModel::QWen3_5GGUFMoE(Arc::new(model)),
+                            cfg,
+                            SeparatorStyle::Qwen,
+                        )
+                    }
                 }
                 "glm4" => {
                     let model = GGUFGLM4::from_gguf(
@@ -1295,6 +1529,8 @@ impl DefaultPipeline {
             Phi3GGUF,
             QWenGGUF,
             QWenGGUFMoE,
+            QWen3_5GGUF,
+            QWen3_5GGUFMoE,
             GLM4GGUF,
         );
         #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
@@ -1420,6 +1656,16 @@ impl DefaultPipeline {
                                 .replay(&input_tokens, &input_positions, &input_metadata)
                         }
                     }
+                    LLMModel::QWen3_5GGUF(model) => {
+                        let _guard = model.lock_mamba_cache_for_graph();
+                        self.capturer
+                            .replay(&input_tokens, &input_positions, &input_metadata)
+                    }
+                    LLMModel::QWen3_5GGUFMoE(model) => {
+                        let _guard = model.lock_mamba_cache_for_graph();
+                        self.capturer
+                            .replay(&input_tokens, &input_positions, &input_metadata)
+                    }
                     _ => self
                         .capturer
                         .replay(&input_tokens, &input_positions, &input_metadata),
@@ -1503,6 +1749,12 @@ impl DefaultPipeline {
             LLMModel::QWenGGUFMoE(qwen) => {
                 qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::QWen3_5GGUF(qwen) => {
+                qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::QWen3_5GGUFMoE(qwen) => {
+                qwen.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::GLM4GGUF(glm4) => {
                 glm4.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -1569,6 +1821,12 @@ impl DefaultPipeline {
             }
             LLMModel::QWenGGUFMoE(qwen_moe) => {
                 qwen_moe.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::QWen3_5GGUF(qwen) => {
+                qwen.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::QWen3_5GGUFMoE(qwen) => {
+                qwen.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::GLM4GGUF(glm4) => {
                 glm4.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
@@ -1827,6 +2085,8 @@ impl DefaultPipeline {
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),
             LLMModel::QWenGGUF(qwen) => qwen.get_config().clone(),
             LLMModel::QWenGGUFMoE(qwen) => qwen.get_config().clone(),
+            LLMModel::QWen3_5GGUF(qwen) => qwen.get_config().clone(),
+            LLMModel::QWen3_5GGUFMoE(qwen) => qwen.get_config().clone(),
             LLMModel::GLM4GGUF(glm4) => glm4.get_config().clone(),
         }
     }
@@ -1853,6 +2113,8 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => model.release_sequence_state(sequence_id),
             LLMModel::Qwen3_5MoE(model) => model.release_sequence_state(sequence_id),
             LLMModel::Qwen3VL(model) => model.release_sequence_state(sequence_id),
+            LLMModel::QWen3_5GGUF(model) => model.release_sequence_state(sequence_id),
+            LLMModel::QWen3_5GGUFMoE(model) => model.release_sequence_state(sequence_id),
             _ => {}
         }
     }
@@ -1862,6 +2124,8 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3_5MoE(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3VL(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
+            LLMModel::QWen3_5GGUF(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
+            LLMModel::QWen3_5GGUFMoE(model) => model.ensure_mamba_slots_for_sequences(sequence_ids),
             _ => Ok(vec![]),
         }
     }
@@ -1871,6 +2135,8 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => model.get_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3_5MoE(model) => model.get_mamba_slots_for_sequences(sequence_ids),
             LLMModel::Qwen3VL(model) => model.get_mamba_slots_for_sequences(sequence_ids),
+            LLMModel::QWen3_5GGUF(model) => model.get_mamba_slots_for_sequences(sequence_ids),
+            LLMModel::QWen3_5GGUFMoE(model) => model.get_mamba_slots_for_sequences(sequence_ids),
             _ => Ok(vec![]),
         }
     }
@@ -1880,6 +2146,8 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => model.has_mamba_slot_for_sequence(sequence_id),
             LLMModel::Qwen3_5MoE(model) => model.has_mamba_slot_for_sequence(sequence_id),
             LLMModel::Qwen3VL(model) => model.has_mamba_slot_for_sequence(sequence_id),
+            LLMModel::QWen3_5GGUF(model) => model.has_mamba_slot_for_sequence(sequence_id),
+            LLMModel::QWen3_5GGUFMoE(model) => model.has_mamba_slot_for_sequence(sequence_id),
             _ => false,
         }
     }
@@ -1889,6 +2157,8 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => model.preallocate_mamba_cache(max_num_seqs),
             LLMModel::Qwen3_5MoE(model) => model.preallocate_mamba_cache(max_num_seqs),
             LLMModel::Qwen3VL(model) => model.preallocate_mamba_cache(max_num_seqs),
+            LLMModel::QWen3_5GGUF(model) => model.preallocate_mamba_cache(max_num_seqs),
+            LLMModel::QWen3_5GGUFMoE(model) => model.preallocate_mamba_cache(max_num_seqs),
             _ => Ok(()),
         }
     }
@@ -1898,6 +2168,8 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => model.set_mamba_prefix_cache_capacity(capacity),
             LLMModel::Qwen3_5MoE(model) => model.set_mamba_prefix_cache_capacity(capacity),
             LLMModel::Qwen3VL(model) => model.set_mamba_prefix_cache_capacity(capacity),
+            LLMModel::QWen3_5GGUF(model) => model.set_mamba_prefix_cache_capacity(capacity),
+            LLMModel::QWen3_5GGUFMoE(model) => model.set_mamba_prefix_cache_capacity(capacity),
             _ => {}
         }
     }
@@ -1912,6 +2184,12 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
             LLMModel::Qwen3_5MoE(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
             LLMModel::Qwen3VL(model) => model.capture_mamba_prefix_state(seq_id, hash, preserve),
+            LLMModel::QWen3_5GGUF(model) => {
+                model.capture_mamba_prefix_state(seq_id, hash, preserve)
+            }
+            LLMModel::QWen3_5GGUFMoE(model) => {
+                model.capture_mamba_prefix_state(seq_id, hash, preserve)
+            }
             _ => Ok(false),
         }
     }
@@ -1921,6 +2199,8 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => Ok(model.has_mamba_prefix_state(hash)),
             LLMModel::Qwen3_5MoE(model) => Ok(model.has_mamba_prefix_state(hash)),
             LLMModel::Qwen3VL(model) => Ok(model.has_mamba_prefix_state(hash)),
+            LLMModel::QWen3_5GGUF(model) => Ok(model.has_mamba_prefix_state(hash)),
+            LLMModel::QWen3_5GGUFMoE(model) => Ok(model.has_mamba_prefix_state(hash)),
             _ => Ok(true),
         }
     }
@@ -1930,6 +2210,8 @@ impl DefaultPipeline {
             LLMModel::Qwen3_5(model) => model.restore_mamba_prefix_state(seq_id, hash),
             LLMModel::Qwen3_5MoE(model) => model.restore_mamba_prefix_state(seq_id, hash),
             LLMModel::Qwen3VL(model) => model.restore_mamba_prefix_state(seq_id, hash),
+            LLMModel::QWen3_5GGUF(model) => model.restore_mamba_prefix_state(seq_id, hash),
+            LLMModel::QWen3_5GGUFMoE(model) => model.restore_mamba_prefix_state(seq_id, hash),
             _ => Ok(true),
         }
     }
@@ -1945,6 +2227,8 @@ impl DefaultPipeline {
                     LLMModel::Qwen3_5(model) => model.reset_mamba_cache()?,
                     LLMModel::Qwen3_5MoE(model) => model.reset_mamba_cache()?,
                     LLMModel::Qwen3VL(model) => model.reset_mamba_cache()?,
+                    LLMModel::QWen3_5GGUF(model) => model.reset_mamba_cache()?,
+                    LLMModel::QWen3_5GGUFMoE(model) => model.reset_mamba_cache()?,
                     _ => {}
                 }
                 Ok(())

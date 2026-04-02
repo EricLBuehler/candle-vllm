@@ -641,6 +641,7 @@ pub struct QuantizedAttention {
     n_head: usize,
     n_kv_head: usize,
     head_dim: usize,
+    attn_output_gate: bool,
     attn: PagedAttention,
     rotary_emb: Arc<ScalingRotaryEmbedding>,
     dtype: DType,
@@ -717,6 +718,11 @@ impl QuantizedAttention {
         let head_dim = config
             .head_dim
             .unwrap_or(config.hidden_size / config.num_attention_heads);
+        let n_head = config.num_attention_heads;
+        let expected_q_dim = n_head * head_dim;
+        let q_out_dim = attention_wq.shape().dims()[0];
+        let attn_output_gate = q_out_dim == expected_q_dim * 2;
+
         Ok(QuantizedAttention {
             attention_wq: QMatMul::from_qtensor(attention_wq)?,
             attention_wk: QMatMul::from_qtensor(attention_wk)?,
@@ -727,11 +733,12 @@ impl QuantizedAttention {
             attention_wo: QMatMul::from_qtensor(attention_wo)?,
             q_norm,
             k_norm,
-            n_head: config.num_attention_heads,
+            n_head,
             n_kv_head: config
                 .num_key_value_heads
                 .unwrap_or(config.num_attention_heads),
             head_dim,
+            attn_output_gate,
             attn: PagedAttention::new(
                 config.num_attention_heads,
                 head_dim,
@@ -757,29 +764,42 @@ impl QuantizedAttention {
     ) -> Result<Tensor> {
         let (seq_len, _) = x.dims2()?;
 
-        let q = self.attention_wq.forward(x)?;
+        let q_raw = self.attention_wq.forward(x)?;
         let k = self.attention_wk.forward(x)?;
         let v = self.attention_wv.forward(x)?;
 
-        let q = if self.attention_bq.is_some() {
-            q.broadcast_add(self.attention_bq.as_ref().unwrap())?
+        let q_raw = if let Some(bq) = &self.attention_bq {
+            q_raw.broadcast_add(bq)?
         } else {
-            q
+            q_raw
         };
 
-        let k = if self.attention_bk.is_some() {
-            k.broadcast_add(self.attention_bk.as_ref().unwrap())?
+        let k = if let Some(bk) = &self.attention_bk {
+            k.broadcast_add(bk)?
         } else {
             k
         };
 
-        let v = if self.attention_bv.is_some() {
-            v.broadcast_add(self.attention_bv.as_ref().unwrap())?
+        let v = if let Some(bv) = &self.attention_bv {
+            v.broadcast_add(bv)?
         } else {
             v
         };
 
-        let q = q.reshape((seq_len, self.n_head, self.head_dim))?;
+        let local_q_dim = self.n_head * self.head_dim;
+        let (q_linear, gate) = if self.attn_output_gate {
+            let q_gate = q_raw.reshape((seq_len, self.n_head, self.head_dim * 2))?;
+            let q = q_gate.narrow(2, 0, self.head_dim)?;
+            let gate = q_gate.narrow(2, self.head_dim, self.head_dim)?;
+            (
+                q.reshape((seq_len, local_q_dim))?,
+                Some(gate.reshape((seq_len, local_q_dim))?),
+            )
+        } else {
+            (q_raw, None)
+        };
+
+        let q = q_linear.reshape((seq_len, self.n_head, self.head_dim))?;
         let k = k.reshape((seq_len, self.n_kv_head, self.head_dim))?;
         let v = v.reshape((seq_len, self.n_kv_head, self.head_dim))?;
 
@@ -821,7 +841,13 @@ impl QuantizedAttention {
             )?
             .reshape((seq_len, ()))?;
 
-        let y = self.attention_wo.forward(&y.to_dtype(x.dtype())?)?;
-        Ok(y)
+        let y = if let Some(gate) = gate {
+            let gate = gate.to_dtype(y.dtype())?;
+            y.broadcast_mul(&candle_nn::ops::sigmoid(&gate)?)?
+        } else {
+            y
+        };
+
+        self.attention_wo.forward(&y.to_dtype(DType::F32)?)
     }
 }

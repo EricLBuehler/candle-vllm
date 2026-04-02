@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.6.6"
+version = "0.6.7"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -25,6 +25,7 @@ hyper = { version = "0.14", features = ["full"] }
 candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "b63bf40" }
 candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "b63bf40" }
 dyn-fmt = "0.4.0"
+safetensors = "0.4"
 serde = { version = "1.0.190", features = ["serde_derive"] }
 tokenizers = "0.21.2"
 uuid = { version = "1.5.0", features = ["v4"] }
@@ -74,6 +75,7 @@ colored = { version = "3.0.0" }
 local-ip-address = "0.6.5"
 image = { version = "0.25.6", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 bytemuck = "1.23.2"
+libc = "0.2.184"
 
 [features]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]

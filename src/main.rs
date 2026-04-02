@@ -290,6 +290,9 @@ async fn main() -> Result<()> {
     let logger: ftail::Ftail = ftail::Ftail::new();
     let host = args.host;
     let mut port = args.port;
+
+    candle_vllm::openai::utils::ensure_port_free(&host, port);
+
     #[cfg(feature = "nccl")]
     let (pipelines, global_rank, daemon_manager) = if multi_process {
         use candle_vllm::openai::communicator::init_subprocess;
