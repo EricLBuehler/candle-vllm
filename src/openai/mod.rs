@@ -139,6 +139,7 @@ pub mod conversation;
 pub mod logits_processor;
 pub mod models;
 pub mod multimodal;
+#[cfg(feature = "server")]
 pub mod openai_server;
 pub mod pipelines;
 pub mod utils;

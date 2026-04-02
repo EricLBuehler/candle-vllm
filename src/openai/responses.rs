@@ -1,7 +1,10 @@
 use super::streaming::Streamer;
 use crate::openai::sampling_params::Logprobs;
+#[cfg(feature = "server")]
 use axum::extract::Json;
+#[cfg(feature = "server")]
 use axum::http::{self, StatusCode};
+#[cfg(feature = "server")]
 use axum::response::{IntoResponse, Sse};
 use derive_more::{Display, Error};
 use serde::{Deserialize, Serialize};
@@ -113,6 +116,7 @@ pub struct ChatCompletionChunk {
     pub usage: Option<ChatCompletionUsageResponse>,
 }
 
+#[cfg(feature = "server")]
 trait ErrorToResponse: Serialize {
     fn to_response(&self, code: StatusCode) -> axum::response::Response {
         let mut r = Json(self).into_response();
@@ -121,18 +125,22 @@ trait ErrorToResponse: Serialize {
     }
 }
 
+#[cfg(feature = "server")]
 #[derive(Serialize)]
 struct JsonError {
     message: String,
 }
 
+#[cfg(feature = "server")]
 impl JsonError {
     fn new(message: String) -> Self {
         Self { message }
     }
 }
+#[cfg(feature = "server")]
 impl ErrorToResponse for JsonError {}
 
+#[cfg(feature = "server")]
 pub enum ChatResponder {
     Streamer(Sse<Streamer>),
     Completion(ChatCompletionResponse),
@@ -142,6 +150,7 @@ pub enum ChatResponder {
     ValidationError(APIError),
 }
 
+#[cfg(feature = "server")]
 impl IntoResponse for ChatResponder {
     fn into_response(self) -> axum::response::Response {
         match self {

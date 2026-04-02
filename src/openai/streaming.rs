@@ -1,7 +1,9 @@
 use super::responses::{ChatCompletionChunk, EmbeddingResponse};
 use crate::openai::logger::ChatCompletionLogger;
+#[cfg(feature = "server")]
 use axum::response::sse::Event;
 use flume::Receiver;
+#[cfg(feature = "server")]
 use futures::Stream;
 use std::{
     pin::Pin,
@@ -31,6 +33,7 @@ pub struct Streamer {
     pub logger: Option<Arc<ChatCompletionLogger>>,
 }
 
+#[cfg(feature = "server")]
 impl Stream for Streamer {
     type Item = Result<Event, axum::Error>;
 
