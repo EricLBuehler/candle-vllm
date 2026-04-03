@@ -13,15 +13,15 @@ name = "candle-vllm"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.7.4", features = ["tokio"] }
-utoipa = { version = "4.2", features = ["axum_extras"] }
-tower-http = { version = "0.6.6", features = ["cors"]}
+axum = { version = "0.7.4", features = ["tokio"], optional = true }
+utoipa = { version = "4.2", features = ["axum_extras"], optional = true }
+tower-http = { version = "0.6.6", features = ["cors"], optional = true }
 flume = "0.10.14"
 #actix-web = "4.8.0"
 anyhow = "1.0.75"
 rand = "0.9.0"
 rayon="1.10.0"
-hyper = { version = "0.14", features = ["full"] }
+hyper = { version = "0.14", features = ["full"], optional = true }
 candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "b63bf40" }
 candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "b63bf40" }
 dyn-fmt = "0.4.0"
@@ -63,7 +63,7 @@ itertools = "0.13.0"
 chrono = "0.4.41"
 which = "8.0.0"
 ahash = "0.8.11"
-rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", rev="68caad9" }
+rustchatui = { git = "https://github.com/guoqingbao/rustchatui.git", rev="68caad9", optional = true }
 base64 = "0.22.1"
 bytes = "1.5"
 reqwest = { version = "0.12.24", features = ["blocking", "json", "rustls-tls"]}
@@ -78,6 +78,8 @@ bytemuck = "1.23.2"
 libc = "0.2.184"
 
 [features]
+default = ["server"]
+server = ["dep:axum", "dep:utoipa", "dep:tower-http", "dep:rustchatui", "dep:hyper"]
 accelerate = ["dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "attention-rs/cuda"]
 cutlass = ["cuda", "attention-rs/cutlass"]
