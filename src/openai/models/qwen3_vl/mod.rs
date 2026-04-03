@@ -9,11 +9,17 @@ pub mod vision;
 use crate::backend::progress::ProgressReporter;
 use crate::openai::distributed::{Comm, VarBuilder};
 use crate::openai::models::{
-    qwen::Qwen, qwen3_5::Qwen3_5, qwen3_5_moe::Qwen3_5MoE, qwen3_moe::Qwen3MoE, Config,
+    quantized_qwen3_5::GGUFQWen3_5, quantized_qwen3_5_moe::GGUFQWen3_5MoE, qwen::Qwen,
+    qwen3_5::Qwen3_5, qwen3_5_moe::Qwen3_5MoE, qwen3_moe::Qwen3MoE, Config,
 };
 use crate::openai::multimodal::ImageData;
+use crate::openai::utils::{
+    build_multimodal_extra_config, build_vision_config_from_gguf, gguf_vision_tensors_to_vb,
+    load_gguf_vision_tensors, tokenizer_token_id,
+};
 use crate::InputMetadata;
 use attention_rs::mamba_cache::MambaCache;
+use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, Result, Tensor, D};
 use config::Qwen3VLConfig;
 use vision::Qwen3VLVisionModel;
@@ -23,6 +29,8 @@ pub enum Qwen3TextModel {
     MoE(Qwen3MoE),
     Dense35(Qwen3_5),
     MoE35(Qwen3_5MoE),
+    Dense35GGUF(GGUFQWen3_5),
+    MoE35GGUF(GGUFQWen3_5MoE),
 }
 
 pub struct Qwen3VLForConditionalGeneration {
@@ -151,6 +159,8 @@ impl Qwen3VLForConditionalGeneration {
             Qwen3TextModel::MoE(m) => (m.embed_forward(input_ids)?, m.dtype()),
             Qwen3TextModel::Dense35(m) => (m.embed_forward(input_ids)?, m.dtype()),
             Qwen3TextModel::MoE35(m) => (m.embed_forward(input_ids)?, m.dtype()),
+            Qwen3TextModel::Dense35GGUF(m) => (m.embed_forward(input_ids)?, m.dtype()),
+            Qwen3TextModel::MoE35GGUF(m) => (m.embed_forward(input_ids)?, m.dtype()),
         };
         let device = input_embeds.device().clone();
         let mut visual_pos_masks: Option<Tensor> = None;
@@ -282,13 +292,34 @@ impl Qwen3VLForConditionalGeneration {
                 &visual_pos_masks,
                 &deepstack_visual_embeds,
             ),
+            Qwen3TextModel::Dense35GGUF(m) => m.forward_with_deepstack(
+                &input_embeds,
+                positions,
+                kv_caches,
+                input_metadata,
+                true,
+                &visual_pos_masks,
+                &deepstack_visual_embeds,
+            ),
+            Qwen3TextModel::MoE35GGUF(m) => m.forward_with_deepstack(
+                &input_embeds,
+                positions,
+                kv_caches,
+                input_metadata,
+                true,
+                &visual_pos_masks,
+                &deepstack_visual_embeds,
+            ),
         }
     }
 
     pub fn uses_hybrid_mamba_text_model(&self) -> bool {
         matches!(
             self.text_model,
-            Qwen3TextModel::Dense35(_) | Qwen3TextModel::MoE35(_)
+            Qwen3TextModel::Dense35(_)
+                | Qwen3TextModel::MoE35(_)
+                | Qwen3TextModel::Dense35GGUF(_)
+                | Qwen3TextModel::MoE35GGUF(_)
         )
     }
 
@@ -296,6 +327,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.release_sequence_state(sequence_id),
             Qwen3TextModel::MoE35(m) => m.release_sequence_state(sequence_id),
+            Qwen3TextModel::Dense35GGUF(m) => m.release_sequence_state(sequence_id),
+            Qwen3TextModel::MoE35GGUF(m) => m.release_sequence_state(sequence_id),
             _ => {}
         }
     }
@@ -304,6 +337,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.ensure_mamba_slots_for_sequences(sequence_ids),
             Qwen3TextModel::MoE35(m) => m.ensure_mamba_slots_for_sequences(sequence_ids),
+            Qwen3TextModel::Dense35GGUF(m) => m.ensure_mamba_slots_for_sequences(sequence_ids),
+            Qwen3TextModel::MoE35GGUF(m) => m.ensure_mamba_slots_for_sequences(sequence_ids),
             _ => Ok(vec![]),
         }
     }
@@ -312,6 +347,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.get_mamba_slots_for_sequences(sequence_ids),
             Qwen3TextModel::MoE35(m) => m.get_mamba_slots_for_sequences(sequence_ids),
+            Qwen3TextModel::Dense35GGUF(m) => m.get_mamba_slots_for_sequences(sequence_ids),
+            Qwen3TextModel::MoE35GGUF(m) => m.get_mamba_slots_for_sequences(sequence_ids),
             _ => Ok(vec![]),
         }
     }
@@ -320,6 +357,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.has_mamba_slot_for_sequence(sequence_id),
             Qwen3TextModel::MoE35(m) => m.has_mamba_slot_for_sequence(sequence_id),
+            Qwen3TextModel::Dense35GGUF(m) => m.has_mamba_slot_for_sequence(sequence_id),
+            Qwen3TextModel::MoE35GGUF(m) => m.has_mamba_slot_for_sequence(sequence_id),
             _ => false,
         }
     }
@@ -328,6 +367,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => Some(m.lock_mamba_cache_for_graph()),
             Qwen3TextModel::MoE35(m) => Some(m.lock_mamba_cache_for_graph()),
+            Qwen3TextModel::Dense35GGUF(m) => Some(m.lock_mamba_cache_for_graph()),
+            Qwen3TextModel::MoE35GGUF(m) => Some(m.lock_mamba_cache_for_graph()),
             _ => None,
         }
     }
@@ -336,6 +377,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.preallocate_mamba_cache(max_num_seqs),
             Qwen3TextModel::MoE35(m) => m.preallocate_mamba_cache(max_num_seqs),
+            Qwen3TextModel::Dense35GGUF(m) => m.preallocate_mamba_cache(max_num_seqs),
+            Qwen3TextModel::MoE35GGUF(m) => m.preallocate_mamba_cache(max_num_seqs),
             _ => Ok(()),
         }
     }
@@ -344,6 +387,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.set_mamba_prefix_cache_capacity(capacity),
             Qwen3TextModel::MoE35(m) => m.set_mamba_prefix_cache_capacity(capacity),
+            Qwen3TextModel::Dense35GGUF(m) => m.set_mamba_prefix_cache_capacity(capacity),
+            Qwen3TextModel::MoE35GGUF(m) => m.set_mamba_prefix_cache_capacity(capacity),
             _ => {}
         }
     }
@@ -357,6 +402,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.capture_mamba_prefix_state(seq_id, hash, preserve),
             Qwen3TextModel::MoE35(m) => m.capture_mamba_prefix_state(seq_id, hash, preserve),
+            Qwen3TextModel::Dense35GGUF(m) => m.capture_mamba_prefix_state(seq_id, hash, preserve),
+            Qwen3TextModel::MoE35GGUF(m) => m.capture_mamba_prefix_state(seq_id, hash, preserve),
             _ => Ok(true),
         }
     }
@@ -365,6 +412,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.has_mamba_prefix_state(hash),
             Qwen3TextModel::MoE35(m) => m.has_mamba_prefix_state(hash),
+            Qwen3TextModel::Dense35GGUF(m) => m.has_mamba_prefix_state(hash),
+            Qwen3TextModel::MoE35GGUF(m) => m.has_mamba_prefix_state(hash),
             _ => true,
         }
     }
@@ -373,6 +422,8 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.restore_mamba_prefix_state(seq_id, hash),
             Qwen3TextModel::MoE35(m) => m.restore_mamba_prefix_state(seq_id, hash),
+            Qwen3TextModel::Dense35GGUF(m) => m.restore_mamba_prefix_state(seq_id, hash),
+            Qwen3TextModel::MoE35GGUF(m) => m.restore_mamba_prefix_state(seq_id, hash),
             _ => Ok(true),
         }
     }
@@ -381,11 +432,75 @@ impl Qwen3VLForConditionalGeneration {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.reset_mamba_cache(),
             Qwen3TextModel::MoE35(m) => m.reset_mamba_cache(),
+            Qwen3TextModel::Dense35GGUF(m) => m.reset_mamba_cache(),
+            Qwen3TextModel::MoE35GGUF(m) => m.reset_mamba_cache(),
             _ => Ok(()),
         }
     }
 
     pub fn get_config(&self) -> &Config {
         &self.cfg
+    }
+
+    /// Load a multimodal Qwen3.5 model from GGUF: text backbone (already loaded)
+    /// plus vision tower from the auxiliary mmproj GGUF file.
+    /// Returns `(model, updated_config)` where the config has architecture and
+    /// extra_config_json set for multimodal image processing.
+    pub fn from_gguf(
+        text_model: Qwen3TextModel,
+        cfg: &Config,
+        aux_gguf_path: &std::path::Path,
+        tokenizer: &tokenizers::Tokenizer,
+        dtype: DType,
+        device: &Device,
+    ) -> Result<(Self, Config)> {
+        let mut aux_file = std::fs::File::open(aux_gguf_path).map_err(candle_core::Error::wrap)?;
+        let aux_ct = gguf_file::Content::read(&mut aux_file)
+            .map_err(|e| e.with_path(aux_gguf_path))
+            .map_err(candle_core::Error::wrap)?;
+
+        let vision_cfg = build_vision_config_from_gguf(&aux_ct)?;
+        let image_token_id = tokenizer_token_id(tokenizer, "<|image_pad|>")?;
+
+        tracing::info!(
+            "Loading GGUF vision tower: depth={}, hidden_size={}, heads={}, patch_size={}, deepstack={}",
+            vision_cfg.depth,
+            vision_cfg.hidden_size,
+            vision_cfg.num_heads,
+            vision_cfg.patch_size,
+            vision_cfg.deepstack_visual_indexes.len(),
+        );
+
+        let tensors = load_gguf_vision_tensors(&aux_ct, &mut aux_file, device)?;
+        let vb = gguf_vision_tensors_to_vb(tensors, dtype, device)?;
+
+        let vision_model = Qwen3VLVisionModel::new(&vision_cfg, &vb.pp("v"), dtype, device)?;
+
+        let mut updated_cfg = cfg.clone();
+        let vl_arch = determine_vl_architecture(&text_model);
+        updated_cfg.architectures = Some(vec![vl_arch.to_string()]);
+        updated_cfg.extra_config_json = Some(build_multimodal_extra_config(
+            cfg,
+            &vision_cfg,
+            image_token_id,
+        )?);
+
+        Ok((
+            Self {
+                text_model,
+                vision_model,
+                image_token_id,
+                cfg: updated_cfg.clone(),
+            },
+            updated_cfg,
+        ))
+    }
+}
+
+fn determine_vl_architecture(text_model: &Qwen3TextModel) -> &'static str {
+    match text_model {
+        Qwen3TextModel::Dense35GGUF(_) => "Qwen3_5ForConditionalGeneration",
+        Qwen3TextModel::MoE35GGUF(_) => "Qwen3_5MoeForConditionalGeneration",
+        _ => "Qwen3VLForConditionalGeneration",
     }
 }
