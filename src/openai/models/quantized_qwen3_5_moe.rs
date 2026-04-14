@@ -245,6 +245,8 @@ impl GGUFQWen3_5MoE {
             num_experts_per_tok: md_get(format!("{arch}.expert_used_count").as_str())?.to_u32()?
                 as usize,
             routed_scaling_factor: expert_weights_scale,
+            first_k_dense_replace: None,
+            n_shared_experts: None,
         };
 
         let original_max_position_embeddings =

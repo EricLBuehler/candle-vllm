@@ -124,20 +124,31 @@ pub fn get_cache_config(
     let kv_layers = config.kv_cache_num_layers().max(1);
     let dsize = kv_dtype.size_in_bytes();
     let size_in_mb = 1024 * 1024;
-    let num_gpu_blocks = kvcache_mem_gpu * size_in_mb
-        / dsize
-        / block_size
-        / (config.num_key_value_heads.unwrap() / num_shards)
-        / config.k_head_dim()
-        / kv_layers
-        / 2;
-    let num_cpu_blocks = kvcache_mem_cpu * size_in_mb
-        / dsize
-        / block_size
-        / (config.num_key_value_heads.unwrap() / num_shards)
-        / config.k_head_dim()
-        / kv_layers
-        / 2;
+    let (num_gpu_blocks, num_cpu_blocks) = if config.is_mla() {
+        let per_block = block_size
+            * (config.mla_kv_lora_rank() + config.mla_qk_rope_head_dim())
+            * dsize
+            * kv_layers;
+        let gpu = kvcache_mem_gpu * size_in_mb / per_block.max(1);
+        let cpu = kvcache_mem_cpu * size_in_mb / per_block.max(1);
+        (gpu, cpu)
+    } else {
+        let num_gpu_blocks = kvcache_mem_gpu * size_in_mb
+            / dsize
+            / block_size
+            / (config.num_key_value_heads.unwrap() / num_shards)
+            / config.k_head_dim()
+            / kv_layers
+            / 2;
+        let num_cpu_blocks = kvcache_mem_cpu * size_in_mb
+            / dsize
+            / block_size
+            / (config.num_key_value_heads.unwrap() / num_shards)
+            / config.k_head_dim()
+            / kv_layers
+            / 2;
+        (num_gpu_blocks, num_cpu_blocks)
+    };
     crate::scheduler::cache_engine::CacheConfig {
         block_size,
         num_gpu_blocks: Some(num_gpu_blocks),

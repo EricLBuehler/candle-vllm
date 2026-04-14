@@ -248,6 +248,10 @@ impl BlockEngine {
         self.block_size
     }
 
+    pub fn requires_mamba_prefix_snapshots(&self) -> bool {
+        self.require_mamba_prefix_snapshots
+    }
+
     pub fn get_num_free_blocks(&self) -> usize {
         *self.gpu_allocator.get_num_free_blocks()
     }

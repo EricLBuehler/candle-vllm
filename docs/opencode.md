@@ -6,7 +6,7 @@ This guide connects OpenCode directly to `candle-vllm` through the built-in Open
 OpenCode -> Candle-vLLM (OpenAI-compatible)
 ```
 
-## 1) Start candle-vLLM
+## 1) Start candle-vLLM (at port 8000)
 
 ```bash
 cargo run --release --features cuda,nccl,graph,flashinfer,cutlass -- \

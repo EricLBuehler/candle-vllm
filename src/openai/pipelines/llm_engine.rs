@@ -117,6 +117,10 @@ impl LLMEngine {
             return Ok(Vec::new());
         }
 
+        let requires_mamba = self
+            .scheduler
+            .block_engine
+            .requires_mamba_prefix_snapshots();
         let restore_plans = self.scheduler.prepare_prompt_mamba_restores(scheduled);
         let restore_by_seq = restore_plans
             .into_iter()
@@ -130,6 +134,8 @@ impl LLMEngine {
                 let cached_tokens = seq.deref().get_num_cached_tokens();
                 let supported_cached_tokens = if cached_tokens == 0 {
                     0
+                } else if !requires_mamba {
+                    cached_tokens
                 } else if pipeline.has_mamba_slot_for_sequence(seq_id) {
                     cached_tokens
                 } else if let Some(plan) = restore_by_seq.get(&seq_id) {
@@ -1164,26 +1170,41 @@ impl LLMEngine {
         let Some(fm) = metadata.flashinfer_metadata.as_mut() else {
             return Ok(());
         };
-        if fm.decode_plan_info.is_some() {
-            return Ok(());
-        }
         let Some(params) = self.flashinfer_kv_params_for_rank(rank)? else {
             return Ok(());
         };
-        fm.decode_plan_info = Some(attention_rs::flashinfer::decode_plan(
-            device,
-            params.kv_dtype,
-            params.out_dtype,
-            &fm.indptr_host,
-            fm.last_len_host.as_deref(),
-            fm.kv_len_arr_host.as_deref(),
-            input_batch,
-            params.num_qo_heads,
-            params.num_kv_heads,
-            params.head_dim,
-            params.page_size,
-            fm.use_cuda_graph,
-        )?);
+        if metadata.is_mla {
+            if fm.mla_decode_plan_info.is_some() {
+                return Ok(());
+            }
+            fm.mla_decode_plan_info = Some(attention_rs::mla::mla_decode_plan(
+                device,
+                params.kv_dtype,
+                &fm.indptr_host,
+                input_batch,
+                params.num_qo_heads,
+                params.page_size,
+                fm.use_cuda_graph,
+            )?);
+        } else {
+            if fm.decode_plan_info.is_some() {
+                return Ok(());
+            }
+            fm.decode_plan_info = Some(attention_rs::flashinfer::decode_plan(
+                device,
+                params.kv_dtype,
+                params.out_dtype,
+                &fm.indptr_host,
+                fm.last_len_host.as_deref(),
+                fm.kv_len_arr_host.as_deref(),
+                input_batch,
+                params.num_qo_heads,
+                params.num_kv_heads,
+                params.head_dim,
+                params.page_size,
+                fm.use_cuda_graph,
+            )?);
+        }
         Ok(())
     }
 

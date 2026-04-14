@@ -6,7 +6,7 @@ This guide connects Kilo Code to the built-in OpenAI-compatible `/v1/chat/comple
 Kilo Code -> Candle-vLLM (OpenAI-compatible)
 ```
 
-## 1) Start candle-vLLM
+## 1) Start candle-vLLM (at port 8000)
 
 ```bash
 cargo run --release --features cuda,nccl,graph,flashinfer,cutlass -- \

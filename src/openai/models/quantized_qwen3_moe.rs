@@ -237,6 +237,8 @@ impl GGUFQWenMoE {
             num_experts_per_tok: md_get(format!("{arch}.expert_used_count").as_str())?.to_u32()?
                 as usize,
             routed_scaling_factor: None,
+            first_k_dense_replace: None,
+            n_shared_experts: None,
         };
 
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
