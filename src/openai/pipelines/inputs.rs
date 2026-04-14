@@ -323,21 +323,38 @@ impl LLMEngine {
             let page_size = self.cache_config.block_size;
             let total_num_rows = *cu_seqlens_q_vec.last().unwrap();
 
-            let prefill_plan_info = attention_rs::flashinfer::prefill_plan(
-                device,
-                &cu_seqlens_q_vec,
-                &indptr_host,
-                &kv_len_arr_host,
-                total_num_rows,
-                last_len_host.len(),
-                num_qo_heads,
-                num_kv_heads,
-                head_dim,
-                page_size,
-                self.cache_config.dtype,
-                None,
-            )
-            .ok();
+            let mut prefill_plan_info = None;
+            let mut mla_prefill_plan_info = None;
+
+            if self.config.is_mla() {
+                mla_prefill_plan_info = attention_rs::mla::mla_prefill_plan(
+                    device,
+                    &cu_seqlens_q_vec,
+                    &indptr_host,
+                    &kv_len_arr_host,
+                    last_len_host.len(),
+                    num_qo_heads,
+                    head_dim,
+                    true,
+                )
+                .ok();
+            } else {
+                prefill_plan_info = attention_rs::flashinfer::prefill_plan(
+                    device,
+                    &cu_seqlens_q_vec,
+                    &indptr_host,
+                    &kv_len_arr_host,
+                    total_num_rows,
+                    last_len_host.len(),
+                    num_qo_heads,
+                    num_kv_heads,
+                    head_dim,
+                    page_size,
+                    self.cache_config.dtype,
+                    None,
+                )
+                .ok();
+            }
 
             Some(FlashInferMetadata {
                 indptr: Tensor::from_vec(indptr, (indptr_host.len(),), device)?,
@@ -353,7 +370,7 @@ impl LLMEngine {
                 decode_plan_info: None,
                 prefill_plan_info,
                 mla_decode_plan_info: None,
-                mla_prefill_plan_info: None,
+                mla_prefill_plan_info,
             })
         } else {
             None
@@ -363,7 +380,7 @@ impl LLMEngine {
 
         let input_metadata = InputMetadata {
             is_prefill: true,
-            is_mla: false,
+            is_mla: self.config.is_mla(),
             sequence_ids: Some(sequence_ids),
             mamba_slot_mapping,
             slot_mapping,
@@ -560,7 +577,7 @@ impl LLMEngine {
         let flashinfer_metadata = None;
         let input_metadata = InputMetadata {
             is_prefill: false,
-            is_mla: false,
+            is_mla: self.config.is_mla(),
             sequence_ids: Some(sequence_ids),
             mamba_slot_mapping,
             slot_mapping,

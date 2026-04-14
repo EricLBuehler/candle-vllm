@@ -1,5 +1,4 @@
-#![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-use super::{Config, MoEConfig, QuantConfig, QwenMoEConfig};
+use super::{Config, MoEConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, Comm, ReplicatedLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
@@ -17,13 +16,10 @@ use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::Embedding;
 use parking_lot::RwLock;
-use serde::Deserialize;
 use std::iter::zip;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-
-use super::TokenID;
 
 struct Mlp {
     gate_proj: TensorParallelColumnLinear,
@@ -66,7 +62,7 @@ impl Mlp {
             gate_proj,
             up_proj,
             down_proj,
-            act_fn: cfg.hidden_act.unwrap_or(candle_nn::Activation::Silu),
+            act_fn: cfg.hidden_act.unwrap(),
         })
     }
 }
@@ -101,7 +97,7 @@ impl MoeOrMlp {
     }
 }
 
-pub struct DeepSeekDecoderLayer {
+pub struct GLM4MoeLiteDecoderLayer {
     self_attn: MlaAttention,
     mlp: MoeOrMlp,
     shared_expert: Option<Mlp>,
@@ -110,7 +106,7 @@ pub struct DeepSeekDecoderLayer {
     rotary_emb: Arc<ScalingRotaryEmbedding>,
 }
 
-impl DeepSeekDecoderLayer {
+impl GLM4MoeLiteDecoderLayer {
     pub fn new(
         vb: VarBuilder,
         comm: Rc<Comm>,
@@ -122,16 +118,13 @@ impl DeepSeekDecoderLayer {
     ) -> Result<Self> {
         let moe_cfg = match &config.moe_config {
             Some(MoEConfig::QwenMoE(m)) => m.clone(),
-            _ => candle::bail!("DeepSeek requires moe_config: QwenMoE"),
+            _ => candle::bail!("GLM4 MoE Lite requires moe_config: QwenMoE"),
         };
 
         let self_attn =
             MlaAttention::new(vb.pp("self_attn"), comm.clone(), mla_cfg, config, dtype)?;
 
-        let is_moe_layer = layer_idx >= moe_cfg.first_k_dense_replace.unwrap_or(0)
-            && moe_cfg.num_experts.is_some();
-
-        let mlp = if is_moe_layer {
+        let mlp = if layer_idx >= moe_cfg.first_k_dense_replace.unwrap_or(0) {
             if let Some(ref quant_config) = config.quantization_config {
                 if quant_config.quant_method == "fp8" {
                     MoeOrMlp::FusedMoeFp8(FusedMoeFp8::new(
@@ -194,6 +187,7 @@ impl DeepSeekDecoderLayer {
             )?)
         };
 
+        let is_moe_layer = layer_idx >= moe_cfg.first_k_dense_replace.unwrap_or(0);
         let shared_expert = if is_moe_layer {
             if let Some(intermediate_size) = moe_cfg.shared_expert_intermediate_size {
                 if intermediate_size > 0 {
@@ -247,6 +241,7 @@ impl DeepSeekDecoderLayer {
         positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
+        _layer_idx: usize,
     ) -> Result<Tensor> {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs)?;
@@ -278,49 +273,9 @@ impl DeepSeekDecoderLayer {
     }
 }
 
-#[derive(Deserialize, Clone, Debug)]
-pub struct DeepSeekConfig {
-    pub vocab_size: usize,
-    pub hidden_size: usize,
-    pub intermediate_size: usize,
-    pub moe_intermediate_size: usize,
-    pub num_hidden_layers: usize,
-    pub num_attention_heads: usize,
-    pub num_key_value_heads: Option<usize>,
-    pub n_shared_experts: Option<usize>,
-    pub n_routed_experts: Option<usize>,
-    pub num_experts_per_tok: Option<usize>,
-    #[serde(default)]
-    pub moe_layer_freq: Option<usize>,
-    #[serde(default)]
-    pub first_k_dense_replace: Option<usize>,
-    #[serde(default)]
-    pub norm_topk_prob: bool,
-    pub routed_scaling_factor: Option<f64>,
-    pub hidden_act: Option<candle_nn::Activation>,
-    pub max_position_embeddings: usize,
-    pub rms_norm_eps: f64,
-    #[serde(default)]
-    pub tie_word_embeddings: bool,
-    pub rope_theta: Option<f64>,
-    pub rope_scaling: Option<serde_json::Value>,
-    pub attention_bias: Option<bool>,
-    pub q_lora_rank: Option<usize>,
-    pub qk_rope_head_dim: Option<usize>,
-    pub kv_lora_rank: Option<usize>,
-    pub v_head_dim: Option<usize>,
-    pub qk_nope_head_dim: Option<usize>,
-    pub n_group: Option<usize>,
-    pub topk_group: Option<usize>,
-    pub sliding_window: Option<usize>,
-    pub quantization_config: Option<QuantConfig>,
-    pub bos_token_id: Option<TokenID>,
-    pub eos_token_id: Option<TokenID>,
-}
-
-pub struct DeepSeek {
+pub struct GLM4MoeLiteForCausalLM {
     embed_tokens: Embedding,
-    layers: Vec<DeepSeekDecoderLayer>,
+    layers: Vec<GLM4MoeLiteDecoderLayer>,
     norm: NormX,
     lm_head: ReplicatedLinear,
     device: Device,
@@ -329,91 +284,40 @@ pub struct DeepSeek {
     vocab_size: usize,
 }
 
-impl DeepSeek {
+impl GLM4MoeLiteForCausalLM {
     pub fn load_config(filename: &PathBuf, isq: Option<String>) -> Result<Config> {
         let f = std::fs::read(filename.clone()).map_err(candle::Error::wrap)?;
-        let ds_cfg: DeepSeekConfig = serde_json::from_slice(&f).map_err(candle::Error::wrap)?;
+        let mut config: Config = serde_json::from_slice(&f).map_err(candle::Error::wrap)?;
         let raw = String::from_utf8(f.clone()).map_err(candle::Error::wrap)?;
+        config.extra_config_json = Some(raw);
 
-        let hidden_act = ds_cfg.hidden_act.unwrap_or(candle_nn::Activation::Silu);
-
-        let num_kv_heads = ds_cfg
-            .num_key_value_heads
-            .unwrap_or(ds_cfg.num_attention_heads);
-
-        let rope_theta = ds_cfg.rope_theta.unwrap_or(10000.0);
-
-        let rope_scaling = ds_cfg.rope_scaling.as_ref().and_then(|v| {
-            serde_json::from_value::<
-                std::collections::HashMap<String, crate::openai::models::ScalingValue>,
-            >(v.clone())
-            .ok()
-        });
-
-        let moe_intermediate_size = ds_cfg.moe_intermediate_size;
-        let n_shared_experts = ds_cfg.n_shared_experts;
-        let shared_expert_intermediate_size = n_shared_experts.map(|n| moe_intermediate_size * n);
-
-        let qwen_moe = QwenMoEConfig {
-            moe_intermediate_size,
-            shared_expert_intermediate_size,
-            num_experts: ds_cfg.n_routed_experts,
-            mlp_only_layers: None,
-            decoder_sparse_step: None,
-            norm_topk_prob: ds_cfg.norm_topk_prob,
-            num_experts_per_tok: ds_cfg.num_experts_per_tok.unwrap_or(8),
-            routed_scaling_factor: ds_cfg.routed_scaling_factor,
-            first_k_dense_replace: ds_cfg.first_k_dense_replace,
-            n_shared_experts,
-        };
-
-        let isq_quant = if ds_cfg.quantization_config.is_some() {
+        config.isq_quant = if config.quantization_config.is_some() {
             None
         } else {
             isq
         };
 
-        let mut quant_config = ds_cfg.quantization_config.clone();
-        if let Some(ref mut qcfg) = quant_config {
-            qcfg.normalize_compressed_tensors();
+        if config.moe_config.is_none() {
+            let from_root: Option<QwenMoEConfig> = serde_json::from_slice::<QwenMoEConfig>(&f).ok();
+            if let Some(moe_cfg) = from_root {
+                config.moe_config = Some(MoEConfig::QwenMoE(moe_cfg));
+            }
         }
 
-        let mut config = Config {
-            architectures: Some(vec!["DeepseekV3ForCausalLM".to_string()]),
-            hidden_size: ds_cfg.hidden_size,
-            head_dim: Some(ds_cfg.hidden_size / ds_cfg.num_attention_heads),
-            intermediate_size: ds_cfg.intermediate_size,
-            vocab_size: ds_cfg.vocab_size,
-            num_hidden_layers: ds_cfg.num_hidden_layers,
-            num_attention_heads: ds_cfg.num_attention_heads,
-            num_key_value_heads: Some(num_kv_heads),
-            rms_norm_eps: ds_cfg.rms_norm_eps,
-            rope_theta,
-            rope_local_base_freq: None,
-            bos_token_id: ds_cfg.bos_token_id,
-            eos_token_id: ds_cfg.eos_token_id,
-            max_seq_len: ds_cfg.max_position_embeddings,
-            sliding_window: ds_cfg.sliding_window,
-            sliding_window_pattern: None,
-            hidden_act: Some(hidden_act),
-            hidden_activation: None,
-            tie_word_embeddings: ds_cfg.tie_word_embeddings,
-            rope_scaling,
-            max_position_embeddings: Some(ds_cfg.max_position_embeddings),
-            original_max_position_embeddings: None,
-            attention_bias: ds_cfg.attention_bias.or(Some(false)),
-            partial_rotary_factor: None,
-            qk_layernorm: false,
-            use_qkv_bias: None,
-            custom_stop_tokens: None,
-            attn_logit_softcapping: None,
-            final_logit_softcapping: None,
-            quantization_config: quant_config,
-            moe_config: Some(MoEConfig::QwenMoE(qwen_moe)),
-            isq_quant,
-            fp8_kvcache: None,
-            extra_config_json: Some(raw),
-        };
+        if let Some(MoEConfig::QwenMoE(ref mut moe_cfg)) = config.moe_config {
+            if moe_cfg.shared_expert_intermediate_size.is_none() {
+                if let Some(n) = moe_cfg.n_shared_experts {
+                    if n > 0 {
+                        moe_cfg.shared_expert_intermediate_size =
+                            Some(moe_cfg.moe_intermediate_size);
+                    }
+                }
+            }
+        }
+
+        if let Some(ref mut qcfg) = config.quantization_config {
+            qcfg.normalize_compressed_tensors();
+        }
 
         config.apply_rope_overrides();
         config.max_seq_len = config.effective_max_seq_len();
@@ -424,23 +328,28 @@ impl DeepSeek {
         &self.config
     }
 
-    pub fn load(
-        vb: VarBuilder,
-        cfg: &Config,
-        dtype: DType,
-        device: &Device,
+    pub fn new(
+        vb: &VarBuilder,
         comm: Rc<Comm>,
+        config: &Config,
+        dtype: DType,
+        is_gpt_neox: bool,
+        device: &Device,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
-        let mla_cfg = MlaConfig::from_config(cfg);
+        let mla_cfg = MlaConfig::from_config(config);
         let vb_m = vb.pp("model");
 
-        let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
+        let embed_tokens = embedding(
+            config.vocab_size,
+            config.hidden_size,
+            vb_m.pp("embed_tokens"),
+        )?;
 
-        let mut mla_rope_cfg = cfg.clone();
+        let mut mla_rope_cfg = config.clone();
         mla_rope_cfg.head_dim = Some(mla_cfg.qk_rope_head_dim);
         mla_rope_cfg.partial_rotary_factor = None;
-        let rotary_dtype = if let Some(qcfg) = &cfg.quantization_config {
+        let rotary_dtype = if let Some(qcfg) = &config.quantization_config {
             if matches!(qcfg.quant_method.as_str(), "nvfp4" | "mxfp4" | "fp8") {
                 dtype
             } else {
@@ -453,17 +362,17 @@ impl DeepSeek {
             rotary_dtype,
             &mla_rope_cfg,
             device,
-            false,
+            is_gpt_neox,
         )?);
 
         let reporter = progress_reporter.clone();
         let mut layers = Vec::new();
-        for i in 0..cfg.num_hidden_layers {
-            let layer = DeepSeekDecoderLayer::new(
+        for i in 0..config.num_hidden_layers {
+            let layer = GLM4MoeLiteDecoderLayer::new(
                 vb_m.pp("layers").pp(i),
                 comm.clone(),
                 rotary_emb.clone(),
-                cfg,
+                config,
                 &mla_cfg,
                 dtype,
                 i,
@@ -473,24 +382,24 @@ impl DeepSeek {
         }
 
         let norm = rms_norm(
-            cfg.hidden_size,
-            cfg.rms_norm_eps,
+            config.hidden_size,
+            config.rms_norm_eps,
             vb_m.pp("norm"),
             dtype,
             false,
         )?;
 
-        let lm_head = if cfg.tie_word_embeddings {
-            ReplicatedLinear::from_weight_bias(embed_tokens.embeddings().clone(), None)?
-        } else {
-            ReplicatedLinear::load_no_bias(
-                cfg.hidden_size,
-                cfg.vocab_size,
-                vb.pp("lm_head"),
-                &cfg.isq_quant,
-                &cfg.quantization_config,
-            )?
-        };
+        let lm_head = ReplicatedLinear::load_no_bias(
+            config.hidden_size,
+            config.vocab_size,
+            if config.tie_word_embeddings {
+                vb_m.pp("embed_tokens")
+            } else {
+                vb.pp("lm_head")
+            },
+            &config.isq_quant,
+            &config.quantization_config,
+        )?;
 
         Ok(Self {
             embed_tokens,
@@ -498,24 +407,14 @@ impl DeepSeek {
             norm,
             lm_head,
             device: device.clone(),
-            config: cfg.clone(),
+            config: config.clone(),
             dtype,
-            vocab_size: cfg.vocab_size,
+            vocab_size: config.vocab_size,
         })
     }
 
     pub fn embed_forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let xs = self.embed_tokens.forward(xs)?;
-        let needs_f32 = if let Some(qcfg) = &self.config.quantization_config {
-            !matches!(qcfg.quant_method.as_str(), "nvfp4" | "mxfp4" | "fp8")
-        } else {
-            false
-        };
-        if needs_f32 && xs.dtype() != DType::F32 {
-            xs.to_dtype(DType::F32)
-        } else {
-            Ok(xs)
-        }
+        self.embed_tokens.forward(xs)
     }
 
     pub fn forward(
@@ -564,13 +463,16 @@ impl DeepSeek {
         };
 
         if let Some(kv_caches) = kv_caches {
-            for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
+            for (i, ((k_cache, v_cache), layer)) in
+                zip(kv_caches.iter(), self.layers.iter()).enumerate()
+            {
                 xs = layer.forward(
                     &xs,
                     attention_mask.as_ref(),
                     positions,
                     Some((k_cache, v_cache)),
                     input_metadata,
+                    i,
                 )?;
             }
         }

@@ -42,7 +42,10 @@ impl Scheduler {
         groups: &VecDeque<Arc<SequenceGroup>>,
         chunk_size: usize,
     ) -> Vec<MambaPrefixCapture> {
-        if groups.is_empty() || chunk_size == 0 {
+        if !self.block_engine.requires_mamba_prefix_snapshots()
+            || groups.is_empty()
+            || chunk_size == 0
+        {
             return Vec::new();
         }
 
@@ -93,7 +96,7 @@ impl Scheduler {
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Vec<MambaPrefixCapture> {
-        if groups.is_empty() {
+        if !self.block_engine.requires_mamba_prefix_snapshots() || groups.is_empty() {
             return Vec::new();
         }
 
@@ -136,7 +139,7 @@ impl Scheduler {
         &mut self,
         groups: &VecDeque<Arc<SequenceGroup>>,
     ) -> Vec<MambaRestorePlan> {
-        if groups.is_empty() {
+        if !self.block_engine.requires_mamba_prefix_snapshots() || groups.is_empty() {
             return Vec::new();
         }
 

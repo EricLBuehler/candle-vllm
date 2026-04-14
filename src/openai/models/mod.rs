@@ -4,6 +4,7 @@ pub mod gemma;
 pub mod gemma3;
 pub mod gemma3_vl;
 pub mod glm4;
+pub mod glm4_moe_lite;
 pub mod layers;
 pub mod linear;
 pub mod llama;
@@ -107,10 +108,21 @@ pub struct QuantConfig {
     pub quant_algo: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
+    #[serde(default)]
+    pub ignore: Option<Vec<String>>,
 }
 
 impl QuantConfig {
     pub fn normalize_compressed_tensors(&mut self) {
+        if let Some(ignore_list) = self.ignore.take() {
+            let mods = self.modules_to_not_convert.get_or_insert_with(Vec::new);
+            for item in ignore_list {
+                if !mods.contains(&item) {
+                    mods.push(item);
+                }
+            }
+        }
+
         if self.quant_method == "modelopt" {
             if let Some(algo) = &self.quant_algo {
                 if algo.eq_ignore_ascii_case("NVFP4") || algo.eq_ignore_ascii_case("FP4") {
@@ -331,6 +343,7 @@ pub struct DeepSeekMoEConfig {
 pub struct QwenMoEConfig {
     pub moe_intermediate_size: usize,
     pub shared_expert_intermediate_size: Option<usize>,
+    #[serde(alias = "n_routed_experts")]
     pub num_experts: Option<usize>,
     pub mlp_only_layers: Option<Vec<usize>>,
     pub decoder_sparse_step: Option<usize>,
@@ -338,6 +351,11 @@ pub struct QwenMoEConfig {
     pub norm_topk_prob: bool,
     pub num_experts_per_tok: usize,
     pub routed_scaling_factor: Option<f64>,
+    /// First layers use dense MLP; remaining layers use MoE (e.g. GLM4 MoE Lite).
+    #[serde(default)]
+    pub first_k_dense_replace: Option<usize>,
+    #[serde(default)]
+    pub n_shared_experts: Option<usize>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -936,6 +954,43 @@ impl Config {
             }
             _ => self.get_head_size(),
         }
+    }
+
+    pub fn is_mla(&self) -> bool {
+        if let Some(raw) = self.extra_config_json.as_ref() {
+            if let Ok(root) = serde_json::from_str::<serde_json::Value>(raw) {
+                let cfg_root = root.get("text_config").unwrap_or(&root);
+                return cfg_root
+                    .get("kv_lora_rank")
+                    .and_then(|v| v.as_u64())
+                    .is_some();
+            }
+        }
+        false
+    }
+
+    pub fn mla_kv_lora_rank(&self) -> usize {
+        if let Some(raw) = self.extra_config_json.as_ref() {
+            if let Ok(root) = serde_json::from_str::<serde_json::Value>(raw) {
+                let cfg_root = root.get("text_config").unwrap_or(&root);
+                if let Some(v) = cfg_root.get("kv_lora_rank").and_then(|v| v.as_u64()) {
+                    return v as usize;
+                }
+            }
+        }
+        0
+    }
+
+    pub fn mla_qk_rope_head_dim(&self) -> usize {
+        if let Some(raw) = self.extra_config_json.as_ref() {
+            if let Ok(root) = serde_json::from_str::<serde_json::Value>(raw) {
+                let cfg_root = root.get("text_config").unwrap_or(&root);
+                if let Some(v) = cfg_root.get("qk_rope_head_dim").and_then(|v| v.as_u64()) {
+                    return v as usize;
+                }
+            }
+        }
+        64
     }
 }
 

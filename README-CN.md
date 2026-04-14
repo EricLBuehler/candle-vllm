@@ -49,6 +49,7 @@
     | #12 | **DeepSeek V2/V3/R1** |TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|
     | #13 | **QwQ-32B** |45 tks/s **(32B, tp=2)**|63 tks/s **(32B, Q4K)**|
     | #14 | **GLM4** |89 tks/s **(9B)**|124 tks/s **(9B, Q4K)**|
+    | #15 | **GLM4.7 Flash** |TBD|75 tks/s **(31B, NVFP4)**|
   </details>
 
 ### 演示视频
@@ -198,7 +199,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     ```
     **FP4 模型** (MXFP4/NVFP4, 暂不支持MLX量化格式)
     ```shell
-    candle-vllm --m AxionML/Qwen3.5-2B-NVFP4 --ui-server --prefix-cache
+    candle-vllm --m GadflyII-GLM-4.7-Flash-NVFP4 --ui-server --prefix-cache
     ```
 
     ```shell

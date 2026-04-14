@@ -25,6 +25,7 @@ use crate::{
             gemma3::Gemma3,
             gemma3_vl::Gemma3ForConditionalGeneration,
             glm4::GLM4,
+            glm4_moe_lite::GLM4MoeLiteForCausalLM,
             llama::Llama,
             mistral::Mistral,
             mistral3_vl::Mistral3ForConditionalGeneration,
@@ -87,6 +88,7 @@ pub enum LLMModel {
     Yi(Arc<Yi>),
     StableLM(Arc<StableLM>),
     GLM4(Arc<GLM4>),
+    GLM4MoeLite(Arc<GLM4MoeLiteForCausalLM>),
     DeepSeek(Arc<DeepSeek>),
     LlamaGGUF(Arc<GGUFLLaMa>),
     Phi3GGUF(Arc<GGUFPhi3>),
@@ -114,7 +116,7 @@ fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
         LLMModel::Mistral(_) | LLMModel::Mistral3VL(_) => ToolModelType::Mistral,
         LLMModel::Yi(_) => ToolModelType::Yi,
         LLMModel::StableLM(_) => ToolModelType::StableLM,
-        LLMModel::GLM4(_) | LLMModel::GLM4GGUF(_) => ToolModelType::GLM4,
+        LLMModel::GLM4(_) | LLMModel::GLM4MoeLite(_) | LLMModel::GLM4GGUF(_) => ToolModelType::GLM4,
         LLMModel::DeepSeek(_) => ToolModelType::DeepSeek,
         LLMModel::Phi2(_) | LLMModel::Phi3GGUF(_) => ToolModelType::Phi,
         LLMModel::Phi4(_) => ToolModelType::Phi4,
@@ -865,14 +867,20 @@ impl DefaultLoader {
                 "yi" => Yi::load_config(&cfile, isq.clone())?,
                 "StableLmForCausalLM" => StableLM::load_config(&cfile, isq.clone())?,
                 "Glm4ForCausalLM" => GLM4::load_config(&cfile, isq.clone())?,
-                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" => {
+                "Glm4MoeLiteForCausalLM" => {
+                    GLM4MoeLiteForCausalLM::load_config(&cfile, isq.clone())?
+                }
+                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" | "DeepseekV32ForCausalLM" => {
                     DeepSeek::load_config(&cfile, isq.clone())?
                 }
                 _ => panic!("Model not supported!"),
             };
             if !matches!(
                 arch.as_str(),
-                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM"
+                "DeepseekV2ForCausalLM"
+                    | "DeepseekV3ForCausalLM"
+                    | "DeepseekV32ForCausalLM"
+                    | "Glm4MoeLiteForCausalLM"
             ) {
                 config.apply_runtime_rope_overrides(self.yarn_scaling_factor);
             }
@@ -1196,7 +1204,24 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Llama,
                         ),
-                        "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" => (
+                        "Glm4MoeLiteForCausalLM" => (
+                            LLMModel::GLM4MoeLite(Arc::new(
+                                GLM4MoeLiteForCausalLM::new(
+                                    &vb,
+                                    comm,
+                                    &config,
+                                    dtype,
+                                    false,
+                                    &device,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            )),
+                            SeparatorStyle::Llama,
+                        ),
+                        "DeepseekV2ForCausalLM"
+                        | "DeepseekV3ForCausalLM"
+                        | "DeepseekV32ForCausalLM" => (
                             LLMModel::DeepSeek(Arc::new(
                                 DeepSeek::load(
                                     vb,
@@ -1550,6 +1575,7 @@ impl DefaultPipeline {
             Yi,
             StableLM,
             GLM4,
+            GLM4MoeLite,
             DeepSeek,
             LlamaGGUF,
             Phi3GGUF,
@@ -1562,6 +1588,15 @@ impl DefaultPipeline {
         #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
         let flashinfer_kv_params = if _kv_cache_dtype == DType::U8 {
             None
+        } else if config.is_mla() {
+            Some(FlashInferKvParams {
+                kv_dtype: _kv_cache_dtype,
+                out_dtype: dtype,
+                page_size: block_size,
+                num_kv_heads: 1,
+                head_dim: config.mla_kv_lora_rank(),
+                num_qo_heads: config.num_attention_heads / _num_shards,
+            })
         } else {
             Some(FlashInferKvParams {
                 kv_dtype: _kv_cache_dtype,
@@ -1636,6 +1671,7 @@ impl DefaultPipeline {
                 config.max_seq_len,
                 block_size,
                 config.hidden_size,
+                config.is_mla(),
                 #[cfg(feature = "flashinfer")]
                 &flashinfer_kv_params,
             ),
@@ -1760,6 +1796,9 @@ impl DefaultPipeline {
             LLMModel::GLM4(glm4) => {
                 glm4.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::GLM4MoeLite(m) => {
+                m.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::DeepSeek(deepseek) => {
                 deepseek.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -1856,6 +1895,9 @@ impl DefaultPipeline {
             }
             LLMModel::GLM4GGUF(glm4) => {
                 glm4.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::GLM4MoeLite(m) => {
+                m.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Yi(yi) => {
                 yi.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
@@ -2106,6 +2148,7 @@ impl DefaultPipeline {
             LLMModel::Yi(yi) => yi.get_config().clone(),
             LLMModel::StableLM(stablelm) => stablelm.get_config().clone(),
             LLMModel::GLM4(glm4) => glm4.get_config().clone(),
+            LLMModel::GLM4MoeLite(m) => m.get_config().clone(),
             LLMModel::DeepSeek(deepseek) => deepseek.get_config().clone(),
             LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),

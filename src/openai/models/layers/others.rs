@@ -3,15 +3,29 @@ use candle_core::{IndexOp, Result, Tensor};
 use candle_nn::{Embedding, LayerNorm, Module, RmsNorm};
 
 pub enum NormX {
-    Rms(RmsNorm),
-    Layer(LayerNorm),
+    Rms(RmsNorm, candle_core::DType),
+    Layer(LayerNorm, candle_core::DType),
 }
 
 impl NormX {
     pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        match self {
-            Self::Rms(norm) => norm.forward(xs),
-            Self::Layer(norm) => norm.forward(xs),
+        let norm_dtype = match self {
+            Self::Rms(_, dt) | Self::Layer(_, dt) => *dt,
+        };
+        let in_dtype = xs.dtype();
+        let xs = if in_dtype != norm_dtype {
+            xs.to_dtype(norm_dtype)?
+        } else {
+            xs.clone()
+        };
+        let out = match self {
+            Self::Rms(norm, _) => norm.forward(&xs)?,
+            Self::Layer(norm, _) => norm.forward(&xs)?,
+        };
+        if out.dtype() != in_dtype {
+            out.to_dtype(in_dtype)
+        } else {
+            Ok(out)
         }
     }
 }
@@ -20,12 +34,18 @@ pub fn rms_norm(
     size: usize,
     eps: f64,
     vb: VarBuilder,
-    _dtype: candle_core::DType,
+    dtype: candle_core::DType,
     is_gemma: bool,
 ) -> Result<NormX> {
     let weight = vb.get(size, "weight")?;
+    let weight = if weight.dtype() != dtype {
+        weight.to_dtype(dtype)?
+    } else {
+        weight
+    };
     let weight = if is_gemma { (weight + 1.0)? } else { weight };
-    Ok(NormX::Rms(RmsNorm::new(weight, eps)))
+    let dt = weight.dtype();
+    Ok(NormX::Rms(RmsNorm::new(weight, eps), dt))
 }
 
 pub fn layer_norm(
@@ -36,11 +56,12 @@ pub fn layer_norm(
     _dtype: candle_core::DType,
 ) -> Result<NormX> {
     let weight = vb.get(size, "weight")?;
+    let dt = weight.dtype();
     if affine {
         let bias = vb.get(size, "bias")?;
-        Ok(NormX::Layer(LayerNorm::new(weight, bias, eps)))
+        Ok(NormX::Layer(LayerNorm::new(weight, bias, eps), dt))
     } else {
-        Ok(NormX::Layer(LayerNorm::new_no_bias(weight, eps)))
+        Ok(NormX::Layer(LayerNorm::new_no_bias(weight, eps), dt))
     }
 }
 
