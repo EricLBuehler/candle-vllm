@@ -27,6 +27,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support Block-wise FP8 Models (SM90+, Qwen3 Series)
 - Support Flashinfer Backend
 - Support manual YaRN RoPE scaling override from the command line via `--yarn-scaling-factor`
+- Support MXFP4/NVFP4 models
 
 ## Supported Models
 - Currently, candle-vllm supports chat serving for the following model structures.
@@ -170,7 +171,7 @@ cargo install --features metal --path .
 docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data candle-vllm:latest bash
 ```
 
-- Run **Uncompressed** models 
+- Run **Uncompressed, FP8 or FP4** models 
   <details open>
     <summary>Show command</summary>
 
@@ -203,6 +204,15 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     ```shell
      # MacOS/Metal (Dense)
     candle-vllm --m Qwen/Qwen3-4B-Instruct-2507-FP8 --ui-server --prefix-cache
+    ```
+
+    **FP4 Model** (MXFP4/NVFP4, MLX quantized format not supported)
+    ```shell
+    candle-vllm --m AxionML/Qwen3.5-2B-NVFP4 --ui-server --prefix-cache
+    ```
+
+    ```shell
+    candle-vllm --m nm-testing/Qwen3-30B-A3B-MXFP4A16 --ui-server --prefix-cache
     ```
   </details>
 

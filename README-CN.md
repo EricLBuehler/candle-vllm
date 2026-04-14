@@ -26,6 +26,7 @@
 - 支持硬件FP8模型推理加速（SM90+, Qwen3系列，Block-wise FP8量化）
 - 支持 Flashinfer 后端
 - 支持通过命令行参数 `--yarn-scaling-factor` 手动设置 YaRN RoPE 缩放因子
+- 支持 MXFP4/NVFP4 模型
 
 ## 支持的模型
 - 目前，candle-vllm支持以下模型结构的推理服务。
@@ -195,7 +196,14 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     ```shell
     candle-vllm --m Qwen/Qwen3.5-27B-FP8 --ui-server --prefix-cache
     ```
+    **FP4 模型** (MXFP4/NVFP4, 暂不支持MLX量化格式)
+    ```shell
+    candle-vllm --m AxionML/Qwen3.5-2B-NVFP4 --ui-server --prefix-cache
+    ```
 
+    ```shell
+    candle-vllm --m nm-testing/Qwen3-30B-A3B-MXFP4A16 --ui-server --prefix-cache
+    ```
   </details>
 
 - 运行**GGUF**模型 
