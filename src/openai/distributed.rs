@@ -600,11 +600,34 @@ impl MergedParallelColumnLinear {
         } else {
             false
         };
+        let is_fp4_quant = if let Some(cfg) = quant_cfg {
+            cfg.quant_method == "mxfp4" || cfg.quant_method == "nvfp4"
+        } else {
+            false
+        };
 
-        if quant_cfg.is_some() && !is_fp8_quant {
+        if quant_cfg.is_some() && !is_fp8_quant && !is_fp4_quant {
             candle_core::bail!(
                 "Merged quantized weight is not supported at the moment, using ISQ instead!"
             );
+        }
+
+        if is_fp4_quant {
+            let linear = crate::openai::models::linear::linear_no_bias_x(
+                in_dim,
+                out_dim,
+                vb,
+                shard(0, comm.rank(), comm.world_size()),
+                &None,
+                quant_cfg,
+                dtype,
+                None,
+            )?;
+            return Ok(Self {
+                linears: vec![TensorParallelColumnLinear::new(linear)],
+                biases: vec![],
+                output_splits: None,
+            });
         }
         let mut vec_linear = Vec::<TensorParallelColumnLinear>::new();
         let mut output_splits: Option<Vec<usize>> = None;

@@ -877,6 +877,32 @@ impl DefaultLoader {
                 config.apply_runtime_rope_overrides(self.yarn_scaling_factor);
             }
             config.fp8_kvcache = Some(kv_cache_dtype == DType::U8);
+
+            if let Some(qcfg) = &mut config.quantization_config {
+                qcfg.normalize_compressed_tensors();
+                if let Some(mode) = &qcfg.mode {
+                    if mode.eq_ignore_ascii_case("nvfp4") || mode.eq_ignore_ascii_case("mxfp4") {
+                        panic!(
+                            "MLX-quantized models (mode=\"{}\") are not supported. \
+                             MLX uses an incompatible packing format (U32 weights with integer scales). \
+                             Please use a modelopt or compressed-tensors quantized model instead \
+                             (e.g. AxionML/Qwen3.5-*-NVFP4 or nvidia/*-NVFP4).",
+                            mode
+                        );
+                    }
+                }
+                assert!(
+                    qcfg.quant_method == "gptq"
+                        || qcfg.quant_method == "awq"
+                        || qcfg.quant_method == "fp8"
+                        || qcfg.quant_method == "mxfp4"
+                        || qcfg.quant_method == "nvfp4"
+                        || qcfg.quant_method == "marlin",
+                    "Invalid quantization format! Only `gptq`, `awq`, `fp8`, `mxfp4` and `nvfp4` supported, got `{}`",
+                    qcfg.quant_method
+                );
+            }
+
             info!("Model {:?}", config);
 
             info!("Loading {} model.", arch);

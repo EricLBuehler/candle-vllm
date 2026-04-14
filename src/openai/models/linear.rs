@@ -1177,6 +1177,8 @@ pub enum LinearX {
     Linear(Linear),
     QLinear(QLinear),
     LnFp8(LnFp8),
+    LnMxfp4(LnMxfp4),
+    LnNvfp4(LnNvfp4),
 }
 
 impl Module for LinearX {
@@ -1185,6 +1187,8 @@ impl Module for LinearX {
             LinearX::Linear(ln) => ln.forward(x),
             LinearX::QLinear(ln) => ln.forward(x),
             LinearX::LnFp8(ln) => ln.forward(x),
+            LinearX::LnMxfp4(ln) => ln.forward(x),
+            LinearX::LnNvfp4(ln) => ln.forward(x),
         }
     }
 }
@@ -1213,7 +1217,9 @@ impl LinearX {
         match self {
             LinearX::Linear(ln) => ln.offload(),
             LinearX::QLinear(ln) => ln.offload(),
-            LinearX::LnFp8(_) => Ok(()), // FP8 weights are already small
+            LinearX::LnFp8(_) => Ok(()),
+            LinearX::LnMxfp4(_) => Ok(()),
+            LinearX::LnNvfp4(_) => Ok(()),
         }
     }
 
@@ -1222,38 +1228,22 @@ impl LinearX {
         match self {
             LinearX::Linear(ln) => ln.reload(),
             LinearX::QLinear(ln) => ln.reload(),
-            LinearX::LnFp8(_) => Ok(()), // FP8 weights are already small
+            LinearX::LnFp8(_) => Ok(()),
+            LinearX::LnMxfp4(_) => Ok(()),
+            LinearX::LnNvfp4(_) => Ok(()),
         }
     }
 }
 
 fn should_bypass_quant_for_module(vb: &VarBuilder, quant_config: &Option<QuantConfig>) -> bool {
-    fn module_path_matches_not_convert(module_path: &str, item: &str) -> bool {
-        let module_path = module_path.trim_end_matches(".weight");
-        let item = item.trim_end_matches(".weight");
-        module_path == item
-            || module_path.ends_with(item)
-            || module_path.ends_with(&format!(".{item}"))
-            || item.ends_with(module_path)
-            || item.ends_with(&format!(".{module_path}"))
-    }
-
     let Some(cfg) = quant_config else {
-        return false;
-    };
-    if cfg.quant_method != "fp8" {
-        return false;
-    }
-    let Some(skip_modules) = &cfg.modules_to_not_convert else {
         return false;
     };
     let prefix = vb.prefix();
     if prefix.is_empty() {
         return false;
     }
-    skip_modules
-        .iter()
-        .any(|m| module_path_matches_not_convert(&prefix, m))
+    cfg.should_skip_module(&prefix)
 }
 
 pub fn linear_x(
@@ -1273,7 +1263,6 @@ pub fn linear_x(
     };
     let quant_local = if bypass_quant { None } else { quant.clone() };
 
-    // Check for FP8 quantization first
     if let Some(cfg) = &quant_config_local {
         if cfg.quant_method == "fp8" {
             let has_fp8_scale =
@@ -1291,6 +1280,17 @@ pub fn linear_x(
             let ln = load_ln_fp8_with_hints(in_dim, out_dim, vb, shard, cfg, true)?;
             return Ok(LinearX::LnFp8(ln));
         }
+
+        if cfg.quant_method == "mxfp4" {
+            let ln = LnMxfp4::load(in_dim, out_dim, vb.clone(), shard, true)?;
+            return Ok(LinearX::LnMxfp4(ln));
+        }
+
+        if cfg.quant_method == "nvfp4" {
+            let ln = LnNvfp4::load(in_dim, out_dim, vb.clone(), shard, true)?;
+            return Ok(LinearX::LnNvfp4(ln));
+        }
+
         if matches!(cfg.quant_method.as_str(), "gptq" | "awq" | "marlin") {
             let ln = qlinear(in_dim, out_dim, vb, shard, &quant_config_local, true, dtype)?;
             return Ok(LinearX::QLinear(QLinear::from_linear_x(
@@ -1332,7 +1332,6 @@ pub fn linear_no_bias_x(
     };
     let quant_local = if bypass_quant { None } else { quant.clone() };
 
-    // Check for FP8 quantization first
     if let Some(cfg) = &quant_config_local {
         if cfg.quant_method == "fp8" {
             let has_fp8_scale =
@@ -1374,6 +1373,17 @@ pub fn linear_no_bias_x(
             let ln = load_ln_fp8_with_hints(in_dim, out_dim, vb, shards, cfg, false)?;
             return Ok(LinearX::LnFp8(ln));
         }
+
+        if cfg.quant_method == "mxfp4" {
+            let ln = LnMxfp4::load(in_dim, out_dim, vb.clone(), shards, false)?;
+            return Ok(LinearX::LnMxfp4(ln));
+        }
+
+        if cfg.quant_method == "nvfp4" {
+            let ln = LnNvfp4::load(in_dim, out_dim, vb.clone(), shards, false)?;
+            return Ok(LinearX::LnNvfp4(ln));
+        }
+
         if matches!(cfg.quant_method.as_str(), "gptq" | "awq" | "marlin") {
             let ln = qlinear(
                 in_dim,
@@ -1486,5 +1496,170 @@ pub fn linear_b_x(
             dtype,
             merged_chunks,
         )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LnMxfp4 {
+    pub blocks: Tensor,
+    pub scales: Tensor,
+    pub bias: Option<Tensor>,
+}
+
+impl LnMxfp4 {
+    pub fn load(
+        in_dim: usize,
+        out_dim: usize,
+        vb: VarBuilder,
+        shard: Shard,
+        load_bias: bool,
+    ) -> Result<Self> {
+        let blocks = if vb.contains_tensor("weight_packed") {
+            vb.get_with_hints_dtype((out_dim, in_dim / 2), "weight_packed", shard, DType::U8)?
+        } else {
+            vb.get_with_hints_dtype((out_dim, in_dim / 2), "blocks", shard, DType::U8)?
+        };
+        let scales = if vb.contains_tensor("weight_scale") {
+            vb.get_with_hints_dtype((out_dim, in_dim / 32), "weight_scale", shard, DType::U8)?
+        } else {
+            vb.get_with_hints_dtype((out_dim, in_dim / 32), "scales", shard, DType::U8)?
+        };
+        let bias = if load_bias && vb.contains_tensor("bias") {
+            Some(vb.get((out_dim,), "bias")?)
+        } else {
+            None
+        };
+        Ok(Self {
+            blocks,
+            scales,
+            bias,
+        })
+    }
+}
+
+impl Module for LnMxfp4 {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let orig_dims = x.dims().to_vec();
+        let x_2d = if orig_dims.len() > 2 {
+            let features = orig_dims[orig_dims.len() - 1];
+            let batch_size: usize = orig_dims[..orig_dims.len() - 1].iter().product();
+            x.reshape((batch_size, features))?
+        } else {
+            x.clone()
+        };
+
+        let result = attention_rs::mxfp4_linear::mxfp4_matmul(
+            &x_2d,
+            &self.blocks,
+            &self.scales,
+            self.bias.as_ref(),
+        )?;
+
+        if orig_dims.len() > 2 {
+            let mut new_dims = orig_dims[..orig_dims.len() - 1].to_vec();
+            new_dims.push(result.dim(1)?);
+            result.reshape(new_dims)
+        } else {
+            Ok(result)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LnNvfp4 {
+    pub blocks: Tensor,
+    pub scales: Tensor,
+    pub global_scale: f32,
+    pub bias: Option<Tensor>,
+}
+
+impl LnNvfp4 {
+    pub fn load(
+        in_dim: usize,
+        out_dim: usize,
+        vb: VarBuilder,
+        shard: Shard,
+        load_bias: bool,
+    ) -> Result<Self> {
+        let blocks = if vb.contains_tensor("weight_packed") {
+            vb.get_with_hints_dtype((out_dim, in_dim / 2), "weight_packed", shard, DType::U8)?
+        } else if vb.contains_tensor("weight") {
+            vb.get_with_hints_dtype((out_dim, in_dim / 2), "weight", shard, DType::U8)?
+        } else {
+            vb.get_with_hints_dtype((out_dim, in_dim / 2), "blocks", shard, DType::U8)?
+        };
+
+        let scale_dim = in_dim / 16;
+        let scales = if vb.contains_tensor("weight_scale") {
+            vb.get_with_hints_dtype((out_dim, scale_dim), "weight_scale", shard, DType::U8)?
+        } else {
+            vb.get_with_hints_dtype((out_dim, scale_dim), "scales", shard, DType::U8)?
+        };
+
+        let no_shard = Shard::default();
+        let global_scale = if vb.contains_tensor("weight_global_scale") {
+            let t = match vb.get_with_hints_dtype((1,), "weight_global_scale", no_shard, DType::F32)
+            {
+                Ok(t) => t,
+                Err(_) => {
+                    vb.get_with_hints_dtype((), "weight_global_scale", no_shard, DType::F32)?
+                }
+            };
+            let raw = t.flatten_all()?.to_vec1::<f32>()?[0];
+            if raw != 0.0 {
+                1.0 / raw
+            } else {
+                1.0
+            }
+        } else if vb.contains_tensor("weight_scale_2") {
+            let t = match vb.get_with_hints_dtype((1,), "weight_scale_2", no_shard, DType::F32) {
+                Ok(t) => t,
+                Err(_) => vb.get_with_hints_dtype((), "weight_scale_2", no_shard, DType::F32)?,
+            };
+            t.flatten_all()?.to_vec1::<f32>()?[0]
+        } else {
+            1.0f32
+        };
+
+        let bias = if load_bias && vb.contains_tensor("bias") {
+            Some(vb.get((out_dim,), "bias")?)
+        } else {
+            None
+        };
+        Ok(Self {
+            blocks,
+            scales,
+            global_scale,
+            bias,
+        })
+    }
+}
+
+impl Module for LnNvfp4 {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let orig_dims = x.dims().to_vec();
+        let x_2d = if orig_dims.len() > 2 {
+            let features = orig_dims[orig_dims.len() - 1];
+            let batch_size: usize = orig_dims[..orig_dims.len() - 1].iter().product();
+            x.reshape((batch_size, features))?
+        } else {
+            x.clone()
+        };
+
+        let result = attention_rs::nvfp4_linear::nvfp4_matmul(
+            &x_2d,
+            &self.blocks,
+            &self.scales,
+            self.global_scale,
+            self.bias.as_ref(),
+        )?;
+
+        if orig_dims.len() > 2 {
+            let mut new_dims = orig_dims[..orig_dims.len() - 1].to_vec();
+            new_dims.push(result.dim(1)?);
+            result.reshape(new_dims)
+        } else {
+            Ok(result)
+        }
     }
 }
