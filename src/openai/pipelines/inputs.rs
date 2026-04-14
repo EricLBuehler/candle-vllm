@@ -313,6 +313,32 @@ impl LLMEngine {
                     kv_len_arr_host.push(full + last_len_host[i]);
                 }
             }
+            let num_qo_heads = self.config.num_attention_heads / self.num_shards;
+            let num_kv_heads = self
+                .config
+                .num_key_value_heads
+                .unwrap_or(self.config.num_attention_heads)
+                / self.num_shards;
+            let head_dim = self.config.head_dim.unwrap_or(128);
+            let page_size = self.cache_config.block_size;
+            let total_num_rows = *cu_seqlens_q_vec.last().unwrap();
+
+            let prefill_plan_info = attention_rs::flashinfer::prefill_plan(
+                device,
+                &cu_seqlens_q_vec,
+                &indptr_host,
+                &kv_len_arr_host,
+                total_num_rows,
+                last_len_host.len(),
+                num_qo_heads,
+                num_kv_heads,
+                head_dim,
+                page_size,
+                self.cache_config.dtype,
+                None,
+            )
+            .ok();
+
             Some(FlashInferMetadata {
                 indptr: Tensor::from_vec(indptr, (indptr_host.len(),), device)?,
                 indptr_host,
@@ -320,12 +346,14 @@ impl LLMEngine {
                 last_len: Tensor::from_vec(last_len, (last_len_host.len(),), device)?,
                 last_len_host: Some(last_len_host),
                 kv_len_arr_host: Some(kv_len_arr_host),
-                cu_seqlens_q_host: Some(cu_seqlens_q_vec.clone()),
-                total_num_rows: Some(*cu_seqlens_q_vec.last().unwrap()),
+                total_num_rows: Some(total_num_rows),
                 batch_indices: Some(Tensor::from_vec(batch_indices_vec, (length,), device)?),
                 positions: Some(Tensor::from_vec(positions_vec, (length,), device)?),
                 use_cuda_graph: false,
                 decode_plan_info: None,
+                prefill_plan_info,
+                mla_decode_plan_info: None,
+                mla_prefill_plan_info: None,
             })
         } else {
             None
@@ -335,6 +363,7 @@ impl LLMEngine {
 
         let input_metadata = InputMetadata {
             is_prefill: true,
+            is_mla: false,
             sequence_ids: Some(sequence_ids),
             mamba_slot_mapping,
             slot_mapping,
@@ -515,12 +544,14 @@ impl LLMEngine {
                 last_len: Tensor::from_vec(last_len, (length,), device)?,
                 last_len_host: Some(last_len_host),
                 kv_len_arr_host: Some(kv_len_arr_host),
-                cu_seqlens_q_host: None,
                 total_num_rows: None,
                 batch_indices: None,
                 positions: None,
                 use_cuda_graph,
                 decode_plan_info: None,
+                prefill_plan_info: None,
+                mla_decode_plan_info: None,
+                mla_prefill_plan_info: None,
             })
         } else {
             None
@@ -529,6 +560,7 @@ impl LLMEngine {
         let flashinfer_metadata = None;
         let input_metadata = InputMetadata {
             is_prefill: false,
+            is_mla: false,
             sequence_ids: Some(sequence_ids),
             mamba_slot_mapping,
             slot_mapping,

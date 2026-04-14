@@ -14,7 +14,9 @@ use crate::openai::distributed::{
     TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::layers::deepstack::ApplyDeepStack;
-use crate::openai::models::layers::moe::{FusedMoe, FusedMoeFp8, FusedMoeISQ};
+use crate::openai::models::layers::moe::{
+    FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4,
+};
 use crate::openai::models::linear::LinearX as Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::QwenMoEConfig;
@@ -161,6 +163,8 @@ enum MoeOrMlp {
     FusedMoe(FusedMoe),
     FusedMoeISQ(FusedMoeISQ),
     FusedMoeFp8(FusedMoeFp8),
+    FusedMoeMxfp4(FusedMoeMxfp4),
+    FusedMoeNvfp4(FusedMoeNvfp4),
 }
 
 impl MoeOrMlp {
@@ -169,6 +173,8 @@ impl MoeOrMlp {
             Self::FusedMoe(m) => m.forward(xs, is_prefill),
             Self::FusedMoeISQ(m) => m.forward(xs, is_prefill),
             Self::FusedMoeFp8(m) => m.forward(xs, is_prefill),
+            Self::FusedMoeMxfp4(m) => m.forward(xs, is_prefill),
+            Self::FusedMoeNvfp4(m) => m.forward(xs, is_prefill),
         }
     }
 }
@@ -222,15 +228,8 @@ impl DecoderLayer {
             candle::bail!("Expected QwenMoEConfig")
         };
 
-        let is_fp8_model = if let Some(ref quant_cfg) = cfg.quantization_config {
-            quant_cfg.quant_method == "fp8"
-        } else {
-            false
-        };
-        // Qwen3.5 MoE / Qwen3-Next are routed-MoE layers; keep model path aligned
-        // with upstream and avoid dense-MLP fallback in these architectures.
-        let mlp = if is_fp8_model {
-            if let Some(ref quant_cfg) = cfg.quantization_config {
+        let mlp = if let Some(ref quant_cfg) = cfg.quantization_config {
+            if quant_cfg.quant_method == "fp8" {
                 MoeOrMlp::FusedMoeFp8(FusedMoeFp8::new(
                     cfg,
                     vb.pp("mlp").clone(),
@@ -238,8 +237,27 @@ impl DecoderLayer {
                     dtype,
                     quant_cfg,
                 )?)
+            } else if quant_cfg.quant_method == "mxfp4" {
+                MoeOrMlp::FusedMoeMxfp4(FusedMoeMxfp4::new(
+                    cfg,
+                    vb.pp("mlp").clone(),
+                    comm.clone(),
+                    dtype,
+                )?)
+            } else if quant_cfg.quant_method == "nvfp4" {
+                MoeOrMlp::FusedMoeNvfp4(FusedMoeNvfp4::new(
+                    cfg,
+                    vb.pp("mlp").clone(),
+                    comm.clone(),
+                    dtype,
+                )?)
             } else {
-                candle_core::bail!("Missing quantization_config for fp8 model!")
+                MoeOrMlp::FusedMoe(FusedMoe::new(
+                    cfg,
+                    vb.pp("mlp").clone(),
+                    comm.clone(),
+                    dtype,
+                )?)
             }
         } else if cfg.isq_quant.is_some() {
             MoeOrMlp::FusedMoeISQ(FusedMoeISQ::new(

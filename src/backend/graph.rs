@@ -490,18 +490,21 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                     last_len: flashinfer_last_len.narrow(0, 0, bs)?,
                     last_len_host: Some(last_len_host[..bs].to_vec()),
                     kv_len_arr_host,
-                    cu_seqlens_q_host: None,
                     total_num_rows: None,
                     batch_indices: None,
                     positions: None,
                     use_cuda_graph: true,
                     decode_plan_info,
+                    prefill_plan_info: None,
+                    mla_decode_plan_info: None,
+                    mla_prefill_plan_info: None,
                 })
             };
             #[cfg(not(feature = "flashinfer"))]
             let flashinfer_metadata = None;
             let input_metadata = InputMetadata {
                 is_prefill: false,
+                is_mla: false,
                 sequence_ids: None,
                 mamba_slot_mapping: Some(mamba_slot_mapping.narrow(0, 0, bs)?),
                 slot_mapping: slot_mapping.narrow(0, 0, bs)?,

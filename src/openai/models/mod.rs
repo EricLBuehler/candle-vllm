@@ -51,8 +51,37 @@ pub struct TokenID(
     #[serde(with = "either::serde_untagged")] pub Either<Option<u32>, Option<Vec<u32>>>,
 );
 
+/// Match a module path against an ignore pattern.
+/// Supports three pattern types:
+///   - `re:` prefix -> regex match
+///   - Contains `*` -> glob match (converted to regex: `*` becomes `.*`)
+///   - Otherwise -> literal suffix matching
+pub fn match_ignore_pattern(module_path: &str, pattern: &str) -> bool {
+    if let Some(re_pat) = pattern.strip_prefix("re:") {
+        if let Ok(re) = regex::Regex::new(re_pat) {
+            return re.is_match(module_path);
+        }
+        return false;
+    }
+    if pattern.contains('*') {
+        let re_pat = format!("^{}$", regex::escape(pattern).replace(r"\*", ".*"));
+        if let Ok(re) = regex::Regex::new(&re_pat) {
+            return re.is_match(module_path);
+        }
+        return false;
+    }
+    let module_path = module_path.trim_end_matches(".weight");
+    let item = pattern.trim_end_matches(".weight");
+    module_path == item
+        || module_path.ends_with(item)
+        || module_path.ends_with(&format!(".{item}"))
+        || item.ends_with(module_path)
+        || item.ends_with(&format!(".{module_path}"))
+}
+
 #[derive(Deserialize, PartialEq, Clone)]
 pub struct QuantConfig {
+    #[serde(default)]
     pub quant_method: String,
     #[serde(default)]
     pub activation_scheme: Option<String>,
@@ -70,6 +99,172 @@ pub struct QuantConfig {
     pub desc_act: Option<bool>,
     pub checkpoint_format: Option<String>,
     pub weight_block_size: Option<Vec<usize>>,
+    #[serde(default)]
+    pub format: Option<String>,
+    #[serde(default)]
+    pub config_groups: Option<serde_json::Value>,
+    #[serde(default)]
+    pub quant_algo: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+}
+
+impl QuantConfig {
+    pub fn normalize_compressed_tensors(&mut self) {
+        if self.quant_method == "modelopt" {
+            if let Some(algo) = &self.quant_algo {
+                if algo.eq_ignore_ascii_case("NVFP4") || algo.eq_ignore_ascii_case("FP4") {
+                    self.quant_method = "nvfp4".to_string();
+                    self.extract_compressed_tensors_params();
+                    if self.group_size == 0 {
+                        self.group_size = 16;
+                    }
+                    if self.bits == 0 {
+                        self.bits = 4;
+                    }
+                    return;
+                }
+            }
+            if self.detect_nvfp4_from_config_groups() {
+                self.quant_method = "nvfp4".to_string();
+                self.extract_compressed_tensors_params();
+                if self.group_size == 0 {
+                    self.group_size = 16;
+                }
+                if self.bits == 0 {
+                    self.bits = 4;
+                }
+                return;
+            }
+        }
+
+        if self.quant_method != "compressed-tensors" {
+            return;
+        }
+
+        let format_str = self.format.as_deref().unwrap_or("");
+
+        let is_nvfp4 = format_str.contains("nvfp4") || self.detect_nvfp4_from_config_groups();
+
+        if is_nvfp4 {
+            self.quant_method = "nvfp4".to_string();
+            self.extract_compressed_tensors_params();
+            if self.group_size == 0 {
+                self.group_size = 16;
+            }
+            if self.bits == 0 {
+                self.bits = 4;
+            }
+            return;
+        }
+
+        let is_mxfp4 = format_str.contains("mxfp4") || self.detect_mxfp4_from_config_groups();
+
+        if is_mxfp4 {
+            self.quant_method = "mxfp4".to_string();
+            self.extract_compressed_tensors_params();
+        }
+    }
+
+    fn detect_nvfp4_from_config_groups(&self) -> bool {
+        let groups = match &self.config_groups {
+            Some(v) => v,
+            None => return false,
+        };
+        if let Some(obj) = groups.as_object() {
+            for (_key, group) in obj {
+                if let Some(fmt) = group.get("format").and_then(|v| v.as_str()) {
+                    if fmt.contains("nvfp4") {
+                        return true;
+                    }
+                }
+                if let Some(weights) = group.get("weights") {
+                    if let Some(fmt) = weights.get("format").and_then(|v| v.as_str()) {
+                        if fmt.contains("nvfp4") {
+                            return true;
+                        }
+                    }
+                    if let Some(num_bits) = weights.get("num_bits").and_then(|v| v.as_u64()) {
+                        if num_bits == 4 {
+                            let is_float = weights
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .map(|t| t == "float")
+                                .unwrap_or(false);
+                            let gs = weights
+                                .get("group_size")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+                            if is_float && gs == 16 {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn detect_mxfp4_from_config_groups(&self) -> bool {
+        let groups = match &self.config_groups {
+            Some(v) => v,
+            None => return false,
+        };
+        if let Some(obj) = groups.as_object() {
+            for (_key, group) in obj {
+                if let Some(fmt) = group.get("format").and_then(|v| v.as_str()) {
+                    if fmt.contains("mxfp4") {
+                        return true;
+                    }
+                }
+                if let Some(weights) = group.get("weights") {
+                    if let Some(fmt) = weights.get("format").and_then(|v| v.as_str()) {
+                        if fmt.contains("mxfp4") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    fn extract_compressed_tensors_params(&mut self) {
+        let groups = match &self.config_groups {
+            Some(v) => v.clone(),
+            None => return,
+        };
+        if let Some(obj) = groups.as_object() {
+            for (_key, group) in obj {
+                if let Some(weights) = group.get("weights") {
+                    if self.group_size == 0 {
+                        if let Some(gs) = weights.get("group_size").and_then(|v| v.as_i64()) {
+                            self.group_size = gs as i32;
+                        }
+                    }
+                    if self.bits == 0 {
+                        if let Some(nb) = weights.get("num_bits").and_then(|v| v.as_u64()) {
+                            self.bits = nb as usize;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn should_skip_module(&self, module_path: &str) -> bool {
+        if module_path.is_empty() {
+            return false;
+        }
+        let skip_modules = match &self.modules_to_not_convert {
+            Some(v) if !v.is_empty() => v,
+            _ => return false,
+        };
+        skip_modules
+            .iter()
+            .any(|item| match_ignore_pattern(module_path, item))
+    }
 }
 
 impl fmt::Debug for QuantConfig {
@@ -84,7 +279,9 @@ impl fmt::Debug for QuantConfig {
             .field("sym", &self.sym)
             .field("desc_act", &self.desc_act)
             .field("checkpoint_format", &self.checkpoint_format)
+            .field("format", &self.format)
             .field("weight_block_size", &self.weight_block_size)
+            .field("modules_to_not_convert", &self.modules_to_not_convert)
             .finish()
     }
 }
@@ -418,7 +615,11 @@ impl Config {
                 let top_level_quant_config = serde_json::from_slice::<serde_json::Value>(&f)
                     .ok()
                     .and_then(|root| root.get("quantization_config").cloned())
-                    .and_then(|v| serde_json::from_value::<QuantConfig>(v).ok());
+                    .and_then(|v| serde_json::from_value::<QuantConfig>(v).ok())
+                    .map(|mut qcfg| {
+                        qcfg.normalize_compressed_tensors();
+                        qcfg
+                    });
                 let mut config: Config =
                     if let Ok(mm_cfg) = serde_json::from_slice::<MultiModalArchConfig>(&f) {
                         if mm_cfg.text_config.is_some() && mm_cfg.vision_config.is_some() {

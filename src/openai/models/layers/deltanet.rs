@@ -57,6 +57,34 @@ pub struct GatedDeltaNet {
 }
 
 impl GatedDeltaNet {
+    fn is_weight_quantized(vb: &VarBuilder, quant_method: &str) -> bool {
+        match quant_method {
+            "fp8" => vb.contains_tensor("weight_scale") || vb.contains_tensor("weight_scale_inv"),
+            "mxfp4" => vb.contains_tensor("weight_packed") || vb.contains_tensor("blocks"),
+            "nvfp4" => {
+                let has_packed =
+                    vb.contains_tensor("weight_packed") || vb.contains_tensor("blocks");
+                let has_scale = vb.contains_tensor("weight_scale") || vb.contains_tensor("scales");
+                let has_modelopt =
+                    vb.contains_tensor("weight_scale_2") || vb.contains_tensor("input_scale");
+                (has_packed && has_scale) || (has_modelopt && has_scale)
+            }
+            _ => true,
+        }
+    }
+
+    fn resolve_quant_for_weight(
+        vb: &VarBuilder,
+        quantization_config: &Option<crate::openai::models::QuantConfig>,
+    ) -> Option<crate::openai::models::QuantConfig> {
+        if let Some(cfg) = quantization_config {
+            if Self::is_weight_quantized(vb, &cfg.quant_method) {
+                return quantization_config.clone();
+            }
+        }
+        None
+    }
+
     fn load_projection(
         vb: &VarBuilder,
         hidden_size: usize,
@@ -66,86 +94,96 @@ impl GatedDeltaNet {
         comm: Rc<Comm>,
         config: &Config,
         dtype: DType,
-        is_fp8_quant: bool,
+        is_quantized: bool,
     ) -> Result<GdnProjection> {
-        let (quantization_config, _quant) = if is_fp8_quant {
+        let (quantization_config, _quant) = if is_quantized {
             (config.quantization_config.clone(), config.isq_quant.clone())
         } else {
             (None, None)
         };
-        // Qwen3Next format: fused qkvz + fused ba
+
         let projection_size_qkvz = key_dim_global * 2 + value_dim_global * 2;
         let projection_size_ba = num_v_heads_global * 2;
+
+        let vb_qkvz = vb.pp("in_proj_qkvz");
+        let qc_qkvz = Self::resolve_quant_for_weight(&vb_qkvz, &quantization_config);
         let fused_qkvz = TensorParallelColumnLinear::load_with_hints(
             hidden_size,
             projection_size_qkvz,
             false,
-            vb.pp("in_proj_qkvz"),
+            vb_qkvz,
             comm.clone(),
             &None,
-            &quantization_config,
+            &qc_qkvz,
         );
 
+        let vb_ba = vb.pp("in_proj_ba");
+        let qc_ba = Self::resolve_quant_for_weight(&vb_ba, &quantization_config);
         let fused_ba = TensorParallelColumnLinear::load_with_hints(
             hidden_size,
             projection_size_ba,
             false,
-            vb.pp("in_proj_ba"),
+            vb_ba,
             comm.clone(),
             &None,
-            &None,
+            &qc_ba,
         );
 
         if let (Ok(in_proj_qkvz), Ok(in_proj_ba)) = (fused_qkvz, fused_ba) {
-            // Qwen3 Next projection
             return Ok(GdnProjection::FusedQkvzBa {
                 in_proj_qkvz,
                 in_proj_ba,
             });
         };
 
-        // Qwen3.5 format: split qkv, z, b, a
+        let vb_z = vb.pp("in_proj_z");
+        let qc_z = Self::resolve_quant_for_weight(&vb_z, &quantization_config);
         let split_z = TensorParallelColumnLinear::load_with_hints(
             hidden_size,
             value_dim_global,
             false,
-            vb.pp("in_proj_z"),
+            vb_z,
             comm.clone(),
             &None,
-            &quantization_config,
+            &qc_z,
         );
 
+        let vb_b = vb.pp("in_proj_b");
+        let qc_b = Self::resolve_quant_for_weight(&vb_b, &quantization_config);
         let split_b = TensorParallelColumnLinear::load_with_hints(
             hidden_size,
             num_v_heads_global,
             false,
-            vb.pp("in_proj_b"),
+            vb_b,
             comm.clone(),
             &None,
-            &None,
+            &qc_b,
         );
+
+        let vb_a = vb.pp("in_proj_a");
+        let qc_a = Self::resolve_quant_for_weight(&vb_a, &quantization_config);
         let split_a = TensorParallelColumnLinear::load_with_hints(
             hidden_size,
             num_v_heads_global,
             false,
-            vb.pp("in_proj_a"),
+            vb_a,
             comm.clone(),
             &None,
-            &None,
+            &qc_a,
         );
 
         if let (Ok(in_proj_z), Ok(in_proj_b), Ok(in_proj_a)) = (split_z, split_b, split_a) {
             if comm.world_size() > 1 {
-                // TP-safe path for packed in_proj_qkv [q|k|v]:
-                // shard each semantic chunk independently (q, k, v), not as one contiguous block.
+                let vb_qkv = vb.pp("in_proj_qkv");
+                let qc_qkv = Self::resolve_quant_for_weight(&vb_qkv, &quantization_config);
                 let split_qkv_merged = MergedParallelColumnLinear::load_merged_chunks(
                     hidden_size,
                     key_dim_global * 2 + value_dim_global,
                     0,
                     vec![key_dim_global, key_dim_global, value_dim_global],
-                    vb.pp("in_proj_qkv"),
+                    vb_qkv,
                     comm.clone(),
-                    &quantization_config,
+                    &qc_qkv,
                     &None,
                     dtype,
                 );
@@ -160,9 +198,9 @@ impl GatedDeltaNet {
                         });
                     }
                     Err(err) => {
-                        if is_fp8_quant {
+                        if is_quantized {
                             candle_core::bail!(
-                                "Unable to load TP-safe FP8 Qwen3.5 split in_proj_qkv: {}",
+                                "Unable to load TP-safe quantized Qwen3.5 split in_proj_qkv: {}",
                                 err
                             );
                         }
@@ -170,15 +208,16 @@ impl GatedDeltaNet {
                 }
             }
 
-            // Single GPU (or non-FP8 fallback): use legacy split loader.
+            let vb_qkv = vb.pp("in_proj_qkv");
+            let qc_qkv = Self::resolve_quant_for_weight(&vb_qkv, &quantization_config);
             let split_qkv_legacy = TensorParallelColumnLinear::load_with_hints(
                 hidden_size,
                 key_dim_global * 2 + value_dim_global,
                 false,
-                vb.pp("in_proj_qkv"),
+                vb_qkv,
                 comm.clone(),
                 &None,
-                &quantization_config,
+                &qc_qkv,
             );
 
             if let Ok(in_proj_qkv) = split_qkv_legacy {
@@ -330,11 +369,7 @@ impl GatedDeltaNet {
             );
         }
 
-        let is_fp8_quant = if let Some(cfg) = config.quantization_config.as_ref() {
-            cfg.quant_method == "fp8"
-        } else {
-            false
-        };
+        let is_quantized = config.quantization_config.is_some();
         let dtype = vb.dtype();
 
         let num_v_heads = num_v_heads_global / world_size;
@@ -368,7 +403,7 @@ impl GatedDeltaNet {
             comm.clone(),
             config,
             dtype,
-            is_fp8_quant,
+            is_quantized,
         )?;
 
         // Conv1D weights are stored global; slice rank-local q/k/v channel blocks.
@@ -392,18 +427,20 @@ impl GatedDeltaNet {
         };
 
         // Output projection
+        let vb_out = vb.pp("out_proj");
+        let qc_out = if is_quantized {
+            Self::resolve_quant_for_weight(&vb_out, &config.quantization_config)
+        } else {
+            None
+        };
         let out_proj = TensorParallelRowLinear::load_with_hints(
             value_dim_global,
             hidden_size,
             false,
-            vb.pp("out_proj"),
+            vb_out,
             comm.clone(),
             &None,
-            if is_fp8_quant {
-                &config.quantization_config
-            } else {
-                &None
-            },
+            &qc_out,
         )?;
 
         // GDN output norm (gated RMSNorm): both Qwen3.5 and Qwen3Next use per-head params.
