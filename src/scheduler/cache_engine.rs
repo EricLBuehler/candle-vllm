@@ -94,25 +94,22 @@ impl CacheEngine {
             cache_config.num_gpu_blocks.unwrap_or(32)
         };
 
-        if cfg!(any(feature = "flashattn", feature = "flashinfer")) {
-            if model_config.is_mla() {
-                let block_size = cache_config.block_size;
-                let kv_lora_rank = model_config.mla_kv_lora_rank();
-                let qk_rope_head_dim = model_config.mla_qk_rope_head_dim();
-                let mut cache = Vec::new();
-                for _ in 0..model_config.kv_cache_num_layers() {
-                    let ckv_blocks =
-                        Tensor::zeros((num_blocks, block_size, 1, kv_lora_rank), dtype, device)?;
-                    let kpe_blocks = Tensor::zeros(
-                        (num_blocks, block_size, 1, qk_rope_head_dim),
-                        dtype,
-                        device,
-                    )?;
-                    cache.push((ckv_blocks, kpe_blocks));
-                }
-                return Ok(cache);
+        if model_config.is_mla() {
+            let block_size = cache_config.block_size;
+            let kv_lora_rank = model_config.mla_kv_lora_rank();
+            let qk_rope_head_dim = model_config.mla_qk_rope_head_dim();
+            let mut cache = Vec::new();
+            for _ in 0..model_config.kv_cache_num_layers() {
+                let ckv_blocks =
+                    Tensor::zeros((num_blocks, block_size, 1, kv_lora_rank), dtype, device)?;
+                let kpe_blocks =
+                    Tensor::zeros((num_blocks, block_size, 1, qk_rope_head_dim), dtype, device)?;
+                cache.push((ckv_blocks, kpe_blocks));
             }
+            return Ok(cache);
+        }
 
+        if cfg!(any(feature = "flashattn", feature = "flashinfer")) {
             let kv_shape = Self::calculate_flash_key_value_block_shape(
                 model_config,
                 cache_config.block_size,

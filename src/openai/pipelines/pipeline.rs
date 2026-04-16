@@ -2290,6 +2290,10 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Phi4(_) => Ok(()),
             LLMModel::Phi3GGUF(_) => Ok(()),
+            #[cfg(not(feature = "flashinfer"))]
+            LLMModel::GLM4MoeLite(_) => Ok(()),
+            #[cfg(not(feature = "flashinfer"))]
+            LLMModel::DeepSeek(_) => Ok(()),
             _ => {
                 self.capturer.capture(&self.device, kv_caches)?;
                 match &self.model {

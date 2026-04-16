@@ -58,6 +58,7 @@ impl MlaConfig {
     }
 }
 
+#[allow(unused)]
 pub struct MlaAttention {
     q_a_proj: Option<ReplicatedLinear>,
     q_a_layernorm: Option<NormX>,
@@ -241,6 +242,20 @@ impl MlaAttention {
         })
     }
 
+    fn project_mla_output(
+        &self,
+        attn_out: &Tensor,
+        seq_len: usize,
+        xs_dtype: DType,
+    ) -> Result<Tensor> {
+        let attn_t = attn_out.transpose(0, 1)?.contiguous()?;
+        let y = attn_t.matmul(&self.w_uv_t)?;
+        let y = y.transpose(0, 1)?.contiguous()?;
+        let y = y.reshape((seq_len, self.num_heads * self.v_head_dim))?;
+        let y = y.to_dtype(xs_dtype)?;
+        self.o_proj.forward(&y)
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[allow(unused_variables)]
     pub fn forward(
@@ -360,31 +375,140 @@ impl MlaAttention {
             }
         }
 
-        let kv_b_out = self.kv_b_proj.forward(&ckv)?;
-        let kv_b_out = kv_b_out.reshape((
-            seq_len,
-            self.num_heads,
-            self.qk_nope_head_dim + self.v_head_dim,
-        ))?;
-        let k_nope = kv_b_out.narrow(D::Minus1, 0, self.qk_nope_head_dim)?;
-        let v = kv_b_out.narrow(D::Minus1, self.qk_nope_head_dim, self.v_head_dim)?;
+        #[cfg(feature = "cuda")]
+        if let Some((ckv_cache, kpe_cache)) = cache {
+            attention_rs::mla::concat_and_cache_mla(
+                &ckv,
+                &k_pe,
+                ckv_cache,
+                kpe_cache,
+                &input_metadata.slot_mapping,
+            )?;
 
-        let k_pe_broadcast =
-            k_pe.unsqueeze(1)?
-                .broadcast_as((seq_len, self.num_heads, self.qk_rope_head_dim))?;
-        let q_full = Tensor::cat(&[&q_nope, &q_pe], D::Minus1)?;
-        let k_full = Tensor::cat(&[&k_nope, &k_pe_broadcast], D::Minus1)?;
+            let q_nope_t = q_nope.transpose(0, 1)?.contiguous()?;
+            let q_absorbed = q_nope_t.matmul(&self.w_uk)?.transpose(0, 1)?.contiguous()?;
 
-        let q_t = q_full.transpose(0, 1)?;
-        let k_t = k_full.transpose(0, 1)?;
-        let v_t = v.transpose(0, 1)?;
+            let ckv_cache_3d = ckv_cache.squeeze(2)?;
+            let kpe_cache_3d = kpe_cache.squeeze(2)?;
 
-        let att = (q_t.matmul(&k_t.t()?)? * f64::from(self.sm_scale))?;
-        let att =
-            candle_nn::ops::softmax_last_dim(&att.to_dtype(DType::F32)?)?.to_dtype(self.dtype)?;
-        let y = att.matmul(&v_t)?.transpose(0, 1)?;
-        let y = y.reshape((seq_len, self.num_heads * self.v_head_dim))?;
-        let y = y.to_dtype(xs.dtype())?;
-        self.o_proj.forward(&y)
+            if let (Some(block_tables), Some(context_lens)) =
+                (&input_metadata.block_tables, &input_metadata.context_lens)
+            {
+                let block_tables_i32 = block_tables.to_dtype(DType::I64)?.to_dtype(DType::U32)?;
+                let context_lens_i32 = context_lens.to_dtype(DType::I64)?.to_dtype(DType::U32)?;
+
+                if input_metadata.is_prefill {
+                    let cu_seqlens_q = input_metadata.cu_seqlens_q.as_ref().ok_or_else(|| {
+                        candle_core::Error::msg("MLA fused prefill requires cu_seqlens_q")
+                    })?;
+                    let cu_seqlens_i32 = cu_seqlens_q.to_dtype(DType::I64)?.to_dtype(DType::U32)?;
+
+                    let attn_out = attention_rs::mla::mla_paged_prefill(
+                        &q_absorbed,
+                        &q_pe,
+                        &ckv_cache_3d,
+                        &kpe_cache_3d,
+                        &block_tables_i32,
+                        &context_lens_i32,
+                        &cu_seqlens_i32,
+                        self.sm_scale,
+                    )?;
+                    return self.project_mla_output(&attn_out, seq_len, xs.dtype());
+                }
+
+                let attn_out = attention_rs::mla::mla_paged_decode(
+                    &q_absorbed,
+                    &q_pe,
+                    &ckv_cache_3d,
+                    &kpe_cache_3d,
+                    &block_tables_i32,
+                    &context_lens_i32,
+                    self.sm_scale,
+                )?;
+                return self.project_mla_output(&attn_out, seq_len, xs.dtype());
+            }
+
+            if input_metadata.is_prefill {
+                let attn_out =
+                    self.mla_sdp_prefill(&q_absorbed, &q_pe, &ckv, &k_pe, input_metadata)?;
+                let y = attn_out.to_dtype(xs.dtype())?;
+                return self.o_proj.forward(&y);
+            }
+        }
+        candle_core::bail!("MLA attention requires CUDA platform!")
+    }
+
+    fn mla_sdp_prefill(
+        &self,
+        q_absorbed: &Tensor,
+        q_pe: &Tensor,
+        ckv: &Tensor,
+        k_pe: &Tensor,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        let cu_seqlens = input_metadata
+            .cu_seqlens_q
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::msg("MLA prefill requires cu_seqlens_q"))?
+            .to_vec1::<u32>()?;
+        let num_seqs = cu_seqlens.len() - 1;
+
+        let mut results = Vec::with_capacity(num_seqs);
+        for s in 0..num_seqs {
+            let start = cu_seqlens[s] as usize;
+            let end = cu_seqlens[s + 1] as usize;
+            let slen = end - start;
+
+            let q_abs_s = q_absorbed.narrow(0, start, slen)?.contiguous()?;
+            let q_pe_s = q_pe.narrow(0, start, slen)?.contiguous()?;
+            let ckv_s = ckv.narrow(0, start, slen)?.contiguous()?;
+            let k_pe_s = k_pe.narrow(0, start, slen)?.contiguous()?;
+
+            let q_abs_t = q_abs_s.transpose(0, 1)?.contiguous()?;
+            let ckv_kt = ckv_s
+                .t()?
+                .unsqueeze(0)?
+                .broadcast_as((self.num_heads, self.kv_lora_rank, slen))?
+                .contiguous()?;
+            let nope_scores = q_abs_t.matmul(&ckv_kt)?;
+
+            let q_pe_t = q_pe_s.transpose(0, 1)?.contiguous()?;
+            let k_pe_kt = k_pe_s
+                .t()?
+                .unsqueeze(0)?
+                .broadcast_as((self.num_heads, self.qk_rope_head_dim, slen))?
+                .contiguous()?;
+            let pe_scores = q_pe_t.matmul(&k_pe_kt)?;
+
+            let scores = ((nope_scores + pe_scores)? * f64::from(self.sm_scale))?;
+
+            let dev = scores.device().clone();
+            let scores_dtype = scores.dtype();
+            let mut mask_data = vec![0.0f32; slen * slen];
+            for qi in 0..slen {
+                for ki in (qi + 1)..slen {
+                    mask_data[qi * slen + ki] = f32::NEG_INFINITY;
+                }
+            }
+            let causal_mask =
+                Tensor::from_vec(mask_data, (1, slen, slen), &dev)?.to_dtype(scores_dtype)?;
+            let scores = scores.broadcast_add(&causal_mask)?;
+
+            let attn_weights = candle_nn::ops::softmax_last_dim(&scores.to_dtype(DType::F32)?)?
+                .to_dtype(self.dtype)?;
+
+            let ckv_v = ckv_s
+                .unsqueeze(0)?
+                .broadcast_as((self.num_heads, slen, self.kv_lora_rank))?
+                .contiguous()?;
+            let attn_out = attn_weights.matmul(&ckv_v)?;
+
+            let y = attn_out.matmul(&self.w_uv_t)?;
+            let y = y.transpose(0, 1)?.contiguous()?;
+            let y = y.reshape((slen, self.num_heads * self.v_head_dim))?;
+            results.push(y);
+        }
+
+        Tensor::cat(&results, 0)
     }
 }
