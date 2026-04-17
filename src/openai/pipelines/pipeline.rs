@@ -27,6 +27,7 @@ use crate::{
             glm4::GLM4,
             glm4_moe_lite::GLM4MoeLiteForCausalLM,
             llama::Llama,
+            llama4::LLama4ForConditionalGeneration,
             mistral::Mistral,
             mistral3_vl::Mistral3ForConditionalGeneration,
             phi2::Phi2,
@@ -73,6 +74,7 @@ const MIN_GEN_TOKENS: usize = 128;
 const MAX_GEN_TOKENS: usize = 16 * 1024;
 pub enum LLMModel {
     Llama(Arc<Llama>),
+    LLaMa4(Arc<LLama4ForConditionalGeneration>),
     Phi2(Arc<Phi2>),
     Phi4(Arc<Phi4>),
     Qwen(Arc<Qwen>),
@@ -101,7 +103,7 @@ pub enum LLMModel {
 
 fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
     match model {
-        LLMModel::Llama(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
+        LLMModel::Llama(_) | LLMModel::LLaMa4(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
         LLMModel::Qwen(_)
         | LLMModel::Qwen3_5(_)
         | LLMModel::Qwen3VL(_)
@@ -839,6 +841,9 @@ impl DefaultLoader {
 
             let mut config = match arch.as_str() {
                 "LlamaForCausalLM" => Llama::load_config(&cfile, isq.clone())?,
+                "Llama4ForConditionalGeneration" => {
+                    LLama4ForConditionalGeneration::load_config(&cfile, isq.clone())?
+                }
                 "PhiForCausalLM" | "Phi2ForCausalLM" => Phi2::load_config(&cfile, isq.clone())?,
                 "Phi3ForCausalLM" | "Phi4ForCausalLM" => Phi4::load_config(&cfile, isq.clone())?,
                 "Qwen2ForCausalLM" | "Qwen3ForCausalLM" | "Qwen3VLForConditionalGeneration" => {
@@ -881,6 +886,7 @@ impl DefaultLoader {
                     | "DeepseekV3ForCausalLM"
                     | "DeepseekV32ForCausalLM"
                     | "Glm4MoeLiteForCausalLM"
+                    | "Llama4ForConditionalGeneration"
             ) {
                 config.apply_runtime_rope_overrides(self.yarn_scaling_factor);
             }
@@ -995,6 +1001,20 @@ impl DefaultLoader {
                                     dtype,
                                     &device,
                                     comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            )),
+                            SeparatorStyle::Llama3,
+                        ),
+                        "Llama4ForConditionalGeneration" => (
+                            LLMModel::LLaMa4(Arc::new(
+                                LLama4ForConditionalGeneration::new(
+                                    &vb,
+                                    comm,
+                                    &config,
+                                    dtype,
+                                    &device,
                                     Arc::clone(&reporter),
                                 )
                                 .unwrap(),
@@ -1313,8 +1333,10 @@ impl DefaultLoader {
                     Option<String>,
                     Option<String>,
                 ) = if tokenizer_file.display().to_string() != "" && Path::exists(&tokenizer_file) {
-                    let tokenizer = Tokenizer::from_file(tokenizer_file.clone())
+                    let mut tokenizer = Tokenizer::from_file(tokenizer_file.clone())
                         .map_err(candle_core::Error::wrap).unwrap();
+                    let _ = tokenizer.with_truncation(None);
+                    let _ = tokenizer.with_padding(None);
 
                     let tokenizer_cfg_file = paths.get_tokenizer_config_filename();
                     let (mut chat_template, bos, eos) = if Path::exists(&tokenizer_cfg_file) {
@@ -1563,6 +1585,7 @@ impl DefaultPipeline {
             model,
             device,
             Llama,
+            LLaMa4,
             Phi2,
             Phi4,
             Qwen,
@@ -1739,6 +1762,9 @@ impl DefaultPipeline {
             LLMModel::Llama(llama) => {
                 llama.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::LLaMa4(m) => {
+                m.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::Phi2(phi) => {
                 phi.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -1837,6 +1863,9 @@ impl DefaultPipeline {
         match &self.model {
             LLMModel::Llama(llama) => {
                 llama.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::LLaMa4(m) => {
+                m.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Mistral(mistral) => {
                 mistral.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
@@ -2133,6 +2162,7 @@ impl DefaultPipeline {
     pub fn get_model_config(&self) -> Config {
         match &self.model {
             LLMModel::Llama(llama) => llama.get_config().clone(),
+            LLMModel::LLaMa4(m) => m.get_config().clone(),
             LLMModel::Phi2(phi) => phi.get_config().clone(),
             LLMModel::Phi4(phi) => phi.get_config().clone(),
             LLMModel::Qwen(qwen) => qwen.get_config().clone(),

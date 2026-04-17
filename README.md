@@ -51,6 +51,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     | #13 | **QwQ-32B** |45 tks/s **(32B, tp=2)**|63 tks/s **(32B, Q4K)**|
     | #14 | **GLM4** |89 tks/s **(9B)**|124 tks/s **(9B, Q4K)**|
     | #15 | **GLM4.7 Flash** |TBD|75 tks/s **(31B, NVFP4)**|
+    | #16 | **LLama4** |TBD|43 tks/s **(107B, NVFP4)**|
   </details>
 
 ### Demo Video

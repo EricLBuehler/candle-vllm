@@ -8,6 +8,7 @@ pub mod glm4_moe_lite;
 pub mod layers;
 pub mod linear;
 pub mod llama;
+pub mod llama4;
 pub mod mistral;
 pub mod mistral3_vl;
 pub mod phi2;
@@ -563,6 +564,11 @@ impl Config {
             });
 
         match (rope_type, factor, original_max_position_embeddings) {
+            (
+                Some("linear" | "dynamic" | "llama3"),
+                Some(factor),
+                Some(original_max_position_embeddings),
+            ) if factor > 1.0 => (original_max_position_embeddings * factor).round() as usize,
             (Some("yarn"), Some(factor), Some(original_max_position_embeddings))
                 if factor > 1.0 =>
             {
@@ -776,6 +782,25 @@ mod tests {
         ]));
 
         assert_eq!(config.effective_max_seq_len(), 1_048_576);
+    }
+
+    #[test]
+    fn test_effective_max_seq_len_scales_llama3_context() {
+        let mut config = test_config(10_485_760);
+        config.original_max_position_embeddings = Some(8_192);
+        config.rope_scaling = Some(HashMap::from([
+            (
+                "rope_type".to_string(),
+                ScalingValue::String("llama3".to_string()),
+            ),
+            ("factor".to_string(), ScalingValue::Single(16.0)),
+            (
+                "original_max_position_embeddings".to_string(),
+                ScalingValue::Single(8_192.0),
+            ),
+        ]));
+
+        assert_eq!(config.effective_max_seq_len(), 131_072);
     }
 
     #[test]

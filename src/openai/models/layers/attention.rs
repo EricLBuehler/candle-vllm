@@ -36,6 +36,7 @@ pub struct Attention {
     dtype: DType,
     attn_output_gate: bool,
     no_per_head_norm: bool,
+    qk_l2_norm: bool,
 }
 
 impl Attention {
@@ -500,16 +501,23 @@ impl Attention {
             dtype: vb.dtype(),
             attn_output_gate,
             no_per_head_norm: is_qwen35_or_next,
+            qk_l2_norm: false,
         })
     }
 
-    pub fn forward(
+    pub fn set_qk_l2_norm(&mut self, enable: bool) {
+        self.qk_l2_norm = enable;
+    }
+
+    pub fn forward_ext(
         &self,
         xs: &Tensor,
+        rotary_emb: Option<&ScalingRotaryEmbedding>,
         attention_mask: Option<&Vec<Tensor>>,
         input_positions: &Tensor,
         cache: Option<(&Tensor, &Tensor)>,
         input_metadata: &InputMetadata,
+        q_scale: Option<&Tensor>,
     ) -> Result<Tensor> {
         let (seq_len, _) = xs.dims2()?;
 
@@ -590,7 +598,21 @@ impl Attention {
             (q, k)
         };
 
-        let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
+        let (mut q, mut k) = if let Some(rotary_emb) = rotary_emb {
+            rotary_emb.apply_rotary_emb(&q, &k, input_positions)?
+        } else {
+            (q, k)
+        };
+        if self.qk_l2_norm {
+            let q_rms = (q.sqr()?.mean_keepdim(candle_core::D::Minus1)? + 1e-5)?.sqrt()?;
+            let k_rms = (k.sqr()?.mean_keepdim(candle_core::D::Minus1)? + 1e-5)?.sqrt()?;
+            q = q.broadcast_div(&q_rms)?;
+            k = k.broadcast_div(&k_rms)?;
+        }
+        if let Some(scale) = q_scale {
+            let scale = scale.reshape((seq_len, 1, 1))?;
+            q = q.broadcast_mul(&scale.to_dtype(q.dtype())?)?;
+        }
         let (q, k) = (q.to_dtype(self.dtype)?, k.to_dtype(self.dtype)?);
         let v = if v.dtype() != self.dtype {
             v.to_dtype(self.dtype)?
@@ -625,6 +647,25 @@ impl Attention {
 
         let y = self.o_proj.forward(&y.to_dtype(xs.dtype())?)?;
         Ok(y)
+    }
+
+    pub fn forward(
+        &self,
+        xs: &Tensor,
+        attention_mask: Option<&Vec<Tensor>>,
+        input_positions: &Tensor,
+        cache: Option<(&Tensor, &Tensor)>,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        self.forward_ext(
+            xs,
+            Some(self.rotary_emb.as_ref()),
+            attention_mask,
+            input_positions,
+            cache,
+            input_metadata,
+            None,
+        )
     }
 }
 
