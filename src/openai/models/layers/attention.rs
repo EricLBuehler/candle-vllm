@@ -37,6 +37,7 @@ pub struct Attention {
     attn_output_gate: bool,
     no_per_head_norm: bool,
     qk_l2_norm: bool,
+    v_norm_eps: Option<f64>,
 }
 
 impl Attention {
@@ -193,6 +194,7 @@ impl Attention {
         dtype: DType,
         quant_cfg: &Option<crate::openai::models::QuantConfig>,
         quant: &Option<String>,
+        k_eq_v: bool,
     ) -> Result<Option<QkvProjection>> {
         if quant.is_some() {
             return Ok(None);
@@ -202,7 +204,11 @@ impl Attention {
         let kv_shard = shard(0, comm.rank(), comm.world_size());
         let q_vb = vb.pp("q_proj");
         let k_vb = vb.pp("k_proj");
-        let v_vb = vb.pp("v_proj");
+        let v_vb = if k_eq_v {
+            vb.pp("k_proj")
+        } else {
+            vb.pp("v_proj")
+        };
 
         let is_fp8_quant = quant_cfg
             .as_ref()
@@ -350,6 +356,26 @@ impl Attention {
         comm: Rc<Comm>,
         sliding_window: Option<usize>,
     ) -> Result<Self> {
+        Self::new_with_option(
+            rotary_emb,
+            cfg,
+            vb.clone(),
+            comm,
+            sliding_window,
+            false,
+            None,
+        )
+    }
+
+    pub fn new_with_option(
+        rotary_emb: Arc<ScalingRotaryEmbedding>,
+        cfg: &Config,
+        vb: VarBuilder,
+        comm: Rc<Comm>,
+        sliding_window: Option<usize>,
+        k_eq_v: bool,
+        attention_scale: Option<f32>,
+    ) -> Result<Self> {
         let hidden_sz = cfg.hidden_size;
         let num_heads = cfg.num_attention_heads;
         let num_kv_heads = cfg.num_key_value_heads.unwrap();
@@ -392,6 +418,7 @@ impl Attention {
             vb.dtype(),
             &cfg.quantization_config,
             &cfg.isq_quant,
+            k_eq_v,
         )? {
             packed
         } else {
@@ -430,7 +457,7 @@ impl Attention {
                 hidden_sz,
                 num_kv_heads * head_dim,
                 attention_bias,
-                vb.pp("v_proj"),
+                vb.pp(if k_eq_v { "k_proj" } else { "v_proj" }),
                 comm.clone(),
                 v_proj_quant,
                 &cfg.quantization_config,
@@ -470,6 +497,30 @@ impl Attention {
         )
         .ok();
 
+        let is_gemma4 = arch == "Gemma4ForConditionalGeneration" || arch == "Gemma4ForCausalLM";
+        let v_norm_eps = if is_gemma4 {
+            Some(cfg.rms_norm_eps)
+        } else {
+            None
+        };
+        let no_per_head_norm_models: Vec<String> = vec![
+            "Gemma3ForConditionalGeneration",
+            "Gemma3ForCausalLM",
+            "Gemma4ForConditionalGeneration",
+            "Gemma4ForCausalLM",
+            "Qwen3VLForConditionalGeneration",
+            "Qwen3VLMoeForConditionalGeneration",
+            "Qwen3_5ForCausalLM",
+            "Qwen3_5ForConditionalGeneration",
+            "Qwen3_5MoeForCausalLM",
+            "Qwen3_5MoeForConditionalGeneration",
+            "Qwen3NextForCausalLM",
+            "Qwen3NextForConditionalGeneration",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
         assert!(cfg.num_attention_heads >= comm.world_size());
         assert!(cfg.num_attention_heads % comm.world_size() == 0);
 
@@ -490,7 +541,7 @@ impl Attention {
             attn: PagedAttention::new(
                 attention_heads,
                 head_dim,
-                1. / ((head_dim as f32).sqrt()),
+                attention_scale.unwrap_or(1. / ((head_dim as f32).sqrt())),
                 Some(kv_heads),
                 sliding_window,
                 vb.device().clone(),
@@ -500,8 +551,9 @@ impl Attention {
             softcapping: cfg.attn_logit_softcapping,
             dtype: vb.dtype(),
             attn_output_gate,
-            no_per_head_norm: is_qwen35_or_next,
+            no_per_head_norm: no_per_head_norm_models.contains(&arch),
             qk_l2_norm: false,
+            v_norm_eps,
         })
     }
 
@@ -616,6 +668,16 @@ impl Attention {
         let (q, k) = (q.to_dtype(self.dtype)?, k.to_dtype(self.dtype)?);
         let v = if v.dtype() != self.dtype {
             v.to_dtype(self.dtype)?
+        } else {
+            v
+        };
+
+        let v = if let Some(eps) = self.v_norm_eps {
+            let orig_dtype = v.dtype();
+            let v_f32 = v.to_dtype(DType::F32)?;
+            let mean_sq = v_f32.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
+            let rms = (mean_sq + eps)?.sqrt()?;
+            v_f32.broadcast_div(&rms)?.to_dtype(orig_dtype)?
         } else {
             v
         };

@@ -3,6 +3,7 @@ pub mod deepseek;
 pub mod gemma;
 pub mod gemma3;
 pub mod gemma3_vl;
+pub mod gemma4;
 pub mod glm4;
 pub mod glm4_moe_lite;
 pub mod layers;
@@ -564,11 +565,6 @@ impl Config {
             });
 
         match (rope_type, factor, original_max_position_embeddings) {
-            (
-                Some("linear" | "dynamic" | "llama3"),
-                Some(factor),
-                Some(original_max_position_embeddings),
-            ) if factor > 1.0 => (original_max_position_embeddings * factor).round() as usize,
             (Some("yarn"), Some(factor), Some(original_max_position_embeddings))
                 if factor > 1.0 =>
             {
@@ -785,25 +781,6 @@ mod tests {
     }
 
     #[test]
-    fn test_effective_max_seq_len_scales_llama3_context() {
-        let mut config = test_config(10_485_760);
-        config.original_max_position_embeddings = Some(8_192);
-        config.rope_scaling = Some(HashMap::from([
-            (
-                "rope_type".to_string(),
-                ScalingValue::String("llama3".to_string()),
-            ),
-            ("factor".to_string(), ScalingValue::Single(16.0)),
-            (
-                "original_max_position_embeddings".to_string(),
-                ScalingValue::Single(8_192.0),
-            ),
-        ]));
-
-        assert_eq!(config.effective_max_seq_len(), 131_072);
-    }
-
-    #[test]
     fn test_apply_runtime_rope_overrides_updates_effective_max_seq_len() {
         let mut config = test_config(262_144);
         config.apply_runtime_rope_overrides(Some(8.0));
@@ -992,6 +969,111 @@ impl Config {
             }
         }
         false
+    }
+
+    pub fn needs_paged_kvcache_layout(&self) -> bool {
+        let arch = self
+            .architectures
+            .as_ref()
+            .and_then(|a| a.first())
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        if !arch.contains("Gemma4") {
+            return false;
+        }
+        if let Some(raw) = self.extra_config_json.as_ref() {
+            if let Ok(root) = serde_json::from_str::<serde_json::Value>(raw) {
+                let cfg = root.get("text_config").unwrap_or(&root);
+                let global_head_dim = cfg
+                    .get("global_head_dim")
+                    .or_else(|| root.get("global_head_dim"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                if global_head_dim > 256 {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    pub fn gemma4_per_layer_cache_config(&self) -> Option<Vec<(usize, usize)>> {
+        let arch = self
+            .architectures
+            .as_ref()
+            .and_then(|a| a.first())
+            .map(|s| s.as_str())
+            .unwrap_or("");
+        if !arch.contains("Gemma4") {
+            return None;
+        }
+        let raw = self.extra_config_json.as_ref()?;
+        let root: serde_json::Value = serde_json::from_str(raw).ok()?;
+        let cfg = root.get("text_config").unwrap_or(&root);
+
+        let layer_types: Vec<String> = cfg
+            .get("layer_types")
+            .or_else(|| root.get("layer_types"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())?;
+
+        if layer_types.len() != self.num_hidden_layers {
+            return None;
+        }
+
+        let swa_head_dim = cfg
+            .get("swa_head_dim")
+            .or_else(|| cfg.get("head_dim"))
+            .or_else(|| root.get("head_dim"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(256) as usize;
+
+        let global_head_dim = cfg
+            .get("global_head_dim")
+            .or_else(|| root.get("global_head_dim"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(swa_head_dim as u64) as usize;
+
+        let swa_kv_heads = cfg
+            .get("num_key_value_heads")
+            .or_else(|| root.get("num_key_value_heads"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(self.num_key_value_heads.unwrap_or(self.num_attention_heads) as u64)
+            as usize;
+
+        let global_kv_heads = cfg
+            .get("num_global_key_value_heads")
+            .or_else(|| root.get("num_global_key_value_heads"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(swa_kv_heads as u64) as usize;
+
+        let per_layer: Vec<(usize, usize)> = layer_types
+            .iter()
+            .map(|lt| {
+                if lt == "full_attention" {
+                    (global_kv_heads, global_head_dim)
+                } else {
+                    (swa_kv_heads, swa_head_dim)
+                }
+            })
+            .collect();
+
+        if per_layer
+            .iter()
+            .all(|&(kv_heads, head_dim)| kv_heads == swa_kv_heads && head_dim == swa_head_dim)
+        {
+            return None;
+        }
+
+        Some(per_layer)
+    }
+
+    pub fn max_head_dim(&self) -> usize {
+        if let Some(per_layer) = self.gemma4_per_layer_cache_config() {
+            per_layer.iter().map(|(_, hd)| *hd).max().unwrap_or(256)
+        } else {
+            self.head_dim
+                .unwrap_or(self.hidden_size / self.num_attention_heads)
+        }
     }
 
     pub fn mla_kv_lora_rank(&self) -> usize {

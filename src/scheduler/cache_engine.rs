@@ -109,7 +109,53 @@ impl CacheEngine {
             return Ok(cache);
         }
 
-        if cfg!(any(feature = "flashattn", feature = "flashinfer")) {
+        let per_layer_config = model_config.gemma4_per_layer_cache_config();
+        let use_flash_layout = cfg!(any(feature = "flashattn", feature = "flashinfer"));
+        let block_size = cache_config.block_size;
+        let element_size = dtype.size_in_bytes();
+        let x = 16 / element_size;
+
+        if let Some(ref configs) = per_layer_config {
+            if !device.is_cpu() {
+                println!(
+                    "Using per-layer KV cache config for Gemma4: {} layers, max head_dim={}",
+                    configs.len(),
+                    configs.iter().map(|(_, hd)| *hd).max().unwrap_or(0)
+                );
+            }
+            let mut cache = Vec::new();
+            for (layer_kv_heads, layer_head_dim) in configs.iter().copied() {
+                let kv_heads = layer_kv_heads / num_shards.max(1);
+                if use_flash_layout && layer_head_dim <= 256 {
+                    let key_blocks = Tensor::zeros(
+                        (num_blocks, block_size, kv_heads, layer_head_dim),
+                        dtype,
+                        device,
+                    )?;
+                    let value_blocks = Tensor::zeros(
+                        (num_blocks, block_size, kv_heads, layer_head_dim),
+                        dtype,
+                        device,
+                    )?;
+                    cache.push((key_blocks, value_blocks));
+                } else {
+                    let key_blocks = Tensor::zeros(
+                        (num_blocks, kv_heads, layer_head_dim / x, block_size, x),
+                        dtype,
+                        device,
+                    )?;
+                    let value_blocks = Tensor::zeros(
+                        (num_blocks, kv_heads, layer_head_dim, block_size),
+                        dtype,
+                        device,
+                    )?;
+                    cache.push((key_blocks, value_blocks));
+                }
+            }
+            return Ok(cache);
+        }
+
+        if use_flash_layout && !model_config.needs_paged_kvcache_layout() {
             let kv_shape = Self::calculate_flash_key_value_block_shape(
                 model_config,
                 cache_config.block_size,

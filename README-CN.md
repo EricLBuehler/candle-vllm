@@ -51,6 +51,7 @@
     | #14 | **GLM4** |89 tks/s **(9B)**|124 tks/s **(9B, Q4K)**|
     | #15 | **GLM4.7 Flash** |TBD|75 tks/s **(31B, NVFP4)**|
     | #16 | **LLama4** |TBD|43 tks/s **(107B, NVFP4)**|
+    | #17 | **Gemma4-26B** |75 tks/s|72 tks/s **(NVFP4)**|
   </details>
 
 ### 演示视频

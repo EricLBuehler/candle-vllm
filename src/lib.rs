@@ -132,6 +132,18 @@ pub fn get_cache_config(
         let gpu = kvcache_mem_gpu * size_in_mb / per_block.max(1);
         let cpu = kvcache_mem_cpu * size_in_mb / per_block.max(1);
         (gpu, cpu)
+    } else if let Some(per_layer_cfg) = config.gemma4_per_layer_cache_config() {
+        // For Gemma4 with heterogeneous head_dim, calculate per-layer cache size
+        let mut total_per_block_bytes = 0usize;
+        for &(kv_heads, head_dim) in &per_layer_cfg {
+            let kv_heads_sharded = kv_heads / num_shards;
+            // 2 for key and value tensors
+            total_per_block_bytes += block_size * kv_heads_sharded * head_dim * dsize * 2;
+        }
+        let per_block = total_per_block_bytes.max(1);
+        let gpu = kvcache_mem_gpu * size_in_mb / per_block;
+        let cpu = kvcache_mem_cpu * size_in_mb / per_block;
+        (gpu, cpu)
     } else {
         let num_gpu_blocks = kvcache_mem_gpu * size_in_mb
             / dsize
