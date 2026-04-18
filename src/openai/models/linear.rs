@@ -34,31 +34,30 @@ use std::sync::Arc;
 use tracing::warn;
 
 thread_local! {
-    static FP8_LINEAR_IS_PREFILL: Cell<bool> = const { Cell::new(false) };
+    static LINEAR_IS_PREFILL: Cell<bool> = const { Cell::new(false) };
 }
 
-pub struct Fp8LinearPrefillGuard {
+pub struct LinearPrefillGuard {
     prev: bool,
 }
 
-impl Drop for Fp8LinearPrefillGuard {
+impl Drop for LinearPrefillGuard {
     fn drop(&mut self) {
-        FP8_LINEAR_IS_PREFILL.with(|flag| flag.set(self.prev));
+        LINEAR_IS_PREFILL.with(|flag| flag.set(self.prev));
     }
 }
 
-pub fn set_fp8_linear_is_prefill(is_prefill: bool) -> Fp8LinearPrefillGuard {
-    let prev = FP8_LINEAR_IS_PREFILL.with(|flag| {
+pub fn set_linear_is_prefill(is_prefill: bool) -> LinearPrefillGuard {
+    let prev = LINEAR_IS_PREFILL.with(|flag| {
         let prev = flag.get();
         flag.set(is_prefill);
         prev
     });
-    Fp8LinearPrefillGuard { prev }
+    LinearPrefillGuard { prev }
 }
 
-#[cfg(feature = "flashinfer")]
-fn fp8_linear_is_prefill() -> bool {
-    FP8_LINEAR_IS_PREFILL.with(|flag| flag.get())
+pub fn linear_is_prefill() -> bool {
+    LINEAR_IS_PREFILL.with(|flag| flag.get())
 }
 
 #[derive(Clone, Debug)]
@@ -1073,89 +1072,15 @@ impl Module for LnFp8 {
             _ => candle_core::bail!("LnFp8: Input should be 2D or 3D"),
         };
 
-        let m = b_sz * seq_len;
-        let k = in_dim;
+        let x_2d = x.reshape((b_sz * seq_len, in_dim))?;
 
-        let x_2d = x.reshape((m, k))?;
-
-        #[cfg(feature = "flashinfer")]
-        let can_use_flashinfer_fp8 = (90..100).contains(&self.sm_version)
-            && x_2d.dtype() == DType::BF16
-            && self.weight_block_size.as_slice() == &[128, 128]
-            && !fp8_linear_is_prefill()
-            && m <= 64;
-
-        #[cfg(feature = "flashinfer")]
-        let out = if can_use_flashinfer_fp8 {
-            attention_rs::fp8_linear::fp8_matmul_flashinfer(
-                &x_2d,
-                &self.weight,
-                &self.weight_scale,
-            )?
-        } else {
-            #[cfg(feature = "cutlass")]
-            {
-                let weight_scale_cutlass = self
-                    .weight_scale_cutlass
-                    .as_ref()
-                    .unwrap_or(&self.weight_scale);
-                if self.sm_version >= 90 {
-                    attention_rs::fp8_linear::fp8_matmul_cutlass(
-                        &x_2d,
-                        &self.weight.t()?,
-                        weight_scale_cutlass,
-                        &self.weight_block_size,
-                    )?
-                } else {
-                    attention_rs::fp8_linear::fp8_matmul(
-                        &x_2d,
-                        &self.weight,
-                        &self.weight_scale,
-                        &self.weight_block_size,
-                    )?
-                }
-            }
-
-            #[cfg(not(feature = "cutlass"))]
-            {
-                attention_rs::fp8_linear::fp8_matmul(
-                    &x_2d,
-                    &self.weight,
-                    &self.weight_scale,
-                    &self.weight_block_size,
-                )?
-            }
-        };
-
-        #[cfg(not(feature = "flashinfer"))]
-        #[cfg(feature = "cutlass")]
-        let out = if self.sm_version >= 90 {
-            let weight_scale_cutlass = self
-                .weight_scale_cutlass
-                .as_ref()
-                .unwrap_or(&self.weight_scale);
-            attention_rs::fp8_linear::fp8_matmul_cutlass(
-                &x_2d,
-                &self.weight.t()?,
-                weight_scale_cutlass,
-                &self.weight_block_size,
-            )?
-        } else {
-            // slower path
-            attention_rs::fp8_linear::fp8_matmul(
-                &x_2d,
-                &self.weight,
-                &self.weight_scale,
-                &self.weight_block_size,
-            )?
-        };
-
-        #[cfg(all(not(feature = "flashinfer"), not(feature = "cutlass")))]
         let out = attention_rs::fp8_linear::fp8_matmul(
             &x_2d,
             &self.weight,
             &self.weight_scale,
+            self.weight_scale_cutlass.as_ref(),
             &self.weight_block_size,
+            linear_is_prefill(),
         )?;
 
         let (_, out_dim) = out.dims2()?;
@@ -1553,6 +1478,7 @@ impl Module for LnMxfp4 {
             &self.blocks,
             &self.scales,
             self.bias.as_ref(),
+            linear_is_prefill(),
         )?;
 
         if orig_dims.len() > 2 {
@@ -1570,6 +1496,7 @@ pub struct LnNvfp4 {
     pub blocks: Tensor,
     pub scales: Tensor,
     pub global_scale: f32,
+    pub input_scale: f32,
     pub bias: Option<Tensor>,
 }
 
@@ -1621,6 +1548,30 @@ impl LnNvfp4 {
             1.0f32
         };
 
+        let input_scale = if vb.contains_tensor("input_scale") {
+            let t = match vb.get_with_hints_dtype((1,), "input_scale", no_shard, DType::F32) {
+                Ok(t) => t,
+                Err(_) => vb.get_with_hints_dtype((), "input_scale", no_shard, DType::F32)?,
+            };
+            t.flatten_all()?.to_vec1::<f32>()?[0]
+        } else if vb.contains_tensor("input_global_scale") {
+            let t = match vb.get_with_hints_dtype((1,), "input_global_scale", no_shard, DType::F32)
+            {
+                Ok(t) => t,
+                Err(_) => {
+                    vb.get_with_hints_dtype((), "input_global_scale", no_shard, DType::F32)?
+                }
+            };
+            let raw = t.flatten_all()?.to_vec1::<f32>()?[0];
+            if raw != 0.0 {
+                1.0 / raw
+            } else {
+                1.0
+            }
+        } else {
+            1.0f32
+        };
+
         let bias = if load_bias && vb.contains_tensor("bias") {
             Some(vb.get((out_dim,), "bias")?)
         } else {
@@ -1630,6 +1581,7 @@ impl LnNvfp4 {
             blocks,
             scales,
             global_scale,
+            input_scale,
             bias,
         })
     }
@@ -1651,7 +1603,9 @@ impl Module for LnNvfp4 {
             &self.blocks,
             &self.scales,
             self.global_scale,
+            self.input_scale,
             self.bias.as_ref(),
+            linear_is_prefill(),
         )?;
 
         if orig_dims.len() > 2 {

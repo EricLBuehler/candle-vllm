@@ -4,7 +4,7 @@ use crate::backend::gguf;
 use crate::backend::graph::{CudaGraphFn, CudaGraphWrapper, GraphCapturer, ModelFn};
 use crate::backend::progress::{progress_worker, ProgressLike, ProgressReporter};
 use crate::openai::logits_processor::LogitsProcessor;
-use crate::openai::models::linear::set_fp8_linear_is_prefill;
+use crate::openai::models::linear::set_linear_is_prefill;
 use crate::openai::models::TokenID;
 use crate::openai::multimodal::{get_image_config, ImageProcessConfig};
 use crate::openai::requests::StopTokens;
@@ -24,6 +24,7 @@ use crate::{
             gemma::Gemma,
             gemma3::Gemma3,
             gemma3_vl::Gemma3ForConditionalGeneration,
+            gemma4::Gemma4,
             glm4::GLM4,
             glm4_moe_lite::GLM4MoeLiteForCausalLM,
             llama::Llama,
@@ -85,6 +86,7 @@ pub enum LLMModel {
     Gemma(Arc<Gemma>),
     Gemma3(Arc<Gemma3>),
     Gemma3VL(Arc<Gemma3ForConditionalGeneration>),
+    Gemma4(Arc<Gemma4>),
     Mistral(Arc<Mistral>),
     Mistral3VL(Arc<Mistral3ForConditionalGeneration>),
     Yi(Arc<Yi>),
@@ -114,7 +116,7 @@ fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
         | LLMModel::QWenGGUFMoE(_)
         | LLMModel::QWen3_5GGUFMoE(_) => ToolModelType::Qwen3MoE,
         LLMModel::Gemma(_) => ToolModelType::Gemma,
-        LLMModel::Gemma3(_) | LLMModel::Gemma3VL(_) => ToolModelType::Gemma3,
+        LLMModel::Gemma3(_) | LLMModel::Gemma3VL(_) | LLMModel::Gemma4(_) => ToolModelType::Gemma3,
         LLMModel::Mistral(_) | LLMModel::Mistral3VL(_) => ToolModelType::Mistral,
         LLMModel::Yi(_) => ToolModelType::Yi,
         LLMModel::StableLM(_) => ToolModelType::StableLM,
@@ -865,6 +867,9 @@ impl DefaultLoader {
                 }
                 "Gemma2ForCausalLM" => Gemma::load_config(&cfile, isq.clone())?,
                 "Gemma3ForConditionalGeneration" => Gemma3::load_config(&cfile, isq.clone())?,
+                "Gemma4ForConditionalGeneration" | "Gemma4ForCausalLM" => {
+                    Gemma4::load_config(&cfile, isq.clone())?
+                }
                 "MistralForCausalLM" => Mistral::load_config(&cfile, isq.clone())?,
                 "Mistral3ForConditionalGeneration" => {
                     Mistral::load_text_config(&cfile, isq.clone())?
@@ -1152,6 +1157,20 @@ impl DefaultLoader {
                         "Gemma3ForConditionalGeneration" => (
                             LLMModel::Gemma3VL(Arc::new(
                                 Gemma3ForConditionalGeneration::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            )),
+                            SeparatorStyle::Gemma,
+                        ),
+                        "Gemma4ForConditionalGeneration" | "Gemma4ForCausalLM" => (
+                            LLMModel::Gemma4(Arc::new(
+                                Gemma4::new(
                                     vb,
                                     &config,
                                     dtype,
@@ -1594,6 +1613,7 @@ impl DefaultPipeline {
             Qwen3_5MoE,
             Gemma,
             Gemma3,
+            Gemma4,
             Mistral,
             Yi,
             StableLM,
@@ -1620,6 +1640,23 @@ impl DefaultPipeline {
                 head_dim: config.mla_kv_lora_rank(),
                 num_qo_heads: config.num_attention_heads / _num_shards,
             })
+        } else if let Some(per_layer_cfg) = config.gemma4_per_layer_cache_config() {
+            // For Gemma4 with heterogeneous head_dim, find the first layer with head_dim <= 256
+            // FlashInfer can be used for those layers, paged attention for others
+            let flash_compatible = per_layer_cfg.iter().find(|(_kv_heads, hd)| *hd <= 256);
+            if let Some(&(kv_heads, hd)) = flash_compatible {
+                Some(FlashInferKvParams {
+                    kv_dtype: _kv_cache_dtype,
+                    out_dtype: dtype,
+                    page_size: block_size,
+                    num_kv_heads: kv_heads / _num_shards,
+                    head_dim: hd,
+                    num_qo_heads: config.num_attention_heads / _num_shards,
+                })
+            } else {
+                // All layers have head_dim > 256, can't use FlashInfer
+                None
+            }
         } else {
             Some(FlashInferKvParams {
                 kv_dtype: _kv_cache_dtype,
@@ -1709,7 +1746,7 @@ impl DefaultPipeline {
         input_metadata: &InputMetadata,
         images: Option<&crate::openai::multimodal::ImageData>,
     ) -> Result<Tensor> {
-        let _fp8_linear_prefill_guard = set_fp8_linear_is_prefill(input_metadata.is_prefill);
+        let _fp8_linear_prefill_guard = set_linear_is_prefill(input_metadata.is_prefill);
         #[cfg(all(feature = "cuda", feature = "graph"))]
         if !input_metadata.is_prefill {
             let input_batch = input_tokens.dim(0)?;
@@ -1803,6 +1840,9 @@ impl DefaultPipeline {
                 input_metadata,
                 images,
             ),
+            LLMModel::Gemma4(gemma4) => {
+                gemma4.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::Mistral(mistral) => {
                 mistral.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -1859,7 +1899,7 @@ impl DefaultPipeline {
         kv_cache: Option<&Vec<(Tensor, Tensor)>>,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
-        let _fp8_linear_prefill_guard = set_fp8_linear_is_prefill(input_metadata.is_prefill);
+        let _fp8_linear_prefill_guard = set_linear_is_prefill(input_metadata.is_prefill);
         match &self.model {
             LLMModel::Llama(llama) => {
                 llama.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
@@ -1886,6 +1926,9 @@ impl DefaultPipeline {
                 input_metadata,
                 None,
             ),
+            LLMModel::Gemma4(gemma4) => {
+                gemma4.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::Qwen(qwen) => {
                 qwen.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -2173,6 +2216,7 @@ impl DefaultPipeline {
             LLMModel::Gemma(gemma) => gemma.get_config().clone(),
             LLMModel::Gemma3(gemma3) => gemma3.get_config().clone(),
             LLMModel::Gemma3VL(gemma3) => gemma3.get_config().clone(),
+            LLMModel::Gemma4(gemma4) => gemma4.get_config().clone(),
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Mistral3VL(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),
