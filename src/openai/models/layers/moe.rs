@@ -5,6 +5,7 @@ use crate::openai::models::linear::{linear_no_bias, linear_no_bias_x, Linear, Li
 use crate::openai::models::{Config, MoEConfig, QuantConfig, QwenMoEConfig};
 use attention_rs::moe;
 use attention_rs::moe::moe_gemm_fp8;
+use attention_rs::silu_and_mul::silu_and_mul;
 use candle::{DType, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_core::quantized::GgmlDType;
@@ -262,7 +263,6 @@ pub struct FusedMoe {
     gate_up_w: Tensor,
     w_size_n: usize,
     down_w: Tensor,
-    act: candle_nn::Activation,
     norm_topk_prob: bool,
     routed_scaling_factor: Option<f64>,
     num_experts_per_tok: usize,
@@ -300,7 +300,6 @@ impl FusedMoe {
             gate_up_w,
             w_size_n,
             down_w,
-            act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             routed_scaling_factor: moe_cfg.routed_scaling_factor,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -335,7 +334,6 @@ impl FusedMoe {
             gate_up_w,
             w_size_n,
             down_w,
-            act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             routed_scaling_factor: moe_cfg.routed_scaling_factor,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -395,14 +393,7 @@ impl FusedMoe {
             is_prefill,
         )?;
 
-        let gate = gate_up
-            .narrow(candle_core::D::Minus1, 0, self.w_size_n)?
-            .contiguous()?;
-        let up = gate_up
-            .narrow(candle_core::D::Minus1, self.w_size_n, self.w_size_n)?
-            .contiguous()?;
-
-        let down_inputs = (up * gate.apply(&self.act)?)?;
+        let down_inputs = silu_and_mul(&gate_up, self.w_size_n)?;
 
         let mut ys = moe::moe_gemm(
             &down_inputs,
@@ -812,7 +803,6 @@ pub struct FusedMoeFp8 {
     w_size_n: usize,
     down_experts: Tensor,
     down_experts_scale: Tensor,
-    act: candle_nn::Activation,
     norm_topk_prob: bool,
     routed_scaling_factor: Option<f64>,
     num_experts_per_tok: usize,
@@ -1052,7 +1042,6 @@ impl FusedMoeFp8 {
             w_size_n,
             down_experts,
             down_experts_scale,
-            act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             routed_scaling_factor: moe_cfg.routed_scaling_factor,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -1192,7 +1181,6 @@ impl FusedMoeFp8 {
             w_size_n,
             down_experts,
             down_experts_scale,
-            act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             routed_scaling_factor: moe_cfg.routed_scaling_factor,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -1261,14 +1249,7 @@ impl FusedMoeFp8 {
             is_prefill,
         )?;
 
-        let gate = gate_up
-            .narrow(candle_core::D::Minus1, 0, self.w_size_n)?
-            .contiguous()?;
-        let up = gate_up
-            .narrow(candle_core::D::Minus1, self.w_size_n, self.w_size_n)?
-            .contiguous()?;
-
-        let down_inputs = (up * gate.apply(&self.act)?)?;
+        let down_inputs = silu_and_mul(&gate_up, self.w_size_n)?;
 
         let mut ys = moe_gemm_fp8(
             &down_inputs,
@@ -1299,7 +1280,6 @@ pub struct FusedMoeMxfp4 {
     down_blocks: Tensor,
     down_scales: Tensor,
     w_size_n: usize,
-    act: candle_nn::Activation,
     norm_topk_prob: bool,
     routed_scaling_factor: Option<f64>,
     num_experts_per_tok: usize,
@@ -1437,7 +1417,6 @@ impl FusedMoeMxfp4 {
             down_blocks,
             down_scales,
             w_size_n,
-            act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             routed_scaling_factor: moe_cfg.routed_scaling_factor,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -1559,7 +1538,6 @@ impl FusedMoeMxfp4 {
             down_blocks,
             down_scales,
             w_size_n,
-            act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             routed_scaling_factor: moe_cfg.routed_scaling_factor,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -1612,13 +1590,7 @@ impl FusedMoeMxfp4 {
             is_prefill,
         )?;
 
-        let gate = gate_up
-            .narrow(candle::D::Minus1, 0, self.w_size_n)?
-            .contiguous()?;
-        let up = gate_up
-            .narrow(candle::D::Minus1, self.w_size_n, self.w_size_n)?
-            .contiguous()?;
-        let down_inputs = (up * gate.apply(&self.act)?)?;
+        let down_inputs = silu_and_mul(&gate_up, self.w_size_n)?;
 
         let down = moe::moe_gemm_mxfp4(
             &down_inputs,
@@ -1653,7 +1625,6 @@ pub struct FusedMoeNvfp4 {
     down_global_scales: Tensor,
     down_input_scales: Tensor,
     w_size_n: usize,
-    act: candle_nn::Activation,
     norm_topk_prob: bool,
     routed_scaling_factor: Option<f64>,
     num_experts_per_tok: usize,
@@ -1887,7 +1858,6 @@ impl FusedMoeNvfp4 {
             down_global_scales,
             down_input_scales,
             w_size_n,
-            act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             routed_scaling_factor: moe_cfg.routed_scaling_factor,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -2053,7 +2023,6 @@ impl FusedMoeNvfp4 {
             down_global_scales,
             down_input_scales,
             w_size_n,
-            act: candle_nn::Activation::Silu,
             norm_topk_prob: moe_cfg.norm_topk_prob,
             routed_scaling_factor: moe_cfg.routed_scaling_factor,
             num_experts_per_tok: moe_cfg.num_experts_per_tok,
@@ -2142,13 +2111,7 @@ impl FusedMoeNvfp4 {
             is_prefill,
         )?;
 
-        let gate = gate_up
-            .narrow(candle::D::Minus1, 0, self.w_size_n)?
-            .contiguous()?;
-        let up = gate_up
-            .narrow(candle::D::Minus1, self.w_size_n, self.w_size_n)?
-            .contiguous()?;
-        let down_inputs = (up * gate.apply(&self.act)?)?;
+        let down_inputs = silu_and_mul(&gate_up, self.w_size_n)?;
 
         let down = moe::moe_gemm_nvfp4(
             &down_inputs,

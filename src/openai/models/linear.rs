@@ -1498,6 +1498,7 @@ pub struct LnNvfp4 {
     pub global_scale: f32,
     pub input_scale: f32,
     pub bias: Option<Tensor>,
+    pub weight_scale_swizzled: Option<Tensor>,
 }
 
 impl LnNvfp4 {
@@ -1577,12 +1578,29 @@ impl LnNvfp4 {
         } else {
             None
         };
+
+        #[cfg(feature = "cuda")]
+        let weight_scale_swizzled = {
+            let sm = attention_rs::cuda_utils::sm_version(vb.device().as_cuda_device()?)
+                .unwrap_or(0) as usize;
+            if sm >= 100 {
+                Some(attention_rs::nvfp4_linear::swizzle_nvfp4_weight_scales(
+                    &scales, out_dim, in_dim,
+                )?)
+            } else {
+                None
+            }
+        };
+        #[cfg(not(feature = "cuda"))]
+        let weight_scale_swizzled: Option<Tensor> = None;
+
         Ok(Self {
             blocks,
             scales,
             global_scale,
             input_scale,
             bias,
+            weight_scale_swizzled,
         })
     }
 }
@@ -1606,6 +1624,7 @@ impl Module for LnNvfp4 {
             self.input_scale,
             self.bias.as_ref(),
             linear_is_prefill(),
+            self.weight_scale_swizzled.as_ref(),
         )?;
 
         if orig_dims.len() > 2 {
