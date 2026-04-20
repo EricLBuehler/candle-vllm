@@ -242,6 +242,7 @@ impl MlaAttention {
         })
     }
 
+    #[cfg(feature = "cuda")]
     fn project_mla_output(
         &self,
         attn_out: &Tensor,
@@ -438,6 +439,7 @@ impl MlaAttention {
         candle_core::bail!("MLA attention requires CUDA platform!")
     }
 
+    #[cfg(feature = "cuda")]
     fn mla_sdp_prefill(
         &self,
         q_absorbed: &Tensor,
