@@ -27,6 +27,113 @@ fn to_openai_tools(tools: &[crate::tools::Tool]) -> Vec<openai_protocol::common:
         .collect()
 }
 
+/// Manually parse MiniMax XML tool call format.
+/// Format: `<minimax:tool_call><invoke name="..."><parameter name="...">...</parameter></invoke></minimax:tool_call>`
+fn parse_minimax_xml_tool_calls(text: &str) -> Vec<ToolCall> {
+    let mut calls = Vec::new();
+    let mut search_from = 0;
+
+    while let Some(invoke_start) = text[search_from..].find("<invoke name=") {
+        let abs_invoke_start = search_from + invoke_start;
+        let invoke_section = &text[abs_invoke_start..];
+
+        // Extract function name from <invoke name="..."> or <invoke name='...'>
+        let name_start = "<invoke name=".len();
+        let quote_char = invoke_section.chars().nth(name_start);
+        let Some(quote) = quote_char else {
+            search_from = abs_invoke_start + 1;
+            continue;
+        };
+        if quote != '"' && quote != '\'' {
+            search_from = abs_invoke_start + 1;
+            continue;
+        }
+
+        let name_content_start = name_start + 1;
+        let Some(name_end_rel) = invoke_section[name_content_start..].find(quote) else {
+            search_from = abs_invoke_start + 1;
+            continue;
+        };
+        let function_name = &invoke_section[name_content_start..name_content_start + name_end_rel];
+
+        // Find the end of this invoke block
+        let invoke_end = if let Some(end_rel) = invoke_section.find("</invoke>") {
+            abs_invoke_start + end_rel + "</invoke>".len()
+        } else {
+            text.len()
+        };
+
+        let invoke_block = &text[abs_invoke_start..invoke_end];
+
+        // Extract parameters from <parameter name="...">...</parameter>
+        let mut args = Map::new();
+        let mut param_search = 0;
+        while let Some(param_start) = invoke_block[param_search..].find("<parameter name=") {
+            let abs_param_start = param_search + param_start;
+            let param_section = &invoke_block[abs_param_start..];
+
+            // Extract parameter name
+            let pname_start = "<parameter name=".len();
+            let pquote_char = param_section.chars().nth(pname_start);
+            let Some(pquote) = pquote_char else {
+                param_search = abs_param_start + 1;
+                continue;
+            };
+            if pquote != '"' && pquote != '\'' {
+                param_search = abs_param_start + 1;
+                continue;
+            }
+
+            let pname_content_start = pname_start + 1;
+            let Some(pname_end_rel) = param_section[pname_content_start..].find(pquote) else {
+                param_search = abs_param_start + 1;
+                continue;
+            };
+            let param_name =
+                &param_section[pname_content_start..pname_content_start + pname_end_rel];
+
+            // Find value between > and </parameter>
+            let Some(value_start_rel) = param_section[pname_content_start + pname_end_rel..]
+                .find('>')
+                .map(|p| pname_content_start + pname_end_rel + p + 1)
+            else {
+                param_search = abs_param_start + 1;
+                continue;
+            };
+
+            let value_section = &param_section[value_start_rel..];
+            let value_end = value_section
+                .find("</parameter>")
+                .unwrap_or(value_section.len());
+            let param_value = value_section[..value_end].trim();
+
+            // Try to parse value as JSON, otherwise use as string
+            let json_value = if let Ok(parsed) = serde_json::from_str::<Value>(param_value) {
+                parsed
+            } else {
+                Value::String(param_value.to_string())
+            };
+            args.insert(param_name.to_string(), json_value);
+
+            param_search = abs_param_start + value_start_rel + value_end;
+        }
+
+        if !function_name.is_empty() {
+            let args_str =
+                serde_json::to_string(&Value::Object(args)).unwrap_or_else(|_| "{}".to_string());
+            calls.push(crate::tools::new_tool_call(
+                crate::tools::generate_tool_call_id(),
+                function_name.to_string(),
+                args_str,
+            ));
+        }
+
+        search_from = invoke_end;
+    }
+
+    calls
+}
+
 /// Model type classification for tool call handling.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToolModelType {
@@ -42,6 +149,7 @@ pub enum ToolModelType {
     Yi,
     StableLM,
     DeepSeek,
+    MiniMax,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,6 +221,19 @@ impl ToolConfig {
                 start_token_str: "<start_function_call>".into(),
                 end_token_str: "<end_function_call>".into(),
             },
+            ToolModelType::MiniMax => {
+                // MiniMax tokenizer ships dedicated tool envelope tokens:
+                //   200052 => <minimax:tool_call>
+                //   200053 => </minimax:tool_call>
+                start_ids.insert(200052);
+                end_ids.insert(200053);
+                Self {
+                    start_token_ids: start_ids,
+                    end_token_ids: end_ids,
+                    start_token_str: "<minimax:tool_call>".into(),
+                    end_token_str: "</minimax:tool_call>".into(),
+                }
+            }
             _ => Self {
                 start_token_ids: HashSet::new(),
                 end_token_ids: HashSet::new(),
@@ -835,6 +956,21 @@ impl StreamToolParser {
             }
         }
 
+        // MiniMax XML style: <minimax:tool_call><invoke name="..."><parameter name="...">...</parameter></invoke></minimax:tool_call>
+        if parsed_calls.is_empty() && text.contains("<invoke name=") {
+            let factory = ParserFactory::new();
+            if let Some(xml_parser) = factory.registry().create_parser("minimax_m2") {
+                if let Ok((_normal_text, calls)) = xml_parser.parse_complete(text).await {
+                    parsed_calls = calls;
+                }
+            }
+            // Manual fallback if tool-parser crate fails
+            if parsed_calls.is_empty() {
+                tracing::info!("Falling back to manual MiniMax XML parser for: {}", text);
+                return parse_minimax_xml_tool_calls(text);
+            }
+        }
+
         if parsed_calls.is_empty()
             && self.config.start_token_str.starts_with('<')
             && self.config.end_token_str.starts_with('<')
@@ -1069,6 +1205,20 @@ impl StreamToolParser {
         }
         let inner = self.buffer[inner_start..inner_end].trim();
 
+        // MiniMax XML style: <minimax:tool_call><invoke name="..."><parameter name="...">...</parameter></invoke></minimax:tool_call>
+        if block.contains("<invoke ") || block.contains("<parameter name=") {
+            let Some(invoke_start) = block.find("<invoke ") else {
+                return false;
+            };
+            let invoke_section = &block[invoke_start..];
+            let Some(invoke_end_rel) = invoke_section.rfind("</invoke>") else {
+                return false;
+            };
+            let invoke_block =
+                &block[invoke_start..invoke_start + invoke_end_rel + "</invoke>".len()];
+            return Self::has_balanced_minimax_parameter_tags(invoke_block);
+        }
+
         if block.contains("<function=") || block.contains("<parameter=") {
             let Some(fs) = block.find("<function=") else {
                 return false;
@@ -1084,6 +1234,42 @@ impl StreamToolParser {
             return false;
         }
         serde_json::from_str::<Value>(inner).is_ok()
+    }
+
+    fn has_balanced_minimax_parameter_tags(invoke_block: &str) -> bool {
+        let mut idx = 0usize;
+        let mut open_count = 0usize;
+        const OPEN: &str = "<parameter name=";
+        const CLOSE: &str = "</parameter>";
+        while idx < invoke_block.len() {
+            let open_pos = invoke_block[idx..].find(OPEN).map(|p| idx + p);
+            let close_pos = invoke_block[idx..].find(CLOSE).map(|p| idx + p);
+            match (open_pos, close_pos) {
+                (None, None) => break,
+                (Some(op), None) => {
+                    open_count += 1;
+                    idx = op + OPEN.len();
+                }
+                (None, Some(cp)) => {
+                    if open_count > 0 {
+                        open_count -= 1;
+                    }
+                    idx = cp + CLOSE.len();
+                }
+                (Some(op), Some(cp)) => {
+                    if op < cp {
+                        open_count += 1;
+                        idx = op + OPEN.len();
+                    } else {
+                        if open_count > 0 {
+                            open_count -= 1;
+                        }
+                        idx = cp + CLOSE.len();
+                    }
+                }
+            }
+        }
+        open_count == 0
     }
 
     fn has_balanced_parameter_tags(function_block: &str) -> bool {
@@ -1178,6 +1364,7 @@ impl StreamToolParser {
             ToolModelType::GLM4 => "json",
             ToolModelType::Yi | ToolModelType::StableLM => "qwen",
             ToolModelType::DeepSeek => "deepseek",
+            ToolModelType::MiniMax => "minimax_m2",
         }
     }
 
@@ -1285,7 +1472,19 @@ impl StreamToolParser {
                 markers.push(marker.to_string());
             }
         }
-        if self.config.start_token_str.contains("tool_call")
+        // XML-style nested tool markers commonly appear in model-specific tool payloads.
+        if self.uses_minimax_xml() {
+            markers.extend(
+                [
+                    "<invoke name=",
+                    "</invoke>",
+                    "<parameter name=",
+                    "</parameter>",
+                ]
+                .into_iter()
+                .map(|s| s.to_string()),
+            );
+        } else if self.config.start_token_str.contains("tool_call")
             && self.config.end_token_str.contains("tool_call")
         {
             markers.extend(
@@ -1298,17 +1497,27 @@ impl StreamToolParser {
     }
 
     fn recover_streaming_arguments_from_buffer(&mut self) {
-        if self.streaming_calls.is_empty() || !self.buffer.contains("<parameter=") {
+        let uses_minimax_xml = self.uses_minimax_xml();
+        if self.streaming_calls.is_empty()
+            || !self
+                .buffer
+                .contains(Self::xml_parameter_open_prefix(uses_minimax_xml))
+        {
             return;
         }
+        let buffer = self.buffer.clone();
+
         for state in &mut self.streaming_calls {
             let Some(name) = state.name.as_deref() else {
                 continue;
             };
-            let recovered = Self::extract_xml_parameters_for_function(&self.buffer, name);
+
+            let recovered =
+                Self::extract_xml_parameters_for_function(&buffer, name, uses_minimax_xml);
             if recovered.is_empty() {
                 continue;
             }
+
             let mut args_obj = match serde_json::from_str::<Value>(state.arguments.trim()) {
                 Ok(Value::Object(map)) => map,
                 _ => Map::new(),
@@ -1327,26 +1536,51 @@ impl StreamToolParser {
         }
     }
 
+    fn uses_minimax_xml(&self) -> bool {
+        self.config.start_token_str == "<minimax:tool_call>"
+            && self.config.end_token_str == "</minimax:tool_call>"
+    }
+
+    fn xml_parameter_open_prefix(uses_minimax_xml: bool) -> &'static str {
+        if uses_minimax_xml {
+            "<parameter name="
+        } else {
+            "<parameter="
+        }
+    }
+
     fn extract_xml_parameters_for_function(
         buffer: &str,
         function_name: &str,
+        uses_minimax_xml: bool,
     ) -> std::collections::HashMap<String, String> {
         let mut recovered = std::collections::HashMap::new();
-        let function_tag = format!("<function={}>", function_name);
-        let alt_function_tag = format!("<function=\"{}\">", function_name);
-        let Some(func_start) = buffer
-            .rfind(&function_tag)
-            .or_else(|| buffer.rfind(&alt_function_tag))
-        else {
+        let func_start = if uses_minimax_xml {
+            let function_tag = format!(r#"<invoke name="{function_name}">"#);
+            let alt_function_tag = format!(r#"<invoke name='{function_name}'>"#);
+            buffer
+                .rfind(&function_tag)
+                .or_else(|| buffer.rfind(&alt_function_tag))
+        } else {
+            let function_tag = format!("<function={}>", function_name);
+            let alt_function_tag = format!("<function=\"{}\">", function_name);
+            buffer
+                .rfind(&function_tag)
+                .or_else(|| buffer.rfind(&alt_function_tag))
+        };
+
+        let Some(func_start) = func_start else {
             return recovered;
         };
+
         let section = &buffer[func_start..];
         let mut cursor = 0usize;
-        const PARAM_PREFIX: &str = "<parameter=";
         const PARAM_END: &str = "</parameter>";
-        while let Some(rel) = section[cursor..].find(PARAM_PREFIX) {
+        let param_prefix = Self::xml_parameter_open_prefix(uses_minimax_xml);
+
+        while let Some(rel) = section[cursor..].find(param_prefix) {
             let tag_start = cursor + rel;
-            let name_start = tag_start + PARAM_PREFIX.len();
+            let name_start = tag_start + param_prefix.len();
             let Some(name_end_rel) = section[name_start..].find('>') else {
                 break;
             };
@@ -1937,5 +2171,145 @@ mod tests {
                 other
             ),
         }
+    }
+
+    #[test]
+    fn test_tool_config_minimax() {
+        let config = ToolConfig::for_model_type(&ToolModelType::MiniMax);
+        assert!(config.has_special_tokens());
+        assert!(config.start_token_ids.contains(&200052));
+        assert!(config.end_token_ids.contains(&200053));
+        assert_eq!(config.start_token_str, "<minimax:tool_call>");
+        assert_eq!(config.end_token_str, "</minimax:tool_call>");
+    }
+
+    #[test]
+    fn test_minimax_parser_detects_start_and_end_by_token_id() {
+        let tools = vec![crate::tools::function_tool("search_web", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::MiniMax,
+            "MiniMax-M2.5".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::MiniMax),
+            tools,
+            None,
+        );
+
+        match parser.process_token(200052, "<minimax:tool_call>") {
+            StreamResult::Buffering => {}
+            other => panic!("expected buffering on MiniMax start token, got {:?}", other),
+        }
+
+        parser.buffer = r#"<minimax:tool_call>
+<invoke name="search_web">
+<parameter name="query_tag">["technology","events"]</parameter>
+<parameter name="query_list">["\"OpenAI\" \"latest\" \"release\""]</parameter>
+</invoke>"#
+            .to_string();
+        parser.streaming_calls.push(StreamingToolCallState {
+            name: Some("search_web".to_string()),
+            arguments: r#"{"query_tag":["technology","events"],"query_list":["\"OpenAI\" \"latest\" \"release\""]}"#.to_string(),
+        });
+
+        match parser.process_token(200053, "</minimax:tool_call>") {
+            StreamResult::ToolCalls(calls) => {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].function.name, "search_web");
+            }
+            other => panic!("expected ToolCalls on MiniMax end token, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_sanitize_tool_markup_for_display_escapes_minimax_xml_payload() {
+        let tools = vec![crate::tools::function_tool("search_web", "desc").build()];
+        let parser = StreamToolParser::new_with_config(
+            &ToolModelType::MiniMax,
+            "MiniMax-M2.5".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::MiniMax),
+            tools,
+            None,
+        );
+
+        let raw = r#"<minimax:tool_call><invoke name="search_web"><parameter name="query_list">["rust"]</parameter></invoke></minimax:tool_call>"#;
+        assert!(parser.contains_tool_markup(raw));
+
+        let safe = parser.sanitize_tool_markup_for_display(raw);
+        assert!(safe.contains("<\u{200C}minimax:tool_call>"));
+        assert!(safe.contains("<\u{200C}invoke name=\"search_web\">"));
+        assert!(safe.contains("<\u{200C}parameter name=\"query_list\">"));
+        assert!(!parser.contains_tool_markup(&safe));
+    }
+
+    #[test]
+    fn test_parser_defaults_to_minimax_parser() {
+        assert_eq!(
+            StreamToolParser::parser_name_for_model(&ToolModelType::MiniMax, "MiniMax-M2.5-NVFP4"),
+            "minimax_m2"
+        );
+    }
+
+    #[test]
+    fn test_minimax_envelope_accepts_complete_invoke_block() {
+        let tools = vec![crate::tools::function_tool("search_web", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::MiniMax,
+            "MiniMax-M2.5".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::MiniMax),
+            tools,
+            None,
+        );
+
+        parser.buffer = r#"<minimax:tool_call>
+<invoke name="search_web">
+<parameter name="query_tag">["technology", "events"]</parameter>
+<parameter name="query_list">["\"OpenAI\" \"latest\" \"release\""]</parameter>
+</invoke>
+</minimax:tool_call>"#
+            .to_string();
+
+        assert!(parser.has_complete_tool_envelope());
+    }
+
+    #[test]
+    fn test_parse_minimax_xml_tool_calls_manual() {
+        let text = r#"<minimax:tool_call>
+<invoke name="write">
+<parameter name="content"># Test Content
+Some markdown text here.</parameter>
+<parameter name="filePath">/root/test.md</parameter>
+</invoke>
+</minimax:tool_call>"#;
+
+        let calls = parse_minimax_xml_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "write");
+        assert!(calls[0].function.arguments.contains("content"));
+        assert!(calls[0].function.arguments.contains("filePath"));
+    }
+
+    #[test]
+    fn test_parse_minimax_xml_without_closing_tag() {
+        let text = r#"<minimax:tool_call>
+<invoke name="read">
+<parameter name="filePath">/root/AGENTS.md</parameter>
+</invoke>"#;
+
+        let calls = parse_minimax_xml_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "read");
+        assert!(calls[0].function.arguments.contains("filePath"));
+    }
+
+    #[test]
+    fn test_parse_minimax_xml_with_array_value() {
+        let text = r#"<invoke name="search">
+<parameter name="tags">["rust", "programming"]</parameter>
+</invoke>"#;
+
+        let calls = parse_minimax_xml_tool_calls(text);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "search");
+        let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert!(args["tags"].is_array());
     }
 }

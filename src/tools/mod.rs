@@ -329,6 +329,7 @@ impl ToolFormat {
             | crate::tools::stream_parser::ToolModelType::Yi
             | crate::tools::stream_parser::ToolModelType::StableLM => "qwen",
             crate::tools::stream_parser::ToolModelType::DeepSeek => "deepseek",
+            crate::tools::stream_parser::ToolModelType::MiniMax => "minimax_m2",
         }
     }
 
