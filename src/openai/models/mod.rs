@@ -10,6 +10,7 @@ pub mod layers;
 pub mod linear;
 pub mod llama;
 pub mod llama4;
+pub mod minimax;
 pub mod mistral;
 pub mod mistral3_vl;
 pub mod phi2;
@@ -345,7 +346,7 @@ pub struct DeepSeekMoEConfig {
 pub struct QwenMoEConfig {
     pub moe_intermediate_size: usize,
     pub shared_expert_intermediate_size: Option<usize>,
-    #[serde(alias = "n_routed_experts")]
+    #[serde(alias = "n_routed_experts", alias = "num_local_experts")]
     pub num_experts: Option<usize>,
     pub mlp_only_layers: Option<Vec<usize>>,
     pub decoder_sparse_step: Option<usize>,

@@ -34,7 +34,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
   <details open>
     <summary>Show supported model architectures</summary>
 
-    | Model ID | Model Type | Decoding Speed / Request (`BF16`, Hopper) | Quantized (`Q4K` or `Marlin`) |
+    | Model ID | Model Type | `BF16` (Decoding Speed / req) | Quantized |
     |--|--|--|--|
     | #1 | **LLAMA** |105 tks/s (8B) | 154 tks/s (8B, Q4k), 163 tks/s (8B, **Marlin**) |
     | #2 | **Mistral** |112 tks/s (7B)| 171 tks/s (7B, Q4k), 175 tks/s (7B, **Marlin**) |
@@ -43,7 +43,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     | #5 | **QWen3 MoE** |92 tks/s **(30B)**|114 tks/s **(30B, Q4K)** |
     | #6 | **QWen3-Next MoE** |71 tks/s **(80B, BF16, tp=2)**|TBD|
     | #7 | **QWen3.5 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
-    | #8 | **QWen3.5 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
+    | #8 | **QWen3.5/3.6 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
     | #9 | **Yi** |148 tks/s (6B)| 180 tks/s (6B, Q4k)|
     | #10 | **StableLM** |223 tks/s (3B)|-|
     | #11 | **Gemma-2/Gemma-3** |92 tks/s (9B)|115 tks/s (9B, **Marlin**)|
@@ -52,7 +52,10 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     | #14 | **GLM4** |89 tks/s **(9B)**|124 tks/s **(9B, Q4K)**|
     | #15 | **GLM4.7 Flash** |TBD|75 tks/s **(31B, NVFP4)**|
     | #16 | **LLama4** |TBD|43 tks/s **(107B, NVFP4)**|
-    | #17 | **Gemma4-26B** |75 tks/s|72 tks/s **(NVFP4)**|
+    | #17 | **Gemma4** |(26B) 75 tks/s|72 tks/s **(26B, NVFP4)**|
+    | #18 | **MiniMax-M2.5/M2.7** |TBD|60 tks/s **(229B, NVFP4, TP=2)**|
+
+_Note: results are decoding speed per request (input 4k, output 1k, on `Hopper` 80G)_
   </details>
 
 ### Demo Video

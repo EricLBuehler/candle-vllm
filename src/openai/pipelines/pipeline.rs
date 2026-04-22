@@ -29,6 +29,7 @@ use crate::{
             glm4_moe_lite::GLM4MoeLiteForCausalLM,
             llama::Llama,
             llama4::LLama4ForConditionalGeneration,
+            minimax::MiniMaxForCausalLM,
             mistral::Mistral,
             mistral3_vl::Mistral3ForConditionalGeneration,
             phi2::Phi2,
@@ -87,6 +88,7 @@ pub enum LLMModel {
     Gemma3(Arc<Gemma3>),
     Gemma3VL(Arc<Gemma3ForConditionalGeneration>),
     Gemma4(Arc<Gemma4>),
+    MiniMax(Arc<MiniMaxForCausalLM>),
     Mistral(Arc<Mistral>),
     Mistral3VL(Arc<Mistral3ForConditionalGeneration>),
     Yi(Arc<Yi>),
@@ -117,6 +119,7 @@ fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
         | LLMModel::QWen3_5GGUFMoE(_) => ToolModelType::Qwen3MoE,
         LLMModel::Gemma(_) => ToolModelType::Gemma,
         LLMModel::Gemma3(_) | LLMModel::Gemma3VL(_) | LLMModel::Gemma4(_) => ToolModelType::Gemma3,
+        LLMModel::MiniMax(_) => ToolModelType::MiniMax,
         LLMModel::Mistral(_) | LLMModel::Mistral3VL(_) => ToolModelType::Mistral,
         LLMModel::Yi(_) => ToolModelType::Yi,
         LLMModel::StableLM(_) => ToolModelType::StableLM,
@@ -883,6 +886,7 @@ impl DefaultLoader {
                 "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" | "DeepseekV32ForCausalLM" => {
                     DeepSeek::load_config(&cfile, isq.clone())?
                 }
+                "MiniMaxM2ForCausalLM" => MiniMaxForCausalLM::load_config(&cfile, isq.clone())?,
                 _ => panic!("Model not supported!"),
             };
             if !matches!(
@@ -892,6 +896,7 @@ impl DefaultLoader {
                     | "DeepseekV32ForCausalLM"
                     | "Glm4MoeLiteForCausalLM"
                     | "Llama4ForConditionalGeneration"
+                    | "MiniMaxM2ForCausalLM"
             ) {
                 config.apply_runtime_rope_overrides(self.yarn_scaling_factor);
             }
@@ -1274,6 +1279,25 @@ impl DefaultLoader {
                             )),
                             SeparatorStyle::Llama3,
                         ),
+                        "MiniMaxM2ForCausalLM" => (
+                            LLMModel::MiniMax(Arc::new(
+                                MiniMaxForCausalLM::new(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .map_err(|e| {
+                                    candle_core::Error::msg(format!(
+                                        "Failed to load MiniMax model for arch {} on rank {}: {}",
+                                        arch, rank, e
+                                    ))
+                                })?,
+                            )),
+                            SeparatorStyle::Qwen,
+                        ),
                         _ => panic!("Model not supported!"),
                     };
 
@@ -1614,6 +1638,7 @@ impl DefaultPipeline {
             Gemma,
             Gemma3,
             Gemma4,
+            MiniMax,
             Mistral,
             Yi,
             StableLM,
@@ -1843,6 +1868,9 @@ impl DefaultPipeline {
             LLMModel::Gemma4(gemma4) => {
                 gemma4.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::MiniMax(m) => {
+                m.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::Mistral(mistral) => {
                 mistral.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -1905,6 +1933,9 @@ impl DefaultPipeline {
                 llama.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::LLaMa4(m) => {
+                m.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::MiniMax(m) => {
                 m.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Mistral(mistral) => {
@@ -2217,6 +2248,7 @@ impl DefaultPipeline {
             LLMModel::Gemma3(gemma3) => gemma3.get_config().clone(),
             LLMModel::Gemma3VL(gemma3) => gemma3.get_config().clone(),
             LLMModel::Gemma4(gemma4) => gemma4.get_config().clone(),
+            LLMModel::MiniMax(m) => m.get_config().clone(),
             LLMModel::Mistral(mistral) => mistral.get_config().clone(),
             LLMModel::Mistral3VL(mistral) => mistral.get_config().clone(),
             LLMModel::Yi(yi) => yi.get_config().clone(),

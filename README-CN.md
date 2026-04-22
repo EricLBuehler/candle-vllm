@@ -33,7 +33,7 @@
   <details open>
     <summary>显示支持的模型架构</summary>
 
-    | 模型ID | 模型类型 | 解码速度 / 单请求（`BF16`, Hopper） | 量化（`Q4K`或`Marlin`） |
+    | 模型ID | 模型类型 | 解码速度 / 单请求（`BF16`) | 量化（`Q4K`或`Marlin`） |
     |--|--|--|--|
     | #1 | **LLAMA** |105 tks/s (8B) | 154 tks/s (8B, Q4k), 163 tks/s (8B, **Marlin**) |
     | #2 | **Mistral** |112 tks/s (7B)| 171 tks/s (7B, Q4k), 175 tks/s (7B, **Marlin**) |
@@ -42,7 +42,7 @@
     | #5 | **QWen3 MoE** |92 tks/s **(30B)**|114 tks/s **(30B, Q4K)** |
     | #6 | **QWen3-Next MoE** |71 tks/s **(80B, BF16, tp=2)**|TBD|
     | #7 | **QWen3.5 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
-    | #8 | **QWen3.5 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
+    | #8 | **QWen3.5/3.6 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
     | #9 | **Yi** |148 tks/s (6B)| 180 tks/s (6B, Q4k)|
     | #10 | **StableLM** |223 tks/s (3B)|-|
     | #11 | **Gemma-2/Gemma-3** |92 tks/s (9B)|115 tks/s (9B, **Marlin**)|
@@ -51,7 +51,10 @@
     | #14 | **GLM4** |89 tks/s **(9B)**|124 tks/s **(9B, Q4K)**|
     | #15 | **GLM4.7 Flash** |TBD|75 tks/s **(31B, NVFP4)**|
     | #16 | **LLama4** |TBD|43 tks/s **(107B, NVFP4)**|
-    | #17 | **Gemma4-26B** |75 tks/s|72 tks/s **(NVFP4)**|
+    | #17 | **Gemma4** |(26B) 75 tks/s|72 tks/s **(26B, NVFP4)**|
+    | #18 | **MiniMax-M2.5/M2.7** |TBD|60 tks/s **(229B, NVFP4, TP=2)**|
+
+_注：结果为单个请求的解码速度（输入 4k，输出 1k，`Hopper` 80G）。_
   </details>
 
 ### 演示视频
