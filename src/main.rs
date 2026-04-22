@@ -407,11 +407,9 @@ async fn main() -> Result<()> {
     let first_model_dtype = first_pipeline.dtype;
     let requested_gpu_memory_fraction = args
         .gpu_memory_fraction
-        .unwrap_or(if !cfg(feature = "cuda") { 0.7 } else { 0.5 });
+        .unwrap_or(if cfg!(feature = "cuda") { 0.7 } else { 0.5 });
     let explicit_gpu_memory_fraction = args.gpu_memory_fraction.is_some();
-    if !cfg(feature = "cuda") {
-        warn!("GPU memory fraction is not supported on CPU, using 0.1");
-    }
+    
     let (kvcache_mem_gpu, mamba_cache_budget_bytes, kvcache_budget_desc) =
         match candle_vllm::detect_kvcache_mem_gpu_mb_for_devices(
             &devices,
