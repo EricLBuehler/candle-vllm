@@ -41,7 +41,7 @@
     | #4 | **QWen2/Qwen3 Dense** |96 tks/s (8B)|135 tks/s **(8B, Q4k)**|
     | #5 | **QWen3 MoE** |92 tks/s **(30B)**|114 tks/s **(30B, Q4K)** |
     | #6 | **QWen3-Next MoE** |71 tks/s **(80B, BF16, tp=2)**|TBD|
-    | #7 | **QWen3.5 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
+    | #7 | **QWen3.5/3.6 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
     | #8 | **QWen3.5/3.6 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
     | #9 | **Yi** |148 tks/s (6B)| 180 tks/s (6B, Q4k)|
     | #10 | **StableLM** |223 tks/s (3B)|-|
@@ -138,16 +138,16 @@ cargo install --features metal --path .
     **示例:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.6-27B-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0
 
-    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.5-27B-FP8（或使用 `--w` 指定本地模型路径）
+    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.6-27B-FP8（或使用 `--w` 指定本地模型路径）
 
     `CACHE CONFIG`: --fp8-kvcache
 
@@ -184,23 +184,23 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
 
     **本地路径 (ISQ量化, +UI Server)**
     ```shell
-    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3.5-27B/ --isq q4k --ui-server --prefix-cache
+    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3.6-27B/ --isq q4k --ui-server --prefix-cache
     ```
 
     **模型ID（从Huggingface下载）**
 
     ```shell
-    candle-vllm --m Qwen/Qwen3.5-35B-A3B --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-35B-A3B --ui-server --prefix-cache
     ```
 
     **手动设置 YaRN 缩放**
     ```shell
-    candle-vllm --m Qwen/Qwen3.5-35B-A3B --yarn-scaling-factor 4.0 --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server --prefix-cache
     ```
 
     **FP8 模型** (block-wise量化, 通过增加`cutlass`特性构建)
     ```shell
-    candle-vllm --m Qwen/Qwen3.5-27B-FP8 --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server --prefix-cache
     ```
     **FP4 模型** (MXFP4/NVFP4, 暂不支持MLX量化格式)
     ```shell
@@ -255,7 +255,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     **只需在运行未量化模型时添加`isq`参数**
 
     ```shell
-    candle-vllm --m Qwen/Qwen3.5-27B --isq q4k
+    candle-vllm --m Qwen/Qwen3.6-27B --isq q4k
     ```
 
     注：原位量化加载可能需要更长的加载时间，原位`isq`参数选项：["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -653,7 +653,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     <summary>显示详情</summary>
     `--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算，默认值为 `4096` MB。
 
-    `--gpu-memory-fraction` 提供一个更轻量的自动模式。不显式指定时，默认值为 `0.7`。模型加载完成后，candle-vllm 会探测每张已加载的 CUDA 或 Metal 设备，并按以下公式计算 KV Cache 预算：
+    `--gpu-memory-fraction` 提供一个更轻量的自动模式。不显式指定时，默认值为 `0.5`。模型加载完成后，candle-vllm 会探测每张已加载的 CUDA 或 Metal 设备，并按以下公式计算 KV Cache 预算：
 
     ```
     gpu_memory_fraction * total_gpu_memory - current_memory_usage
@@ -662,7 +662,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     多卡场景下，会取所有 rank 中最小的结果作为每个 rank 的 KV Cache 预算。例如：
 
     ```
-    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.7
+    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.5
     ```
 
     当你需要显式固定缓存预算时，用 `--mem`。当你希望服务根据模型加载后的可用显存自动调整时，用 `--gpu-memory-fraction`。

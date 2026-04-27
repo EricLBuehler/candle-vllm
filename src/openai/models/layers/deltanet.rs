@@ -557,7 +557,7 @@ impl GatedDeltaNet {
 
             // Get mutable reference to global state for in-place update (optimized prefill)
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            xs.device().synchronize()?;
+            // xs.device().synchronize()?;
 
             gdn::gated_delta_rule_recurrence_varlen(
                 &q_scaled,

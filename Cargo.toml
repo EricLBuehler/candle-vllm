@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -46,7 +46,7 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.5.2", rev = "36ba0bb" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.5.2", rev = "2ea587f" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 lazy_static = {version = "1.4.0"}
 interprocess = "2.2.2"
@@ -85,8 +85,7 @@ metal = ["candle-core/metal", "candle-nn/metal", "dep:metal", "attention-rs/meta
 cudnn = ["candle-core/cudnn"]
 flashattn = ["attention-rs/flashattn", "attention-rs/no-fp8-kvcache"]
 flashinfer = ["attention-rs/flashinfer"]
-trtllm = ["flashinfer", "attention-rs/trtllm"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl"]
 nccl = ["candle-core/nccl"]
 mpi = ["candle-core/nccl", "dep:mpi"]
-graph = ["attention-rs/graph", "candle-core/graph"]
+graph = ["cuda", "attention-rs/graph", "candle-core/graph"]

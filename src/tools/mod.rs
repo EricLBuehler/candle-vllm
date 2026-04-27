@@ -297,8 +297,11 @@ impl ToolFormat {
                 "qwen" => "qwen",
                 "mistral" => "mistral",
                 "llama" => "llama",
+                "pythonic" => "pythonic",
+                "gemma4" => "gemma4",
                 "glm47_moe" => "glm47_moe",
                 "deepseek" => "deepseek",
+                "minimax_m2" => "minimax_m2",
                 _ => {
                     if tool_config.start_token_str.contains("tool_call") {
                         "qwen"
@@ -312,18 +315,23 @@ impl ToolFormat {
         let model_lower = model_id.to_ascii_lowercase();
         match model_type {
             crate::tools::stream_parser::ToolModelType::LLaMa => "llama",
+            crate::tools::stream_parser::ToolModelType::LLaMa4 => "pythonic",
             crate::tools::stream_parser::ToolModelType::Mistral => "mistral",
             crate::tools::stream_parser::ToolModelType::Qwen
             | crate::tools::stream_parser::ToolModelType::Qwen3MoE => {
-                if model_lower.contains("coder") || model_lower.contains("qwen3.5") {
+                if model_lower.contains("coder")
+                    || model_lower.contains("qwen3.5")
+                    || model_lower.contains("qwen3.6")
+                {
                     "qwen_coder"
                 } else {
                     "qwen"
                 }
             }
             crate::tools::stream_parser::ToolModelType::Gemma
-            | crate::tools::stream_parser::ToolModelType::Gemma3
-            | crate::tools::stream_parser::ToolModelType::GLM4 => "json",
+            | crate::tools::stream_parser::ToolModelType::Gemma3 => "json",
+            crate::tools::stream_parser::ToolModelType::Gemma4 => "gemma4",
+            crate::tools::stream_parser::ToolModelType::GLM4 => "glm47_moe",
             crate::tools::stream_parser::ToolModelType::Phi
             | crate::tools::stream_parser::ToolModelType::Phi4
             | crate::tools::stream_parser::ToolModelType::Yi
@@ -344,6 +352,38 @@ impl ToolFormat {
         let start_tag = &tool_config.start_token_str;
         let end_tag = &tool_config.end_token_str;
         match Self::parser_name_for_prompt(tool_config, model_type, model_id, enforce_parser) {
+            "pythonic" => format!(
+                "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW:\n\
+                For each function call, use Python-call syntax wrapped in {start_tag}{end_tag} markers.\n\n\
+                Do NOT USE ANY code blocks. Required format:\n\
+                {start_tag}[<function-name>(<param1>=<value1>, <param2>=<value2>)]{end_tag}\n\n\
+                Rules:\n\
+                - Use quoted strings for string values\n\
+                - Multiple function calls may be comma-separated inside the same square brackets\n\
+                - Do NOT emit JSON or XML for tool calls\n\
+                - Tool-use must be placed at the end of your response, top-level, and not nested in other tags."
+            ),
+            "gemma4" => format!(
+                "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW:\n\
+                For each function call, use Gemma tool-call syntax.\n\n\
+                Do NOT USE ANY code blocks. Required format:\n\
+                {start_tag}call:<function-name>{{<param1>:<|\"|>value<|\"|>,<param2>:123}}{end_tag}\n\n\
+                Rules:\n\
+                - Wrap string values with <|\"|> delimiters\n\
+                - Use bare JSON-like values for numbers, booleans, null, arrays, and objects\n\
+                - Do NOT emit JSON object tool calls\n\
+                - Tool-use must be placed at the end of your response, top-level, and not nested in other tags."
+            ),
+            "glm47_moe" => format!(
+                "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW:\n\
+                For each function call, use GLM4.7 XML argument tags wrapped in {start_tag}{end_tag} markers.\n\n\
+                Do NOT USE ANY code blocks. Required format:\n\
+                {start_tag}<function-name><arg_key>parameter_name</arg_key><arg_value>parameter value</arg_value>{end_tag}\n\n\
+                Rules:\n\
+                - Repeat <arg_key>...</arg_key><arg_value>...</arg_value> for each argument\n\
+                - Do NOT emit JSON for tool calls\n\
+                - Tool-use must be placed at the end of your response, top-level, and not nested in other tags."
+            ),
             "qwen_coder" => format!(
                 "MOST IMPORTANT INSTRUCTION, **MUST** FOLLOW:\n\
                 For each function call, you MUST wrap the function block in {start_tag}{end_tag} tags.\n\n\
@@ -449,5 +489,41 @@ mod tests {
             prompt.contains("{\"name\": \"<function-name>\", \"arguments\": <args-json-object>}")
         );
         assert!(!prompt.contains("Do NOT emit JSON for tool calls"));
+    }
+
+    #[test]
+    fn tool_prompt_uses_pythonic_for_llama4() {
+        let prompt = ToolFormat::get_tool_prompt(
+            &ToolConfig::for_model_type(&ToolModelType::LLaMa4),
+            &ToolModelType::LLaMa4,
+            "llama4",
+            None,
+        );
+        assert!(prompt.contains("[<function-name>(<param1>=<value1>"));
+        assert!(prompt.contains("Do NOT emit JSON or XML"));
+    }
+
+    #[test]
+    fn tool_prompt_uses_gemma4_format() {
+        let prompt = ToolFormat::get_tool_prompt(
+            &ToolConfig::for_model_type(&ToolModelType::Gemma4),
+            &ToolModelType::Gemma4,
+            "gemma4",
+            None,
+        );
+        assert!(prompt.contains("call:<function-name>"));
+        assert!(prompt.contains("<|\"|>value<|\"|>"));
+    }
+
+    #[test]
+    fn tool_prompt_uses_glm47_xml_format() {
+        let prompt = ToolFormat::get_tool_prompt(
+            &ToolConfig::for_model_type(&ToolModelType::GLM4),
+            &ToolModelType::GLM4,
+            "glm-4.7-flash",
+            None,
+        );
+        assert!(prompt.contains("<arg_key>parameter_name</arg_key>"));
+        assert!(prompt.contains("<arg_value>parameter value</arg_value>"));
     }
 }

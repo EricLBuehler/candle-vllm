@@ -79,6 +79,7 @@ pub struct MlaAttention {
     sm_scale: f32,
     rope_scale: f32,
     rope_theta: f32,
+    promote_qk_to_f32: bool,
     dtype: DType,
 }
 
@@ -97,6 +98,12 @@ impl MlaAttention {
         let qk_rope_head_dim = mla_cfg.qk_rope_head_dim;
         let v_head_dim = mla_cfg.v_head_dim;
         let q_head_dim = qk_nope_head_dim + qk_rope_head_dim;
+        let is_qvar_builder = config.isq_quant.is_some();
+        let norm_dtype = if is_qvar_builder || config.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
 
         let (q_a_proj, q_a_layernorm, q_b_proj, q_proj) =
             if let Some(q_lora_rank) = mla_cfg.q_lora_rank {
@@ -112,7 +119,7 @@ impl MlaAttention {
                     q_lora_rank,
                     mla_cfg.rms_norm_eps,
                     vb.pp("q_a_layernorm"),
-                    dtype,
+                    norm_dtype,
                     false,
                 )?;
                 let q_b = ReplicatedLinear::load_b(
@@ -149,7 +156,7 @@ impl MlaAttention {
             kv_lora_rank,
             mla_cfg.rms_norm_eps,
             vb.pp("kv_a_layernorm"),
-            dtype,
+            norm_dtype,
             false,
         )?;
 
@@ -238,6 +245,7 @@ impl MlaAttention {
             sm_scale,
             rope_scale,
             rope_theta: config.rope_theta as f32,
+            promote_qk_to_f32: is_qvar_builder || config.higher_precision_required(),
             dtype,
         })
     }
@@ -292,6 +300,15 @@ impl MlaAttention {
 
         let k_pe = k_pe_raw.reshape((seq_len, 1, self.qk_rope_head_dim))?;
         let q_pe_for_rope = q_pe.contiguous()?;
+
+        let (q_pe_for_rope, k_pe) = if self.promote_qk_to_f32 {
+            (
+                q_pe_for_rope.to_dtype(DType::F32)?,
+                k_pe.to_dtype(DType::F32)?,
+            )
+        } else {
+            (q_pe_for_rope, k_pe)
+        };
         let (q_pe, k_pe) = if let Some(rotary_emb) = &rotary_emb {
             let (q_new, k_new) = rotary_emb.apply_rotary_emb(&q_pe_for_rope, &k_pe, positions)?;
             (q_new, k_new)

@@ -42,7 +42,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
     | #4 | **QWen2/Qwen3 Dense** |96 tks/s (8B)|135 tks/s **(8B, Q4k)**|
     | #5 | **QWen3 MoE** |92 tks/s **(30B)**|114 tks/s **(30B, Q4K)** |
     | #6 | **QWen3-Next MoE** |71 tks/s **(80B, BF16, tp=2)**|TBD|
-    | #7 | **QWen3.5 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
+    | #7 | **QWen3.5/3.6 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
     | #8 | **QWen3.5/3.6 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
     | #9 | **Yi** |148 tks/s (6B)| 180 tks/s (6B, Q4k)|
     | #10 | **StableLM** |223 tks/s (3B)|-|
@@ -141,16 +141,16 @@ cargo install --features metal --path .
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.5-27B-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.6-27B-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
     `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.7 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0
+    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0
 
-    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.5-27B-FP8 (or `--w` specify local model path)
+    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.6-27B-FP8 (or `--w` specify local model path)
 
     `CACHE CONFIG`: --fp8-kvcache
 
@@ -188,23 +188,23 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
 
     **Local Path (ISQ, +UI Server)**
     ```shell
-    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3.5-27B/ --isq q4k --ui-server --prefix-cache
+    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3.6-27B/ --isq q4k --ui-server --prefix-cache
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    candle-vllm --m Qwen/Qwen3.5-35B-A3B --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-35B-A3B --ui-server --prefix-cache
     ```
 
     **Manual YaRN scaling**
     ```shell
-    candle-vllm --m Qwen/Qwen3.5-35B-A3B --yarn-scaling-factor 4.0 --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server --prefix-cache
     ```
 
     **FP8 Model** (block-wise quant, build with `cutlass` feature)
     ```shell
-    candle-vllm --m Qwen/Qwen3.5-27B-FP8 --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server --prefix-cache
     ```
 
     ```shell
@@ -265,7 +265,7 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     **Simply add `isq` parameter when running unquantized models**
 
     ```shell
-    candle-vllm --p 2000 --m Qwen/Qwen3.5-27B --isq q4k
+    candle-vllm --p 2000 --m Qwen/Qwen3.6-27B --isq q4k
     ```
 
     Options for in-site `isq` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
@@ -659,7 +659,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     <summary>Show details</summary>
     The `--mem` (`kvcache-mem-gpu`) parameter sets a fixed KV cache budget in MB. By default this is `4096` MB.
 
-    The `--gpu-memory-fraction` parameter is a lighter-weight auto mode. When omitted, it defaults to `0.7`. After the model finishes loading, candle-vllm probes each loaded CUDA or Metal device and computes the KV cache budget as:
+    The `--gpu-memory-fraction` parameter is a lighter-weight auto mode. When omitted, it defaults to `0.5`. After the model finishes loading, candle-vllm probes each loaded CUDA or Metal device and computes the KV cache budget as:
 
     ```
     gpu_memory_fraction * remaining_gpu_memory_after_model_load
@@ -668,7 +668,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
     This means the fraction directly controls how much of the free GPU memory left after model load can be used for the combined GPU cache budget. The minimum detected budget across ranks is used as the KV cache budget per rank. For example:
 
     ```
-    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.7
+    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --gpu-memory-fraction 0.5
     ```
 
     Use `--mem` when you want an explicit fixed budget. Use `--gpu-memory-fraction` when you want the server to adapt to the currently available GPU memory after model load.

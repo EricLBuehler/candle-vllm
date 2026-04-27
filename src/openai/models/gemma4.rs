@@ -328,6 +328,7 @@ impl Gemma4DecoderLayer {
             comm.clone(),
             sliding_window,
             k_eq_v,
+            false,
             Some(1.0),
         )?;
 

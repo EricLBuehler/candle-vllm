@@ -218,7 +218,7 @@ impl DeepSeekDecoderLayer {
             config.hidden_size,
             config.rms_norm_eps,
             vb.pp("input_layernorm"),
-            dtype,
+            DType::F32,
             false,
         )?;
 
@@ -226,7 +226,7 @@ impl DeepSeekDecoderLayer {
             config.hidden_size,
             config.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
-            dtype,
+            DType::F32,
             false,
         )?;
 
@@ -440,12 +440,9 @@ impl DeepSeek {
         let mut mla_rope_cfg = cfg.clone();
         mla_rope_cfg.head_dim = Some(mla_cfg.qk_rope_head_dim);
         mla_rope_cfg.partial_rotary_factor = None;
-        let rotary_dtype = if let Some(qcfg) = &cfg.quantization_config {
-            if matches!(qcfg.quant_method.as_str(), "nvfp4" | "mxfp4" | "fp8") {
-                dtype
-            } else {
-                DType::F32
-            }
+        let is_qvar_builder = cfg.isq_quant.is_some();
+        let rotary_dtype = if is_qvar_builder || cfg.higher_precision_required() {
+            DType::F32
         } else {
             dtype
         };
@@ -476,7 +473,7 @@ impl DeepSeek {
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb_m.pp("norm"),
-            dtype,
+            DType::F32,
             false,
         )?;
 
