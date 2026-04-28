@@ -1355,6 +1355,15 @@ impl StreamToolParser {
         {
             return true;
         }
+
+        // `<|...|>` style special tokens (e.g. Gemma4's <|tool_call>/<tool_call|>)
+        // are not XML envelopes; skip structural validation for them.
+        if self.config.start_token_str.starts_with("<|")
+            || self.config.end_token_str.starts_with("<|")
+        {
+            return true;
+        }
+
         let Some(start_idx) = self.buffer.find(&self.config.start_token_str) else {
             return true;
         };
@@ -2996,5 +3005,61 @@ Some markdown text here.</parameter>
         let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert_eq!(args["query"], "rust programming");
         assert_eq!(args["count"], 5);
+    }
+
+    #[test]
+    fn test_gemma4_streaming_tool_call_with_reasoning() {
+        // Simulates Gemma4 output: reasoning in <|channel>...<channel|>, then tool call
+        let tools = vec![crate::tools::function_tool("search", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Gemma4,
+            "gemma4".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::Gemma4),
+            tools,
+            None,
+        );
+        parser.set_detect_tools_in_reasoning(true);
+
+        // Reasoning block tokens (non-special IDs for text content)
+        let tokens: Vec<(u32, &str)> = vec![
+            (100, "<|channel>"),
+            (101, "thought"),
+            (102, "\n"),
+            (103, "I should search for this."),
+            (104, "\n"),
+            (105, "<channel|>"),
+            // Tool call start (special token ID 48)
+            (48, "<|tool_call>"),
+            (106, "call:search{query:"),
+            (107, "<|\"|>"),
+            (108, "rust programming"),
+            (109, "<|\"|>"),
+            (110, ",count:5}"),
+            // Tool call end (special token ID 49)
+            (49, "<tool_call|>"),
+        ];
+
+        let mut got_tool_calls = false;
+        for (id, text) in &tokens {
+            match parser.process_token(*id, text) {
+                StreamResult::ToolCalls(calls) => {
+                    assert_eq!(calls.len(), 1, "Expected exactly one tool call");
+                    assert_eq!(calls[0].function.name, "search");
+                    let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+                    assert_eq!(args["query"], "rust programming");
+                    assert_eq!(args["count"], 5);
+                    got_tool_calls = true;
+                }
+                StreamResult::Buffering => {}
+                StreamResult::Content(_) => {}
+                StreamResult::FlushBuffer(_) => {}
+            }
+        }
+        assert!(got_tool_calls, "Expected tool calls to be emitted");
+        // After tool call, parser should be back in Normal state
+        assert!(
+            matches!(parser.state(), ParserState::Normal),
+            "Parser should return to Normal state after tool call"
+        );
     }
 }
