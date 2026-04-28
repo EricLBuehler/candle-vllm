@@ -38,7 +38,6 @@ pub struct Attention {
     no_per_head_norm: bool,
     full_dim_qk_norm: bool,
     qk_l2_norm: bool,
-    promote_qk_to_f32: bool,
     v_norm_eps: Option<f64>,
 }
 
@@ -564,7 +563,6 @@ impl Attention {
 
         let attention_heads = cfg.num_attention_heads / comm.world_size();
         let kv_heads = cfg.num_key_value_heads.unwrap() / comm.world_size();
-        let is_qvar_builder = cfg.isq_quant.is_some();
         Ok(Self {
             qkv_proj,
             o_proj,
@@ -590,10 +588,6 @@ impl Attention {
             no_per_head_norm: no_per_head_norm_models.contains(&arch),
             full_dim_qk_norm,
             qk_l2_norm,
-            promote_qk_to_f32: is_qvar_builder
-                || cfg.quantization_config.is_some()
-                || cfg.higher_precision_required()
-                || qk_l2_norm,
             v_norm_eps,
         })
     }
@@ -657,7 +651,7 @@ impl Attention {
         let k = key_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
         let v = value_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
 
-        let (q, k) = if self.promote_qk_to_f32 && q.dtype() != DType::F32 {
+        let (q, k) = if q.dtype() != DType::F32 {
             (q.to_dtype(DType::F32)?, k.to_dtype(DType::F32)?)
         } else {
             (q, k)

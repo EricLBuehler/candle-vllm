@@ -539,6 +539,7 @@ const REASONING_MARKERS: &[(&str, &str)] = &[
     ("<|think|>", "<|/think|>"),
     ("[THINK]", "[/THINK]"),
     ("<thought>", "</thought>"),
+    ("<|channel>", "<channel|>"),
 ];
 
 pub fn reasoning_markers() -> &'static [(&'static str, &'static str)] {

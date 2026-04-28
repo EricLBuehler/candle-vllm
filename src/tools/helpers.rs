@@ -8,14 +8,102 @@ use super::{FunctionCall, Tool, ToolCall};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::env;
 use std::sync::OnceLock;
+
+static STRICT_TOOL_CALL_VALIDATION: OnceLock<bool> = OnceLock::new();
+
+/// Returns whether strict server-side tool schema validation is enabled.
+/// When disabled, parsed tool calls are still checked for known tool names before
+/// being returned to clients, but argument-schema failures are allowed through.
+pub fn strict_tool_call_validation_enabled() -> bool {
+    *STRICT_TOOL_CALL_VALIDATION.get_or_init(|| {
+        env::var("VLLM_RS_STRICT_TOOL_CALL")
+            .ok()
+            .map(|raw| {
+                let normalized = raw.trim().to_ascii_lowercase();
+                matches!(normalized.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false)
+    })
+}
 
 /// Build a map of tool names to their parameter schemas
 pub fn build_tool_schema_map(tools: &[Tool]) -> HashMap<String, Value> {
     tools
         .iter()
-        .map(|tool| (tool.function.name.clone(), tool.function.parameters.clone()))
+        .map(|tool| {
+            let mut schema = tool.function.parameters.clone();
+            if tool.function.strict == Some(false) {
+                if let Some(obj) = schema.as_object_mut() {
+                    obj.insert("x-vllm-rs-lenient".to_string(), Value::Bool(true));
+                }
+            }
+            (tool.function.name.clone(), schema)
+        })
         .collect()
+}
+
+/// Enforce `tool_choice=function` by retaining only calls that match `forced_tool_name`.
+/// Returns the number of dropped calls.
+pub fn retain_tool_calls_forced_name(
+    tool_calls: &mut Vec<ToolCall>,
+    forced_tool_name: Option<&str>,
+) -> usize {
+    let Some(forced_name) = forced_tool_name else {
+        return 0;
+    };
+
+    let before = tool_calls.len();
+    tool_calls.retain(|call| call.function.name == forced_name);
+    before - tool_calls.len()
+}
+
+/// Build a model-facing fallback message when tool calls were parsed but rejected.
+pub fn build_invalid_tool_call_feedback(
+    invalid_calls: &[ToolCall],
+    schemas: &HashMap<String, Value>,
+    forced_tool_name: Option<&str>,
+) -> Option<String> {
+    if invalid_calls.is_empty() {
+        return None;
+    }
+
+    let mut rejected_tools: Vec<String> = invalid_calls
+        .iter()
+        .map(|call| call.function.name.trim())
+        .filter(|name| !name.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    rejected_tools.sort();
+    rejected_tools.dedup();
+
+    let mut allowed_tools: Vec<String> = schemas.keys().cloned().collect();
+    allowed_tools.sort();
+
+    let rejected_summary = if rejected_tools.is_empty() {
+        "Rejected tool call(s).".to_string()
+    } else {
+        format!("Rejected tool call(s): {}.", rejected_tools.join(", "))
+    };
+
+    let mut parts = vec![rejected_summary];
+    if let Some(name) = forced_tool_name {
+        if !name.trim().is_empty() {
+            parts.push(format!("Required tool_choice is '{}'.", name));
+        }
+    }
+    if allowed_tools.is_empty() {
+        parts.push("No callable tools are available for this turn.".to_string());
+    } else {
+        parts.push(format!("Allowed tools: {}.", allowed_tools.join(", ")));
+    }
+    parts.push(
+        "Retry with one valid tool call using a JSON object that matches the tool schema."
+            .to_string(),
+    );
+
+    Some(parts.join(" "))
 }
 
 /// Filter tool calls into valid and invalid based on schema validation.
