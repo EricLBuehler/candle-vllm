@@ -478,23 +478,7 @@ impl DefaultConversation {
     /// Convert this conversation to a String prompt
     pub fn get_prompt(&mut self, thinking: bool, tools: &Vec<Tool>) -> String {
         match self.apply_chat_template(true, thinking, tools) {
-            Ok(prompt) => {
-                if !tools.is_empty() {
-                    let tool_names: Vec<&str> =
-                        tools.iter().map(|t| t.function.name.as_str()).collect();
-                    let tool_count = prompt.matches("<|tool>").count();
-                    let tool_end_count = prompt.matches("<tool|>").count();
-                    tracing::info!(
-                        "Chat template rendered with {} tool(s): {:?} \
-                         ({} <|tool> tags, {} <tool|> tags)",
-                        tools.len(),
-                        tool_names,
-                        tool_count,
-                        tool_end_count
-                    );
-                }
-                prompt
-            }
+            Ok(prompt) => prompt,
             Err(e) => {
                 if self.chat_template.is_some() {
                     if !tools.is_empty() {
