@@ -11,6 +11,119 @@ use tool_parser::{
     ParserFactory, ToolParser as ExternalToolParser,
 };
 
+/// Look up the JSON schema types for a parameter.
+/// Supports direct `type`, compound schemas, and enum values.
+fn extract_schema_types(schema: &Value) -> Vec<String> {
+    let Some(obj) = schema.as_object() else {
+        return vec!["string".to_string()];
+    };
+
+    let mut types = Vec::new();
+    if let Some(t) = obj.get("type") {
+        match t {
+            Value::String(s) => types.push(s.clone()),
+            Value::Array(arr) => {
+                types.extend(
+                    arr.iter()
+                        .filter_map(|item| item.as_str().map(str::to_string)),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(choices)) = obj.get(key) {
+            for choice in choices {
+                types.extend(extract_schema_types(choice));
+            }
+        }
+    }
+
+    if let Some(Value::Array(enum_vals)) = obj.get("enum") {
+        for val in enum_vals {
+            let ty = match val {
+                Value::Null => "null",
+                Value::Bool(_) => "boolean",
+                Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+            };
+            types.push(ty.to_string());
+        }
+    }
+
+    if types.is_empty() {
+        types.push("string".to_string());
+    }
+    types.sort();
+    types.dedup();
+    types
+}
+
+fn coerce_param_value(raw: &str, schema_types: &[String]) -> Value {
+    let raw = raw.trim();
+    let lower = raw.to_ascii_lowercase();
+    if matches!(lower.as_str(), "null" | "none" | "nil") {
+        return Value::Null;
+    }
+
+    let has_explicit_non_string = schema_types
+        .iter()
+        .any(|t| !matches!(t.as_str(), "string" | "str" | "text"));
+    if has_explicit_non_string {
+        for ptype in ["integer", "number", "boolean", "object", "array", "string"] {
+            if !schema_types.iter().any(|t| t == ptype) {
+                continue;
+            }
+            match ptype {
+                "integer" => {
+                    if let Ok(n) = raw.parse::<i64>() {
+                        return Value::Number(n.into());
+                    }
+                }
+                "number" => {
+                    if let Ok(f) = raw.parse::<f64>() {
+                        if f == (f as i64) as f64 {
+                            return Value::Number((f as i64).into());
+                        }
+                        if let Some(n) = serde_json::Number::from_f64(f) {
+                            return Value::Number(n);
+                        }
+                    }
+                }
+                "boolean" => match lower.as_str() {
+                    "true" | "1" | "yes" | "on" => return Value::Bool(true),
+                    "false" | "0" | "no" | "off" => return Value::Bool(false),
+                    _ => {}
+                },
+                "object" | "array" => {
+                    if let Ok(v) = serde_json::from_str::<Value>(raw) {
+                        return v;
+                    }
+                }
+                "string" => return Value::String(raw.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+}
+
+fn resolve_param_properties<'a>(
+    function_name: &str,
+    tools: &'a [openai_protocol::common::Tool],
+) -> Option<&'a serde_json::Map<String, Value>> {
+    tools
+        .iter()
+        .find(|tool| tool.function.name == function_name)
+        .and_then(|tool| tool.function.parameters.get("properties"))
+        .and_then(Value::as_object)
+}
+
 /// Convert our local Tool to openai_protocol::Tool for the tool-parser crate.
 fn to_openai_tools(tools: &[crate::tools::Tool]) -> Vec<openai_protocol::common::Tool> {
     tools
@@ -29,7 +142,10 @@ fn to_openai_tools(tools: &[crate::tools::Tool]) -> Vec<openai_protocol::common:
 
 /// Manually parse MiniMax XML tool call format.
 /// Format: `<minimax:tool_call><invoke name="..."><parameter name="...">...</parameter></invoke></minimax:tool_call>`
-fn parse_minimax_xml_tool_calls(text: &str) -> Vec<ToolCall> {
+fn parse_minimax_xml_tool_calls(
+    text: &str,
+    tools: &[openai_protocol::common::Tool],
+) -> Vec<ToolCall> {
     let mut calls = Vec::new();
     let mut search_from = 0;
 
@@ -64,6 +180,7 @@ fn parse_minimax_xml_tool_calls(text: &str) -> Vec<ToolCall> {
         };
 
         let invoke_block = &text[abs_invoke_start..invoke_end];
+        let param_props = resolve_param_properties(function_name, tools);
 
         // Extract parameters from <parameter name="...">...</parameter>
         let mut args = Map::new();
@@ -107,12 +224,11 @@ fn parse_minimax_xml_tool_calls(text: &str) -> Vec<ToolCall> {
                 .unwrap_or(value_section.len());
             let param_value = value_section[..value_end].trim();
 
-            // Try to parse value as JSON, otherwise use as string
-            let json_value = if let Ok(parsed) = serde_json::from_str::<Value>(param_value) {
-                parsed
-            } else {
-                Value::String(param_value.to_string())
-            };
+            let schema_types = param_props
+                .and_then(|props| props.get(param_name))
+                .map(extract_schema_types)
+                .unwrap_or_else(|| vec!["string".to_string()]);
+            let json_value = coerce_param_value(param_value, &schema_types);
             args.insert(param_name.to_string(), json_value);
 
             param_search = abs_param_start + value_start_rel + value_end;
@@ -138,11 +254,13 @@ fn parse_minimax_xml_tool_calls(text: &str) -> Vec<ToolCall> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ToolModelType {
     LLaMa,
+    LLaMa4,
     Qwen,
     Qwen3MoE,
     Mistral,
     Gemma,
     Gemma3,
+    Gemma4,
     Phi,
     Phi4,
     GLM4,
@@ -196,6 +314,17 @@ impl ToolConfig {
                     end_token_str: "<|eom_id|>".into(),
                 }
             }
+            ToolModelType::LLaMa4 => {
+                start_ids.insert(200016);
+                end_ids.insert(200007);
+                end_ids.insert(200008);
+                Self {
+                    start_token_ids: start_ids,
+                    end_token_ids: end_ids,
+                    start_token_str: "<|python_start|>".into(),
+                    end_token_str: "<|eom|>".into(),
+                }
+            }
             ToolModelType::Qwen | ToolModelType::Qwen3MoE => {
                 start_ids.insert(151657);
                 end_ids.insert(151658);
@@ -221,6 +350,16 @@ impl ToolConfig {
                 start_token_str: "<start_function_call>".into(),
                 end_token_str: "<end_function_call>".into(),
             },
+            ToolModelType::Gemma4 => {
+                start_ids.insert(48);
+                end_ids.insert(49);
+                Self {
+                    start_token_ids: start_ids,
+                    end_token_ids: end_ids,
+                    start_token_str: "<|tool_call>".into(),
+                    end_token_str: "<tool_call|>".into(),
+                }
+            }
             ToolModelType::MiniMax => {
                 // MiniMax tokenizer ships dedicated tool envelope tokens:
                 //   200052 => <minimax:tool_call>
@@ -254,41 +393,72 @@ impl ToolConfig {
     }
 
     pub fn validate_with_tokenizer(&mut self, tokenizer: &Tokenizer, model_type: &ToolModelType) {
-        if self.has_start_tokens()
-            && !Self::matches_single_token(tokenizer, &self.start_token_str, &self.start_token_ids)
-        {
-            if Self::try_rebind_single_token_id(
+        if self.has_start_tokens() {
+            if !Self::matches_single_token(tokenizer, &self.start_token_str, &self.start_token_ids)
+            {
+                if Self::try_rebind_single_token_id(
+                    tokenizer,
+                    &self.start_token_str,
+                    &mut self.start_token_ids,
+                ) {
+                    tracing::warn!(
+                        "Tool start token IDs corrected for model {:?}: {:?}",
+                        model_type,
+                        self.start_token_ids
+                    );
+                } else {
+                    tracing::warn!(
+                        "Tool start token IDs not supported for model {:?}, falling back to text matching",
+                        model_type
+                    );
+                    self.start_token_ids.clear();
+                }
+            }
+        } else if !self.start_token_str.is_empty()
+            && Self::try_rebind_single_token_id(
                 tokenizer,
                 &self.start_token_str,
                 &mut self.start_token_ids,
-            ) {
-                tracing::warn!(
-                    "Tool start token IDs corrected for model {:?}: {:?}",
-                    model_type,
-                    self.start_token_ids
-                );
-            } else {
-                tracing::warn!("Tool start token IDs not supported for model {:?}, falling back to text matching", model_type);
-                self.start_token_ids.clear();
-            }
-        }
-        if self.has_end_tokens()
-            && !Self::matches_single_token(tokenizer, &self.end_token_str, &self.end_token_ids)
+            )
         {
-            if Self::try_rebind_single_token_id(
+            tracing::info!(
+                "Tool start token IDs auto-populated from tokenizer for model {:?}: {:?}",
+                model_type,
+                self.start_token_ids
+            );
+        }
+        if self.has_end_tokens() {
+            if !Self::matches_single_token(tokenizer, &self.end_token_str, &self.end_token_ids) {
+                if Self::try_rebind_single_token_id(
+                    tokenizer,
+                    &self.end_token_str,
+                    &mut self.end_token_ids,
+                ) {
+                    tracing::warn!(
+                        "Tool end token IDs corrected for model {:?}: {:?}",
+                        model_type,
+                        self.end_token_ids
+                    );
+                } else {
+                    tracing::warn!(
+                        "Tool end token IDs not supported for model {:?}, falling back to text matching",
+                        model_type
+                    );
+                    self.end_token_ids.clear();
+                }
+            }
+        } else if !self.end_token_str.is_empty()
+            && Self::try_rebind_single_token_id(
                 tokenizer,
                 &self.end_token_str,
                 &mut self.end_token_ids,
-            ) {
-                tracing::warn!(
-                    "Tool end token IDs corrected for model {:?}: {:?}",
-                    model_type,
-                    self.end_token_ids
-                );
-            } else {
-                tracing::warn!("Tool end token IDs not supported for model {:?}, falling back to text matching", model_type);
-                self.end_token_ids.clear();
-            }
+            )
+        {
+            tracing::info!(
+                "Tool end token IDs auto-populated from tokenizer for model {:?}: {:?}",
+                model_type,
+                self.end_token_ids
+            );
         }
     }
 
@@ -400,6 +570,7 @@ const REASONING_MARKERS: &[(&str, &str)] = &[
     ("<|think|>", "<|/think|>"),
     ("[THINK]", "[/THINK]"),
     ("<thought>", "</thought>"),
+    ("<|channel>", "<channel|>"),
 ];
 
 pub fn reasoning_markers() -> &'static [(&'static str, &'static str)] {
@@ -499,6 +670,7 @@ pub struct StreamToolParser {
     config: ToolConfig,
     state: ParserState,
     buffer: String,
+    model_id: String,
     parse_strategy: String,
     parser: Box<dyn ExternalToolParser>,
     tools: Vec<openai_protocol::common::Tool>,
@@ -527,12 +699,14 @@ impl StreamToolParser {
         tools: Vec<Tool>,
         enforce_parser: Option<String>,
     ) -> Self {
-        let openai_tools = to_openai_tools(&tools);
         let parse_strategy = match model_type {
             ToolModelType::Mistral => "mistral_list",
+            ToolModelType::Gemma4 => "gemma4",
+            ToolModelType::LLaMa4 => "pythonic",
             _ => "json",
         }
         .to_string();
+        let openai_tools = to_openai_tools(&tools);
 
         let factory = ParserFactory::new();
         let parser_name = if let Some(name) = enforce_parser.as_ref().and_then(|s| {
@@ -575,6 +749,7 @@ impl StreamToolParser {
             config,
             state: ParserState::Normal,
             buffer: String::new(),
+            model_id,
             parse_strategy,
             parser,
             tools: openai_tools,
@@ -939,6 +1114,23 @@ impl StreamToolParser {
     }
 
     pub async fn parse_complete_with_fallback(&self, text: &str) -> Vec<ToolCall> {
+        if self.parse_strategy == "gemma4" {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                Self::parse_gemma4_tool_calls(text)
+            })) {
+                Ok(Some(calls)) => return calls,
+                Ok(None) => {}
+                Err(e) => {
+                    let msg = e
+                        .downcast_ref::<String>()
+                        .map(|s| s.as_str())
+                        .or_else(|| e.downcast_ref::<&str>().copied())
+                        .unwrap_or("unknown");
+                    tracing::warn!("Gemma4 tool call parse panicked: {}", msg);
+                }
+            }
+        }
+
         let mut parsed_calls = match self.parser.parse_complete(text).await {
             Ok((_normal_text, calls)) => calls,
             Err(err) => {
@@ -946,6 +1138,15 @@ impl StreamToolParser {
                 Vec::new()
             }
         };
+
+        if parsed_calls.is_empty() && self.parse_strategy == "pythonic" {
+            let factory = ParserFactory::new();
+            if let Some(pythonic_parser) = factory.registry().create_parser("pythonic") {
+                if let Ok((_normal_text, calls)) = pythonic_parser.parse_complete(text).await {
+                    parsed_calls = calls;
+                }
+            }
+        }
 
         if parsed_calls.is_empty() && text.contains("<function=") {
             let factory = ParserFactory::new();
@@ -967,7 +1168,7 @@ impl StreamToolParser {
             // Manual fallback if tool-parser crate fails
             if parsed_calls.is_empty() {
                 tracing::info!("Falling back to manual MiniMax XML parser for: {}", text);
-                return parse_minimax_xml_tool_calls(text);
+                return parse_minimax_xml_tool_calls(text, &self.tools);
             }
         }
 
@@ -1185,6 +1386,15 @@ impl StreamToolParser {
         {
             return true;
         }
+
+        // `<|...|>` style special tokens (e.g. Gemma4's <|tool_call>/<tool_call|>)
+        // are not XML envelopes; skip structural validation for them.
+        if self.config.start_token_str.starts_with("<|")
+            || self.config.end_token_str.starts_with("<|")
+        {
+            return true;
+        }
+
         let Some(start_idx) = self.buffer.find(&self.config.start_token_str) else {
             return true;
         };
@@ -1214,9 +1424,9 @@ impl StreamToolParser {
             let Some(invoke_end_rel) = invoke_section.rfind("</invoke>") else {
                 return false;
             };
-            let invoke_block =
-                &block[invoke_start..invoke_start + invoke_end_rel + "</invoke>".len()];
-            return Self::has_balanced_minimax_parameter_tags(invoke_block);
+            let invoke_end = invoke_start + invoke_end_rel + "</invoke>".len();
+            let invoke_block = &block[invoke_start..invoke_end];
+            return Self::has_balanced_parameter_tags(invoke_block, "<parameter name=");
         }
 
         if block.contains("<function=") || block.contains("<parameter=") {
@@ -1227,8 +1437,14 @@ impl StreamToolParser {
             let Some(fe_rel) = func_section.rfind("</function>") else {
                 return false;
             };
-            let func_block = &block[fs..fs + fe_rel + "</function>".len()];
-            return Self::has_balanced_parameter_tags(func_block);
+            let func_end = fs + fe_rel + "</function>".len();
+            let func_block = &block[fs..func_end];
+            return Self::has_balanced_parameter_tags(func_block, "<parameter=");
+        }
+        if block.contains("<arg_key>") || block.contains("<arg_value>") {
+            return block.contains("</arg_value>")
+                && Self::has_balanced_xml_tags(block, "<arg_key>", "</arg_key>")
+                && Self::has_balanced_xml_tags(block, "<arg_value>", "</arg_value>");
         }
         if inner.is_empty() {
             return false;
@@ -1236,19 +1452,18 @@ impl StreamToolParser {
         serde_json::from_str::<Value>(inner).is_ok()
     }
 
-    fn has_balanced_minimax_parameter_tags(invoke_block: &str) -> bool {
+    fn has_balanced_parameter_tags(function_block: &str, open_tag: &str) -> bool {
         let mut idx = 0usize;
         let mut open_count = 0usize;
-        const OPEN: &str = "<parameter name=";
         const CLOSE: &str = "</parameter>";
-        while idx < invoke_block.len() {
-            let open_pos = invoke_block[idx..].find(OPEN).map(|p| idx + p);
-            let close_pos = invoke_block[idx..].find(CLOSE).map(|p| idx + p);
+        while idx < function_block.len() {
+            let open_pos = function_block[idx..].find(open_tag).map(|p| idx + p);
+            let close_pos = function_block[idx..].find(CLOSE).map(|p| idx + p);
             match (open_pos, close_pos) {
                 (None, None) => break,
                 (Some(op), None) => {
                     open_count += 1;
-                    idx = op + OPEN.len();
+                    idx = op + open_tag.len();
                 }
                 (None, Some(cp)) => {
                     if open_count > 0 {
@@ -1259,7 +1474,7 @@ impl StreamToolParser {
                 (Some(op), Some(cp)) => {
                     if op < cp {
                         open_count += 1;
-                        idx = op + OPEN.len();
+                        idx = op + open_tag.len();
                     } else {
                         if open_count > 0 {
                             open_count -= 1;
@@ -1272,40 +1487,10 @@ impl StreamToolParser {
         open_count == 0
     }
 
-    fn has_balanced_parameter_tags(function_block: &str) -> bool {
-        let mut idx = 0usize;
-        let mut open_count = 0usize;
-        const OPEN: &str = "<parameter=";
-        const CLOSE: &str = "</parameter>";
-        while idx < function_block.len() {
-            let open_pos = function_block[idx..].find(OPEN).map(|p| idx + p);
-            let close_pos = function_block[idx..].find(CLOSE).map(|p| idx + p);
-            match (open_pos, close_pos) {
-                (None, None) => break,
-                (Some(op), None) => {
-                    open_count += 1;
-                    idx = op + OPEN.len();
-                }
-                (None, Some(cp)) => {
-                    if open_count > 0 {
-                        open_count -= 1;
-                    }
-                    idx = cp + CLOSE.len();
-                }
-                (Some(op), Some(cp)) => {
-                    if op < cp {
-                        open_count += 1;
-                        idx = op + OPEN.len();
-                    } else {
-                        if open_count > 0 {
-                            open_count -= 1;
-                        }
-                        idx = cp + CLOSE.len();
-                    }
-                }
-            }
-        }
-        open_count == 0
+    fn has_balanced_xml_tags(block: &str, open: &str, close: &str) -> bool {
+        let open_count = block.matches(open).count();
+        let close_count = block.matches(close).count();
+        open_count > 0 && open_count == close_count
     }
 
     fn finalize_streamed_arguments(&self, raw: &str) -> String {
@@ -1351,20 +1536,365 @@ impl StreamToolParser {
         let model_lower = model_id.to_ascii_lowercase();
         match model_type {
             ToolModelType::LLaMa => "llama",
+            ToolModelType::LLaMa4 => "pythonic",
             ToolModelType::Mistral => "mistral",
             ToolModelType::Qwen | ToolModelType::Qwen3MoE => {
-                if model_lower.contains("coder") || model_lower.contains("qwen3.5") {
+                if model_lower.contains("coder")
+                    || model_lower.contains("qwen3.5")
+                    || model_lower.contains("qwen3.6")
+                {
                     "qwen_coder"
                 } else {
                     "qwen"
                 }
             }
-            ToolModelType::Gemma | ToolModelType::Gemma3 => "json",
+            ToolModelType::Gemma | ToolModelType::Gemma3 | ToolModelType::Gemma4 => "json",
             ToolModelType::Phi | ToolModelType::Phi4 => "qwen",
-            ToolModelType::GLM4 => "json",
+            ToolModelType::GLM4 => "glm47_moe",
             ToolModelType::Yi | ToolModelType::StableLM => "qwen",
             ToolModelType::DeepSeek => "deepseek",
             ToolModelType::MiniMax => "minimax_m2",
+        }
+    }
+
+    /// Parse Gemma4 tool calls: `<|tool_call>call:NAME{key:<|"|>value<|"|>,...}<tool_call|>`.
+    fn parse_gemma4_tool_calls(text: &str) -> Option<Vec<ToolCall>> {
+        const PREFIX: &str = "<|tool_call>call:";
+        const PREFIX_STRIPPED: &str = "call:";
+        const SUFFIX: &str = "<tool_call|>";
+
+        let text = text.trim_end();
+        let text = text
+            .strip_suffix("<|tool_response>")
+            .or_else(|| text.strip_suffix("<tool_response|>"))
+            .unwrap_or(text);
+
+        let has_full_prefix = text.contains(PREFIX);
+        let has_stripped_prefix = !has_full_prefix && text.contains(PREFIX_STRIPPED);
+        if !has_full_prefix && !has_stripped_prefix {
+            return None;
+        }
+        let active_prefix = if has_full_prefix {
+            PREFIX
+        } else {
+            PREFIX_STRIPPED
+        };
+
+        let mut calls = Vec::new();
+        let mut search_start = 0usize;
+        while let Some(rel_pos) = text[search_start..].find(active_prefix) {
+            let abs_start = search_start + rel_pos + active_prefix.len();
+            let Some(brace_rel) = text[abs_start..].find('{') else {
+                break;
+            };
+            let name = text[abs_start..abs_start + brace_rel].trim();
+            let brace_abs = abs_start + brace_rel;
+            let Some((inner, after_brace)) = Self::gemma4_extract_braces(text, brace_abs) else {
+                break;
+            };
+            let arguments = Self::gemma4_parse_args(inner);
+            calls.push(crate::tools::new_tool_call(
+                crate::tools::generate_tool_call_id(),
+                name.to_string(),
+                serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string()),
+            ));
+
+            let remaining = &text[after_brace..];
+            search_start = if let Some(suf_pos) = remaining.find(SUFFIX) {
+                after_brace + suf_pos + SUFFIX.len()
+            } else {
+                after_brace
+            };
+        }
+
+        (!calls.is_empty()).then_some(calls)
+    }
+
+    fn gemma4_extract_braces(s: &str, start: usize) -> Option<(&str, usize)> {
+        const DELIM: &str = "<|\"|>";
+        if !s.is_char_boundary(start) || s.as_bytes().get(start) != Some(&b'{') {
+            return None;
+        }
+
+        let mut depth = 0usize;
+        let mut in_delim_string = false;
+        let mut in_regular_string = false;
+        let tail = &s[start..];
+        let mut iter = tail.char_indices();
+        while let Some((offset, ch)) = iter.next() {
+            let abs = start + offset;
+            if in_delim_string {
+                if tail[offset..].starts_with(DELIM) {
+                    in_delim_string = false;
+                    for _ in 0..DELIM.len().saturating_sub(ch.len_utf8()) {
+                        iter.next();
+                    }
+                }
+                continue;
+            }
+            if in_regular_string {
+                if ch == '"' && (offset == 0 || tail.as_bytes()[offset - 1] != b'\\') {
+                    in_regular_string = false;
+                }
+                continue;
+            }
+            if tail[offset..].starts_with(DELIM) {
+                in_delim_string = true;
+                for _ in 0..DELIM.len().saturating_sub(ch.len_utf8()) {
+                    iter.next();
+                }
+                continue;
+            }
+            match ch {
+                '"' => in_regular_string = true,
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        let inner_start = start + '{'.len_utf8();
+                        return Some((&s[inner_start..abs], abs + '}'.len_utf8()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn gemma4_parse_args(args_str: &str) -> Value {
+        if args_str.trim().is_empty() {
+            return Value::Object(Map::new());
+        }
+
+        let cleaned = args_str.replace("<|\"|>", "\"");
+        if let Ok(v) = serde_json::from_str::<Value>(&format!("{{{cleaned}}}")) {
+            return v;
+        }
+
+        let mut map = Map::new();
+        let chars: Vec<(usize, char)> = args_str.char_indices().collect();
+        let n = chars.len();
+        let mut ci = 0usize;
+        while ci < n {
+            while ci < n && matches!(chars[ci].1, ' ' | ',' | '\n' | '\t') {
+                ci += 1;
+            }
+            if ci >= n {
+                break;
+            }
+
+            let key_start = chars[ci].0;
+            while ci < n && chars[ci].1 != ':' {
+                ci += 1;
+            }
+            if ci >= n {
+                break;
+            }
+            let key = args_str[key_start..chars[ci].0].trim().trim_matches('"');
+            ci += 1;
+            while ci < n && matches!(chars[ci].1, ' ' | '\n' | '\t') {
+                ci += 1;
+            }
+            if ci >= n {
+                map.insert(key.to_string(), Value::String(String::new()));
+                break;
+            }
+
+            const DELIM: &str = "<|\"|>";
+            let byte_pos = chars[ci].0;
+            if args_str[byte_pos..].starts_with(DELIM) {
+                let delim_char_len = DELIM.chars().count();
+                ci += delim_char_len;
+                let val_start = if ci < n { chars[ci].0 } else { args_str.len() };
+                match args_str[val_start..].find(DELIM) {
+                    Some(rel) => {
+                        let val = &args_str[val_start..val_start + rel];
+                        map.insert(key.to_string(), Value::String(val.to_string()));
+                        let after = val_start + rel + DELIM.len();
+                        ci = chars.iter().position(|&(b, _)| b >= after).unwrap_or(n);
+                    }
+                    None => {
+                        map.insert(
+                            key.to_string(),
+                            Value::String(args_str[val_start..].to_string()),
+                        );
+                        break;
+                    }
+                }
+            } else if chars[ci].1 == '"' {
+                ci += 1;
+                let val_start = if ci < n { chars[ci].0 } else { args_str.len() };
+                let mut end_ci = ci;
+                while end_ci < n {
+                    if chars[end_ci].1 == '"' && (end_ci == 0 || chars[end_ci - 1].1 != '\\') {
+                        break;
+                    }
+                    end_ci += 1;
+                }
+                let val_end = if end_ci < n {
+                    chars[end_ci].0
+                } else {
+                    args_str.len()
+                };
+                map.insert(
+                    key.to_string(),
+                    Value::String(args_str[val_start..val_end].to_string()),
+                );
+                ci = if end_ci < n { end_ci + 1 } else { n };
+            } else if chars[ci].1 == '{' {
+                let (inner, after_ci) = Self::gemma4_scan_nested(&chars, ci, '{', '}', n, args_str);
+                map.insert(key.to_string(), Self::gemma4_parse_args(inner));
+                ci = after_ci;
+            } else if chars[ci].1 == '[' {
+                let (inner, after_ci) = Self::gemma4_scan_nested(&chars, ci, '[', ']', n, args_str);
+                map.insert(key.to_string(), Self::gemma4_parse_array(inner));
+                ci = after_ci;
+            } else {
+                let val_start = chars[ci].0;
+                while ci < n && !matches!(chars[ci].1, ',' | '}' | ']') {
+                    ci += 1;
+                }
+                let val_end = if ci < n { chars[ci].0 } else { args_str.len() };
+                map.insert(
+                    key.to_string(),
+                    Self::gemma4_parse_bare_value(args_str[val_start..val_end].trim()),
+                );
+            }
+        }
+
+        Value::Object(map)
+    }
+
+    fn gemma4_scan_nested<'a>(
+        chars: &[(usize, char)],
+        start_ci: usize,
+        open: char,
+        close: char,
+        n: usize,
+        source: &'a str,
+    ) -> (&'a str, usize) {
+        const DELIM: &str = "<|\"|>";
+        let delim_char_len = DELIM.chars().count();
+        let mut depth = 1usize;
+        let mut ci = start_ci + 1;
+        let inner_start = if ci < n { chars[ci].0 } else { source.len() };
+        while ci < n && depth > 0 {
+            let byte_pos = chars[ci].0;
+            if source[byte_pos..].starts_with(DELIM) {
+                ci += delim_char_len;
+                while ci < n {
+                    let bp = chars[ci].0;
+                    if source[bp..].starts_with(DELIM) {
+                        ci += delim_char_len;
+                        break;
+                    }
+                    ci += 1;
+                }
+                continue;
+            }
+            if chars[ci].1 == open {
+                depth += 1;
+            } else if chars[ci].1 == close {
+                depth = depth.saturating_sub(1);
+            }
+            ci += 1;
+        }
+        let inner_end = if depth == 0 && ci > 0 {
+            chars[ci - 1].0
+        } else if ci < n {
+            chars[ci].0
+        } else {
+            source.len()
+        };
+        (&source[inner_start..inner_end], ci)
+    }
+
+    fn gemma4_parse_array(arr_str: &str) -> Value {
+        const DELIM: &str = "<|\"|>";
+        let mut items = Vec::new();
+        let chars: Vec<(usize, char)> = arr_str.char_indices().collect();
+        let n = chars.len();
+        let mut ci = 0usize;
+        while ci < n {
+            while ci < n && matches!(chars[ci].1, ' ' | ',' | '\n' | '\t') {
+                ci += 1;
+            }
+            if ci >= n {
+                break;
+            }
+            let byte_pos = chars[ci].0;
+            if arr_str[byte_pos..].starts_with(DELIM) {
+                let delim_char_len = DELIM.chars().count();
+                ci += delim_char_len;
+                let val_start = if ci < n { chars[ci].0 } else { arr_str.len() };
+                match arr_str[val_start..].find(DELIM) {
+                    Some(rel) => {
+                        items.push(Value::String(
+                            arr_str[val_start..val_start + rel].to_string(),
+                        ));
+                        let after = val_start + rel + DELIM.len();
+                        ci = chars.iter().position(|&(b, _)| b >= after).unwrap_or(n);
+                    }
+                    None => {
+                        items.push(Value::String(arr_str[val_start..].to_string()));
+                        break;
+                    }
+                }
+            } else if chars[ci].1 == '"' {
+                ci += 1;
+                let val_start = if ci < n { chars[ci].0 } else { arr_str.len() };
+                let mut end_ci = ci;
+                while end_ci < n
+                    && !(chars[end_ci].1 == '"' && (end_ci == 0 || chars[end_ci - 1].1 != '\\'))
+                {
+                    end_ci += 1;
+                }
+                let val_end = if end_ci < n {
+                    chars[end_ci].0
+                } else {
+                    arr_str.len()
+                };
+                items.push(Value::String(arr_str[val_start..val_end].to_string()));
+                ci = if end_ci < n { end_ci + 1 } else { n };
+            } else if chars[ci].1 == '{' {
+                let (inner, after_ci) = Self::gemma4_scan_nested(&chars, ci, '{', '}', n, arr_str);
+                items.push(Self::gemma4_parse_args(inner));
+                ci = after_ci;
+            } else if chars[ci].1 == '[' {
+                let (inner, after_ci) = Self::gemma4_scan_nested(&chars, ci, '[', ']', n, arr_str);
+                items.push(Self::gemma4_parse_array(inner));
+                ci = after_ci;
+            } else {
+                let val_start = chars[ci].0;
+                while ci < n && !matches!(chars[ci].1, ',' | ']') {
+                    ci += 1;
+                }
+                let val_end = if ci < n { chars[ci].0 } else { arr_str.len() };
+                let val = arr_str[val_start..val_end].trim();
+                if !val.is_empty() {
+                    items.push(Self::gemma4_parse_bare_value(val));
+                }
+            }
+        }
+        Value::Array(items)
+    }
+
+    fn gemma4_parse_bare_value(val: &str) -> Value {
+        match val.to_ascii_lowercase().as_str() {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            "null" | "none" | "nil" => Value::Null,
+            _ => {
+                if let Ok(n) = val.parse::<i64>() {
+                    Value::Number(n.into())
+                } else if let Ok(f) = val.parse::<f64>() {
+                    serde_json::Number::from_f64(f)
+                        .map(Value::Number)
+                        .unwrap_or_else(|| Value::String(val.to_string()))
+                } else {
+                    Value::String(val.to_string())
+                }
+            }
         }
     }
 
@@ -1487,11 +2017,19 @@ impl StreamToolParser {
         } else if self.config.start_token_str.contains("tool_call")
             && self.config.end_token_str.contains("tool_call")
         {
-            markers.extend(
-                ["<function=", "</function>", "<parameter=", "</parameter>"]
-                    .into_iter()
-                    .map(|s| s.to_string()),
-            );
+            if self.uses_glm_xml() {
+                markers.extend(
+                    ["<arg_key>", "</arg_key>", "<arg_value>", "</arg_value>"]
+                        .into_iter()
+                        .map(|s| s.to_string()),
+                );
+            } else {
+                markers.extend(
+                    ["<function=", "</function>", "<parameter=", "</parameter>"]
+                        .into_iter()
+                        .map(|s| s.to_string()),
+                );
+            }
         }
         markers
     }
@@ -1524,8 +2062,8 @@ impl StreamToolParser {
             };
             let mut merged_any = false;
             for (key, value) in recovered {
-                if !args_obj.contains_key(&key) && !value.is_empty() {
-                    args_obj.insert(key, Value::String(value));
+                if !args_obj.contains_key(&key) {
+                    args_obj.insert(key, value);
                     merged_any = true;
                 }
             }
@@ -1541,6 +2079,14 @@ impl StreamToolParser {
             && self.config.end_token_str == "</minimax:tool_call>"
     }
 
+    fn uses_glm_xml(&self) -> bool {
+        let id = self.model_id.to_ascii_lowercase();
+        id.contains("glm")
+            && !self.uses_minimax_xml()
+            && self.config.start_token_str == "<tool_call>"
+            && self.config.end_token_str == "</tool_call>"
+    }
+
     fn xml_parameter_open_prefix(uses_minimax_xml: bool) -> &'static str {
         if uses_minimax_xml {
             "<parameter name="
@@ -1553,7 +2099,7 @@ impl StreamToolParser {
         buffer: &str,
         function_name: &str,
         uses_minimax_xml: bool,
-    ) -> std::collections::HashMap<String, String> {
+    ) -> std::collections::HashMap<String, Value> {
         let mut recovered = std::collections::HashMap::new();
         let func_start = if uses_minimax_xml {
             let function_tag = format!(r#"<invoke name="{function_name}">"#);
@@ -1601,18 +2147,50 @@ impl StreamToolParser {
                 let value_end = value_start + value_end_rel;
                 let value = section[value_start..value_end]
                     .trim_matches(|c| c == '\n' || c == '\r')
+                    .trim()
                     .to_string();
-                recovered.insert(parameter_name, value);
+                recovered.insert(parameter_name, Self::parse_recovered_xml_value(&value));
                 cursor = value_end + PARAM_END.len();
             } else {
                 let value = section[value_start..]
                     .trim_matches(|c| c == '\n' || c == '\r')
+                    .trim()
                     .to_string();
-                recovered.insert(parameter_name, value);
+                recovered.insert(parameter_name, Self::parse_recovered_xml_value(&value));
                 break;
             }
         }
         recovered
+    }
+
+    fn parse_recovered_xml_value(raw: &str) -> Value {
+        let decoded = raw
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+            .replace("&quot;", "\"")
+            .replace("&apos;", "'");
+
+        match decoded.as_str() {
+            "true" | "True" => return Value::Bool(true),
+            "false" | "False" => return Value::Bool(false),
+            "null" | "None" => return Value::Null,
+            _ => {}
+        }
+        if (decoded.starts_with('{') || decoded.starts_with('['))
+            && serde_json::from_str::<Value>(&decoded).is_ok()
+        {
+            return serde_json::from_str::<Value>(&decoded).unwrap();
+        }
+        if let Ok(num) = decoded.parse::<i64>() {
+            return Value::Number(num.into());
+        }
+        if let Ok(num) = decoded.parse::<f64>() {
+            if let Some(num) = serde_json::Number::from_f64(num) {
+                return Value::Number(num);
+            }
+        }
+        Value::String(decoded)
     }
 }
 
@@ -2280,7 +2858,7 @@ Some markdown text here.</parameter>
 </invoke>
 </minimax:tool_call>"#;
 
-        let calls = parse_minimax_xml_tool_calls(text);
+        let calls = parse_minimax_xml_tool_calls(text, &[]);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "write");
         assert!(calls[0].function.arguments.contains("content"));
@@ -2294,7 +2872,7 @@ Some markdown text here.</parameter>
 <parameter name="filePath">/root/AGENTS.md</parameter>
 </invoke>"#;
 
-        let calls = parse_minimax_xml_tool_calls(text);
+        let calls = parse_minimax_xml_tool_calls(text, &[]);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "read");
         assert!(calls[0].function.arguments.contains("filePath"));
@@ -2306,10 +2884,213 @@ Some markdown text here.</parameter>
 <parameter name="tags">["rust", "programming"]</parameter>
 </invoke>"#;
 
-        let calls = parse_minimax_xml_tool_calls(text);
+        let calls = parse_minimax_xml_tool_calls(text, &[]);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].function.name, "search");
         let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
         assert!(args["tags"].is_array());
+    }
+
+    #[test]
+    fn test_parse_minimax_xml_type_coercion_with_schema() {
+        let tools = to_openai_tools(&[crate::tools::function_tool("get_weather", "desc")
+            .parameters_schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "days": {"type": "integer"},
+                    "include_hourly": {"type": "boolean"},
+                    "units": {"type": "string"}
+                }
+            }))
+            .build()]);
+        let text = r#"<invoke name="get_weather">
+<parameter name="days">3</parameter>
+<parameter name="include_hourly">true</parameter>
+<parameter name="units">metric</parameter>
+</invoke>"#;
+
+        let calls = parse_minimax_xml_tool_calls(text, &tools);
+        let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["days"], 3);
+        assert_eq!(args["include_hourly"], true);
+        assert_eq!(args["units"], "metric");
+    }
+
+    #[test]
+    fn test_tool_config_llama4() {
+        let config = ToolConfig::for_model_type(&ToolModelType::LLaMa4);
+        assert!(config.start_token_ids.contains(&200016));
+        assert!(config.end_token_ids.contains(&200007));
+        assert!(config.end_token_ids.contains(&200008));
+        assert_eq!(config.start_token_str, "<|python_start|>");
+    }
+
+    #[test]
+    fn test_llama4_uses_pythonic_parser() {
+        assert_eq!(
+            StreamToolParser::parser_name_for_model(
+                &ToolModelType::LLaMa4,
+                "meta-llama/Llama-4-Scout"
+            ),
+            "pythonic"
+        );
+    }
+
+    #[test]
+    fn test_llama4_parse_pythonic_tool_call() {
+        let tools = vec![crate::tools::function_tool("get_weather", "desc").build()];
+        let parser = StreamToolParser::new_with_config(
+            &ToolModelType::LLaMa4,
+            "llama4".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::LLaMa4),
+            tools,
+            None,
+        );
+
+        let calls = futures::executor::block_on(parser.parse_complete_with_fallback(
+            r#"[get_weather(location="Vancouver", units="celsius")]"#,
+        ));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "get_weather");
+        let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["location"], "Vancouver");
+        assert_eq!(args["units"], "celsius");
+    }
+
+    #[test]
+    fn test_envelope_glm47_xml_format() {
+        let tools = vec![crate::tools::function_tool("read", "Read a file").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::GLM4,
+            "glm-4.7-flash".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::GLM4),
+            tools,
+            None,
+        );
+
+        parser.buffer =
+            "<tool_call>read<arg_key>filePath</arg_key><arg_value>/tmp/test.rs</arg_value></tool_call>"
+                .to_string();
+        assert!(parser.has_complete_tool_envelope());
+
+        parser.buffer =
+            "<tool_call>read<arg_key>filePath</arg_key><arg_value>/tmp/test.rs</arg_value>"
+                .to_string();
+        assert!(!parser.has_complete_tool_envelope());
+    }
+
+    #[test]
+    fn test_glm47_display_escape_markers() {
+        let tools = vec![crate::tools::function_tool("read", "Read a file").build()];
+        let parser = StreamToolParser::new_with_config(
+            &ToolModelType::GLM4,
+            "glm-4.7-flash".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::GLM4),
+            tools,
+            None,
+        );
+
+        let markers = parser.display_escape_markers();
+        assert!(markers.iter().any(|m| m == "<arg_key>"));
+        assert!(markers.iter().any(|m| m == "</arg_key>"));
+        assert!(markers.iter().any(|m| m == "<arg_value>"));
+        assert!(markers.iter().any(|m| m == "</arg_value>"));
+    }
+
+    #[test]
+    fn test_gemma4_parse_bare_value_case_insensitive() {
+        assert_eq!(
+            StreamToolParser::gemma4_parse_bare_value("TRUE"),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            StreamToolParser::gemma4_parse_bare_value("False"),
+            Value::Bool(false)
+        );
+        assert_eq!(
+            StreamToolParser::gemma4_parse_bare_value("None"),
+            Value::Null
+        );
+        assert_eq!(
+            StreamToolParser::gemma4_parse_bare_value("42"),
+            Value::Number(42.into())
+        );
+    }
+
+    #[test]
+    fn test_gemma4_tool_call_parse() {
+        let tools = vec![crate::tools::function_tool("search", "desc").build()];
+        let parser = StreamToolParser::new_with_config(
+            &ToolModelType::Gemma4,
+            "gemma4".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::Gemma4),
+            tools,
+            None,
+        );
+
+        let text =
+            r#"<|tool_call>call:search{query:<|"|>rust programming<|"|>,count:5}<tool_call|>"#;
+        let calls = futures::executor::block_on(parser.parse_complete_with_fallback(text));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "search");
+        let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+        assert_eq!(args["query"], "rust programming");
+        assert_eq!(args["count"], 5);
+    }
+
+    #[test]
+    fn test_gemma4_streaming_tool_call_with_reasoning() {
+        // Simulates Gemma4 output: reasoning in <|channel>...<channel|>, then tool call
+        let tools = vec![crate::tools::function_tool("search", "desc").build()];
+        let mut parser = StreamToolParser::new_with_config(
+            &ToolModelType::Gemma4,
+            "gemma4".to_string(),
+            ToolConfig::for_model_type(&ToolModelType::Gemma4),
+            tools,
+            None,
+        );
+        parser.set_detect_tools_in_reasoning(true);
+
+        // Reasoning block tokens (non-special IDs for text content)
+        let tokens: Vec<(u32, &str)> = vec![
+            (100, "<|channel>"),
+            (101, "thought"),
+            (102, "\n"),
+            (103, "I should search for this."),
+            (104, "\n"),
+            (105, "<channel|>"),
+            // Tool call start (special token ID 48)
+            (48, "<|tool_call>"),
+            (106, "call:search{query:"),
+            (107, "<|\"|>"),
+            (108, "rust programming"),
+            (109, "<|\"|>"),
+            (110, ",count:5}"),
+            // Tool call end (special token ID 49)
+            (49, "<tool_call|>"),
+        ];
+
+        let mut got_tool_calls = false;
+        for (id, text) in &tokens {
+            match parser.process_token(*id, text) {
+                StreamResult::ToolCalls(calls) => {
+                    assert_eq!(calls.len(), 1, "Expected exactly one tool call");
+                    assert_eq!(calls[0].function.name, "search");
+                    let args: Value = serde_json::from_str(&calls[0].function.arguments).unwrap();
+                    assert_eq!(args["query"], "rust programming");
+                    assert_eq!(args["count"], 5);
+                    got_tool_calls = true;
+                }
+                StreamResult::Buffering => {}
+                StreamResult::Content(_) => {}
+                StreamResult::FlushBuffer(_) => {}
+            }
+        }
+        assert!(got_tool_calls, "Expected tool calls to be emitted");
+        // After tool call, parser should be back in Normal state
+        assert!(
+            matches!(parser.state(), ParserState::Normal),
+            "Parser should return to Normal state after tool call"
+        );
     }
 }

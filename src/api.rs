@@ -9,7 +9,9 @@ use crate::openai::PipelineConfig;
 use crate::scheduler::cache_engine::{CacheConfig, CacheEngine};
 use crate::scheduler::prefix_cache::PrefixCacheConfig;
 use crate::scheduler::SchedulerConfig;
-use crate::tools::ToolFormat;
+use crate::tools::helpers::{
+    build_invalid_tool_call_feedback, build_tool_schema_map, filter_tool_calls,
+};
 use candle_core::{DType, Result};
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -66,7 +68,7 @@ impl EngineBuilder {
             max_num_seqs: 16,
             block_size: if cfg!(feature = "cuda") { 64 } else { 32 },
             kvcache_mem_gpu: 4096,
-            gpu_memory_fraction: Some(0.7),
+            gpu_memory_fraction: Some(0.5),
             kvcache_mem_cpu: 128,
             temperature: None,
             top_p: None,
@@ -446,12 +448,13 @@ impl Engine {
                 .map_err(candle_core::Error::wrap)?;
         }
 
-        let (prompt, tokenizer, image_data) = {
+        let (prompt, tokenizer, image_data, resolved_tools) = {
             let e = self.engine.read();
             let (pipeline, _) = e.get_pipeline(0).unwrap();
 
             let tool_config = resolve_tools_for_request(&request.tools, &request.tool_choice, None)
                 .map_err(candle_core::Error::wrap)?;
+            let resolved_tools = tool_config.tools.clone();
 
             // tokenizer is inside DefaultPipeline
             let mut conversation = pipeline.conversation.clone();
@@ -499,35 +502,15 @@ impl Engine {
                 }
             };
 
-            if !tool_config.tools.is_empty() {
-                let mut tools_prompt = ToolFormat::get_tool_prompt(
-                    &pipeline.tool_config,
-                    &pipeline.tool_model_type,
-                    &pipeline.tool_parser_model_id,
-                    pipeline.enforce_parser.as_deref(),
-                );
-
-                // Enforce tool_choice=function
-                if let crate::openai::ToolChoiceKind::Function(name) = &tool_config.choice {
-                    tools_prompt = format!(
-                        "IMPORTANT: You MUST call the tool \"{}\". Do not respond with plain text.\n\n{}",
-                        name, tools_prompt
-                    );
-                }
-
-                let current_system = conversation.get_system_message().unwrap_or_default();
-                let new_system = if current_system.is_empty() {
-                    tools_prompt
-                } else {
-                    format!("{}\n\n{}", current_system, tools_prompt)
-                };
-                conversation.set_system_message(Some(new_system));
-            }
-
             let enable_thinking = request.thinking.unwrap_or(true);
             let prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
 
-            (prompt, pipeline.tokenizer.clone(), image_data)
+            (
+                prompt,
+                pipeline.tokenizer.clone(),
+                image_data,
+                resolved_tools,
+            )
         };
 
         let request_id = format!("cmpl-{}", uuid::Uuid::new_v4());
@@ -553,7 +536,7 @@ impl Engine {
         let prefilled_reasoning_end =
             crate::tools::stream_parser::detect_prefilled_reasoning_end_marker(&prompt);
 
-        let has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
+        let has_tools = !resolved_tools.is_empty();
         {
             let mut e = self.engine.write();
             let mut sampling_params = SamplingParams::new(
@@ -589,7 +572,7 @@ impl Engine {
                 false, // is_embedding
                 crate::openai::requests::EncodingFormat::default(),
                 crate::openai::requests::EmbeddingType::default(),
-                request.tools.clone().unwrap_or_default(),
+                resolved_tools.clone(),
                 image_data,
                 None, // streamer
                 Some(req_notify.clone()),
@@ -633,6 +616,45 @@ impl Engine {
                             }
                         }
                     }
+                }
+            }
+            if has_tools {
+                let parser = crate::tools::parser::ToolParser::new();
+                let tool_schemas = build_tool_schema_map(&resolved_tools);
+                for choice in &mut choices {
+                    let parsed_calls = if let Some(calls) = choice.message.tool_calls.take() {
+                        calls
+                    } else if let Some(content) = &choice.message.content {
+                        parser.parse(content)
+                    } else {
+                        Vec::new()
+                    };
+
+                    if parsed_calls.is_empty() {
+                        continue;
+                    }
+
+                    let (valid_calls, invalid_calls) =
+                        filter_tool_calls(&parsed_calls, &tool_schemas);
+                    if !invalid_calls.is_empty() {
+                        tracing::warn!(
+                            "Dropped {} invalid tool call(s) before response",
+                            invalid_calls.len()
+                        );
+                    }
+                    if valid_calls.is_empty() {
+                        if let Some(feedback) =
+                            build_invalid_tool_call_feedback(&invalid_calls, &tool_schemas, None)
+                        {
+                            choice.message.content = Some(feedback);
+                        }
+                        choice.finish_reason = Some("stop".to_string());
+                        continue;
+                    }
+
+                    choice.message.tool_calls = Some(valid_calls);
+                    choice.message.content = None;
+                    choice.finish_reason = Some("tool_calls".to_string());
                 }
             }
             Ok(ChatCompletionResponse {

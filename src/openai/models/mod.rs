@@ -537,6 +537,14 @@ impl Config {
         None
     }
 
+    pub fn higher_precision_required(&self) -> bool {
+        self.isq_quant.is_some()
+            || self
+                .quantization_config
+                .as_ref()
+                .is_some_and(|cfg| matches!(cfg.quant_method.as_str(), "mxfp4" | "nvfp4"))
+    }
+
     pub fn effective_max_seq_len(&self) -> usize {
         let base_max_position_embeddings = self.base_max_position_embeddings();
         let Some(rope_scaling) = &self.rope_scaling else {

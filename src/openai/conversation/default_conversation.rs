@@ -2,8 +2,10 @@ use crate::tools::{Tool, ToolCall};
 
 use super::{ApplyChatTemplateError, Message};
 use minijinja::{context, value::Kwargs, Environment, Error, ErrorKind, Value as JinjaValue};
+use regex::Regex;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use std::sync::OnceLock;
 use tokenizers::Tokenizer;
 
 pub const ROLES: (&str, &str) = ("USER", "ASSISTANT");
@@ -203,6 +205,24 @@ fn should_escape_nested_xml_tool_markers(tool_markers: &[&str]) -> bool {
         .any(|marker| marker.starts_with('<') && marker.contains("tool_call"))
 }
 
+fn normalize_template_source(source: &str) -> String {
+    static TOJSON_ENSURE_ASCII_RE: OnceLock<Regex> = OnceLock::new();
+    let regex = TOJSON_ENSURE_ASCII_RE.get_or_init(|| {
+        Regex::new(
+            r#"(?x)
+            \|
+            (?P<ws>\s*)
+            tojson
+            \(
+                \s*ensure_ascii\s*=\s*(?:false|true|False|True)\s*
+            \)
+        "#,
+        )
+        .expect("valid tojson ensure_ascii regex")
+    });
+    regex.replace_all(source, "|${ws}tojson").into_owned()
+}
+
 impl DefaultConversation {
     pub fn collect_escape_tokens(tokenizer: &Tokenizer, tool_markers: &[&str]) -> Vec<String> {
         let mut tokens = tokenizer
@@ -255,17 +275,43 @@ impl DefaultConversation {
         escape_special_tokens_in_text(content, &self.escape_tokens, &self.preserve_tokens)
     }
 
-    fn escaped_messages_for_render(&self) -> Vec<Message> {
-        if self.escape_tokens.is_empty() {
-            return self.messages.clone();
-        }
-
+    fn escaped_messages_for_render(&self, enable_thinking: bool) -> Vec<Message> {
+        let need_escape = !self.escape_tokens.is_empty();
+        let is_thinking_model = enable_thinking
+            && self
+                .escape_tokens
+                .iter()
+                .any(|token| token.to_lowercase().contains("think"));
         self.messages
             .iter()
             .map(|message| {
                 let mut escaped = message.clone();
-                if !matches!(escaped.role.as_str(), "system" | "developer") {
-                    escaped.content = self.escape_text(&escaped.content);
+                match escaped.role.as_str() {
+                    "system" | "developer" => {}
+                    "assistant" => {
+                        if let Some((reasoning, remaining)) =
+                            crate::tools::stream_parser::extract_reasoning_content(&escaped.content)
+                        {
+                            if escaped.reasoning_content.is_none() {
+                                escaped.reasoning_content = Some(reasoning);
+                            }
+                            escaped.content = remaining;
+                        }
+                        if is_thinking_model
+                            && escaped.reasoning_content.is_none()
+                            && escaped.tool_calls.is_some()
+                        {
+                            escaped.reasoning_content = Some("...".to_string());
+                        }
+                        if need_escape {
+                            escaped.content = self.escape_text(&escaped.content);
+                        }
+                    }
+                    _ => {
+                        if need_escape {
+                            escaped.content = self.escape_text(&escaped.content);
+                        }
+                    }
                 }
                 escaped
             })
@@ -375,7 +421,7 @@ impl DefaultConversation {
         env.set_lstrip_blocks(true);
         env.set_trim_blocks(true);
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
-        let template = self.chat_template.as_ref().unwrap();
+        let template = normalize_template_source(self.chat_template.as_ref().unwrap());
         let mut template = template.replace("[::-1]", "|reverse");
         if template.contains("{{ meta }}") {
             template = template.replace("{%- set meta = message.get(\"metadata\", \"\") %}", "");
@@ -394,7 +440,7 @@ impl DefaultConversation {
         let template = env
             .get_template(&self.name)
             .map_err(ApplyChatTemplateError::GetTemplateError)?;
-        let render_messages = self.escaped_messages_for_render();
+        let render_messages = self.escaped_messages_for_render(enable_thinking);
         template
             .render(context! {
               messages => render_messages,
@@ -435,14 +481,23 @@ impl DefaultConversation {
             Ok(prompt) => prompt,
             Err(e) => {
                 if self.chat_template.is_some() {
-                    tracing::warn!("apply chat template failed {:?}", e);
+                    if !tools.is_empty() {
+                        tracing::error!(
+                            "Chat template rendering FAILED (tools will be dropped!): {:?}. \
+                             Tools provided: {:?}. Using built-in fallback which does NOT support tools.",
+                            e,
+                            tools.iter().map(|t| &t.function.name).collect::<Vec<_>>()
+                        );
+                    } else {
+                        tracing::warn!("apply chat template failed {:?}", e);
+                    }
                 }
                 //no chat template exists? using the built-in template
                 let system_prompt = self
                     .system_message
                     .as_ref()
                     .map_or("".to_string(), |msg| format!("<|system|>\n {msg}"));
-                let render_messages = self.escaped_messages_for_render();
+                let render_messages = self.escaped_messages_for_render(thinking);
 
                 match self.sep_style {
                     SeparatorStyle::AddColonSingle
@@ -784,5 +839,26 @@ mod tests {
 
         assert!(escaped.contains(&"</content>".to_string()));
         assert!(!escaped.contains(&"plain_text".to_string()));
+    }
+
+    #[test]
+    fn normalize_template_source_strips_unsupported_ensure_ascii_kwarg() {
+        let source = "{{ value | tojson(ensure_ascii=False) }}";
+
+        let mut raw_env = Environment::new();
+        raw_env.add_template("raw", source).unwrap();
+        let raw_template = raw_env.get_template("raw").unwrap();
+        let raw_err = raw_template
+            .render(context! { value => "hello" })
+            .unwrap_err();
+        assert!(
+            raw_err
+                .to_string()
+                .contains("unknown keyword argument 'ensure_ascii'"),
+            "unexpected raw error: {raw_err}"
+        );
+
+        let normalized = normalize_template_source(source);
+        assert_eq!(normalized, "{{ value | tojson }}");
     }
 }

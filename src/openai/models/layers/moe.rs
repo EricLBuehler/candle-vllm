@@ -6,6 +6,7 @@ use crate::openai::models::{Config, MoEConfig, QuantConfig, QwenMoEConfig};
 use attention_rs::moe;
 use attention_rs::moe::moe_gemm_fp8;
 use attention_rs::silu_and_mul::silu_and_mul;
+use attention_rs::sort::ArgSortOp;
 use candle::{DType, Module, Result, Tensor, D};
 use candle_core as candle;
 use candle_core::quantized::GgmlDType;
@@ -29,6 +30,26 @@ fn gated_activation(gate_up: &Tensor, half_dim: usize, act: &Activation) -> Resu
             .contiguous()?;
         (up * gate.apply(act)?)?.contiguous()
     }
+}
+
+fn sort_expert_assignments(topk_ids: &Tensor, is_prefill: bool) -> Result<(Tensor, Tensor)> {
+    let flat = topk_ids.flatten_all()?;
+    if is_prefill {
+        flat.sort(true)
+    } else {
+        flat.sort_last_dim(true)
+    }
+}
+
+fn presorted_expert_assignments(
+    topk_ids: &Tensor,
+    is_prefill: bool,
+) -> Result<Option<(Tensor, Tensor)>> {
+    if !is_prefill {
+        return Ok(None);
+    }
+    let (expert_ids, sorted_token_ids) = sort_expert_assignments(topk_ids, true)?;
+    Ok(Some((sorted_token_ids, expert_ids)))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -414,17 +435,7 @@ impl FusedMoe {
     ) -> Result<Tensor> {
         let (num_tokens, hidden_dim) = xs.dims2()?;
 
-        let (expert_ids, sorted_token_ids) = if is_prefill {
-            #[cfg(feature = "cuda")]
-            {
-                use attention_rs::sort::ArgSortOp;
-                topk_ids.flatten_all()?.sort(true)?
-            }
-            #[cfg(not(feature = "cuda"))]
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        } else {
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        };
+        let (expert_ids, sorted_token_ids) = sort_expert_assignments(&topk_ids, is_prefill)?;
 
         let gate_up = moe::moe_gemm(
             &xs,
@@ -724,17 +735,7 @@ impl FusedMoeISQ {
             xs.to_owned()
         };
 
-        let (expert_ids, sorted_token_ids) = if is_prefill {
-            #[cfg(feature = "cuda")]
-            {
-                use attention_rs::sort::ArgSortOp;
-                topk_ids.flatten_all()?.sort(true)?
-            }
-            #[cfg(not(feature = "cuda"))]
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        } else {
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        };
+        let (expert_ids, sorted_token_ids) = sort_expert_assignments(&topk_ids, is_prefill)?;
 
         let ys = {
             let gate = moe::moe_gemm_gguf(
@@ -1267,17 +1268,7 @@ impl FusedMoeFp8 {
     ) -> Result<Tensor> {
         let (num_tokens, hidden_dim) = xs.dims2()?;
 
-        let (expert_ids, sorted_token_ids) = if is_prefill {
-            #[cfg(feature = "cuda")]
-            {
-                use attention_rs::sort::ArgSortOp;
-                topk_ids.flatten_all()?.sort(true)?
-            }
-            #[cfg(not(feature = "cuda"))]
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        } else {
-            topk_ids.flatten_all()?.sort_last_dim(true)?
-        };
+        let (expert_ids, sorted_token_ids) = sort_expert_assignments(&topk_ids, is_prefill)?;
 
         let xs = if xs.dtype() == DType::F32 {
             xs.to_dtype(DType::BF16)?
@@ -2177,14 +2168,7 @@ impl FusedMoeNvfp4 {
             xs
         };
 
-        let pre_sorted = if is_prefill {
-            use attention_rs::sort::ArgSortOp;
-            let flat = topk_ids.flatten_all()?.contiguous()?;
-            let (eids, tids) = flat.sort(true)?;
-            Some((tids, eids))
-        } else {
-            None
-        };
+        let pre_sorted = presorted_expert_assignments(&topk_ids, is_prefill)?;
         let pre_sorted_refs = pre_sorted.as_ref().map(|(a, b)| (a, b));
 
         let gate_up = moe::moe_gemm_nvfp4(

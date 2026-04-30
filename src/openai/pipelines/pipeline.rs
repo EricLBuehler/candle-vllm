@@ -107,7 +107,8 @@ pub enum LLMModel {
 
 fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
     match model {
-        LLMModel::Llama(_) | LLMModel::LLaMa4(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
+        LLMModel::Llama(_) | LLMModel::LlamaGGUF(_) => ToolModelType::LLaMa,
+        LLMModel::LLaMa4(_) => ToolModelType::LLaMa4,
         LLMModel::Qwen(_)
         | LLMModel::Qwen3_5(_)
         | LLMModel::Qwen3VL(_)
@@ -118,7 +119,8 @@ fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
         | LLMModel::QWenGGUFMoE(_)
         | LLMModel::QWen3_5GGUFMoE(_) => ToolModelType::Qwen3MoE,
         LLMModel::Gemma(_) => ToolModelType::Gemma,
-        LLMModel::Gemma3(_) | LLMModel::Gemma3VL(_) | LLMModel::Gemma4(_) => ToolModelType::Gemma3,
+        LLMModel::Gemma3(_) | LLMModel::Gemma3VL(_) => ToolModelType::Gemma3,
+        LLMModel::Gemma4(_) => ToolModelType::Gemma4,
         LLMModel::MiniMax(_) => ToolModelType::MiniMax,
         LLMModel::Mistral(_) | LLMModel::Mistral3VL(_) => ToolModelType::Mistral,
         LLMModel::Yi(_) => ToolModelType::Yi,
@@ -1775,8 +1777,7 @@ impl DefaultPipeline {
         #[cfg(all(feature = "cuda", feature = "graph"))]
         if !input_metadata.is_prefill {
             let input_batch = input_tokens.dim(0)?;
-            let require_exact_graph = input_metadata.mamba_slot_mapping.is_some()
-                || input_metadata.flashinfer_metadata.is_some();
+            let require_exact_graph = input_metadata.mamba_slot_mapping.is_some();
             let can_replay = if require_exact_graph {
                 self.capturer.is_exact_captured(input_batch)
             } else {
@@ -2180,7 +2181,9 @@ impl DefaultPipeline {
                         seq.deref_mut().deref_mut().pending_finish_logprobs = Some(finish_logprobs);
                         return Right("tool_calls".to_string());
                     }
-                    if self.json_end_token_id == Some(next_token) {
+                    if self.tool_call_end_token_ids.is_empty()
+                        && self.json_end_token_id == Some(next_token)
+                    {
                         let mut output_tokens: Vec<u32> = seq
                             .deref()
                             .get_output_tokens()

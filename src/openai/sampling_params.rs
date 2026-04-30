@@ -256,12 +256,6 @@ impl SamplingParams {
             ));
         }
 
-        if self.top_k.is_some_and(|k| k != -1) {
-            return Err(APIError::new_str(
-                "top_k must be -1 when using greedy sampling (no temperature specified).",
-            ));
-        }
-
         Ok(())
     }
 }

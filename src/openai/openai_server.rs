@@ -10,10 +10,12 @@ use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
 use crate::openai::multimodal::{build_messages_and_images, ImageData};
 use crate::openai::{resolve_tools_for_request, ResolvedToolConfig};
+use crate::tools::helpers::{
+    build_invalid_tool_call_feedback, build_tool_schema_map, filter_tool_calls,
+};
 use crate::tools::stream_parser::{
     detect_prefilled_reasoning_end_marker, extract_reasoning_content,
 };
-use crate::tools::ToolFormat;
 use axum::response::sse::KeepAlive;
 use axum::{
     extract::{Json, State},
@@ -101,31 +103,6 @@ async fn get_gen_prompt(
                 }
             }
         }
-    }
-
-    if !tool_config.tools.is_empty() {
-        let mut tools_prompt = ToolFormat::get_tool_prompt(
-            &pipeline.0.tool_config,
-            &pipeline.0.tool_model_type,
-            &pipeline.0.tool_parser_model_id,
-            pipeline.0.enforce_parser.as_deref(),
-        );
-
-        // Enforce tool_choice=function by prepending a mandatory instruction
-        if let crate::openai::ToolChoiceKind::Function(name) = &tool_config.choice {
-            tools_prompt = format!(
-                "IMPORTANT: You MUST call the tool \"{}\". Do not respond with plain text.\n\n{}",
-                name, tools_prompt
-            );
-        }
-
-        let current_system = conversation.get_system_message().unwrap_or_default();
-        let new_system = if current_system.is_empty() {
-            tools_prompt
-        } else {
-            format!("{}\n\n{}", current_system, tools_prompt)
-        };
-        conversation.set_system_message(Some(new_system));
     }
 
     let enable_thinking = request.thinking.unwrap_or(true);
@@ -335,6 +312,8 @@ pub async fn chat_completions(
     } else {
         Some(Arc::clone(&sync_notify))
     };
+    let request_tools_for_engine = tool_config.tools.clone();
+    let response_tools = tool_config.tools.clone();
 
     let _ = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
@@ -349,7 +328,7 @@ pub async fn chat_completions(
                     false,
                     EncodingFormat::default(),
                     EmbeddingType::default(),
-                    tool_config.tools.clone(),
+                    request_tools_for_engine.clone(),
                     image_data,
                     if stream_request {
                         Some(Arc::new(response_tx))
@@ -430,18 +409,40 @@ pub async fn chat_completions(
 
         if has_tools {
             let parser = crate::tools::parser::ToolParser::new();
+            let tool_schemas = build_tool_schema_map(&response_tools);
             for choice in &mut final_choices {
-                if choice.message.tool_calls.is_some() {
+                let parsed_calls = if let Some(calls) = choice.message.tool_calls.take() {
+                    calls
+                } else if let Some(content) = &choice.message.content {
+                    parser.parse(content)
+                } else {
+                    Vec::new()
+                };
+
+                if parsed_calls.is_empty() {
                     continue;
                 }
-                if let Some(content) = &choice.message.content {
-                    let calls = parser.parse(content);
-                    if !calls.is_empty() {
-                        choice.message.tool_calls = Some(calls);
-                        choice.message.content = None;
-                        choice.finish_reason = Some("tool_calls".to_string());
-                    }
+
+                let (valid_calls, invalid_calls) = filter_tool_calls(&parsed_calls, &tool_schemas);
+                if !invalid_calls.is_empty() {
+                    tracing::warn!(
+                        "Dropped {} invalid tool call(s) before response",
+                        invalid_calls.len()
+                    );
                 }
+                if valid_calls.is_empty() {
+                    if let Some(feedback) =
+                        build_invalid_tool_call_feedback(&invalid_calls, &tool_schemas, None)
+                    {
+                        choice.message.content = Some(feedback);
+                    }
+                    choice.finish_reason = Some("stop".to_string());
+                    continue;
+                }
+
+                choice.message.tool_calls = Some(valid_calls);
+                choice.message.content = None;
+                choice.finish_reason = Some("tool_calls".to_string());
             }
         }
 

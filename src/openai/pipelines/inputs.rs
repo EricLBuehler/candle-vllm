@@ -9,6 +9,14 @@ use super::{LLMEngine, PreparedInputs, Sequence, SequenceGroup, PREFILL_CHUNK_SI
 use crate::InputMetadata;
 
 impl LLMEngine {
+    fn used_blocks_for_len(seq_len: usize, block_size: usize, table_len: usize) -> usize {
+        if seq_len == 0 {
+            0
+        } else {
+            seq_len.div_ceil(block_size).min(table_len)
+        }
+    }
+
     pub fn prepare_block_tables(
         &self,
         groups: &VecDeque<Arc<SequenceGroup>>,
@@ -250,7 +258,7 @@ impl LLMEngine {
         let mamba_slot_mapping =
             self.prepare_mamba_slot_mapping(&sequence_ids, true, rank, device)?;
         #[cfg(feature = "flashinfer")]
-        let flashinfer_metadata = if self.flashinfer_kv_params_for_rank(rank)?.is_some() {
+        let flashinfer_metadata = if let Some(params) = self.flashinfer_kv_params_for_rank(rank)? {
             let mut indptr = vec![0u32];
             let mut indices = Vec::new();
             let mut last_len = Vec::new();
@@ -313,47 +321,37 @@ impl LLMEngine {
                     kv_len_arr_host.push(full + last_len_host[i]);
                 }
             }
-            let num_qo_heads = self.config.num_attention_heads / self.num_shards;
-            let num_kv_heads = self
-                .config
-                .num_key_value_heads
-                .unwrap_or(self.config.num_attention_heads)
-                / self.num_shards;
-            let head_dim = self.config.head_dim.unwrap_or(128);
-            let page_size = self.cache_config.block_size;
             let total_num_rows = *cu_seqlens_q_vec.last().unwrap();
 
             let mut prefill_plan_info = None;
             let mut mla_prefill_plan_info = None;
 
             if self.config.is_mla() {
-                mla_prefill_plan_info = attention_rs::mla::mla_prefill_plan(
+                mla_prefill_plan_info = Some(attention_rs::mla::mla_prefill_plan(
                     device,
                     &cu_seqlens_q_vec,
                     &indptr_host,
                     &kv_len_arr_host,
                     last_len_host.len(),
-                    num_qo_heads,
-                    head_dim,
+                    params.num_qo_heads,
+                    params.head_dim,
                     true,
-                )
-                .ok();
+                )?);
             } else {
-                prefill_plan_info = attention_rs::flashinfer::prefill_plan(
+                prefill_plan_info = Some(attention_rs::flashinfer::prefill_plan(
                     device,
                     &cu_seqlens_q_vec,
                     &indptr_host,
                     &kv_len_arr_host,
                     total_num_rows,
                     last_len_host.len(),
-                    num_qo_heads,
-                    num_kv_heads,
-                    head_dim,
-                    page_size,
-                    self.cache_config.dtype,
+                    params.num_qo_heads,
+                    params.num_kv_heads,
+                    params.head_dim,
+                    params.page_size,
+                    params.out_dtype,
                     None,
-                )
-                .ok();
+                )?);
             }
 
             Some(FlashInferMetadata {
@@ -456,6 +454,13 @@ impl LLMEngine {
                 let slot: i64 = slot.try_into().unwrap();
                 slot_mapping.push(slot);
 
+                let used_blocks = Self::used_blocks_for_len(
+                    seq.deref().get_len(),
+                    self.cache_config.block_size,
+                    table.len(),
+                );
+                let table = table.get(..used_blocks).unwrap_or(&[]).to_vec();
+
                 if let Some(sliding_window) = self.config.sliding_window {
                     let sliding_window_blocks = sliding_window / self.cache_config.block_size;
                     let slide_idx = if table.len() > sliding_window_blocks {
@@ -498,7 +503,16 @@ impl LLMEngine {
                 let (pipeline, _) = self.get_pipeline(rank).ok_or_else(|| {
                     candle_core::Error::msg(format!("missing pipeline for rank {rank}"))
                 })?;
-                pipeline.capturer.is_exact_captured(length)
+                // Match vllm.rs: only mamba models need exact batch size graphs.
+                // Non-mamba models (including MLA like GLM4) can use any captured
+                // graph >= the current batch size, keeping the use_cuda_graph flag
+                // consistent with the graph replay decision in forward().
+                let require_exact_graph = mamba_slot_mapping.is_some();
+                if require_exact_graph {
+                    pipeline.capturer.is_exact_captured(length)
+                } else {
+                    pipeline.capturer.is_captured(length)
+                }
             };
             #[cfg(not(all(feature = "cuda", feature = "graph")))]
             let use_cuda_graph = false;
@@ -517,9 +531,11 @@ impl LLMEngine {
                         .iter()
                         .map(|block| block.deref_mut().block_id as u32)
                         .collect::<Vec<_>>();
-                    indices.extend(table);
-                    indptr.push(indices.len() as u32);
                     let len = seq.deref().get_len();
+                    let used_blocks =
+                        Self::used_blocks_for_len(len, self.cache_config.block_size, table.len());
+                    indices.extend(table.iter().take(used_blocks).copied());
+                    indptr.push(indices.len() as u32);
                     let last = if len == 0 {
                         0
                     } else {

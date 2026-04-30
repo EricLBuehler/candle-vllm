@@ -7,6 +7,7 @@ use crate::openai::distributed::{embedding, Comm, ReplicatedLinear, VarBuilder};
 use crate::openai::models::layers::moe::{
     FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4,
 };
+use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::rotary_emb::DefaultRotaryEmbedding;
 use crate::openai::models::ScalingValue;
@@ -14,7 +15,7 @@ use crate::openai::models::TokenID;
 use crate::InputMetadata;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
-use candle_nn::{Activation, Linear, RmsNorm};
+use candle_nn::{Activation, Linear};
 use either::Either;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -116,41 +117,6 @@ pub struct Gemma4Config {
     pub bos_token_id: Option<TokenID>,
     pub eos_token_id: Option<TokenID>,
     pub text_config: Gemma4TextConfig,
-}
-
-struct Gemma4RmsNorm {
-    inner: RmsNorm,
-    weight_dtype: DType,
-}
-
-impl Gemma4RmsNorm {
-    fn new(weight: Tensor, eps: f64) -> Self {
-        let weight_dtype = weight.dtype();
-        Self {
-            inner: RmsNorm::new(weight, eps),
-            weight_dtype,
-        }
-    }
-
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let in_dtype = xs.dtype();
-        let xs = if in_dtype != self.weight_dtype {
-            xs.to_dtype(self.weight_dtype)?
-        } else {
-            xs.clone()
-        };
-        let out = self.inner.forward(&xs)?;
-        if out.dtype() != in_dtype {
-            out.to_dtype(in_dtype)
-        } else {
-            Ok(out)
-        }
-    }
-}
-
-fn rms_norm(dim: usize, eps: f64, vb: VarBuilder) -> Result<Gemma4RmsNorm> {
-    let weight = vb.get(dim, "weight")?;
-    Ok(Gemma4RmsNorm::new(weight, eps))
 }
 
 struct Gemma4Router {
@@ -272,14 +238,14 @@ struct Gemma4DecoderLayer {
     mlp: Mlp,
     moe: Option<Gemma4MoE>,
     gemma4_router: Option<Gemma4Router>,
-    input_layernorm: Gemma4RmsNorm,
-    post_attention_layernorm: Gemma4RmsNorm,
-    pre_feedforward_layernorm: Gemma4RmsNorm,
-    post_feedforward_layernorm: Gemma4RmsNorm,
-    post_feedforward_layernorm_1: Option<Gemma4RmsNorm>,
-    post_feedforward_layernorm_2: Option<Gemma4RmsNorm>,
-    pre_feedforward_layernorm_2: Option<Gemma4RmsNorm>,
-    post_per_layer_input_norm: Option<Gemma4RmsNorm>,
+    input_layernorm: NormX,
+    post_attention_layernorm: NormX,
+    pre_feedforward_layernorm: NormX,
+    post_feedforward_layernorm: NormX,
+    post_feedforward_layernorm_1: Option<NormX>,
+    post_feedforward_layernorm_2: Option<NormX>,
+    pre_feedforward_layernorm_2: Option<NormX>,
+    post_per_layer_input_norm: Option<NormX>,
     per_layer_input_gate: Option<ReplicatedLinear>,
     per_layer_projection: Option<ReplicatedLinear>,
     layer_scalar: Tensor,
@@ -328,6 +294,7 @@ impl Gemma4DecoderLayer {
             comm.clone(),
             sliding_window,
             k_eq_v,
+            false,
             Some(1.0),
         )?;
 
@@ -402,22 +369,33 @@ impl Gemma4DecoderLayer {
             (None, None)
         };
 
-        let input_layernorm =
-            rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
+        let input_layernorm = rms_norm(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb.pp("input_layernorm"),
+            DType::F32,
+            false,
+        )?;
         let post_attention_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
+            DType::F32,
+            false,
         )?;
         let pre_feedforward_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("pre_feedforward_layernorm"),
+            DType::F32,
+            false,
         )?;
         let post_feedforward_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_feedforward_layernorm"),
+            DType::F32,
+            false,
         )?;
 
         let (
@@ -430,16 +408,22 @@ impl Gemma4DecoderLayer {
                     cfg.hidden_size,
                     cfg.rms_norm_eps,
                     vb.pp("post_feedforward_layernorm_1"),
+                    DType::F32,
+                    false,
                 )?),
                 Some(rms_norm(
                     cfg.hidden_size,
                     cfg.rms_norm_eps,
                     vb.pp("post_feedforward_layernorm_2"),
+                    DType::F32,
+                    false,
                 )?),
                 Some(rms_norm(
                     cfg.hidden_size,
                     cfg.rms_norm_eps,
                     vb.pp("pre_feedforward_layernorm_2"),
+                    DType::F32,
+                    false,
                 )?),
             )
         } else {
@@ -452,6 +436,8 @@ impl Gemma4DecoderLayer {
                     cfg.hidden_size,
                     cfg.rms_norm_eps,
                     vb.pp("post_per_layer_input_norm"),
+                    DType::F32,
+                    false,
                 )?;
                 let gate = ReplicatedLinear::load_no_bias(
                     cfg.hidden_size,
@@ -608,9 +594,9 @@ pub struct Gemma4 {
     embed_tokens: candle_nn::Embedding,
     embed_tokens_per_layer: Option<candle_nn::Embedding>,
     per_layer_model_projection: Option<Linear>,
-    per_layer_projection_norm: Option<Gemma4RmsNorm>,
+    per_layer_projection_norm: Option<NormX>,
     layers: Vec<Gemma4DecoderLayer>,
-    norm: Gemma4RmsNorm,
+    norm: NormX,
     lm_head: ReplicatedLinear,
     device: Device,
     dtype: DType,
@@ -874,6 +860,8 @@ impl Gemma4 {
                     pli_dim,
                     cfg.rms_norm_eps,
                     vb_m.pp("per_layer_projection_norm"),
+                    DType::F32,
+                    false,
                 )?;
 
                 (Some(emb), Some(proj), Some(norm))
@@ -884,39 +872,74 @@ impl Gemma4 {
         let (global_rope_theta, partial_rotary_factor) = {
             let mut theta = cfg.rope_theta;
             let mut prf = cfg.partial_rotary_factor.unwrap_or(0.25) as f64;
-            if let Some(fa) = text_cfg
-                .get("rope_parameters")
-                .and_then(|rp| rp.get("full_attention"))
-            {
-                if let Some(t) = fa.get("rope_theta").and_then(|v| v.as_f64()) {
-                    theta = t;
-                }
-                if let Some(p) = fa.get("partial_rotary_factor").and_then(|v| v.as_f64()) {
-                    prf = p;
+            if let Some(extra) = &cfg.extra_config_json {
+                let v: serde_json::Value =
+                    serde_json::from_str(extra).unwrap_or(serde_json::Value::Null);
+                let fa = v
+                    .get("text_config")
+                    .and_then(|tc| tc.get("rope_parameters"))
+                    .and_then(|rp| rp.get("full_attention"));
+                if let Some(fa) = fa {
+                    if let Some(t) = fa.get("rope_theta").and_then(|v| v.as_f64()) {
+                        theta = t;
+                    }
+                    if let Some(p) = fa.get("partial_rotary_factor").and_then(|v| v.as_f64()) {
+                        prf = p;
+                    }
                 }
             }
             (theta, prf)
         };
+        let rope_angles = (partial_rotary_factor * global_head_dim as f64 / 2.0) as usize;
+        let half_dim = global_head_dim / 2;
 
-        let rotary_emb = Arc::new(Self::create_partial_rotary_emb(
-            DType::F32,
-            global_head_dim,
-            partial_rotary_factor,
-            global_rope_theta,
-            cfg.max_seq_len,
-            device,
-        )?);
+        let mut inv_freq_vec: Vec<f32> = Vec::with_capacity(half_dim);
+        for i in 0..rope_angles {
+            inv_freq_vec.push(
+                1.0f32 / (global_rope_theta as f32).powf((2 * i) as f32 / global_head_dim as f32),
+            );
+        }
+        for _ in rope_angles..half_dim {
+            inv_freq_vec.push(0.0f32);
+        }
 
-        let rotary_emb_local = Arc::new(ScalingRotaryEmbedding::new_sliding(
-            DType::F32,
-            cfg.sliding_window,
-            &Config {
-                head_dim: Some(swa_head_dim),
-                rope_theta: rope_local_base_freq,
-                ..cfg.clone()
+        let inv_freq = Tensor::from_vec(inv_freq_vec, (1, half_dim), &vb.device())?;
+        let t = Tensor::arange(
+            0u32,
+            cfg.max_position_embeddings.unwrap() as u32,
+            &vb.device(),
+        )?
+        .to_dtype(DType::F32)?
+        .reshape((cfg.max_position_embeddings.unwrap(), 1))?;
+        let freqs = t.matmul(&inv_freq)?;
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding {
+            0: DefaultRotaryEmbedding {
+                cos: freqs.cos()?.to_dtype(DType::F32)?,
+                sin: freqs.sin()?.to_dtype(DType::F32)?,
+                is_gpt_neox: true,
+                rotary_dim: None,
             },
-            device,
-        )?);
+        });
+
+        let swa_head_dim_for_rope = if let Some(extra) = &cfg.extra_config_json {
+            let v: serde_json::Value =
+                serde_json::from_str(extra).unwrap_or(serde_json::Value::Null);
+            v.get("swa_head_dim")
+                .or_else(|| v.get("text_config").and_then(|tc| tc.get("head_dim")))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(256) as usize
+        } else {
+            256
+        };
+
+        let mut local_config = cfg.clone();
+        local_config.head_dim = Some(swa_head_dim_for_rope);
+        local_config.partial_rotary_factor = None;
+        local_config.rope_theta = rope_local_base_freq;
+
+        let rotary_emb_local = Arc::new(ScalingRotaryEmbedding {
+            0: DefaultRotaryEmbedding::new(DType::F32, &local_config, &vb.device(), true)?,
+        });
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         let vb_l = vb_m.pp("layers");
@@ -960,18 +983,24 @@ impl Gemma4 {
             reporter.write().set_progress(layer_idx + 1);
         }
 
-        let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = if cfg.tie_word_embeddings {
-            ReplicatedLinear::from_weight_bias(embed_tokens.embeddings().clone(), None)?
-        } else {
-            ReplicatedLinear::load_no_bias(
-                cfg.hidden_size,
-                cfg.vocab_size,
-                vb.pp("lm_head"),
-                &cfg.isq_quant,
-                &cfg.quantization_config,
-            )?
-        };
+        let norm = rms_norm(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb_m.pp("norm"),
+            DType::F32,
+            false,
+        )?;
+        let lm_head = ReplicatedLinear::load_no_bias(
+            cfg.hidden_size,
+            cfg.vocab_size,
+            if cfg.tie_word_embeddings {
+                vb_m.pp("embed_tokens")
+            } else {
+                vb.pp("lm_head")
+            },
+            &None,
+            &None,
+        )?;
 
         Ok(Self {
             embed_tokens,
@@ -989,41 +1018,6 @@ impl Gemma4 {
             hidden_size_per_layer_input,
             num_hidden_layers: cfg.num_hidden_layers,
         })
-    }
-
-    fn create_partial_rotary_emb(
-        dtype: DType,
-        head_dim: usize,
-        partial_rotary_factor: f64,
-        rope_theta: f64,
-        max_seq_len: usize,
-        device: &Device,
-    ) -> Result<ScalingRotaryEmbedding> {
-        let rope_angles = (partial_rotary_factor * head_dim as f64 / 2.0) as usize;
-        let half_dim = head_dim / 2;
-
-        let mut inv_freq_vec: Vec<f32> = Vec::with_capacity(half_dim);
-        for i in 0..rope_angles {
-            inv_freq_vec.push(1.0f32 / (rope_theta as f32).powf((2 * i) as f32 / head_dim as f32));
-        }
-        for _ in rope_angles..half_dim {
-            inv_freq_vec.push(0.0f32);
-        }
-
-        let inv_freq = Tensor::from_vec(inv_freq_vec, (1, half_dim), device)?;
-        let t = Tensor::arange(0u32, max_seq_len as u32, device)?
-            .to_dtype(DType::F32)?
-            .reshape((max_seq_len, 1))?;
-        let freqs = t.matmul(&inv_freq)?;
-        let sin = freqs.sin()?.to_dtype(dtype)?;
-        let cos = freqs.cos()?.to_dtype(dtype)?;
-
-        Ok(ScalingRotaryEmbedding(DefaultRotaryEmbedding {
-            cos,
-            sin,
-            is_gpt_neox: true,
-            rotary_dim: None,
-        }))
     }
 
     fn create_attention_masks(
@@ -1211,7 +1205,10 @@ impl Gemma4 {
             return xs.to_dtype(DType::F32);
         }
 
-        let logits = self.lm_head.forward(&xs)?.to_dtype(DType::F32)?;
+        let logits = self
+            .lm_head
+            .forward(&xs.to_dtype(self.dtype)?)?
+            .to_dtype(DType::F32)?;
 
         let logits = match self.cfg.final_logit_softcapping {
             None => logits,

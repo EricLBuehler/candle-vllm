@@ -187,17 +187,17 @@ impl LLama4DecoderLayer {
             None
         };
 
-        let mut self_attn = Attention::new(
+        let qk_l2_norm = text_cfg.use_qk_norm && use_rope;
+        let self_attn = Attention::new_with_option(
             rotary_emb.clone(),
             config,
             vb.pp("self_attn"),
             comm.clone(),
             sliding_window,
+            false,
+            qk_l2_norm,
+            None,
         )?;
-
-        if text_cfg.use_qk_norm && use_rope {
-            self_attn.set_qk_l2_norm(true);
-        }
 
         let moe_layers = text_cfg.moe_layers();
         let is_moe_layer = moe_layers.contains(&layer_idx);
@@ -220,14 +220,14 @@ impl LLama4DecoderLayer {
             config.hidden_size,
             config.rms_norm_eps,
             vb.pp("input_layernorm"),
-            dtype,
+            DType::F32,
             false,
         )?;
         let post_attention_layernorm = rms_norm(
             config.hidden_size,
             config.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
-            dtype,
+            DType::F32,
             false,
         )?;
 
