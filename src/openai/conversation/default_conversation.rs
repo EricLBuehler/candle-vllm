@@ -478,21 +478,15 @@ impl DefaultConversation {
     /// Convert this conversation to a String prompt
     pub fn get_prompt(&mut self, thinking: bool, tools: &Vec<Tool>) -> String {
         match self.apply_chat_template(true, thinking, tools) {
-            Ok(mut prompt) => {
+            Ok(prompt) => {
                 if !tools.is_empty() {
                     let tool_names: Vec<&str> =
                         tools.iter().map(|t| t.function.name.as_str()).collect();
-                    // Ensure tools are on separate lines: Gemma4 requires
-                    // newline-delimited `<|tool>...</tool|>` blocks so the
-                    // model can distinguish individual declarations.
-                    // Use a simple heuristic: insert a newline before each
-                    // `<|tool>` marker (except the first one).
-                    prompt = prompt.replace("<tool|><|tool>", "<tool|>\n<|tool>");
                     let tool_count = prompt.matches("<|tool>").count();
                     let tool_end_count = prompt.matches("<tool|>").count();
                     tracing::info!(
                         "Chat template rendered with {} tool(s): {:?} \
-                         ({} <|tool> tags, {} <tool|> tags after fix)",
+                         ({} <|tool> tags, {} <tool|> tags)",
                         tools.len(),
                         tool_names,
                         tool_count,
