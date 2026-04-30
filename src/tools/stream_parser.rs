@@ -393,41 +393,72 @@ impl ToolConfig {
     }
 
     pub fn validate_with_tokenizer(&mut self, tokenizer: &Tokenizer, model_type: &ToolModelType) {
-        if self.has_start_tokens()
-            && !Self::matches_single_token(tokenizer, &self.start_token_str, &self.start_token_ids)
-        {
-            if Self::try_rebind_single_token_id(
+        if self.has_start_tokens() {
+            if !Self::matches_single_token(tokenizer, &self.start_token_str, &self.start_token_ids)
+            {
+                if Self::try_rebind_single_token_id(
+                    tokenizer,
+                    &self.start_token_str,
+                    &mut self.start_token_ids,
+                ) {
+                    tracing::warn!(
+                        "Tool start token IDs corrected for model {:?}: {:?}",
+                        model_type,
+                        self.start_token_ids
+                    );
+                } else {
+                    tracing::warn!(
+                        "Tool start token IDs not supported for model {:?}, falling back to text matching",
+                        model_type
+                    );
+                    self.start_token_ids.clear();
+                }
+            }
+        } else if !self.start_token_str.is_empty()
+            && Self::try_rebind_single_token_id(
                 tokenizer,
                 &self.start_token_str,
                 &mut self.start_token_ids,
-            ) {
-                tracing::warn!(
-                    "Tool start token IDs corrected for model {:?}: {:?}",
-                    model_type,
-                    self.start_token_ids
-                );
-            } else {
-                tracing::warn!("Tool start token IDs not supported for model {:?}, falling back to text matching", model_type);
-                self.start_token_ids.clear();
-            }
-        }
-        if self.has_end_tokens()
-            && !Self::matches_single_token(tokenizer, &self.end_token_str, &self.end_token_ids)
+            )
         {
-            if Self::try_rebind_single_token_id(
+            tracing::info!(
+                "Tool start token IDs auto-populated from tokenizer for model {:?}: {:?}",
+                model_type,
+                self.start_token_ids
+            );
+        }
+        if self.has_end_tokens() {
+            if !Self::matches_single_token(tokenizer, &self.end_token_str, &self.end_token_ids) {
+                if Self::try_rebind_single_token_id(
+                    tokenizer,
+                    &self.end_token_str,
+                    &mut self.end_token_ids,
+                ) {
+                    tracing::warn!(
+                        "Tool end token IDs corrected for model {:?}: {:?}",
+                        model_type,
+                        self.end_token_ids
+                    );
+                } else {
+                    tracing::warn!(
+                        "Tool end token IDs not supported for model {:?}, falling back to text matching",
+                        model_type
+                    );
+                    self.end_token_ids.clear();
+                }
+            }
+        } else if !self.end_token_str.is_empty()
+            && Self::try_rebind_single_token_id(
                 tokenizer,
                 &self.end_token_str,
                 &mut self.end_token_ids,
-            ) {
-                tracing::warn!(
-                    "Tool end token IDs corrected for model {:?}: {:?}",
-                    model_type,
-                    self.end_token_ids
-                );
-            } else {
-                tracing::warn!("Tool end token IDs not supported for model {:?}, falling back to text matching", model_type);
-                self.end_token_ids.clear();
-            }
+            )
+        {
+            tracing::info!(
+                "Tool end token IDs auto-populated from tokenizer for model {:?}: {:?}",
+                model_type,
+                self.end_token_ids
+            );
         }
     }
 
