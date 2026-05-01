@@ -444,8 +444,34 @@ impl BlockEngine {
         total_evicted
     }
 
+    pub fn evict_prefix_cache_blocks(&mut self, num_blocks: usize) -> usize {
+        let Some(prefix_cache) = self.prefix_cache.as_mut() else {
+            return 0;
+        };
+        if num_blocks == 0 {
+            return 0;
+        }
+        let evicted = prefix_cache.evict_blocks(num_blocks);
+        let evicted_count = evicted.len();
+        let evicted_block_ids = evicted
+            .iter()
+            .map(|block| block.deref_mut().block_id)
+            .collect::<Vec<_>>();
+        self.handle_mamba_prefix_evicted_blocks(&evicted_block_ids);
+        for block in evicted {
+            self.release_block(block);
+        }
+        evicted_count
+    }
+
     pub fn prefix_cache_enabled(&self) -> bool {
         self.prefix_cache.is_some()
+    }
+
+    pub fn prefix_cache_blocks(&self) -> usize {
+        self.prefix_cache
+            .as_ref()
+            .map_or(0, |cache| cache.cached_blocks())
     }
 
     pub fn prefix_hash_for_sequence(
@@ -753,13 +779,47 @@ impl BlockEngine {
     }
 
     pub fn can_swap_out_seq_group(&self, seq_group: &SequenceGroup) -> bool {
-        let blocks_required: usize = self
+        let mut blocks_required = 0usize;
+        let mut group_refs = HashMap::new();
+        for (seq_id, table) in self
             .block_tables
             .iter()
             .filter(|(id, _)| seq_group.get_seqs().contains_key(id))
-            .map(|(_, table)| table.len())
-            .sum();
+        {
+            let _ = seq_id;
+            blocks_required += table.len();
+            for block in table {
+                if !block.deref_mut().is_gpu {
+                    return false;
+                }
+                *group_refs
+                    .entry(block.deref_mut().block_id)
+                    .or_insert(0usize) += 1;
+            }
+        }
+        for (block_id, refs_in_group) in group_refs {
+            let Some(block) = self
+                .block_tables
+                .iter()
+                .filter(|(id, _)| seq_group.get_seqs().contains_key(id))
+                .flat_map(|(_, table)| table.iter())
+                .find(|block| block.deref_mut().block_id == block_id)
+            else {
+                continue;
+            };
+            if block.deref_mut().refcount > refs_in_group {
+                return false;
+            }
+        }
         blocks_required <= self.cpu_allocator.free_blocks.len()
+    }
+
+    pub fn seq_group_block_count(&self, seq_group: &SequenceGroup) -> usize {
+        self.block_tables
+            .iter()
+            .filter(|(id, _)| seq_group.get_seqs().contains_key(id))
+            .map(|(_, table)| table.len())
+            .sum()
     }
 
     /// Update the block table so that the sequence does no longer reserve any GPU

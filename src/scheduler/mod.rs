@@ -33,6 +33,8 @@ use self::{
     sequence::SequenceGroup,
 };
 
+const PREFIX_CACHE_PRESSURE_EVICT_PERCENT: f32 = 0.1; // evict 10% of prefix cache when under pressure
+
 pub struct SchedulerOutput {
     pub scheduled: Arc<VecDeque<Arc<SequenceGroup>>>,
     pub blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
@@ -169,6 +171,13 @@ impl Scheduler {
             let seq_group = self.running.pop_front().unwrap();
             let mut finished_with_break = false;
             while !self.block_engine.can_append_token_to_seq(&seq_group) {
+                let evicted = self.evict_prefix_cache_under_pressure();
+                if evicted > 0 {
+                    warn!("Evicted {} prefix cache block(s) under pressure.", evicted);
+                    running.push_back(seq_group.clone());
+                    finished_with_break = true;
+                    break;
+                }
                 // If we cannot, now we need to preempt some seqs
                 if !self.running.is_empty() {
                     // There is something to preempt.
@@ -204,7 +213,16 @@ impl Scheduler {
 
                 // If the GPU cannot handle the group being swapped in, stop
                 if !self.block_engine.can_swap_in_seq_group(seq_group) {
-                    break;
+                    let required_blocks = self.block_engine.seq_group_block_count(seq_group);
+                    let evicted = self
+                        .block_engine
+                        .evict_prefix_cache_until_free(required_blocks);
+                    if evicted > 0 {
+                        warn!("Evicted {} prefix cache block(s) for swap-in.", evicted);
+                    }
+                    if !self.block_engine.can_swap_in_seq_group(seq_group) {
+                        break;
+                    }
                 }
 
                 let seq_group = self.swapped_out.pop_front().unwrap();
@@ -504,5 +522,15 @@ impl Scheduler {
             .make_contiguous()
             .sort_by_key(|seq_group| seq_group.arrival_time());
         self.swapped_out.make_contiguous().reverse();
+    }
+
+    fn evict_prefix_cache_under_pressure(&mut self) -> usize {
+        let cached_blocks = self.block_engine.prefix_cache_blocks();
+        if cached_blocks == 0 {
+            return 0;
+        }
+        let blocks = ((cached_blocks as f32) * PREFIX_CACHE_PRESSURE_EVICT_PERCENT).ceil() as usize;
+        let blocks = blocks.max(1);
+        self.block_engine.evict_prefix_cache_blocks(blocks)
     }
 }

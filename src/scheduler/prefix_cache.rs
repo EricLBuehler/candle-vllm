@@ -58,6 +58,10 @@ impl PrefixCache {
         self.config.enabled && self.config.max_cached_blocks > 0
     }
 
+    pub fn cached_blocks(&self) -> usize {
+        self.entries.len()
+    }
+
     pub fn match_prefix(&mut self, tokens: &[u32]) -> PrefixMatch {
         self.match_prefix_with_seed(tokens, None)
     }
