@@ -301,6 +301,10 @@ impl Scheduler {
         self.block_engine.prefix_cache_enabled()
     }
 
+    pub fn query_prefix_cache_match_tokens(&mut self, tokens: &[u32]) -> usize {
+        self.block_engine.query_prefix_cache_match_tokens(tokens)
+    }
+
     pub fn print_free_blocks(&self) {
         let free_blocks = self.block_engine.get_num_free_blocks();
         let num_blocks = self.block_engine.get_num_blocks();

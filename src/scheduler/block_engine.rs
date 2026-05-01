@@ -639,6 +639,15 @@ impl BlockEngine {
             .map_or(0, |cache| cache.cached_blocks())
     }
 
+    pub fn query_prefix_cache_match_tokens(&mut self, tokens: &[u32]) -> usize {
+        if let Some(prefix_cache) = self.prefix_cache.as_mut() {
+            let PrefixMatch { matched_blocks, .. } = prefix_cache.match_prefix(tokens);
+            matched_blocks * self.block_size
+        } else {
+            0
+        }
+    }
+
     pub fn prefix_hash_for_sequence(
         &self,
         sequence: &Sequence,

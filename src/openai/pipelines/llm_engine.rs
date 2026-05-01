@@ -2101,4 +2101,8 @@ impl LLMEngine {
     pub fn ensure_available_kv_tokens(&mut self, required_tokens: usize) -> (usize, usize) {
         self.scheduler.ensure_available_kv_tokens(required_tokens)
     }
+
+    pub fn query_prefix_cache_match_tokens(&mut self, tokens: &[u32]) -> usize {
+        self.scheduler.query_prefix_cache_match_tokens(tokens)
+    }
 }

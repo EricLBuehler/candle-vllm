@@ -261,18 +261,20 @@ impl PrefixCache {
         protected_hashes: &HashSet<u64>,
     ) -> Vec<Arc<PhysicalTokenBlock>> {
         let mut evicted = Vec::new();
-        while self.entries.len() > self.config.max_cached_blocks {
-            let block = if protected_hashes.is_empty() {
-                self.evict_one_leaf()
-            } else {
-                self.evict_one_unprotected_leaf(protected_hashes)
-                    .or_else(|| self.evict_one_leaf())
-            };
-            let Some(block) = block else {
-                break;
-            };
-            evicted.push(block);
-        }
+        // We have prefix-cache eviction elsewhere, so we won't evict here.
+        // evicting here will cause lower prefix-cache hit rate for tool calls
+        // while self.entries.len() > self.config.max_cached_blocks {
+        //     let block = if protected_hashes.is_empty() {
+        //         self.evict_one_leaf()
+        //     } else {
+        //         self.evict_one_unprotected_leaf(protected_hashes)
+        //             .or_else(|| self.evict_one_leaf())
+        //     };
+        //     let Some(block) = block else {
+        //         break;
+        //     };
+        //     evicted.push(block);
+        // }
         evicted
     }
 
