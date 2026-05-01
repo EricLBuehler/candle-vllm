@@ -313,6 +313,18 @@ impl Scheduler {
         free_blocks * self.block_engine.get_block_size()
     }
 
+    pub fn ensure_available_kv_tokens(&mut self, required_tokens: usize) -> (usize, usize) {
+        if required_tokens == 0 {
+            return (self.get_available_kv_tokens(), 0);
+        }
+
+        let required_blocks = required_tokens.div_ceil(self.block_engine.get_block_size());
+        let evicted = self
+            .block_engine
+            .evict_prefix_cache_until_free(required_blocks);
+        (self.get_available_kv_tokens(), evicted)
+    }
+
     pub fn filter_prefill_finished(
         &mut self,
         scheduled: &VecDeque<Arc<SequenceGroup>>,

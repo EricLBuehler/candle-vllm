@@ -116,22 +116,30 @@ async fn check_length(
     prompt: String,
     data: &OpenAIServerData,
 ) -> Result<(Vec<u32>, usize), APIError> {
-    let (token_ids, available_kv_tokens) = {
+    let token_ids = {
         let model = data.model.read();
-        let available_kv_tokens = model.get_available_kv_tokens();
         let pipeline = model
             .get_pipeline(0)
             .ok_or(APIError::new("Missing pipeline".to_string()))?;
-        (
-            pipeline
-                .0
-                .tokenizer()
-                .encode_fast(prompt, true)
-                .map_err(APIError::from)?
-                .get_ids()
-                .to_vec(),
-            available_kv_tokens,
-        )
+        pipeline
+            .0
+            .tokenizer()
+            .encode_fast(prompt, true)
+            .map_err(APIError::from)?
+            .get_ids()
+            .to_vec()
+    };
+
+    let available_kv_tokens = {
+        let mut model = data.model.write();
+        let (available_kv_tokens, evicted) = model.ensure_available_kv_tokens(token_ids.len());
+        if evicted > 0 {
+            tracing::warn!(
+                "Evicted {} prefix cache block(s) before request length check.",
+                evicted
+            );
+        }
+        available_kv_tokens
     };
 
     let max_gen_tokens = request
@@ -485,20 +493,31 @@ pub async fn create_embeddings(
     let prompt_str = prompts[0].clone();
 
     //TODO: Reuse check_length or similar logic. For now simplified.
-    let (token_ids, available_tokens) = {
+    let token_ids = {
         let model = data.model.read();
-        let available_kv_tokens = model.get_available_kv_tokens();
         let pipeline = model
             .get_pipeline(0)
             .ok_or(APIError::new("Missing pipeline".to_string()));
 
         match pipeline {
             Ok(pipeline) => match pipeline.0.tokenizer().encode_fast(prompt_str, true) {
-                Ok(encoding) => (encoding.get_ids().to_vec(), available_kv_tokens),
+                Ok(encoding) => encoding.get_ids().to_vec(),
                 Err(e) => return ChatResponder::ValidationError(APIError::from(e)),
             },
             Err(e) => return ChatResponder::ModelError(e),
         }
+    };
+
+    let available_tokens = {
+        let mut model = data.model.write();
+        let (available_tokens, evicted) = model.ensure_available_kv_tokens(token_ids.len());
+        if evicted > 0 {
+            tracing::warn!(
+                "Evicted {} prefix cache block(s) before embedding length check.",
+                evicted
+            );
+        }
+        available_tokens
     };
 
     if token_ids.len() >= available_tokens {

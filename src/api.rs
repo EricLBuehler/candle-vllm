@@ -400,8 +400,15 @@ impl Engine {
         }
 
         let available = {
-            let e = self.engine.read();
-            e.get_available_kv_tokens()
+            let mut e = self.engine.write();
+            let (available, evicted) = e.ensure_available_kv_tokens(prompt_len);
+            if evicted > 0 {
+                warn!(
+                    "[{}] Evicted {} prefix cache block(s) before request length check",
+                    request_type, evicted
+                );
+            }
+            available
         };
 
         if prompt_len > available {

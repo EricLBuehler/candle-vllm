@@ -2056,4 +2056,8 @@ impl LLMEngine {
     pub fn get_available_kv_tokens(&self) -> usize {
         self.scheduler.get_available_kv_tokens()
     }
+
+    pub fn ensure_available_kv_tokens(&mut self, required_tokens: usize) -> (usize, usize) {
+        self.scheduler.ensure_available_kv_tokens(required_tokens)
+    }
 }
