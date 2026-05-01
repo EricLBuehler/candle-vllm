@@ -153,7 +153,7 @@ async fn check_length(
         Err(APIError::new(format!(
             "Requested prompt({} tokens) is  \
             larger than available kvcache (maximum {} tokens).\n \
-            You can increase kvcache by setting `--mem` to a larger value!",
+            You can increase kvcache by setting `--gpu-memory-fraction` (default 0.5) to a larger value!",
             token_ids.len(),
             available_kv_tokens
         )))
@@ -250,7 +250,7 @@ pub async fn chat_completions(
             return ChatResponder::ValidationError(APIError::new(format!(
                 "Requested prompt({} tokens) is  \
                 larger than available kvcache (maximum {} tokens).\n \
-                You can increase kvcache by setting `--mem` to a larger value!",
+                You can increase kvcache by setting `--gpu-memory-fraction` (default 0.5) to a larger value!",
                 token_ids.len(),
                 available_tokens
             )));
