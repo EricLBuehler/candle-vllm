@@ -116,22 +116,30 @@ async fn check_length(
     prompt: String,
     data: &OpenAIServerData,
 ) -> Result<(Vec<u32>, usize), APIError> {
-    let (token_ids, available_kv_tokens) = {
+    let token_ids = {
         let model = data.model.read();
-        let available_kv_tokens = model.get_available_kv_tokens();
         let pipeline = model
             .get_pipeline(0)
             .ok_or(APIError::new("Missing pipeline".to_string()))?;
-        (
-            pipeline
-                .0
-                .tokenizer()
-                .encode_fast(prompt, true)
-                .map_err(APIError::from)?
-                .get_ids()
-                .to_vec(),
-            available_kv_tokens,
-        )
+        pipeline
+            .0
+            .tokenizer()
+            .encode_fast(prompt, true)
+            .map_err(APIError::from)?
+            .get_ids()
+            .to_vec()
+    };
+
+    let available_kv_tokens = {
+        let mut model = data.model.write();
+        let (available_kv_tokens, evicted) = model.ensure_available_kv_tokens(token_ids.len());
+        if evicted > 0 {
+            tracing::warn!(
+                "Evicted {} prefix cache block(s) before request length check.",
+                evicted
+            );
+        }
+        available_kv_tokens
     };
 
     let max_gen_tokens = request
@@ -153,7 +161,7 @@ async fn check_length(
         Err(APIError::new(format!(
             "Requested prompt({} tokens) is  \
             larger than available kvcache (maximum {} tokens).\n \
-            You can increase kvcache by setting `--mem` to a larger value!",
+            You can increase kvcache by setting `--gpu-memory-fraction` (default 0.5) to a larger value!",
             token_ids.len(),
             available_kv_tokens
         )))
@@ -235,26 +243,42 @@ pub async fn chat_completions(
         .max_tokens
         .unwrap_or(data.pipeline_config.default_max_tokens);
 
-    if max_request_tokens + token_ids.len() > available_tokens {
-        tracing::warn!(
-            "Requested max tokens + prompt length {} larger than available tokens {}, \
-        max_tokens changed to {} ({} tokens reserved for prompt)!",
-            max_request_tokens + token_ids.len(),
-            available_tokens,
-            available_tokens - token_ids.len(),
-            token_ids.len()
-        );
-        max_request_tokens = if available_tokens > token_ids.len() {
-            available_tokens - token_ids.len()
+    // Query prefix cache to determine how many prompt tokens are already cached
+    let cached_tokens = {
+        let mut model = data.model.write();
+        model.query_prefix_cache_match_tokens(&token_ids)
+    };
+    let new_tokens = token_ids.len().saturating_sub(cached_tokens);
+
+    if max_request_tokens + new_tokens > available_tokens {
+        let mut adjusted_max = if available_tokens > new_tokens {
+            available_tokens - new_tokens
         } else {
             return ChatResponder::ValidationError(APIError::new(format!(
-                "Requested prompt({} tokens) is  \
+                "Requested prompt({} tokens, {} new after prefix cache) is  \
                 larger than available kvcache (maximum {} tokens).\n \
-                You can increase kvcache by setting `--mem` to a larger value!",
+                You can increase kvcache by setting `--gpu-memory-fraction` (default 0.5) to a larger value!",
                 token_ids.len(),
+                new_tokens,
                 available_tokens
             )));
+        };
+        // Ensure max_tokens is at least 4096
+        if adjusted_max < 4096 {
+            adjusted_max = 4096;
         }
+        if adjusted_max != max_request_tokens {
+            tracing::warn!(
+                "Requested max tokens + new prompt tokens {} larger than available tokens {}, \
+                max_tokens changed to {} ({} new tokens after prefix cache hit of {} cached tokens)!",
+                max_request_tokens + new_tokens,
+                available_tokens,
+                adjusted_max,
+                new_tokens,
+                cached_tokens
+            );
+        }
+        max_request_tokens = adjusted_max;
     }
 
     let generation_cfg = data.pipeline_config.generation_cfg.as_ref().unwrap();
@@ -485,20 +509,31 @@ pub async fn create_embeddings(
     let prompt_str = prompts[0].clone();
 
     //TODO: Reuse check_length or similar logic. For now simplified.
-    let (token_ids, available_tokens) = {
+    let token_ids = {
         let model = data.model.read();
-        let available_kv_tokens = model.get_available_kv_tokens();
         let pipeline = model
             .get_pipeline(0)
             .ok_or(APIError::new("Missing pipeline".to_string()));
 
         match pipeline {
             Ok(pipeline) => match pipeline.0.tokenizer().encode_fast(prompt_str, true) {
-                Ok(encoding) => (encoding.get_ids().to_vec(), available_kv_tokens),
+                Ok(encoding) => encoding.get_ids().to_vec(),
                 Err(e) => return ChatResponder::ValidationError(APIError::from(e)),
             },
             Err(e) => return ChatResponder::ModelError(e),
         }
+    };
+
+    let available_tokens = {
+        let mut model = data.model.write();
+        let (available_tokens, evicted) = model.ensure_available_kv_tokens(token_ids.len());
+        if evicted > 0 {
+            tracing::warn!(
+                "Evicted {} prefix cache block(s) before embedding length check.",
+                evicted
+            );
+        }
+        available_tokens
     };
 
     if token_ids.len() >= available_tokens {

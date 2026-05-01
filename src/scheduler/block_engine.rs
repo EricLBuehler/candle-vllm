@@ -265,7 +265,16 @@ impl BlockEngine {
     }
 
     pub fn can_allocate(&mut self, seq_group: &SequenceGroup) -> AllocStatus {
+        self.can_allocate_for_prefill(seq_group, 0)
+    }
+
+    pub fn can_allocate_for_prefill(
+        &mut self,
+        seq_group: &SequenceGroup,
+        prefill_chunk_size: usize,
+    ) -> AllocStatus {
         let block_size = self.block_size;
+        let total_required_blocks = seq_group.get_total_logical_token_blocks();
         let num_required_blocks = if let Some(prefix_cache) = self.prefix_cache.as_mut() {
             let seq = seq_group.get_seqs().values().nth(0).unwrap();
             let tokens = seq.deref().deref().get_token_ids();
@@ -295,10 +304,21 @@ impl BlockEngine {
                 matched_blocks,
                 last_hash,
             );
-            let logical_blocks = seq_group.get_total_logical_token_blocks();
-            logical_blocks.saturating_sub(matched_blocks)
+            let cached_tokens = matched_blocks * block_size;
+            let prefill_end =
+                Self::prefill_chunk_end(tokens.len(), cached_tokens, prefill_chunk_size);
+            let required_blocks = prefill_end.div_ceil(block_size);
+            required_blocks.saturating_sub(matched_blocks)
         } else {
-            seq_group.get_total_logical_token_blocks()
+            seq_group
+                .get_seqs()
+                .values()
+                .map(|seq| {
+                    let prompt_len = seq.deref().deref().get_prompt_len();
+                    let prefill_end = Self::prefill_chunk_end(prompt_len, 0, prefill_chunk_size);
+                    prefill_end.div_ceil(block_size)
+                })
+                .sum()
         };
         let mut num_free_gpu_blocks = *self.gpu_allocator.get_num_free_blocks();
         if num_free_gpu_blocks < num_required_blocks {
@@ -306,7 +326,7 @@ impl BlockEngine {
             num_free_gpu_blocks = *self.gpu_allocator.get_num_free_blocks();
         }
 
-        if self.num_gpu_blocks < num_required_blocks {
+        if self.num_gpu_blocks < total_required_blocks {
             AllocStatus::Impossible
         } else if num_free_gpu_blocks >= num_required_blocks {
             AllocStatus::Ok
@@ -315,16 +335,34 @@ impl BlockEngine {
         }
     }
 
+    pub fn has_block_table(&self, seq_group: &SequenceGroup) -> bool {
+        seq_group
+            .get_seqs()
+            .keys()
+            .all(|seq_id| self.block_tables.contains_key(seq_id))
+    }
+
     pub fn allocate(
         &mut self,
         seq_group: &SequenceGroup,
         _blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
     ) {
+        self.allocate_for_prefill(seq_group, _blocks_to_copy, 0)
+    }
+
+    pub fn allocate_for_prefill(
+        &mut self,
+        seq_group: &SequenceGroup,
+        _blocks_to_copy: &mut HashMap<usize, Vec<usize>>,
+        prefill_chunk_size: usize,
+    ) {
         if self.prefix_cache.is_some() {
-            self.allocate_with_prefix(seq_group);
+            self.allocate_with_prefix(seq_group, prefill_chunk_size);
         } else {
             let mut block_table = VecDeque::new();
-            for _logcical_idx in 0..seq_group.get_total_logical_token_blocks() {
+            let blocks =
+                self.prefill_blocks_to_allocate_without_prefix(seq_group, prefill_chunk_size);
+            for _logcical_idx in 0..blocks {
                 block_table.push_back(self.gpu_allocator.allocate());
             }
             for (idx, seq_id) in seq_group.get_seqs().keys().enumerate() {
@@ -339,10 +377,137 @@ impl BlockEngine {
         }
     }
 
+    fn prefill_chunk_end(prompt_len: usize, cached_tokens: usize, chunk_size: usize) -> usize {
+        let cached_tokens = cached_tokens.min(prompt_len);
+        if chunk_size == 0 {
+            prompt_len
+        } else {
+            cached_tokens + prompt_len.saturating_sub(cached_tokens).min(chunk_size)
+        }
+    }
+
+    fn prefill_blocks_to_allocate_without_prefix(
+        &self,
+        seq_group: &SequenceGroup,
+        prefill_chunk_size: usize,
+    ) -> usize {
+        if prefill_chunk_size == 0 {
+            return seq_group.get_total_logical_token_blocks();
+        }
+        seq_group
+            .get_seqs()
+            .values()
+            .map(|seq| {
+                let prefill_end = Self::prefill_chunk_end(
+                    seq.deref().deref().get_prompt_len(),
+                    0,
+                    prefill_chunk_size,
+                );
+                prefill_end.div_ceil(self.block_size)
+            })
+            .sum()
+    }
+
     pub fn can_append_token_to_seq(&self, seq_group: &SequenceGroup) -> bool {
         let free_blocks = self.gpu_allocator.get_num_free_blocks();
-        // Physical blocks = logical blocks
-        seq_group.total_blocks_to_add_new_tok() <= *free_blocks
+        let blocks_required: usize = seq_group
+            .get_seqs()
+            .values()
+            .map(|seq| self.blocks_required_to_append_token_slot(seq))
+            .sum();
+        blocks_required <= *free_blocks
+    }
+
+    fn blocks_missing_for_sequence(&self, sequence: &Sequence) -> usize {
+        let seq = sequence.deref();
+        let required_blocks = seq.get_logical_token_blocks();
+        let table_len = self
+            .block_tables
+            .get(&seq.get_id())
+            .map(|table| table.len())
+            .unwrap_or(0);
+        required_blocks.saturating_sub(table_len)
+    }
+
+    fn blocks_required_to_append_token_slot(&self, sequence: &Sequence) -> usize {
+        let blocks_missing = self.blocks_missing_for_sequence(sequence);
+        if blocks_missing > 0 {
+            return blocks_missing;
+        }
+
+        if sequence.deref().blocks_to_add_new_tok() > 0 {
+            return 0;
+        }
+
+        let seq_id = sequence.deref().get_id();
+        let Some(table) = self.block_tables.get(&seq_id) else {
+            return 0;
+        };
+        let Some(last_block) = table.back() else {
+            return 0;
+        };
+        usize::from(last_block.deref_mut().refcount > 1)
+    }
+
+    pub fn prefill_chunk_blocks_required(
+        &self,
+        seq_group: &SequenceGroup,
+        prefill_chunk_size: usize,
+    ) -> usize {
+        seq_group
+            .get_seqs()
+            .values()
+            .map(|seq| self.blocks_missing_for_prefill_chunk(seq, prefill_chunk_size))
+            .sum()
+    }
+
+    pub fn can_append_prefill_chunk_to_seq_group(
+        &self,
+        seq_group: &SequenceGroup,
+        prefill_chunk_size: usize,
+    ) -> bool {
+        self.prefill_chunk_blocks_required(seq_group, prefill_chunk_size)
+            <= *self.gpu_allocator.get_num_free_blocks()
+    }
+
+    pub fn append_prefill_chunk_slots_to_seq_group(
+        &mut self,
+        seq_group: &SequenceGroup,
+        prefill_chunk_size: usize,
+    ) {
+        for seq in seq_group.get_seqs().values() {
+            let blocks_to_append = self.blocks_missing_for_prefill_chunk(seq, prefill_chunk_size);
+            if blocks_to_append == 0 {
+                continue;
+            }
+            let table = self
+                .block_tables
+                .get_mut(&seq.deref().deref().get_id())
+                .expect("prefill continuation must have a block table");
+            for _ in 0..blocks_to_append {
+                table.push_back(self.gpu_allocator.allocate());
+            }
+        }
+    }
+
+    fn blocks_missing_for_prefill_chunk(
+        &self,
+        sequence: &Sequence,
+        prefill_chunk_size: usize,
+    ) -> usize {
+        let seq = sequence.deref();
+        let prefill_end = Self::prefill_chunk_end(
+            seq.get_prompt_len(),
+            seq.get_num_cached_tokens(),
+            prefill_chunk_size,
+        );
+        let required_blocks = prefill_end.div_ceil(self.block_size);
+        let table_len = self
+            .block_tables
+            .get(&seq.get_id())
+            .map(|table| table.len())
+            .unwrap_or(0);
+        required_blocks.saturating_sub(table_len)
     }
 
     pub fn free_sequence(&mut self, sequence: &Sequence) {
@@ -444,8 +609,43 @@ impl BlockEngine {
         total_evicted
     }
 
+    pub fn evict_prefix_cache_blocks(&mut self, num_blocks: usize) -> usize {
+        let Some(prefix_cache) = self.prefix_cache.as_mut() else {
+            return 0;
+        };
+        if num_blocks == 0 {
+            return 0;
+        }
+        let evicted = prefix_cache.evict_blocks(num_blocks);
+        let evicted_count = evicted.len();
+        let evicted_block_ids = evicted
+            .iter()
+            .map(|block| block.deref_mut().block_id)
+            .collect::<Vec<_>>();
+        self.handle_mamba_prefix_evicted_blocks(&evicted_block_ids);
+        for block in evicted {
+            self.release_block(block);
+        }
+        evicted_count
+    }
+
     pub fn prefix_cache_enabled(&self) -> bool {
         self.prefix_cache.is_some()
+    }
+
+    pub fn prefix_cache_blocks(&self) -> usize {
+        self.prefix_cache
+            .as_ref()
+            .map_or(0, |cache| cache.cached_blocks())
+    }
+
+    pub fn query_prefix_cache_match_tokens(&mut self, tokens: &[u32]) -> usize {
+        if let Some(prefix_cache) = self.prefix_cache.as_mut() {
+            let PrefixMatch { matched_blocks, .. } = prefix_cache.match_prefix(tokens);
+            matched_blocks * self.block_size
+        } else {
+            0
+        }
     }
 
     pub fn prefix_hash_for_sequence(
@@ -753,13 +953,47 @@ impl BlockEngine {
     }
 
     pub fn can_swap_out_seq_group(&self, seq_group: &SequenceGroup) -> bool {
-        let blocks_required: usize = self
+        let mut blocks_required = 0usize;
+        let mut group_refs = HashMap::new();
+        for (seq_id, table) in self
             .block_tables
             .iter()
             .filter(|(id, _)| seq_group.get_seqs().contains_key(id))
-            .map(|(_, table)| table.len())
-            .sum();
+        {
+            let _ = seq_id;
+            blocks_required += table.len();
+            for block in table {
+                if !block.deref_mut().is_gpu {
+                    return false;
+                }
+                *group_refs
+                    .entry(block.deref_mut().block_id)
+                    .or_insert(0usize) += 1;
+            }
+        }
+        for (block_id, refs_in_group) in group_refs {
+            let Some(block) = self
+                .block_tables
+                .iter()
+                .filter(|(id, _)| seq_group.get_seqs().contains_key(id))
+                .flat_map(|(_, table)| table.iter())
+                .find(|block| block.deref_mut().block_id == block_id)
+            else {
+                continue;
+            };
+            if block.deref_mut().refcount > refs_in_group {
+                return false;
+            }
+        }
         blocks_required <= self.cpu_allocator.free_blocks.len()
+    }
+
+    pub fn seq_group_block_count(&self, seq_group: &SequenceGroup) -> usize {
+        self.block_tables
+            .iter()
+            .filter(|(id, _)| seq_group.get_seqs().contains_key(id))
+            .map(|(_, table)| table.len())
+            .sum()
     }
 
     /// Update the block table so that the sequence does no longer reserve any GPU
@@ -802,34 +1036,35 @@ impl BlockEngine {
     // Returns the COW mapping (src, dst).
     // COW is performed if there are multiple references to the last physical block.
     pub fn append_token_slot_to_seq(&mut self, sequence: &Sequence) -> Option<(usize, usize)> {
+        let blocks_to_append = self.blocks_missing_for_sequence(sequence);
         let table = self
             .block_tables
             .get_mut(&sequence.deref_mut().get_id())
             .unwrap();
 
-        match sequence.deref_mut().blocks_to_add_new_tok() {
-            1 => {
+        if blocks_to_append > 0 {
+            for _ in 0..blocks_to_append {
                 table.push_back(self.gpu_allocator.allocate());
-                None
             }
-            0 => {
-                let last_block = table.back_mut().unwrap();
-                assert!(last_block.deref_mut().is_gpu);
-                if last_block.deref_mut().refcount == 1 {
-                    None
-                } else {
-                    // We would be writing into shared, so COW.
-                    let new_block = self.gpu_allocator.allocate();
-                    self.gpu_allocator.free_block(last_block.clone());
-                    let old_number = last_block.deref_mut().block_id;
-                    let new_number = new_block.deref_mut().block_id;
-                    *last_block = new_block;
-                    Some((old_number, new_number))
-                }
-            }
-            _ => {
-                unreachable!()
-            }
+            return None;
+        }
+
+        if sequence.deref_mut().blocks_to_add_new_tok() > 0 {
+            return None;
+        }
+
+        let last_block = table.back_mut().unwrap();
+        assert!(last_block.deref_mut().is_gpu);
+        if last_block.deref_mut().refcount == 1 {
+            None
+        } else {
+            // We would be writing into shared, so COW.
+            let new_block = self.gpu_allocator.allocate();
+            self.gpu_allocator.free_block(last_block.clone());
+            let old_number = last_block.deref_mut().block_id;
+            let new_number = new_block.deref_mut().block_id;
+            *last_block = new_block;
+            Some((old_number, new_number))
         }
     }
 
@@ -880,7 +1115,7 @@ impl BlockEngine {
             .collect::<HashMap<_, _>>()
     }
 
-    fn allocate_with_prefix(&mut self, seq_group: &SequenceGroup) {
+    fn allocate_with_prefix(&mut self, seq_group: &SequenceGroup, prefill_chunk_size: usize) {
         let block_size = self.block_size;
         let seqs: Vec<_> = seq_group.get_seqs().values().cloned().collect();
         let mut cached_tokens = 0usize;
@@ -961,8 +1196,15 @@ impl BlockEngine {
                 }
             }
             seq.deref_mut().set_num_cached_tokens(cached_tokens);
-            let logical_blocks = seq.deref().deref().get_logical_token_blocks();
-            for _ in block_table.len()..logical_blocks {
+            let prompt_len = seq.deref().deref().get_prompt_len();
+            let prefill_end =
+                Self::prefill_chunk_end(prompt_len, cached_tokens, prefill_chunk_size);
+            let required_blocks = if prefill_chunk_size == 0 {
+                seq.deref().deref().get_logical_token_blocks()
+            } else {
+                prefill_end.div_ceil(block_size)
+            };
+            for _ in block_table.len()..required_blocks {
                 block_table.push_back(self.gpu_allocator.allocate());
             }
         }
@@ -995,7 +1237,7 @@ impl BlockEngine {
 mod tests {
     use super::{BlockEngine, PrefixCacheConfig};
     use crate::openai::requests::{EmbeddingType, EncodingFormat};
-    use crate::openai::sampling_params::{EarlyStoppingCondition, SamplingParams};
+    use crate::openai::sampling_params::{EarlyStoppingCondition, Logprobs, SamplingParams};
     use crate::scheduler::sequence::{Sequence, SequenceGroup, _Sequence};
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -1098,6 +1340,135 @@ mod tests {
         let table = engine.block_tables.get(&seq2.deref().get_id()).unwrap();
         assert_eq!(table[0].deref_mut().block_id, cached_block_ids[0]);
         assert_eq!(table[1].deref_mut().block_id, cached_block_ids[1]);
+    }
+
+    #[test]
+    fn prefix_cache_eviction_does_not_free_active_sequence_blocks() {
+        let block_size = 4;
+        let mut engine = BlockEngine::new(
+            block_size,
+            8,
+            8,
+            0,
+            PrefixCacheConfig {
+                enabled: true,
+                max_cached_blocks: 4,
+            },
+            false,
+        );
+
+        let (group1, seq1) = make_group(1, 1, block_size, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut blocks_to_copy = HashMap::new();
+        engine.allocate(&group1, &mut blocks_to_copy);
+        engine.cache_sequence(&seq1);
+        engine.free_sequence(&seq1);
+
+        let (group2, seq2) = make_group(
+            2,
+            2,
+            block_size,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        engine.allocate(&group2, &mut blocks_to_copy);
+        let active_prefix_ids = engine
+            .block_tables
+            .get(&seq2.deref().get_id())
+            .unwrap()
+            .iter()
+            .take(2)
+            .map(|block| block.deref_mut().block_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(engine.evict_prefix_cache_blocks(2), 2);
+        let free_ids = engine
+            .gpu_allocator
+            .free_blocks
+            .iter()
+            .map(|block| block.deref_mut().block_id)
+            .collect::<Vec<_>>();
+        for block_id in active_prefix_ids {
+            assert!(!free_ids.contains(&block_id));
+        }
+    }
+
+    #[test]
+    fn append_token_slot_repairs_table_after_skipped_boundary_allocation() {
+        let block_size = 4;
+        let mut engine = BlockEngine::new(
+            block_size,
+            4,
+            4,
+            0,
+            PrefixCacheConfig {
+                enabled: false,
+                max_cached_blocks: 0,
+            },
+            false,
+        );
+
+        let (group, seq) = make_group(1, 1, block_size, vec![1, 2, 3, 4]);
+        let mut blocks_to_copy = HashMap::new();
+        engine.allocate(&group, &mut blocks_to_copy);
+
+        let seq_id = seq.deref().get_id();
+        let removed = engine
+            .block_tables
+            .get_mut(&seq_id)
+            .unwrap()
+            .pop_back()
+            .unwrap();
+        engine.gpu_allocator.free_block(removed);
+
+        seq.deref_mut().add_token(Logprobs {
+            token: 5,
+            logprob: 0.0,
+            bytes: String::new(),
+            top_logprobs: Vec::new(),
+        });
+        assert_eq!(seq.deref().get_logical_token_blocks(), 2);
+        assert_eq!(engine.block_tables.get(&seq_id).unwrap().len(), 1);
+
+        assert!(engine.can_append_token_to_seq(&group));
+        let op = engine.append_token_slot_to_seq(&seq);
+        assert!(op.is_none());
+        assert_eq!(engine.block_tables.get(&seq_id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn allocate_for_prefill_reserves_and_extends_by_chunk() {
+        let block_size = 4;
+        let mut engine = BlockEngine::new(
+            block_size,
+            4,
+            4,
+            0,
+            PrefixCacheConfig {
+                enabled: false,
+                max_cached_blocks: 0,
+            },
+            false,
+        );
+
+        let (group, seq) = make_group(1, 1, block_size, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let mut blocks_to_copy = HashMap::new();
+        assert!(matches!(
+            engine.can_allocate_for_prefill(&group, block_size),
+            super::AllocStatus::Ok
+        ));
+        engine.allocate_for_prefill(&group, &mut blocks_to_copy, block_size);
+
+        let seq_id = seq.deref().get_id();
+        assert_eq!(engine.block_tables.get(&seq_id).unwrap().len(), 1);
+
+        seq.deref_mut().set_num_cached_tokens(4);
+        assert_eq!(engine.prefill_chunk_blocks_required(&group, block_size), 1);
+        assert!(engine.can_append_prefill_chunk_to_seq_group(&group, block_size));
+        engine.append_prefill_chunk_slots_to_seq_group(&group, block_size);
+        assert_eq!(engine.block_tables.get(&seq_id).unwrap().len(), 2);
+
+        seq.deref_mut().set_num_cached_tokens(8);
+        engine.append_prefill_chunk_slots_to_seq_group(&group, block_size);
+        assert_eq!(engine.block_tables.get(&seq_id).unwrap().len(), 3);
     }
 
     #[test]

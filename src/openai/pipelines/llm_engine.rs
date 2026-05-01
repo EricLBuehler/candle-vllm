@@ -586,7 +586,16 @@ impl LLMEngine {
         let tasks: Vec<_> = iterator
             .map(|rank| {
                 let engine_clone = engine.clone();
-                Self::generate_once(engine_clone, *rank, multi_process).unwrap()
+                match Self::generate_once(engine_clone, *rank, multi_process) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        warn!("Generation step failed on rank {}: {:?}", rank, err);
+                        if *rank == 0 {
+                            engine.write().fail_current_scheduled_groups(&err);
+                        }
+                        HashMap::new()
+                    }
+                }
             })
             .collect();
         tasks
@@ -749,6 +758,7 @@ impl LLMEngine {
                 scheduler_config,
                 cache_config,
                 require_mamba_prefix_snapshots,
+                prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE),
             ),
             seq_id: 0,
             cache_config: cache_config.clone(),
@@ -841,8 +851,11 @@ impl LLMEngine {
                     if multi_process && !is_master_rank {
                         continue;
                     }
+                    if results.is_empty() {
+                        continue;
+                    }
                     let result = &results[0];
-                    if results.is_empty() || result.is_empty() {
+                    if result.is_empty() {
                         continue;
                     }
 
@@ -1296,6 +1309,34 @@ impl LLMEngine {
     }
 
     fn clear_current_scheduled_groups(&self) {
+        self.sequence_groups.write().clear();
+    }
+
+    fn fail_current_scheduled_groups(&mut self, err: &candle_core::Error) {
+        let scheduled = self.sequence_groups.read().clone();
+        if scheduled.is_empty() {
+            return;
+        }
+
+        let message = format!("Generation failed: {err:?}");
+        let seq_ids = scheduled
+            .iter()
+            .map(|group| Self::primary_sequence(group).deref().get_id())
+            .collect::<Vec<_>>();
+
+        for group in &scheduled {
+            if let Some(sender) = &group.sender {
+                let _ = sender.send(ChatResponse::ModelError(message.clone()));
+                let _ = sender.send(ChatResponse::Done);
+            }
+        }
+
+        let aborted = self.scheduler.abort_sequences(&seq_ids);
+        warn!(
+            "Aborted {} scheduled sequence(s) after generation failure: {:?}",
+            aborted.len(),
+            aborted
+        );
         self.sequence_groups.write().clear();
     }
 
@@ -2055,5 +2096,13 @@ impl LLMEngine {
 
     pub fn get_available_kv_tokens(&self) -> usize {
         self.scheduler.get_available_kv_tokens()
+    }
+
+    pub fn ensure_available_kv_tokens(&mut self, required_tokens: usize) -> (usize, usize) {
+        self.scheduler.ensure_available_kv_tokens(required_tokens)
+    }
+
+    pub fn query_prefix_cache_match_tokens(&mut self, tokens: &[u32]) -> usize {
+        self.scheduler.query_prefix_cache_match_tokens(tokens)
     }
 }
