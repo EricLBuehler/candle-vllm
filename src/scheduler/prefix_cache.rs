@@ -221,7 +221,10 @@ impl PrefixCache {
             parent_hash = Some(hash);
         }
 
-        self.evict_if_needed_protecting(&protected_hashes)
+        // We have prefix-cache eviction elsewhere, so we won't evict here.
+        // evicting here will cause lower prefix-cache hit rate for tool calls
+        // self.evict_if_needed_protecting(&protected_hashes)
+        Vec::new()
     }
 
     pub fn evict_blocks(&mut self, num_blocks: usize) -> Vec<Arc<PhysicalTokenBlock>> {
@@ -254,54 +257,6 @@ impl PrefixCache {
                 self.leaf_lru.push_back((hash, entry.access_id));
             }
         }
-    }
-
-    fn evict_if_needed_protecting(
-        &mut self,
-        protected_hashes: &HashSet<u64>,
-    ) -> Vec<Arc<PhysicalTokenBlock>> {
-        let mut evicted = Vec::new();
-        // We have prefix-cache eviction elsewhere, so we won't evict here.
-        // evicting here will cause lower prefix-cache hit rate for tool calls
-        // while self.entries.len() > self.config.max_cached_blocks {
-        //     let block = if protected_hashes.is_empty() {
-        //         self.evict_one_leaf()
-        //     } else {
-        //         self.evict_one_unprotected_leaf(protected_hashes)
-        //             .or_else(|| self.evict_one_leaf())
-        //     };
-        //     let Some(block) = block else {
-        //         break;
-        //     };
-        //     evicted.push(block);
-        // }
-        evicted
-    }
-
-    fn evict_one_unprotected_leaf(
-        &mut self,
-        protected_hashes: &HashSet<u64>,
-    ) -> Option<Arc<PhysicalTokenBlock>> {
-        let pending = self.leaf_lru.len();
-        for _ in 0..pending {
-            let (hash, access_id) = self.leaf_lru.pop_front()?;
-            if protected_hashes.contains(&hash) {
-                self.leaf_lru.push_back((hash, access_id));
-                continue;
-            }
-            if !self.leaf_set.contains(&hash) {
-                continue;
-            }
-            let entry = match self.entries.get(&hash) {
-                Some(entry) => entry,
-                None => continue,
-            };
-            if entry.access_id != access_id || entry.children > 0 {
-                continue;
-            }
-            return self.evict_leaf_hash(hash);
-        }
-        None
     }
 
     fn evict_one_leaf(&mut self) -> Option<Arc<PhysicalTokenBlock>> {
