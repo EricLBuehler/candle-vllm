@@ -181,12 +181,14 @@ impl PrefixCache {
         }
 
         let mut parent_hash = seed;
+        let mut protected_hashes = HashSet::new();
         for (block, block_tokens) in blocks
             .iter()
             .zip(tokens.chunks(self.block_size))
             .take(max_blocks)
         {
             let hash = Self::hash_block(parent_hash.unwrap_or(0), block_tokens);
+            protected_hashes.insert(hash);
             if self.entries.contains_key(&hash) {
                 let access_id = self.next_access_id();
                 if let Some(entry) = self.entries.get_mut(&hash) {
@@ -219,7 +221,7 @@ impl PrefixCache {
             parent_hash = Some(hash);
         }
 
-        self.evict_if_needed()
+        self.evict_if_needed_protecting(&protected_hashes)
     }
 
     pub fn evict_blocks(&mut self, num_blocks: usize) -> Vec<Arc<PhysicalTokenBlock>> {
@@ -254,15 +256,50 @@ impl PrefixCache {
         }
     }
 
-    fn evict_if_needed(&mut self) -> Vec<Arc<PhysicalTokenBlock>> {
+    fn evict_if_needed_protecting(
+        &mut self,
+        protected_hashes: &HashSet<u64>,
+    ) -> Vec<Arc<PhysicalTokenBlock>> {
         let mut evicted = Vec::new();
         while self.entries.len() > self.config.max_cached_blocks {
-            let Some(block) = self.evict_one_leaf() else {
+            let block = if protected_hashes.is_empty() {
+                self.evict_one_leaf()
+            } else {
+                self.evict_one_unprotected_leaf(protected_hashes)
+                    .or_else(|| self.evict_one_leaf())
+            };
+            let Some(block) = block else {
                 break;
             };
             evicted.push(block);
         }
         evicted
+    }
+
+    fn evict_one_unprotected_leaf(
+        &mut self,
+        protected_hashes: &HashSet<u64>,
+    ) -> Option<Arc<PhysicalTokenBlock>> {
+        let pending = self.leaf_lru.len();
+        for _ in 0..pending {
+            let (hash, access_id) = self.leaf_lru.pop_front()?;
+            if protected_hashes.contains(&hash) {
+                self.leaf_lru.push_back((hash, access_id));
+                continue;
+            }
+            if !self.leaf_set.contains(&hash) {
+                continue;
+            }
+            let entry = match self.entries.get(&hash) {
+                Some(entry) => entry,
+                None => continue,
+            };
+            if entry.access_id != access_id || entry.children > 0 {
+                continue;
+            }
+            return self.evict_leaf_hash(hash);
+        }
+        None
     }
 
     fn evict_one_leaf(&mut self) -> Option<Arc<PhysicalTokenBlock>> {
@@ -278,21 +315,25 @@ impl PrefixCache {
             if entry.access_id != access_id || entry.children > 0 {
                 continue;
             }
-            let entry = self.entries.remove(&hash)?;
-            self.leaf_set.remove(&hash);
-            if let Some(parent) = entry.parent {
-                if let Some(parent_entry) = self.entries.get_mut(&parent) {
-                    if parent_entry.children > 0 {
-                        parent_entry.children -= 1;
-                    }
-                    if parent_entry.children == 0 {
-                        self.leaf_set.insert(parent);
-                        self.leaf_lru.push_back((parent, parent_entry.access_id));
-                    }
+            return self.evict_leaf_hash(hash);
+        }
+    }
+
+    fn evict_leaf_hash(&mut self, hash: u64) -> Option<Arc<PhysicalTokenBlock>> {
+        let entry = self.entries.remove(&hash)?;
+        self.leaf_set.remove(&hash);
+        if let Some(parent) = entry.parent {
+            if let Some(parent_entry) = self.entries.get_mut(&parent) {
+                if parent_entry.children > 0 {
+                    parent_entry.children -= 1;
+                }
+                if parent_entry.children == 0 {
+                    self.leaf_set.insert(parent);
+                    self.leaf_lru.push_back((parent, parent_entry.access_id));
                 }
             }
-            return Some(entry.block.clone());
         }
+        Some(entry.block.clone())
     }
 
     fn next_access_id(&mut self) -> u64 {
@@ -365,5 +406,32 @@ mod tests {
 
         let match_info = cache.match_prefix(&tokens);
         assert_eq!(match_info.matched_blocks, 1);
+    }
+
+    #[test]
+    fn prefix_cache_insert_trims_older_leaves_before_new_prefix() {
+        let mut cache = PrefixCache::new(
+            4,
+            PrefixCacheConfig {
+                enabled: true,
+                max_cached_blocks: 2,
+            },
+        );
+
+        let old_tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let old_blocks = vec![block(1, 4), block(2, 4)];
+        assert!(cache.insert_prefix(&old_tokens, &old_blocks).is_empty());
+
+        let new_tokens = vec![9, 10, 11, 12, 13, 14, 15, 16];
+        let new_blocks = vec![block(3, 4), block(4, 4)];
+        let evicted = cache.insert_prefix(&new_tokens, &new_blocks);
+        let evicted_ids = evicted
+            .iter()
+            .map(|block| block.deref_mut().block_id)
+            .collect::<Vec<_>>();
+        assert_eq!(evicted_ids, vec![2, 1]);
+
+        assert_eq!(cache.match_prefix(&old_tokens).matched_blocks, 0);
+        assert_eq!(cache.match_prefix(&new_tokens).matched_blocks, 2);
     }
 }
