@@ -586,7 +586,13 @@ impl LLMEngine {
         let tasks: Vec<_> = iterator
             .map(|rank| {
                 let engine_clone = engine.clone();
-                Self::generate_once(engine_clone, *rank, multi_process).unwrap()
+                match Self::generate_once(engine_clone, *rank, multi_process) {
+                    Ok(result) => result,
+                    Err(err) => {
+                        warn!("Generation step failed on rank {}: {:?}", rank, err);
+                        HashMap::new()
+                    }
+                }
             })
             .collect();
         tasks
@@ -749,6 +755,7 @@ impl LLMEngine {
                 scheduler_config,
                 cache_config,
                 require_mamba_prefix_snapshots,
+                prefill_chunk_size.unwrap_or(PREFILL_CHUNK_SIZE),
             ),
             seq_id: 0,
             cache_config: cache_config.clone(),
@@ -841,8 +848,11 @@ impl LLMEngine {
                     if multi_process && !is_master_rank {
                         continue;
                     }
+                    if results.is_empty() {
+                        continue;
+                    }
                     let result = &results[0];
-                    if results.is_empty() || result.is_empty() {
+                    if result.is_empty() {
                         continue;
                     }
 
