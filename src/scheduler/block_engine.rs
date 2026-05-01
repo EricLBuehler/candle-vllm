@@ -1334,6 +1334,55 @@ mod tests {
     }
 
     #[test]
+    fn prefix_cache_eviction_does_not_free_active_sequence_blocks() {
+        let block_size = 4;
+        let mut engine = BlockEngine::new(
+            block_size,
+            8,
+            8,
+            0,
+            PrefixCacheConfig {
+                enabled: true,
+                max_cached_blocks: 4,
+            },
+            false,
+        );
+
+        let (group1, seq1) = make_group(1, 1, block_size, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        let mut blocks_to_copy = HashMap::new();
+        engine.allocate(&group1, &mut blocks_to_copy);
+        engine.cache_sequence(&seq1);
+        engine.free_sequence(&seq1);
+
+        let (group2, seq2) = make_group(
+            2,
+            2,
+            block_size,
+            vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+        );
+        engine.allocate(&group2, &mut blocks_to_copy);
+        let active_prefix_ids = engine
+            .block_tables
+            .get(&seq2.deref().get_id())
+            .unwrap()
+            .iter()
+            .take(2)
+            .map(|block| block.deref_mut().block_id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(engine.evict_prefix_cache_blocks(2), 2);
+        let free_ids = engine
+            .gpu_allocator
+            .free_blocks
+            .iter()
+            .map(|block| block.deref_mut().block_id)
+            .collect::<Vec<_>>();
+        for block_id in active_prefix_ids {
+            assert!(!free_ids.contains(&block_id));
+        }
+    }
+
+    #[test]
     fn append_token_slot_repairs_table_after_skipped_boundary_allocation() {
         let block_size = 4;
         let mut engine = BlockEngine::new(

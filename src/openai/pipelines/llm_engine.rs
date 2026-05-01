@@ -590,6 +590,9 @@ impl LLMEngine {
                     Ok(result) => result,
                     Err(err) => {
                         warn!("Generation step failed on rank {}: {:?}", rank, err);
+                        if *rank == 0 {
+                            engine.write().fail_current_scheduled_groups(&err);
+                        }
                         HashMap::new()
                     }
                 }
@@ -1306,6 +1309,34 @@ impl LLMEngine {
     }
 
     fn clear_current_scheduled_groups(&self) {
+        self.sequence_groups.write().clear();
+    }
+
+    fn fail_current_scheduled_groups(&mut self, err: &candle_core::Error) {
+        let scheduled = self.sequence_groups.read().clone();
+        if scheduled.is_empty() {
+            return;
+        }
+
+        let message = format!("Generation failed: {err:?}");
+        let seq_ids = scheduled
+            .iter()
+            .map(|group| Self::primary_sequence(group).deref().get_id())
+            .collect::<Vec<_>>();
+
+        for group in &scheduled {
+            if let Some(sender) = &group.sender {
+                let _ = sender.send(ChatResponse::ModelError(message.clone()));
+                let _ = sender.send(ChatResponse::Done);
+            }
+        }
+
+        let aborted = self.scheduler.abort_sequences(&seq_ids);
+        warn!(
+            "Aborted {} scheduled sequence(s) after generation failure: {:?}",
+            aborted.len(),
+            aborted
+        );
         self.sequence_groups.write().clear();
     }
 
