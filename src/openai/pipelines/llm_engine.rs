@@ -1939,24 +1939,20 @@ impl LLMEngine {
                         // Extract reasoning from the full accumulated output
                         // so it is available even when tool calls consumed
                         // the content (setting it to None).
-                        let reasoning_content =
-                            if crate::stream_as_reasoning_content() && should_parse_tools {
-                                if !full_accumulated.is_empty() {
-                                    crate::tools::stream_parser::extract_reasoning_content(
-                                        &full_accumulated,
-                                    )
-                                    .map(|(r, _)| r)
-                                } else {
-                                    None
-                                }
+                        let reasoning_content = if crate::stream_as_reasoning_content() {
+                            if !full_accumulated.is_empty() {
+                                crate::tools::stream_parser::extract_reasoning_content(
+                                    &full_accumulated,
+                                )
+                                .map(|(r, _)| r)
                             } else {
                                 None
-                            };
+                            }
+                        } else {
+                            None
+                        };
 
-                        let content = if crate::stream_as_reasoning_content()
-                            && should_parse_tools
-                            && content.is_some()
-                        {
+                        let content = if crate::stream_as_reasoning_content() && content.is_some() {
                             match content {
                                 Some(text) => {
                                     match crate::tools::stream_parser::extract_reasoning_content(

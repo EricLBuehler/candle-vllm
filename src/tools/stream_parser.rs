@@ -780,6 +780,10 @@ impl StreamToolParser {
     pub fn set_detect_tools_in_reasoning(&mut self, enabled: bool) {
         self.detect_tools_in_reasoning = enabled;
     }
+    pub fn advance_reasoning_state(&mut self, token_text: &str) {
+        self.accumulated_output.push_str(token_text);
+        self.update_reasoning_state(token_text);
+    }
     pub fn in_code_block(&self) -> bool {
         self.in_code_block
     }
