@@ -16,7 +16,8 @@ use crate::openai::streaming::ChatResponse;
 use crate::openai::TaskData;
 use crate::scheduler::Scheduler;
 use crate::tools::stream_parser::{
-    BufferedFinalizeResult, ParserState, StreamResult, StreamToolParser,
+    extract_reasoning_content, strip_reasoning_markers, BufferedFinalizeResult, ParserState,
+    StreamResult, StreamToolParser,
 };
 #[cfg(feature = "flashinfer")]
 use crate::FlashInferKvParams;
@@ -27,8 +28,8 @@ use crate::{
         multimodal::ImageData,
         responses::{
             ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionUsageResponse, Choice,
-            ChoiceData, EmbeddingData, EmbeddingOutput, EmbeddingResponse, EmbeddingUsage,
-            WrapperLogprobs,
+            ChoiceData, CompletionTokensDetails, EmbeddingData, EmbeddingOutput, EmbeddingResponse,
+            EmbeddingUsage, PromptTokensDetails, WrapperLogprobs,
         },
         sampling_params::Logprobs,
         sampling_params::SamplingParams,
@@ -860,6 +861,16 @@ impl LLMEngine {
                     }
 
                     //chat completion statistics
+                    let cached_tokens_total = result
+                        .values()
+                        .filter_map(|(_, usage)| usage.prompt_tokens_details.as_ref())
+                        .map(|details| details.cached_tokens)
+                        .sum();
+                    let reasoning_tokens_total = result
+                        .values()
+                        .filter_map(|(_, usage)| usage.completion_tokens_details.as_ref())
+                        .map(|details| details.reasoning_tokens)
+                        .sum();
                     let overall_usage = ChatCompletionUsageResponse {
                         request_id: "".to_string(),
                         created: 0,
@@ -878,6 +889,15 @@ impl LLMEngine {
                             .map(|(_, usage)| usage.completion_time_costs)
                             .max()
                             .unwrap_or(0),
+                        prompt_tokens_details: (cached_tokens_total > 0)
+                            .then_some(PromptTokensDetails {
+                                cached_tokens: cached_tokens_total,
+                            }),
+                        completion_tokens_details: (reasoning_tokens_total > 0).then_some(
+                            CompletionTokensDetails {
+                                reasoning_tokens: reasoning_tokens_total,
+                            },
+                        ),
                     };
 
                     let prompt_tps : f32 = result.values().map(|(_, usage)| {
@@ -1268,6 +1288,66 @@ impl LLMEngine {
 
     fn has_unfinished_sequences(&self) -> bool {
         self.scheduler.has_unfinished_sequences()
+    }
+
+    fn count_text_tokens(pipeline: &DefaultPipeline, text: &str) -> usize {
+        if text.is_empty() {
+            return 0;
+        }
+        pipeline
+            .tokenizer()
+            .encode(text, false)
+            .map(|encoding| encoding.get_ids().len())
+            .unwrap_or(0)
+    }
+
+    fn reasoning_token_count_for_sequence(
+        &self,
+        pipeline: &DefaultPipeline,
+        group: &SequenceGroup,
+        seq: &Arc<Sequence>,
+    ) -> usize {
+        let outputs = seq.deref().get_output_tokens();
+        if outputs.is_empty() {
+            return 0;
+        }
+
+        let raw_output = outputs.iter().map(|x| x.bytes.as_str()).collect::<String>();
+        if let Some((reasoning, _)) = extract_reasoning_content(&raw_output) {
+            return Self::count_text_tokens(pipeline, &reasoning);
+        }
+
+        let should_parse_tools = group.sampling_params.mcp_mode.is_some();
+        if !(crate::stream_as_reasoning_content() && should_parse_tools) {
+            return 0;
+        }
+
+        let mut parser = StreamToolParser::new_with_config(
+            &pipeline.tool_model_type,
+            pipeline.tool_parser_model_id.clone(),
+            pipeline.tool_config.clone(),
+            group.tools.clone(),
+            pipeline.enforce_parser.clone(),
+        );
+        if group.active_reasoning_end.is_some() {
+            parser.set_initial_reasoning_end_marker(group.active_reasoning_end.clone());
+        }
+        parser.set_detect_tools_in_reasoning(true);
+
+        let mut reasoning_text = String::new();
+        for output in outputs {
+            let was_in_reasoning = parser.in_reasoning();
+            match parser.process_token(output.token, &output.bytes) {
+                StreamResult::Content(text) | StreamResult::FlushBuffer(text) => {
+                    if was_in_reasoning {
+                        reasoning_text.push_str(&strip_reasoning_markers(&text));
+                    }
+                }
+                StreamResult::Buffering | StreamResult::ToolCalls(_) => {}
+            }
+        }
+
+        Self::count_text_tokens(pipeline, &reasoning_text)
     }
 
     fn schedule_current_batch(&mut self, rank: usize) -> Result<()> {
@@ -1704,9 +1784,9 @@ impl LLMEngine {
 
                 let mut choices = Vec::new();
                 let do_sync_response = allow_sync_response && group.sender.is_none();
+                let pipeline = self.get_pipeline(0usize).unwrap().0.as_ref();
 
                 if do_sync_response {
-                    let pipeline = self.get_pipeline(0usize).unwrap().0.as_ref();
                     for (index, seq) in top_n.iter().enumerate() {
                         let outputs = seq.deref_mut().get_output_tokens();
                         let should_parse_tools = group.sampling_params.mcp_mode.is_some();
@@ -1929,6 +2009,14 @@ impl LLMEngine {
                     .duration_since(group.created_time)
                     .unwrap()
                     .as_millis();
+                let cached_tokens = top_n
+                    .first()
+                    .and_then(|seq| self.get_num_cached_tokens_for_seq(seq.deref().get_id()))
+                    .unwrap_or_else(|| top_n.first().unwrap().deref().get_num_cached_tokens());
+                let reasoning_tokens = top_n
+                    .iter()
+                    .map(|seq| self.reasoning_token_count_for_sequence(pipeline, group, seq))
+                    .sum::<usize>();
 
                 let usage = ChatCompletionUsageResponse {
                     request_id: group.request_id.clone(),
@@ -1938,6 +2026,10 @@ impl LLMEngine {
                     total_tokens: completion_tokens + prompt_tokens,
                     prompt_time_costs: prompt_time_costs as usize,
                     completion_time_costs: completion_time_costs as usize,
+                    prompt_tokens_details: (cached_tokens > 0)
+                        .then_some(PromptTokensDetails { cached_tokens }),
+                    completion_tokens_details: (reasoning_tokens > 0)
+                        .then_some(CompletionTokensDetails { reasoning_tokens }),
                 };
 
                 responses.insert(group.request_id.clone(), (choices, usage.clone()));
@@ -2104,5 +2196,9 @@ impl LLMEngine {
 
     pub fn query_prefix_cache_match_tokens(&mut self, tokens: &[u32]) -> usize {
         self.scheduler.query_prefix_cache_match_tokens(tokens)
+    }
+
+    pub fn get_num_cached_tokens_for_seq(&self, seq_id: usize) -> Option<usize> {
+        self.scheduler.get_num_cached_tokens_for_seq(seq_id)
     }
 }

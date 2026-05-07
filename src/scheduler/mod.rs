@@ -34,6 +34,7 @@ use self::{
 };
 
 const PREFIX_CACHE_PRESSURE_EVICT_PERCENT: f32 = 0.1; // evict 10% of prefix cache when under pressure
+const FINISHED_CACHED_TOKENS_MAX: usize = 16_384;
 
 pub struct SchedulerOutput {
     pub scheduled: Arc<VecDeque<Arc<SequenceGroup>>>,
@@ -57,6 +58,7 @@ pub struct Scheduler {
     mamba_state: MambaState,
     is_last_prefill: bool,
     prefill_chunk_size: usize,
+    finished_cached_tokens: HashMap<usize, usize>,
 }
 
 impl Scheduler {
@@ -84,6 +86,7 @@ impl Scheduler {
             mamba_state: MambaState::default(),
             is_last_prefill: false,
             prefill_chunk_size,
+            finished_cached_tokens: HashMap::new(),
         }
     }
 
@@ -282,6 +285,7 @@ impl Scheduler {
         for group in to_free {
             for seq in group.get_seqs().values() {
                 let seq_id = seq.deref().get_id();
+                self.remember_finished_cached_tokens(seq_id, seq.deref().get_num_cached_tokens());
                 let full_blocks = seq.deref().get_len() / self.block_engine.get_block_size();
                 let block_id = self
                     .block_engine
@@ -295,6 +299,32 @@ impl Scheduler {
             self._free(&group, true);
         }
         released_ids
+    }
+
+    pub fn get_num_cached_tokens_for_seq(&self, seq_id: usize) -> Option<usize> {
+        self.running
+            .iter()
+            .chain(self.waiting.iter())
+            .chain(self.swapped_out.iter())
+            .find_map(|group| {
+                group
+                    .get_seqs()
+                    .values()
+                    .find(|seq| seq.deref().get_id() == seq_id)
+                    .map(|seq| seq.deref().get_num_cached_tokens())
+            })
+            .or_else(|| self.finished_cached_tokens.get(&seq_id).copied())
+    }
+
+    fn remember_finished_cached_tokens(&mut self, seq_id: usize, num_cached_tokens: usize) {
+        self.finished_cached_tokens
+            .insert(seq_id, num_cached_tokens);
+        while self.finished_cached_tokens.len() > FINISHED_CACHED_TOKENS_MAX {
+            let Some(oldest_seq_id) = self.finished_cached_tokens.keys().min().copied() else {
+                break;
+            };
+            self.finished_cached_tokens.remove(&oldest_seq_id);
+        }
     }
 
     pub fn prefix_cache_enabled(&self) -> bool {

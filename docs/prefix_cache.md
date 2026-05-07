@@ -17,6 +17,30 @@ Prefix cache is block-granular. If a shared prefix ends in the middle of a block
 
 If `--prefix-cache-max-tokens` is omitted, the cache defaults to roughly 25% of GPU KV blocks in this project.
 
+## Usage Reporting
+
+OpenAI-compatible chat responses include prefix-cache and reasoning token details when they are non-zero:
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 128,
+    "completion_tokens": 64,
+    "total_tokens": 192,
+    "prompt_time_costs": 4,
+    "completion_time_costs": 250,
+    "prompt_tokens_details": {
+      "cached_tokens": 64
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 32
+    }
+  }
+}
+```
+
+`prompt_tokens_details.cached_tokens` reports the number of prompt tokens reused from the prefix cache. `completion_tokens_details.reasoning_tokens` reports generated tokens inside reasoning blocks such as `<think>...</think>`. Both detail objects are omitted when their count is zero.
+
 ## Hybrid Mamba snapshot stride
 
 For hybrid Mamba models, prefix reuse also needs compatible snapshot boundaries.

@@ -40,6 +40,16 @@ macro_rules! try_api {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PromptTokensDetails {
+    pub cached_tokens: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompletionTokensDetails {
+    pub reasoning_tokens: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatCompletionUsageResponse {
     pub request_id: String,
     pub created: u64,
@@ -48,6 +58,10 @@ pub struct ChatCompletionUsageResponse {
     pub total_tokens: usize,
     pub prompt_time_costs: usize,     //milliseconds
     pub completion_time_costs: usize, //milliseconds
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completion_tokens_details: Option<CompletionTokensDetails>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,4 +201,67 @@ pub struct EmbeddingResponse {
     pub data: Vec<EmbeddingData>,
     pub model: String,
     pub usage: EmbeddingUsage,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChatCompletionUsageResponse, CompletionTokensDetails, PromptTokensDetails};
+
+    fn usage(
+        prompt_tokens_details: Option<PromptTokensDetails>,
+        completion_tokens_details: Option<CompletionTokensDetails>,
+    ) -> ChatCompletionUsageResponse {
+        ChatCompletionUsageResponse {
+            request_id: "request-id".to_string(),
+            created: 0,
+            completion_tokens: 50,
+            prompt_tokens: 100,
+            total_tokens: 150,
+            prompt_time_costs: 1,
+            completion_time_costs: 1,
+            prompt_tokens_details,
+            completion_tokens_details,
+        }
+    }
+
+    #[test]
+    fn usage_omits_token_details_when_none() {
+        let value = serde_json::to_value(usage(None, None)).expect("serialize usage");
+        let object = value.as_object().expect("usage is a JSON object");
+
+        assert!(!object.contains_key("prompt_tokens_details"));
+        assert!(!object.contains_key("completion_tokens_details"));
+    }
+
+    #[test]
+    fn usage_includes_prompt_tokens_details_when_some() {
+        let value =
+            serde_json::to_value(usage(Some(PromptTokensDetails { cached_tokens: 64 }), None))
+                .expect("serialize usage");
+
+        assert_eq!(
+            value
+                .pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(|v| v.as_u64()),
+            Some(64)
+        );
+    }
+
+    #[test]
+    fn usage_includes_completion_tokens_details_when_some() {
+        let value = serde_json::to_value(usage(
+            None,
+            Some(CompletionTokensDetails {
+                reasoning_tokens: 32,
+            }),
+        ))
+        .expect("serialize usage");
+
+        assert_eq!(
+            value
+                .pointer("/completion_tokens_details/reasoning_tokens")
+                .and_then(|v| v.as_u64()),
+            Some(32)
+        );
+    }
 }
