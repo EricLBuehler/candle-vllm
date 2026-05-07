@@ -606,7 +606,7 @@ impl Engine {
             .unwrap_or_else(|| request.model.clone().unwrap_or("default".to_string()));
         if let Some(record) = e.completion_records.get(&request_id) {
             let mut choices = record.0.clone();
-            if crate::stream_as_reasoning_content() && has_tools {
+            if crate::stream_as_reasoning_content() {
                 for choice in &mut choices {
                     if let Some(text) = choice.message.content.take() {
                         match crate::tools::stream_parser::extract_reasoning_content(&text) {

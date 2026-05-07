@@ -132,7 +132,7 @@ impl LLMEngine {
         let (pipeline, _) = self.get_pipeline(rank).unwrap();
         let token_str = &logprobs.bytes;
         let should_parse_tools = group.sampling_params.mcp_mode.is_some();
-        let stream_reasoning = crate::stream_as_reasoning_content() && should_parse_tools;
+        let stream_reasoning = crate::stream_as_reasoning_content();
         let mut content = None;
         let mut reasoning_content = None;
 
@@ -173,7 +173,6 @@ impl LLMEngine {
                                 let has_pending = !data.pending_tool_calls.is_empty();
                                 let action = {
                                     let parser = data.stream_tool_parser.as_mut().unwrap();
-                                    let was_in_reasoning = parser.in_reasoning();
                                     match parser.process_token(token_id, &token_text) {
                                         StreamResult::Content(text) => {
                                             if text.is_empty() {
@@ -186,7 +185,7 @@ impl LLMEngine {
                                                 let stripped = strip_reasoning_markers(&text);
                                                 if stripped.is_empty() {
                                                     TokenAction::None
-                                                } else if was_in_reasoning {
+                                                } else if parser.in_reasoning() {
                                                     TokenAction::ReasoningContent(stripped)
                                                 } else {
                                                     TokenAction::Content(stripped)
@@ -212,6 +211,8 @@ impl LLMEngine {
                                                         strip_reasoning_markers(&safe_text);
                                                     if stripped.is_empty() {
                                                         TokenAction::None
+                                                    } else if parser.in_reasoning() {
+                                                        TokenAction::ReasoningContent(stripped)
                                                     } else {
                                                         TokenAction::Content(stripped)
                                                     }
@@ -252,7 +253,6 @@ impl LLMEngine {
 
                 let has_pending = !data.pending_tool_calls.is_empty();
                 let action = if let Some(parser) = data.stream_tool_parser.as_mut() {
-                    let was_in_reasoning = parser.in_reasoning();
                     match parser.process_token(logprobs.token, token_str) {
                         StreamResult::Content(text) => {
                             if text.is_empty() {
@@ -265,7 +265,7 @@ impl LLMEngine {
                                 let stripped = strip_reasoning_markers(&text);
                                 if stripped.is_empty() {
                                     TokenAction::None
-                                } else if was_in_reasoning {
+                                } else if parser.in_reasoning() {
                                     TokenAction::ReasoningContent(stripped)
                                 } else {
                                     TokenAction::Content(stripped)
@@ -289,6 +289,8 @@ impl LLMEngine {
                                     let stripped = strip_reasoning_markers(&safe_text);
                                     if stripped.is_empty() {
                                         TokenAction::None
+                                    } else if parser.in_reasoning() {
+                                        TokenAction::ReasoningContent(stripped)
                                     } else {
                                         TokenAction::Content(stripped)
                                     }
@@ -317,18 +319,74 @@ impl LLMEngine {
                     }
                     TokenAction::None => {}
                 }
-            } else if !data.prompt_replay_consumed {
-                data.prompt_replay_consumed = true;
-                if let Some(replay_ids) = group.prompt_replay_token_ids.as_ref() {
-                    content = self.decode_prompt_replay_text(pipeline, replay_ids);
+            } else if stream_reasoning {
+                if data.stream_tool_parser.is_none() {
+                    let mut parser = StreamToolParser::new_with_config(
+                        &pipeline.tool_model_type,
+                        pipeline.tool_parser_model_id.clone(),
+                        pipeline.tool_config.clone(),
+                        Vec::new(),
+                        pipeline.enforce_parser.clone(),
+                    );
+                    if group.active_reasoning_end.is_some() {
+                        parser.set_initial_reasoning_end_marker(group.active_reasoning_end.clone());
+                    }
+                    data.stream_tool_parser = Some(parser);
                 }
-                if let Some(existing) = content.as_mut() {
-                    existing.push_str(token_str);
+
+                if !data.prompt_replay_consumed {
+                    data.prompt_replay_consumed = true;
+                    if let Some(replay_ids) = group.prompt_replay_token_ids.as_ref() {
+                        if let Some(parser) = data.stream_tool_parser.as_mut() {
+                            for &token_id in replay_ids {
+                                let token_text = pipeline
+                                    .tokenizer()
+                                    .decode(&[token_id], false)
+                                    .unwrap_or_default();
+                                let was_in_reasoning = parser.in_reasoning();
+                                parser.advance_reasoning_state(&token_text);
+                                let is_in_reasoning = parser.in_reasoning();
+                                let stripped = strip_reasoning_markers(&token_text);
+                                if stripped.is_empty() {
+                                    continue;
+                                }
+                                if was_in_reasoning || is_in_reasoning {
+                                    Self::append_stream_text(&mut reasoning_content, stripped);
+                                } else {
+                                    Self::append_stream_text(&mut content, stripped);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(parser) = data.stream_tool_parser.as_mut() {
+                    let was_in_reasoning = parser.in_reasoning();
+                    parser.advance_reasoning_state(token_str);
+                    let is_in_reasoning = parser.in_reasoning();
+                    let stripped = strip_reasoning_markers(token_str);
+                    if !stripped.is_empty() {
+                        if was_in_reasoning || is_in_reasoning {
+                            Self::append_stream_text(&mut reasoning_content, stripped);
+                        } else {
+                            Self::append_stream_text(&mut content, stripped);
+                        }
+                    }
+                }
+            } else {
+                if !data.prompt_replay_consumed {
+                    data.prompt_replay_consumed = true;
+                    if let Some(replay_ids) = group.prompt_replay_token_ids.as_ref() {
+                        content = self.decode_prompt_replay_text(pipeline, replay_ids);
+                    }
+                    if let Some(existing) = content.as_mut() {
+                        existing.push_str(token_str);
+                    } else if !token_str.is_empty() {
+                        content = Some(token_str.clone());
+                    }
                 } else if !token_str.is_empty() {
                     content = Some(token_str.clone());
                 }
-            } else if !token_str.is_empty() {
-                content = Some(token_str.clone());
             }
         }
 
@@ -356,7 +414,7 @@ impl LLMEngine {
         };
 
         let should_parse_tools = group.sampling_params.mcp_mode.is_some();
-        let stream_reasoning = crate::stream_as_reasoning_content() && should_parse_tools;
+        let stream_reasoning = crate::stream_as_reasoning_content();
 
         if should_parse_tools {
             let (pipeline, _) = self.get_pipeline(rank).unwrap();
@@ -419,7 +477,7 @@ impl LLMEngine {
         let mut content = None;
         let mut tool_calls = None;
         let should_parse_tools = group.sampling_params.mcp_mode.is_some();
-        let stream_reasoning = crate::stream_as_reasoning_content() && should_parse_tools;
+        let stream_reasoning = crate::stream_as_reasoning_content();
         let pipeline = if !should_parse_tools {
             Some(self.get_pipeline(rank).unwrap().0.as_ref())
         } else {

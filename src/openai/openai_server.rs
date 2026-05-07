@@ -411,7 +411,7 @@ pub async fn chat_completions(
         // blocks are preserved even when tool calls consume the remaining
         // content.  Without this, tool parsing sets content=None and the
         // subsequent reasoning extraction finds nothing.
-        if crate::stream_as_reasoning_content() && has_tools {
+        if crate::stream_as_reasoning_content() {
             for choice in &mut final_choices {
                 if let Some(text) = choice.message.content.take() {
                     match extract_reasoning_content(&text) {
