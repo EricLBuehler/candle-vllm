@@ -383,7 +383,7 @@ use crate::openai::streaming::ChatResponse;
 use tracing::{info, warn};
 
 impl Engine {
-    /// Validates prompt length against model limits and available KV cache.
+    /// Validates prompt length against model limits.
     fn validate_prompt(&self, token_ids: &[u32], request_type: &str) -> Result<()> {
         let prompt_len = token_ids.len();
         let max_model_len = self.pipeline_config.max_model_len;
@@ -399,32 +399,9 @@ impl Engine {
             )));
         }
 
-        let available = {
-            let mut e = self.engine.write();
-            let (available, evicted) = e.ensure_available_kv_tokens(prompt_len);
-            if evicted > 0 {
-                warn!(
-                    "[{}] Evicted {} prefix cache block(s) before request length check",
-                    request_type, evicted
-                );
-            }
-            available
-        };
-
-        if prompt_len > available {
-            warn!(
-                "[{}] Prompt length {} exceeds available KV cache capacity {}",
-                request_type, prompt_len, available
-            );
-            return Err(candle_core::Error::msg(format!(
-                "Prompt length {} exceeds available KV cache capacity {}",
-                prompt_len, available
-            )));
-        }
-
         info!(
-            "[{}] Validated prompt with {} tokens (max: {}, available: {})",
-            request_type, prompt_len, max_model_len, available
+            "[{}] Validated prompt with {} tokens (max: {})",
+            request_type, prompt_len, max_model_len
         );
         Ok(())
     }
@@ -536,6 +513,100 @@ impl Engine {
         // Validate prompt length
         self.validate_prompt(&token_ids, "generate_request")?;
 
+        let mut max_request_tokens = request.max_tokens.unwrap_or(16);
+        let max_model_decode_tokens = self
+            .pipeline_config
+            .max_model_len
+            .saturating_sub(token_ids.len())
+            .saturating_sub(10);
+        if max_request_tokens > max_model_decode_tokens {
+            warn!(
+                "[generate_request] Requested max_tokens {} exceeds remaining model context {}, max_tokens changed to {}",
+                max_request_tokens,
+                max_model_decode_tokens,
+                max_model_decode_tokens
+            );
+            max_request_tokens = max_model_decode_tokens;
+        }
+        if max_request_tokens == 0 {
+            return Err(candle_core::Error::msg(format!(
+                "Requested prompt({} tokens) leaves no room for generated tokens within maximum model context {}",
+                token_ids.len(),
+                self.pipeline_config.max_model_len
+            )));
+        }
+
+        let mut cached_tokens = {
+            let mut e = self.engine.write();
+            e.query_prefix_cache_match_tokens(&token_ids)
+        };
+        let mut new_tokens = token_ids.len().saturating_sub(cached_tokens);
+        let mut required_tokens = new_tokens.saturating_add(max_request_tokens);
+        let mut available_tokens = {
+            let mut e = self.engine.write();
+            let (available_tokens, evicted) = e.ensure_available_kv_tokens(required_tokens);
+            if evicted > 0 {
+                warn!(
+                    "[generate_request] Evicted {} prefix cache block(s) to reserve {} KV tokens ({} new prompt + {} max decode)",
+                    evicted,
+                    required_tokens,
+                    new_tokens,
+                    max_request_tokens
+                );
+            }
+            available_tokens
+        };
+        loop {
+            let refreshed_cached_tokens = {
+                let mut e = self.engine.write();
+                e.query_prefix_cache_match_tokens(&token_ids)
+            };
+            if refreshed_cached_tokens == cached_tokens {
+                break;
+            }
+
+            cached_tokens = refreshed_cached_tokens;
+            new_tokens = token_ids.len().saturating_sub(cached_tokens);
+            required_tokens = new_tokens.saturating_add(max_request_tokens);
+            let (refreshed_available_tokens, evicted) = {
+                let mut e = self.engine.write();
+                e.ensure_available_kv_tokens(required_tokens)
+            };
+            if evicted > 0 {
+                warn!(
+                    "[generate_request] Evicted {} additional prefix cache block(s) after prefix-cache hit changed; reserving {} KV tokens ({} new prompt + {} max decode)",
+                    evicted,
+                    required_tokens,
+                    new_tokens,
+                    max_request_tokens
+                );
+            }
+            available_tokens = refreshed_available_tokens;
+            if evicted == 0 {
+                break;
+            }
+        }
+        if required_tokens > available_tokens {
+            max_request_tokens = if available_tokens > new_tokens {
+                available_tokens - new_tokens
+            } else {
+                return Err(candle_core::Error::msg(format!(
+                    "Requested prompt({} tokens, {} new after prefix cache) exceeds available KV cache capacity {}",
+                    token_ids.len(),
+                    new_tokens,
+                    available_tokens
+                )));
+            };
+            warn!(
+                "[generate_request] Requested max tokens + new prompt tokens {} larger than available tokens {}, max_tokens changed to {} ({} new tokens after prefix cache hit of {} cached tokens)",
+                required_tokens,
+                available_tokens,
+                max_request_tokens,
+                new_tokens,
+                cached_tokens
+            );
+        }
+
         // Let's create a local notify for this request.
         let req_notify = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -562,7 +633,7 @@ impl Engine {
                 request.stop.clone(),
                 request.stop_token_ids.clone().unwrap_or_default(),
                 request.ignore_eos.unwrap_or(false),
-                request.max_tokens.unwrap_or(16),
+                max_request_tokens,
                 None,
                 None,
                 request.skip_special_tokens.unwrap_or(true),

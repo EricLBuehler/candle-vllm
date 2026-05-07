@@ -115,7 +115,7 @@ async fn check_length(
     request: &ChatCompletionRequest,
     prompt: String,
     data: &OpenAIServerData,
-) -> Result<(Vec<u32>, usize), APIError> {
+) -> Result<Vec<u32>, APIError> {
     let token_ids = {
         let model = data.model.read();
         let pipeline = model
@@ -128,18 +128,6 @@ async fn check_length(
             .map_err(APIError::from)?
             .get_ids()
             .to_vec()
-    };
-
-    let available_kv_tokens = {
-        let mut model = data.model.write();
-        let (available_kv_tokens, evicted) = model.ensure_available_kv_tokens(token_ids.len());
-        if evicted > 0 {
-            tracing::warn!(
-                "Evicted {} prefix cache block(s) before request length check.",
-                evicted
-            );
-        }
-        available_kv_tokens
     };
 
     let max_gen_tokens = request
@@ -157,18 +145,8 @@ async fn check_length(
             token_ids.len(),
             max_gen_tokens
         )))
-    } else if token_ids.len() >= available_kv_tokens {
-        Err(APIError::new(format!(
-            "Requested prompt({} tokens) is  \
-            larger than available kvcache (maximum {} tokens).\n \
-            You can increase kvcache by setting `--gpu-memory-fraction` (default 0.5) to a larger value!",
-            token_ids.len(),
-            available_kv_tokens
-        )))
     } else {
-        let max_valid_request_tokens =
-            std::cmp::min(available_kv_tokens, data.pipeline_config.max_model_len) - 10;
-        Ok((token_ids, max_valid_request_tokens))
+        Ok(token_ids)
     }
 }
 
@@ -226,11 +204,10 @@ pub async fn chat_completions(
         Err(e) => return ChatResponder::ValidationError(e),
     };
 
-    let (token_ids, available_tokens): (Vec<u32>, usize) =
-        match check_length(&request, prompt.clone(), &data).await {
-            Ok(ids) => ids,
-            Err(e) => return ChatResponder::ValidationError(e),
-        };
+    let token_ids = match check_length(&request, prompt.clone(), &data).await {
+        Ok(ids) => ids,
+        Err(e) => return ChatResponder::ValidationError(e),
+    };
 
     debug!("\n\n\nPrompt {:?}", prompt);
     if let Some(ref l) = logger {
@@ -243,15 +220,83 @@ pub async fn chat_completions(
         .max_tokens
         .unwrap_or(data.pipeline_config.default_max_tokens);
 
+    let max_model_decode_tokens = data
+        .pipeline_config
+        .max_model_len
+        .saturating_sub(token_ids.len())
+        .saturating_sub(10);
+    if max_request_tokens > max_model_decode_tokens {
+        tracing::warn!(
+            "Requested max_tokens {} exceeds remaining model context {}, max_tokens changed to {}.",
+            max_request_tokens,
+            max_model_decode_tokens,
+            max_model_decode_tokens
+        );
+        max_request_tokens = max_model_decode_tokens;
+    }
+    if max_request_tokens == 0 {
+        return ChatResponder::ValidationError(APIError::new(format!(
+            "Requested prompt({} tokens) leaves no room for generated tokens within maximum model context {}.",
+            token_ids.len(),
+            data.pipeline_config.max_model_len
+        )));
+    }
+
     // Query prefix cache to determine how many prompt tokens are already cached
-    let cached_tokens = {
+    let mut cached_tokens = {
         let mut model = data.model.write();
         model.query_prefix_cache_match_tokens(&token_ids)
     };
-    let new_tokens = token_ids.len().saturating_sub(cached_tokens);
+    let mut new_tokens = token_ids.len().saturating_sub(cached_tokens);
+    let mut required_tokens = new_tokens.saturating_add(max_request_tokens);
 
-    if max_request_tokens + new_tokens > available_tokens {
-        let mut adjusted_max = if available_tokens > new_tokens {
+    let mut available_tokens = {
+        let mut model = data.model.write();
+        let (available_tokens, evicted) = model.ensure_available_kv_tokens(required_tokens);
+        if evicted > 0 {
+            tracing::warn!(
+                "Evicted {} prefix cache block(s) to reserve {} KV tokens for request admission ({} new prompt + {} max decode).",
+                evicted,
+                required_tokens,
+                new_tokens,
+                max_request_tokens
+            );
+        }
+        available_tokens
+    };
+    loop {
+        let refreshed_cached_tokens = {
+            let mut model = data.model.write();
+            model.query_prefix_cache_match_tokens(&token_ids)
+        };
+        if refreshed_cached_tokens == cached_tokens {
+            break;
+        }
+
+        cached_tokens = refreshed_cached_tokens;
+        new_tokens = token_ids.len().saturating_sub(cached_tokens);
+        required_tokens = new_tokens.saturating_add(max_request_tokens);
+        let (refreshed_available_tokens, evicted) = {
+            let mut model = data.model.write();
+            model.ensure_available_kv_tokens(required_tokens)
+        };
+        if evicted > 0 {
+            tracing::warn!(
+                "Evicted {} additional prefix cache block(s) after prefix-cache hit changed; reserving {} KV tokens ({} new prompt + {} max decode).",
+                evicted,
+                required_tokens,
+                new_tokens,
+                max_request_tokens
+            );
+        }
+        available_tokens = refreshed_available_tokens;
+        if evicted == 0 {
+            break;
+        }
+    }
+
+    if required_tokens > available_tokens {
+        let adjusted_max = if available_tokens > new_tokens {
             available_tokens - new_tokens
         } else {
             return ChatResponder::ValidationError(APIError::new(format!(
@@ -263,10 +308,6 @@ pub async fn chat_completions(
                 available_tokens
             )));
         };
-        // Ensure max_tokens is at least 4096
-        if adjusted_max < 4096 {
-            adjusted_max = 4096;
-        }
         if adjusted_max != max_request_tokens {
             tracing::warn!(
                 "Requested max tokens + new prompt tokens {} larger than available tokens {}, \
