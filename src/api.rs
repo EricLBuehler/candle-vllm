@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Notify;
 
+const REQUEST_ADMISSION_DECODE_BUDGET_TOKENS: usize = 4096;
+
 #[derive(Clone, Debug)]
 pub enum ModelRepo {
     /// (model_id, filename) -- when filename is None, treat as safetensor model id.
@@ -45,6 +47,7 @@ pub struct EngineBuilder {
     block_size: usize,
     kvcache_mem_gpu: usize,
     gpu_memory_fraction: Option<f32>,
+    mamba_fraction: Option<f32>,
     kvcache_mem_cpu: usize,
     temperature: Option<f32>,
     top_p: Option<f32>,
@@ -65,10 +68,11 @@ impl EngineBuilder {
             flash_attn: None,
             fp8_kvcache: None,
             device_ids: None,
-            max_num_seqs: 16,
+            max_num_seqs: 8,
             block_size: if cfg!(feature = "cuda") { 64 } else { 32 },
             kvcache_mem_gpu: 4096,
             gpu_memory_fraction: Some(0.5),
+            mamba_fraction: None,
             kvcache_mem_cpu: 128,
             temperature: None,
             top_p: None,
@@ -123,6 +127,11 @@ impl EngineBuilder {
 
     pub fn with_gpu_memory_fraction(mut self, gpu_memory_fraction: f32) -> Self {
         self.gpu_memory_fraction = Some(gpu_memory_fraction);
+        self
+    }
+
+    pub fn with_mamba_fraction(mut self, mamba_fraction: f32) -> Self {
+        self.mamba_fraction = Some(mamba_fraction);
         self
     }
 
@@ -242,11 +251,12 @@ impl EngineBuilder {
                 if let Some(estimate) =
                     crate::estimate_hybrid_mamba_cache(&first_config, first_model_dtype, num_shards)
                 {
-                    if let Some(plan) = crate::plan_hybrid_mamba_cache(
+                    if let Some(plan) = crate::plan_hybrid_mamba_cache_with_fraction(
                         detected * 1024 * 1024,
                         estimate,
-                        self.max_num_seqs.max(16),
+                        self.max_num_seqs,
                         false,
+                        self.mamba_fraction,
                     ) {
                         let reserved_mamba_mb = plan.budget_bytes.div_ceil(1024 * 1024);
                         if reserved_mamba_mb < detected {
@@ -541,15 +551,18 @@ impl Engine {
             e.query_prefix_cache_match_tokens(&token_ids)
         };
         let mut new_tokens = token_ids.len().saturating_sub(cached_tokens);
-        let mut required_tokens = new_tokens.saturating_add(max_request_tokens);
+        let minimum_decode_budget_tokens =
+            max_request_tokens.min(REQUEST_ADMISSION_DECODE_BUDGET_TOKENS);
+        let mut target_required_tokens = new_tokens.saturating_add(max_request_tokens);
+        let mut minimum_required_tokens = new_tokens.saturating_add(minimum_decode_budget_tokens);
         let mut available_tokens = {
             let mut e = self.engine.write();
-            let (available_tokens, evicted) = e.ensure_available_kv_tokens(required_tokens);
+            let (available_tokens, evicted) = e.ensure_available_kv_tokens(target_required_tokens);
             if evicted > 0 {
                 warn!(
-                    "[generate_request] Evicted {} prefix cache block(s) to reserve {} KV tokens ({} new prompt + {} max decode)",
+                    "[generate_request] Evicted {} prefix cache block(s) to reserve {} KV tokens ({} new prompt + {} requested decode)",
                     evicted,
-                    required_tokens,
+                    target_required_tokens,
                     new_tokens,
                     max_request_tokens
                 );
@@ -567,16 +580,17 @@ impl Engine {
 
             cached_tokens = refreshed_cached_tokens;
             new_tokens = token_ids.len().saturating_sub(cached_tokens);
-            required_tokens = new_tokens.saturating_add(max_request_tokens);
+            target_required_tokens = new_tokens.saturating_add(max_request_tokens);
+            minimum_required_tokens = new_tokens.saturating_add(minimum_decode_budget_tokens);
             let (refreshed_available_tokens, evicted) = {
                 let mut e = self.engine.write();
-                e.ensure_available_kv_tokens(required_tokens)
+                e.ensure_available_kv_tokens(target_required_tokens)
             };
             if evicted > 0 {
                 warn!(
-                    "[generate_request] Evicted {} additional prefix cache block(s) after prefix-cache hit changed; reserving {} KV tokens ({} new prompt + {} max decode)",
+                    "[generate_request] Evicted {} additional prefix cache block(s) after prefix-cache hit changed; reserving {} KV tokens ({} new prompt + {} requested decode)",
                     evicted,
-                    required_tokens,
+                    target_required_tokens,
                     new_tokens,
                     max_request_tokens
                 );
@@ -586,23 +600,30 @@ impl Engine {
                 break;
             }
         }
-        if required_tokens > available_tokens {
-            max_request_tokens = if available_tokens > new_tokens {
-                available_tokens - new_tokens
-            } else {
+        if minimum_required_tokens > available_tokens {
+            if available_tokens <= new_tokens {
                 return Err(candle_core::Error::msg(format!(
                     "Requested prompt({} tokens, {} new after prefix cache) exceeds available KV cache capacity {}",
                     token_ids.len(),
                     new_tokens,
                     available_tokens
                 )));
-            };
-            warn!(
-                "[generate_request] Requested max tokens + new prompt tokens {} larger than available tokens {}, max_tokens changed to {} ({} new tokens after prefix cache hit of {} cached tokens)",
-                required_tokens,
-                available_tokens,
-                max_request_tokens,
+            }
+            return Err(candle_core::Error::msg(format!(
+                "Requested prompt({} tokens, {} new after prefix cache) plus {} decode budget tokens exceeds available KV cache capacity {}",
+                token_ids.len(),
                 new_tokens,
+                minimum_decode_budget_tokens,
+                available_tokens
+            )));
+        }
+        if target_required_tokens > available_tokens {
+            warn!(
+                "[generate_request] Request admitted with {} KV tokens available, below requested reservation {} tokens but enough for {} new prompt tokens plus {} decode budget tokens ({} cached prompt tokens)",
+                available_tokens,
+                target_required_tokens,
+                new_tokens,
+                minimum_decode_budget_tokens,
                 cached_tokens
             );
         }

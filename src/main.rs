@@ -50,7 +50,7 @@ struct Args {
     verbose: bool,
 
     /// Maximum number of sequences to allow
-    #[arg(long, default_value_t = 16)]
+    #[arg(long, default_value_t = 8)]
     max_num_seqs: usize,
 
     /// Size of a block
@@ -87,6 +87,10 @@ struct Args {
     /// Defaults to 0.5 and takes priority over `--mem` on CUDA/Metal.
     #[arg(long)]
     gpu_memory_fraction: Option<f32>,
+
+    /// Fraction of the auto-sized combined cache budget reserved for hybrid Mamba/GDN states.
+    #[arg(long)]
+    mamba_fraction: Option<f32>,
 
     /// Available CPU memory for kvcache (MB)
     #[arg(long, default_value_t = 128)]
@@ -421,11 +425,12 @@ async fn main() -> Result<()> {
                     first_model_dtype,
                     num_shards,
                 ) {
-                    if let Some(plan) = candle_vllm::plan_hybrid_mamba_cache(
+                    if let Some(plan) = candle_vllm::plan_hybrid_mamba_cache_with_fraction(
                         detected * 1024 * 1024,
                         estimate,
-                        args.max_num_seqs.max(16),
+                        args.max_num_seqs,
                         args.prefix_cache,
+                        args.mamba_fraction,
                     ) {
                         let reserved_mamba_mb = plan.budget_bytes.div_ceil(1024 * 1024);
                         if reserved_mamba_mb < detected {

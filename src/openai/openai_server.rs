@@ -30,6 +30,8 @@ use tokio::time::Duration;
 use tracing::debug;
 use uuid::Uuid;
 
+const REQUEST_ADMISSION_DECODE_BUDGET_TOKENS: usize = 4096;
+
 fn current_model_name(data: &OpenAIServerData) -> Result<String, APIError> {
     let model = data.model.read();
     let (pipeline, _) = model
@@ -248,16 +250,19 @@ pub async fn chat_completions(
         model.query_prefix_cache_match_tokens(&token_ids)
     };
     let mut new_tokens = token_ids.len().saturating_sub(cached_tokens);
-    let mut required_tokens = new_tokens.saturating_add(max_request_tokens);
+    let minimum_decode_budget_tokens =
+        max_request_tokens.min(REQUEST_ADMISSION_DECODE_BUDGET_TOKENS);
+    let mut target_required_tokens = new_tokens.saturating_add(max_request_tokens);
+    let mut minimum_required_tokens = new_tokens.saturating_add(minimum_decode_budget_tokens);
 
     let mut available_tokens = {
         let mut model = data.model.write();
-        let (available_tokens, evicted) = model.ensure_available_kv_tokens(required_tokens);
+        let (available_tokens, evicted) = model.ensure_available_kv_tokens(target_required_tokens);
         if evicted > 0 {
             tracing::warn!(
-                "Evicted {} prefix cache block(s) to reserve {} KV tokens for request admission ({} new prompt + {} max decode).",
+                "Evicted {} prefix cache block(s) to reserve {} KV tokens for request admission ({} new prompt + {} requested decode).",
                 evicted,
-                required_tokens,
+                target_required_tokens,
                 new_tokens,
                 max_request_tokens
             );
@@ -275,16 +280,17 @@ pub async fn chat_completions(
 
         cached_tokens = refreshed_cached_tokens;
         new_tokens = token_ids.len().saturating_sub(cached_tokens);
-        required_tokens = new_tokens.saturating_add(max_request_tokens);
+        target_required_tokens = new_tokens.saturating_add(max_request_tokens);
+        minimum_required_tokens = new_tokens.saturating_add(minimum_decode_budget_tokens);
         let (refreshed_available_tokens, evicted) = {
             let mut model = data.model.write();
-            model.ensure_available_kv_tokens(required_tokens)
+            model.ensure_available_kv_tokens(target_required_tokens)
         };
         if evicted > 0 {
             tracing::warn!(
-                "Evicted {} additional prefix cache block(s) after prefix-cache hit changed; reserving {} KV tokens ({} new prompt + {} max decode).",
+                "Evicted {} additional prefix cache block(s) after prefix-cache hit changed; reserving {} KV tokens ({} new prompt + {} requested decode).",
                 evicted,
-                required_tokens,
+                target_required_tokens,
                 new_tokens,
                 max_request_tokens
             );
@@ -295,10 +301,8 @@ pub async fn chat_completions(
         }
     }
 
-    if required_tokens > available_tokens {
-        let adjusted_max = if available_tokens > new_tokens {
-            available_tokens - new_tokens
-        } else {
+    if minimum_required_tokens > available_tokens {
+        if available_tokens <= new_tokens {
             return ChatResponder::ValidationError(APIError::new(format!(
                 "Requested prompt({} tokens, {} new after prefix cache) is  \
                 larger than available kvcache (maximum {} tokens).\n \
@@ -307,19 +311,27 @@ pub async fn chat_completions(
                 new_tokens,
                 available_tokens
             )));
-        };
-        if adjusted_max != max_request_tokens {
-            tracing::warn!(
-                "Requested max tokens + new prompt tokens {} larger than available tokens {}, \
-                max_tokens changed to {} ({} new tokens after prefix cache hit of {} cached tokens)!",
-                max_request_tokens + new_tokens,
-                available_tokens,
-                adjusted_max,
-                new_tokens,
-                cached_tokens
-            );
         }
-        max_request_tokens = adjusted_max;
+        return ChatResponder::ValidationError(APIError::new(format!(
+            "Requested prompt({} tokens, {} new after prefix cache) plus {} decode budget tokens is \
+            larger than available kvcache (maximum {} tokens).\n \
+            You can increase kvcache by setting `--gpu-memory-fraction` (default 0.5) to a larger value!",
+            token_ids.len(),
+            new_tokens,
+            minimum_decode_budget_tokens,
+            available_tokens
+        )));
+    }
+
+    if target_required_tokens > available_tokens {
+        tracing::warn!(
+            "Request admitted with {} KV tokens available, below requested reservation {} tokens but enough for {} new prompt tokens plus {} decode budget tokens ({} cached prompt tokens).",
+            available_tokens,
+            target_required_tokens,
+            new_tokens,
+            minimum_decode_budget_tokens,
+            cached_tokens
+        );
     }
 
     let generation_cfg = data.pipeline_config.generation_cfg.as_ref().unwrap();

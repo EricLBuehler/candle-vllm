@@ -9,6 +9,11 @@ mod streaming;
 #[path = "threaded.rs"]
 mod threaded;
 
+#[cfg(feature = "cuda")]
+const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 8;
+#[cfg(not(feature = "cuda"))]
+const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 4;
+
 #[cfg(feature = "nccl")]
 use crate::openai::communicator::DaemonManager;
 use crate::openai::pipelines::TokenOrFinishReason;
@@ -630,7 +635,6 @@ impl LLMEngine {
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
         prefill_chunk_size: Option<usize>,
     ) -> Result<Arc<RwLock<Self>>> {
-        const MIN_MAMBA_SLOT_CAPACITY: usize = 16;
         let devices: Vec<_> = pipelines
             .values()
             .map(|(pipeline, _)| pipeline.device())
@@ -643,7 +647,10 @@ impl LLMEngine {
         let hybrid_mamba_estimate =
             crate::estimate_hybrid_mamba_cache(config, model_dtype, num_shards);
         let require_mamba_prefix_snapshots = hybrid_mamba_estimate.is_some();
-        let mut mamba_slot_capacity = scheduler_config.max_num_seqs.max(MIN_MAMBA_SLOT_CAPACITY);
+        let active_slot_target = scheduler_config
+            .max_num_seqs
+            .max(HYBRID_MAMBA_MIN_ACTIVE_SLOTS);
+        let mut mamba_slot_capacity = active_slot_target;
         let mut mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
             scheduler_config.prefix_cache.enabled,
             mamba_slot_capacity,
@@ -676,33 +683,24 @@ impl LLMEngine {
             if cache_config.mamba_cache_budget_bytes > 0 {
                 let planned_total_slots =
                     cache_config.mamba_cache_budget_bytes / estimate.slot_bytes;
-                if planned_total_slots >= mamba_slot_capacity {
+                if planned_total_slots > 0 {
+                    mamba_slot_capacity = if scheduler_config.prefix_cache.enabled {
+                        active_slot_target.min(planned_total_slots).max(1)
+                    } else {
+                        planned_total_slots
+                    };
                     let prefix_budget_slots =
                         planned_total_slots.saturating_sub(mamba_slot_capacity);
-                    if prefix_budget_slots == 0 && mamba_prefix_capacity > 0 {
-                        info!(
-                            "Hybrid mamba planned budget leaves 0 explicit snapshot slot(s); using auto prefix-state capacity {}.",
-                            mamba_prefix_capacity
-                        );
-                    } else if mamba_prefix_capacity > prefix_budget_slots {
+                    mamba_prefix_capacity = if scheduler_config.prefix_cache.enabled {
+                        prefix_budget_slots
+                    } else {
+                        0
+                    };
+                    if mamba_prefix_capacity == 0 && scheduler_config.prefix_cache.enabled {
                         warn!(
-                            "Capping hybrid mamba prefix-state cache from {} to {} entries by planned budget.",
-                            mamba_prefix_capacity,
-                            prefix_budget_slots
+                            "Hybrid mamba prefix-state cache disabled because the planned mamba budget leaves no snapshot slots after active slots."
                         );
-                        mamba_prefix_capacity = prefix_budget_slots;
                     }
-                } else if planned_total_slots > 0 {
-                    warn!(
-                        "Hybrid mamba planned budget only fits {} total slot(s), below the target active minimum {}; using the largest safe active capacity instead.",
-                        planned_total_slots,
-                        mamba_slot_capacity
-                    );
-                    mamba_slot_capacity = planned_total_slots;
-                    mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
-                        scheduler_config.prefix_cache.enabled,
-                        mamba_slot_capacity,
-                    );
                 } else {
                     warn!(
                         "Hybrid mamba planned budget is smaller than one slot; falling back to 1 active slot."
@@ -750,6 +748,8 @@ impl LLMEngine {
         for (pipeline, _) in pipelines.values_mut() {
             pipeline.preallocate_mamba_cache(mamba_slot_capacity)?;
             pipeline.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
+            #[cfg(all(feature = "cuda", feature = "graph"))]
+            pipeline.clamp_mamba_graph_capture_batches(mamba_slot_capacity);
         }
 
         let num_threads: usize = pipelines.len();
