@@ -163,8 +163,9 @@ cargo install --features metal --path .
 - [Tool Calling解析](docs/tool_parsing.md)
 - [Prefix Cache](docs/prefix_cache.md)
 - [多模态模型使用](docs/multimodal.md)
-- [OpenCode + Candle-vLLM后端](docs/opencode.md)
-- [Kilo Code + Candle-vLLM后端](docs/kilocode.md)
+- [在xbot 中使用 Candle-vLLM后端](docs/xbot.md)
+- [在OpenCode 中使用 Candle-vLLM后端](docs/opencode.md)
+- [在Kilo Code 中使用 Candle-vLLM后端](docs/kilocode.md)
 
 ## 如何运行模型？
 

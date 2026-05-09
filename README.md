@@ -166,6 +166,7 @@ cargo install --features metal --path .
 - [Tool Call Parsing](docs/tool_parsing.md)
 - [Prefix Cache](docs/prefix_cache.md)
 - [Multimodal Model Usage](docs/multimodal.md)
+- [Work with xbot](docs/xbot.md)
 - [Work with OpenCode](docs/opencode.md)
 - [Work with Kilo Code](docs/kilocode.md)
 
