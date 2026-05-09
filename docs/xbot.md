@@ -73,10 +73,21 @@ Final Provider Config:
 
 ## 4) Run xbot
 
+One-shot task
+
 ```bash
 cd YOUR PROJECT
+# scan project and init agent file
 xbot chat /init
+# real task
 xbot chat "find bugs in this project."
+```
+**Interactive terminal** (rich TUI)
+
+```bash
+cd YOUR PROJECT
+# you may add .xbot workspace folder to .gitignore
+xbot repl
 ```
 
 ## Notes
