@@ -437,6 +437,16 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
         }
     }
 
+    const GRAPH_CAPTURE_MIN_BATCH: usize = 16;
+
+    pub fn clamp_mamba_graph_batch_size(&mut self, mamba_slot_capacity: usize) {
+        let graph_capture_max = std::cmp::min(
+            self.max_num_seqs.max(Self::GRAPH_CAPTURE_MIN_BATCH),
+            mamba_slot_capacity.max(1),
+        );
+        self.graph_bs = planned_graph_capture_batches(graph_capture_max);
+    }
+
     pub fn capture(
         &mut self,
         device: &Device,

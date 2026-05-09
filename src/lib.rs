@@ -208,7 +208,13 @@ pub struct HybridMambaCachePlan {
     pub budget_bytes: usize,
 }
 
-const DEFAULT_HYBRID_MAMBA_FRACTION: f32 = 0.1;
+const DEFAULT_HYBRID_MAMBA_FRACTION: f32 = 0.15;
+const MAX_HYBRID_MAMBA_FRACTION: f32 = 0.3;
+const HYBRID_MAMBA_PREFIX_SLOT_MULTIPLIER: usize = 2;
+#[cfg(feature = "cuda")]
+const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 8;
+#[cfg(not(feature = "cuda"))]
+const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 4;
 
 #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
 fn compute_kvcache_budget_bytes(free_bytes: usize, fraction: f32) -> Result<usize> {
@@ -350,27 +356,58 @@ pub fn plan_hybrid_mamba_cache(
     min_active_slots: usize,
     prefix_cache_enabled: bool,
 ) -> Option<HybridMambaCachePlan> {
+    plan_hybrid_mamba_cache_with_fraction(
+        total_cache_budget_bytes,
+        estimate,
+        min_active_slots,
+        prefix_cache_enabled,
+        None,
+    )
+}
+
+pub fn plan_hybrid_mamba_cache_with_fraction(
+    total_cache_budget_bytes: usize,
+    estimate: HybridMambaCacheEstimate,
+    min_active_slots: usize,
+    prefix_cache_enabled: bool,
+    mamba_fraction: Option<f32>,
+) -> Option<HybridMambaCachePlan> {
     if total_cache_budget_bytes == 0 || estimate.slot_bytes == 0 {
         return None;
     }
+    let mamba_fraction = mamba_fraction
+        .unwrap_or(DEFAULT_HYBRID_MAMBA_FRACTION)
+        .clamp(0.0, MAX_HYBRID_MAMBA_FRACTION);
+    if mamba_fraction <= 0.0 {
+        return None;
+    }
 
-    let active_slot_capacity = min_active_slots.max(1);
-    let baseline_prefix_slots = if prefix_cache_enabled {
-        active_slot_capacity
+    let active_slot_target = if prefix_cache_enabled {
+        min_active_slots.max(HYBRID_MAMBA_MIN_ACTIVE_SLOTS)
+    } else {
+        min_active_slots.max(1)
+    };
+    let min_prefix_slot_target = if prefix_cache_enabled {
+        active_slot_target.saturating_mul(HYBRID_MAMBA_PREFIX_SLOT_MULTIPLIER)
     } else {
         0
     };
-    let baseline_budget_bytes = active_slot_capacity
-        .saturating_add(baseline_prefix_slots)
+    let baseline_budget_bytes = active_slot_target
+        .saturating_add(min_prefix_slot_target)
         .saturating_mul(estimate.slot_bytes);
-    let target_budget_bytes = ((total_cache_budget_bytes as f64)
-        * (DEFAULT_HYBRID_MAMBA_FRACTION as f64))
-        .round() as usize;
+    let target_budget_bytes =
+        ((total_cache_budget_bytes as f64) * (mamba_fraction as f64)).round() as usize;
     let budget_bytes = target_budget_bytes.max(baseline_budget_bytes);
     let total_slot_capacity = budget_bytes / estimate.slot_bytes;
-    let prefix_slot_capacity = if prefix_cache_enabled && total_slot_capacity > active_slot_capacity
-    {
-        total_slot_capacity - active_slot_capacity
+    let active_slot_capacity = if prefix_cache_enabled {
+        active_slot_target
+            .min(total_slot_capacity.saturating_sub(min_prefix_slot_target))
+            .max(1)
+    } else {
+        total_slot_capacity.max(1)
+    };
+    let prefix_slot_capacity = if prefix_cache_enabled {
+        total_slot_capacity.saturating_sub(active_slot_capacity)
     } else {
         0
     };
@@ -413,7 +450,10 @@ pub mod tools;
 
 #[cfg(test)]
 mod tests {
-    use super::compute_kvcache_budget_bytes;
+    use super::{
+        compute_kvcache_budget_bytes, plan_hybrid_mamba_cache_with_fraction,
+        HybridMambaCacheEstimate,
+    };
 
     #[test]
     fn test_compute_kvcache_budget_bytes() {
@@ -427,5 +467,33 @@ mod tests {
         let free = 0usize;
         let budget = compute_kvcache_budget_bytes(free, 0.9).unwrap();
         assert_eq!(budget, 0);
+    }
+
+    #[test]
+    fn test_hybrid_mamba_plan_keeps_two_prefix_slots_per_active_slot() {
+        let estimate = HybridMambaCacheEstimate {
+            slot_bytes: 10,
+            num_gdn_layers: 1,
+        };
+        let plan =
+            plan_hybrid_mamba_cache_with_fraction(1_000, estimate, 16, true, Some(0.15)).unwrap();
+
+        assert_eq!(plan.active_slot_capacity, 16);
+        assert_eq!(plan.prefix_slot_capacity, 32);
+        assert_eq!(plan.budget_bytes, 480);
+    }
+
+    #[test]
+    fn test_hybrid_mamba_plan_adds_fraction_leftover_to_prefix_slots() {
+        let estimate = HybridMambaCacheEstimate {
+            slot_bytes: 10,
+            num_gdn_layers: 1,
+        };
+        let plan =
+            plan_hybrid_mamba_cache_with_fraction(2_000, estimate, 16, true, Some(0.3)).unwrap();
+
+        assert_eq!(plan.active_slot_capacity, 16);
+        assert_eq!(plan.prefix_slot_capacity, 44);
+        assert_eq!(plan.budget_bytes, 600);
     }
 }

@@ -12,3 +12,5 @@ kernels/src/lib.rs
 CLAUDE.md
 AGENTS.md
 .claude/
+.xbot/
+XBOT.md

@@ -2352,6 +2352,12 @@ impl DefaultPipeline {
         }
     }
 
+    #[cfg(all(feature = "cuda", feature = "graph"))]
+    pub fn clamp_mamba_graph_capture_batches(&mut self, mamba_slot_capacity: usize) {
+        self.capturer
+            .clamp_mamba_graph_batch_size(mamba_slot_capacity);
+    }
+
     pub fn capture_mamba_prefix_state(
         &self,
         seq_id: usize,
