@@ -215,6 +215,21 @@ impl BlockEngine {
         hasher.finish()
     }
 
+    fn image_seed_and_block(
+        images: &ImageData,
+        tokens: &[u32],
+        block_size: usize,
+    ) -> (Option<u64>, Option<usize>) {
+        let Some(image_token_id) = images.image_token_id else {
+            return (None, None);
+        };
+        let Some(first_pos) = tokens.iter().position(|&id| id == image_token_id) else {
+            return (None, None);
+        };
+        let seed = Self::image_prefix_seed(images);
+        (Some(seed), Some(first_pos / block_size))
+    }
+
     #[must_use]
     pub fn new(
         block_size: usize,
@@ -278,16 +293,17 @@ impl BlockEngine {
         let num_required_blocks = if let Some(prefix_cache) = self.prefix_cache.as_mut() {
             let seq = seq_group.get_seqs().values().nth(0).unwrap();
             let tokens = seq.deref().deref().get_token_ids();
-            let seed = seq
+            let (seed, seed_block) = seq
                 .deref()
                 .deref()
                 .get_images()
                 .as_ref()
-                .map(Self::image_prefix_seed);
+                .map(|img| Self::image_seed_and_block(img, &tokens, self.block_size))
+                .unwrap_or((None, None));
             let PrefixMatch {
                 matched_blocks,
                 last_hash,
-            } = prefix_cache.match_prefix_with_seed(&tokens, seed);
+            } = prefix_cache.match_prefix_with_seed(&tokens, seed, seed_block);
             let full_blocks = tokens.len() / block_size;
             let matched_blocks = if matched_blocks == full_blocks
                 && tokens.len() % block_size == 0
@@ -562,12 +578,13 @@ impl BlockEngine {
             tokens.len(),
             full_blocks
         );
-        let seed = sequence
+        let (seed, seed_block) = sequence
             .deref()
             .get_images()
             .as_ref()
-            .map(Self::image_prefix_seed);
-        let evicted = prefix_cache.insert_prefix_with_seed(&tokens, &blocks, seed);
+            .map(|img| Self::image_seed_and_block(img, &tokens, self.block_size))
+            .unwrap_or((None, None));
+        let evicted = prefix_cache.insert_prefix_with_seed(&tokens, &blocks, seed, seed_block);
         if !evicted.is_empty() {
             tracing::info!("Prefix cache evicted {} blocks after insert", evicted.len());
         }
@@ -668,12 +685,13 @@ impl BlockEngine {
         if full_blocks == 0 {
             return None;
         }
-        let seed = sequence
+        let (seed, seed_block) = sequence
             .deref()
             .get_images()
             .as_ref()
-            .map(Self::image_prefix_seed);
-        prefix_cache.hash_for_blocks_with_seed(&tokens, full_blocks, seed)
+            .map(|img| Self::image_seed_and_block(img, &tokens, self.block_size))
+            .unwrap_or((None, None));
+        prefix_cache.hash_for_blocks_with_seed(&tokens, full_blocks, seed, seed_block)
     }
 
     pub fn exact_prefix_hash_for_sequence(
@@ -690,12 +708,13 @@ impl BlockEngine {
         if full_blocks == 0 {
             return None;
         }
-        let seed = sequence
+        let (seed, seed_block) = sequence
             .deref()
             .get_images()
             .as_ref()
-            .map(Self::image_prefix_seed);
-        prefix_cache.hash_for_blocks_with_seed(&tokens, full_blocks, seed)
+            .map(|img| Self::image_seed_and_block(img, &tokens, self.block_size))
+            .unwrap_or((None, None));
+        prefix_cache.hash_for_blocks_with_seed(&tokens, full_blocks, seed, seed_block)
     }
 
     pub fn prefix_hash_chain_for_sequence(
@@ -714,14 +733,17 @@ impl BlockEngine {
         if full_blocks == 0 {
             return Vec::new();
         }
-        let seed = sequence
+        let (seed, seed_block) = sequence
             .deref()
             .get_images()
             .as_ref()
-            .map(Self::image_prefix_seed);
+            .map(|img| Self::image_seed_and_block(img, &tokens, self.block_size))
+            .unwrap_or((None, None));
         let mut hashes = Vec::with_capacity(full_blocks);
         for block_count in 1..=full_blocks {
-            if let Some(hash) = prefix_cache.hash_for_blocks_with_seed(&tokens, block_count, seed) {
+            if let Some(hash) =
+                prefix_cache.hash_for_blocks_with_seed(&tokens, block_count, seed, seed_block)
+            {
                 hashes.push((block_count * self.block_size, hash));
             }
         }
@@ -1125,16 +1147,17 @@ impl BlockEngine {
             let tokens = seq.deref().deref().get_token_ids();
             let valid_hashes = self.valid_mamba_prefix_hashes.clone();
             if let Some(prefix_cache) = self.prefix_cache.as_mut() {
-                let seed = seq
+                let (seed, seed_block) = seq
                     .deref()
                     .deref()
                     .get_images()
                     .as_ref()
-                    .map(Self::image_prefix_seed);
+                    .map(|img| Self::image_seed_and_block(img, &tokens, block_size))
+                    .unwrap_or((None, None));
                 let PrefixMatch {
                     matched_blocks,
                     last_hash,
-                } = prefix_cache.match_prefix_with_seed(&tokens, seed);
+                } = prefix_cache.match_prefix_with_seed(&tokens, seed, seed_block);
                 let full_blocks = tokens.len() / block_size;
                 let raw_matched_blocks = if matched_blocks == full_blocks
                     && tokens.len() % block_size == 0
