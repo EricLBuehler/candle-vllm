@@ -120,17 +120,15 @@ impl Scheduler {
                 }
                 let seq_group = self.waiting.front().unwrap().clone();
 
-                let total_running = self.running.len() + scheduled.len();
-                // If adding this seq means we will have too many, stop as no more could be added.
-                if total_running >= max_seqs_limit
-                    || self.config.max_num_seqs
-                        == self
-                            .running
-                            .iter()
-                            .map(|group| group.get_seqs().len())
-                            .sum::<usize>()
-                            + 1
-                {
+                if self.running.len() >= max_seqs_limit {
+                    break;
+                }
+                let total_individual_seqs: usize = self
+                    .running
+                    .iter()
+                    .map(|group| group.get_seqs().len())
+                    .sum();
+                if total_individual_seqs + 1 > self.config.max_num_seqs {
                     break;
                 }
 
@@ -412,8 +410,9 @@ impl Scheduler {
             let seq = group.get_seqs().values().nth(0).unwrap();
             let prompt_len = seq.deref().get_prompt_len();
             let num_cached_tokens = seq.deref().get_num_cached_tokens();
-            if prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len {
-                if prompt_len > chunk_size {
+            let remaining = prompt_len.saturating_sub(num_cached_tokens);
+            if remaining <= chunk_size {
+                if num_cached_tokens > 0 {
                     chunk_finished_info.push((seq.deref().get_id(), prompt_len));
                 }
                 finished_indices.push(i as u32);
