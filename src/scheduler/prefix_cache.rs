@@ -63,10 +63,15 @@ impl PrefixCache {
     }
 
     pub fn match_prefix(&mut self, tokens: &[u32]) -> PrefixMatch {
-        self.match_prefix_with_seed(tokens, None)
+        self.match_prefix_with_seed(tokens, None, None)
     }
 
-    pub fn match_prefix_with_seed(&mut self, tokens: &[u32], seed: Option<u64>) -> PrefixMatch {
+    pub fn match_prefix_with_seed(
+        &mut self,
+        tokens: &[u32],
+        seed: Option<u64>,
+        seed_block: Option<usize>,
+    ) -> PrefixMatch {
         if !self.enabled() {
             return PrefixMatch {
                 matched_blocks: 0,
@@ -83,9 +88,14 @@ impl PrefixCache {
         }
 
         let mut matched = 0usize;
-        let mut parent_hash = seed.unwrap_or(0u64);
+        let mut parent_hash = 0u64;
         let mut last_hash = None;
-        for block_tokens in tokens.chunks(self.block_size).take(full_blocks) {
+        for (i, block_tokens) in tokens.chunks(self.block_size).take(full_blocks).enumerate() {
+            if let Some(s) = seed {
+                if seed_block.map_or(false, |sb| i == sb) {
+                    parent_hash = Self::mix_seed(parent_hash, s);
+                }
+            }
             let hash = Self::hash_block(parent_hash, block_tokens);
             if self.entries.contains_key(&hash) {
                 matched += 1;
@@ -134,7 +144,7 @@ impl PrefixCache {
     }
 
     pub fn hash_for_blocks(&self, tokens: &[u32], full_blocks: usize) -> Option<u64> {
-        self.hash_for_blocks_with_seed(tokens, full_blocks, None)
+        self.hash_for_blocks_with_seed(tokens, full_blocks, None, None)
     }
 
     pub fn hash_for_blocks_with_seed(
@@ -142,13 +152,19 @@ impl PrefixCache {
         tokens: &[u32],
         full_blocks: usize,
         seed: Option<u64>,
+        seed_block: Option<usize>,
     ) -> Option<u64> {
         if !self.enabled() || full_blocks == 0 {
             return None;
         }
-        let mut parent_hash = seed.unwrap_or(0u64);
+        let mut parent_hash = 0u64;
         let mut last_hash = None;
-        for block_tokens in tokens.chunks(self.block_size).take(full_blocks) {
+        for (i, block_tokens) in tokens.chunks(self.block_size).take(full_blocks).enumerate() {
+            if let Some(s) = seed {
+                if seed_block.map_or(false, |sb| i == sb) {
+                    parent_hash = Self::mix_seed(parent_hash, s);
+                }
+            }
             let hash = Self::hash_block(parent_hash, block_tokens);
             last_hash = Some(hash);
             parent_hash = hash;
@@ -161,7 +177,7 @@ impl PrefixCache {
         tokens: &[u32],
         blocks: &[Arc<PhysicalTokenBlock>],
     ) -> Vec<Arc<PhysicalTokenBlock>> {
-        self.insert_prefix_with_seed(tokens, blocks, None)
+        self.insert_prefix_with_seed(tokens, blocks, None, None)
     }
 
     pub fn insert_prefix_with_seed(
@@ -169,6 +185,7 @@ impl PrefixCache {
         tokens: &[u32],
         blocks: &[Arc<PhysicalTokenBlock>],
         seed: Option<u64>,
+        seed_block: Option<usize>,
     ) -> Vec<Arc<PhysicalTokenBlock>> {
         if !self.enabled() {
             return Vec::new();
@@ -180,14 +197,21 @@ impl PrefixCache {
             return Vec::new();
         }
 
-        let mut parent_hash = seed;
+        let mut parent_hash: Option<u64> = None;
         let mut protected_hashes = HashSet::new();
-        for (block, block_tokens) in blocks
+        for (i, (block, block_tokens)) in blocks
             .iter()
             .zip(tokens.chunks(self.block_size))
             .take(max_blocks)
+            .enumerate()
         {
-            let hash = Self::hash_block(parent_hash.unwrap_or(0), block_tokens);
+            let mut base = parent_hash.unwrap_or(0);
+            if let Some(s) = seed {
+                if seed_block.map_or(false, |sb| i == sb) {
+                    base = Self::mix_seed(base, s);
+                }
+            }
+            let hash = Self::hash_block(base, block_tokens);
             protected_hashes.insert(hash);
             if self.entries.contains_key(&hash) {
                 let access_id = self.next_access_id();
@@ -221,10 +245,17 @@ impl PrefixCache {
             parent_hash = Some(hash);
         }
 
-        // We have prefix-cache eviction elsewhere, so we won't evict here.
-        // evicting here will cause lower prefix-cache hit rate for tool calls
-        // self.evict_if_needed_protecting(&protected_hashes)
-        Vec::new()
+        let excess = self
+            .entries
+            .len()
+            .saturating_sub(self.config.max_cached_blocks);
+        let evicted = if excess > 0 {
+            self.evict_blocks(excess)
+        } else {
+            Vec::new()
+        };
+
+        evicted
     }
 
     pub fn evict_blocks(&mut self, num_blocks: usize) -> Vec<Arc<PhysicalTokenBlock>> {
@@ -302,6 +333,13 @@ impl PrefixCache {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         parent_hash.hash(&mut hasher);
         tokens.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn mix_seed(parent_hash: u64, seed: u64) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        parent_hash.hash(&mut hasher);
+        seed.hash(&mut hasher);
         hasher.finish()
     }
 }
