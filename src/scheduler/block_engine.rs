@@ -168,7 +168,7 @@ impl Allocator<CPUAllocator> {
                     block_id: id,
                     block_size,
                     refcount: 0,
-                    is_gpu: true,
+                    is_gpu: false,
                 },
             ))))
         }
@@ -1112,12 +1112,10 @@ impl BlockEngine {
             for cpu_block in block_table {
                 let gpu_block =
                     if let Entry::Vacant(e) = new_mapping.entry(cpu_block.deref_mut().block_id) {
-                        // Create a new block
-                        let gpu_block = self.cpu_allocator.allocate();
+                        let gpu_block = self.gpu_allocator.allocate();
                         e.insert(gpu_block.clone());
                         gpu_block
                     } else {
-                        // Reuse a block
                         let gpu_block = new_mapping
                             .get(&cpu_block.deref_mut().block_id)
                             .unwrap()
@@ -1126,7 +1124,7 @@ impl BlockEngine {
                         gpu_block
                     };
                 new_block_table.push_back(gpu_block);
-                self.gpu_allocator.free_block(cpu_block.clone());
+                self.cpu_allocator.free_block(cpu_block.clone());
             }
             self.block_tables.insert(*seq_id, new_block_table);
         }
