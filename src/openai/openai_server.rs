@@ -34,10 +34,12 @@ const REQUEST_ADMISSION_DECODE_BUDGET_TOKENS: usize = 4096;
 
 fn current_model_name(data: &OpenAIServerData) -> Result<String, APIError> {
     let model = data.model.read();
-    let (pipeline, _) = model
-        .get_pipeline(0)
-        .ok_or(APIError::new("Missing pipeline".to_string()))?;
-    Ok(pipeline.name().to_string())
+    let model_name = model.model_name();
+    if model_name.is_empty() {
+        Err(APIError::new("Missing pipeline".to_string()))
+    } else {
+        Ok(model_name.to_string())
+    }
 }
 
 fn resolve_response_model_name(requested: Option<&str>, current: &str) -> String {
@@ -53,11 +55,10 @@ async fn get_gen_prompt(
     request: &ChatCompletionRequest,
     tool_config: &ResolvedToolConfig,
 ) -> Result<(String, Option<ImageData>), APIError> {
-    let mut model = data.model.write();
-    let pipeline = model
-        .get_mut_pipeline(0)
-        .ok_or(APIError::new("Missing pipeline".to_string()))?;
-    let mut conversation = pipeline.0.get_conversation().clone();
+    let model = data.model.read();
+    let mut conversation = model.conversation();
+    let image_config = model.image_config();
+    drop(model);
     let mut image_data = None;
 
     match &request.messages {
@@ -66,7 +67,7 @@ async fn get_gen_prompt(
         }
         Messages::Chat(messages) => {
             let (render_messages, images) =
-                build_messages_and_images(messages, pipeline.0.image_config.as_ref())
+                build_messages_and_images(messages, image_config.as_ref())
                     .map_err(APIError::from)?;
             image_data = images;
             for message in render_messages {
@@ -120,11 +121,7 @@ async fn check_length(
 ) -> Result<Vec<u32>, APIError> {
     let token_ids = {
         let model = data.model.read();
-        let pipeline = model
-            .get_pipeline(0)
-            .ok_or(APIError::new("Missing pipeline".to_string()))?;
-        pipeline
-            .0
+        model
             .tokenizer()
             .encode_fast(prompt, true)
             .map_err(APIError::from)?
@@ -564,16 +561,9 @@ pub async fn create_embeddings(
     //TODO: Reuse check_length or similar logic. For now simplified.
     let token_ids = {
         let model = data.model.read();
-        let pipeline = model
-            .get_pipeline(0)
-            .ok_or(APIError::new("Missing pipeline".to_string()));
-
-        match pipeline {
-            Ok(pipeline) => match pipeline.0.tokenizer().encode_fast(prompt_str, true) {
-                Ok(encoding) => encoding.get_ids().to_vec(),
-                Err(e) => return ChatResponder::ValidationError(APIError::from(e)),
-            },
-            Err(e) => return ChatResponder::ModelError(e),
+        match model.tokenizer().encode_fast(prompt_str, true) {
+            Ok(encoding) => encoding.get_ids().to_vec(),
+            Err(e) => return ChatResponder::ValidationError(APIError::from(e)),
         }
     };
 

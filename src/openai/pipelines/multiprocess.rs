@@ -530,10 +530,8 @@ impl MultiprocessRunner {
 
             self.sync_prompt_cache_decisions(&scheduled)?;
 
-            let mut batch = self
-                .engine
-                .write()
-                .execute_scheduled_batch(&scheduled, self.rank)?;
+            let mut batch =
+                LLMEngine::execute_scheduled_batch(&self.engine, &scheduled, self.rank)?;
 
             if batch.is_prompt && !batch.is_embedding {
                 let aborted_sequences = if self.rank == 0 {

@@ -101,8 +101,9 @@ impl Scheduler {
             let mut scheduled = VecDeque::new();
             let mut ignored_seq_groups = VecDeque::new();
             let mut blocks_to_copy = HashMap::new();
+            let pre_existing_running = self.running.len();
             while !self.waiting.is_empty() {
-                if self.is_last_prefill && self.running.len() > 0 {
+                if self.is_last_prefill && pre_existing_running > 0 {
                     break; // interleaved scheduling
                 }
                 let seq_group = self.waiting.front().unwrap().clone();
@@ -373,6 +374,8 @@ impl Scheduler {
     ) -> (Vec<u32>, VecDeque<Arc<SequenceGroup>>) {
         let mut finished_indices = Vec::new();
         let mut remove_ids = Vec::new();
+        let mut chunked_info = Vec::new();
+        let mut chunk_finished_info = Vec::new();
         assert!(chunk_size > 0, "Invalid prefill chunk size!");
         for (i, group) in scheduled.iter().enumerate() {
             let seq = group.get_seqs().values().nth(0).unwrap();
@@ -380,11 +383,7 @@ impl Scheduler {
             let num_cached_tokens = seq.deref().get_num_cached_tokens();
             if prompt_len < chunk_size || num_cached_tokens + chunk_size >= prompt_len {
                 if prompt_len > chunk_size {
-                    tracing::info!(
-                        "Seq {} chunk prefill finished ({} tokens)",
-                        seq.deref().get_id(),
-                        prompt_len
-                    );
+                    chunk_finished_info.push((seq.deref().get_id(), prompt_len));
                 }
                 finished_indices.push(i as u32);
             } else {
@@ -395,14 +394,39 @@ impl Scheduler {
                 seq.deref_mut()
                     .set_num_cached_tokens(num_cached_tokens + chunk_size); //current prefilled CHUNK_SIZE
                 group.set_status(SequenceStatus::Pending);
-                tracing::info!(
-                    "Seq {} chunk prefilled {}/{} tokens",
+                chunked_info.push((
                     seq.deref().get_id(),
                     seq.deref().get_num_cached_tokens(),
-                    prompt_len
-                );
+                    prompt_len,
+                ));
                 self.waiting.push_back(group);
             }
+        }
+        if !chunked_info.is_empty() {
+            let total_chunked: usize = chunked_info.iter().map(|(_, cached, _)| *cached).sum();
+            let seq_details = chunked_info
+                .iter()
+                .map(|(id, cached, total)| format!("{}:{}/{}", id, cached, total))
+                .collect::<Vec<_>>();
+            tracing::info!(
+                "Chunk prefilled {} seq(s) [{}] ({} total tokens processed)",
+                chunked_info.len(),
+                seq_details.join(", "),
+                total_chunked
+            );
+        }
+        if !chunk_finished_info.is_empty() {
+            let seq_ids = chunk_finished_info
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            let total: usize = chunk_finished_info.iter().map(|(_, len)| *len).sum();
+            tracing::info!(
+                "Chunk prefill finished for {} seq(s) {:?} ({} total tokens)",
+                chunk_finished_info.len(),
+                seq_ids,
+                total
+            );
         }
         self.running.retain(|s| {
             !remove_ids.contains(&s.get_seqs().values().nth(0).unwrap().deref().get_id())

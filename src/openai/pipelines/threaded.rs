@@ -58,10 +58,8 @@ impl ThreadedRunner {
                 continue;
             }
 
-            let mut batch = self
-                .engine
-                .write()
-                .execute_scheduled_batch(&scheduled, self.rank)?;
+            let mut batch =
+                LLMEngine::execute_scheduled_batch(&self.engine, &scheduled, self.rank)?;
 
             if self.rank != 0 {
                 self.engine.read().clear_current_scheduled_groups();

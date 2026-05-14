@@ -13,18 +13,18 @@ impl NormX {
             Self::Rms(_, dt) | Self::Layer(_, dt) => *dt,
         };
         let in_dtype = xs.dtype();
-        let xs = if in_dtype != norm_dtype {
-            xs.to_dtype(norm_dtype)?
-        } else {
-            xs.clone()
-        };
-        let out = match self {
-            Self::Rms(norm, _) => norm.forward(&xs)?,
-            Self::Layer(norm, _) => norm.forward(&xs)?,
-        };
-        if out.dtype() != in_dtype {
+        if in_dtype != norm_dtype {
+            let xs = xs.to_dtype(norm_dtype)?;
+            let out = match self {
+                Self::Rms(norm, _) => norm.forward(&xs)?,
+                Self::Layer(norm, _) => norm.forward(&xs)?,
+            };
             out.to_dtype(in_dtype)
         } else {
+            let out = match self {
+                Self::Rms(norm, _) => norm.forward(xs)?,
+                Self::Layer(norm, _) => norm.forward(xs)?,
+            };
             Ok(out)
         }
     }
