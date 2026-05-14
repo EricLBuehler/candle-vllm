@@ -758,6 +758,11 @@ impl LLMEngine {
             pipeline.clamp_mamba_graph_capture_batches(mamba_slot_capacity);
         }
 
+        let mut scheduler_config = scheduler_config;
+        if require_mamba_prefix_snapshots && mamba_slot_capacity > 0 {
+            scheduler_config.mamba_cache_capacity = Some(mamba_slot_capacity);
+        }
+
         let num_threads: usize = pipelines.len();
         let (model_name, tokenizer, conversation, image_config) = {
             let (pipeline, _) = pipelines

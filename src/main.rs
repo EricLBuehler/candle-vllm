@@ -539,6 +539,7 @@ async fn main() -> Result<()> {
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
             prefix_cache: prefix_cache_config,
+            mamba_cache_capacity: None,
         },
         &cache_config,
         &config,
