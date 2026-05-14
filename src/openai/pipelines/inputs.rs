@@ -140,7 +140,7 @@ impl LLMEngine {
                 #[cfg(feature = "flashinfer")]
                 prefill_tokens.push(num_tokens);
 
-                context_lens.push(seq_len as u32);
+                context_lens.push((num_cached_tokens + num_tokens) as u32);
 
                 let seqlen_q = num_tokens;
                 let use_cached_kv = num_cached_tokens > 0

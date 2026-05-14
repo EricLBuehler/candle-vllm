@@ -444,14 +444,14 @@ impl Engine {
 
         let (prompt, tokenizer, image_data, resolved_tools) = {
             let e = self.engine.read();
-            let (pipeline, _) = e.get_pipeline(0).unwrap();
 
             let tool_config = resolve_tools_for_request(&request.tools, &request.tool_choice, None)
                 .map_err(candle_core::Error::wrap)?;
             let resolved_tools = tool_config.tools.clone();
 
-            // tokenizer is inside DefaultPipeline
-            let mut conversation = pipeline.conversation.clone();
+            let tokenizer = e.tokenizer().clone();
+            let image_config = e.image_config();
+            let mut conversation = e.conversation();
             let mut image_data = None;
 
             // Logic to get prompt from messages
@@ -462,7 +462,7 @@ impl Engine {
                 }
                 Messages::Chat(messages) => {
                     let (render_messages, images) =
-                        build_messages_and_images(messages, pipeline.image_config.as_ref())
+                        build_messages_and_images(messages, image_config.as_ref())
                             .map_err(candle_core::Error::wrap)?;
                     image_data = images;
                     for message in render_messages {
@@ -499,12 +499,7 @@ impl Engine {
             let enable_thinking = request.thinking.unwrap_or(true);
             let prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
 
-            (
-                prompt,
-                pipeline.tokenizer.clone(),
-                image_data,
-                resolved_tools,
-            )
+            (prompt, tokenizer, image_data, resolved_tools)
         };
 
         let request_id = format!("cmpl-{}", uuid::Uuid::new_v4());
@@ -692,10 +687,11 @@ impl Engine {
         }
 
         let e = self.engine.read();
-        let response_model = e
-            .get_pipeline(0)
-            .map(|(pipeline, _)| pipeline.name().to_string())
-            .unwrap_or_else(|| request.model.clone().unwrap_or("default".to_string()));
+        let response_model = if e.model_name().is_empty() {
+            request.model.clone().unwrap_or("default".to_string())
+        } else {
+            e.model_name().to_string()
+        };
         if let Some(record) = e.completion_records.get(&request_id) {
             let mut choices = record.0.clone();
             if crate::stream_as_reasoning_content() {
@@ -780,7 +776,6 @@ impl Engine {
     pub async fn embed_async(&self, request: EmbeddingRequest) -> Result<EmbeddingResponse> {
         let prompt_tokens = {
             let e = self.engine.read();
-            let (pipeline, _) = e.get_pipeline(0).unwrap();
 
             let prompt_str = match &request.input {
                 crate::openai::requests::EmbeddingInput::String(s) => s.clone(),
@@ -799,8 +794,7 @@ impl Engine {
                 }
             };
 
-            pipeline
-                .tokenizer
+            e.tokenizer()
                 .encode(prompt_str, false)
                 .map_err(candle_core::Error::msg)?
                 .get_ids()

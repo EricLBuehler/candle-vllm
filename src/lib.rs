@@ -211,10 +211,7 @@ pub struct HybridMambaCachePlan {
 const DEFAULT_HYBRID_MAMBA_FRACTION: f32 = 0.15;
 const MAX_HYBRID_MAMBA_FRACTION: f32 = 0.3;
 const HYBRID_MAMBA_PREFIX_SLOT_MULTIPLIER: usize = 2;
-#[cfg(feature = "cuda")]
 const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 8;
-#[cfg(not(feature = "cuda"))]
-const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 4;
 
 #[cfg_attr(not(any(feature = "cuda", feature = "metal")), allow(dead_code))]
 fn compute_kvcache_budget_bytes(free_bytes: usize, fraction: f32) -> Result<usize> {

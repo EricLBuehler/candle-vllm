@@ -28,9 +28,11 @@ use crate::tools::stream_parser::{
 use crate::FlashInferKvParams;
 use crate::{
     openai::{
+        conversation::default_conversation::DefaultConversation,
         models::Config,
         multimodal::compute_image_slice,
         multimodal::ImageData,
+        multimodal::ImageProcessConfig,
         responses::{
             ChatChoice, ChatChoiceData, ChatCompletionChunk, ChatCompletionUsageResponse, Choice,
             ChoiceData, CompletionTokensDetails, EmbeddingData, EmbeddingOutput, EmbeddingResponse,
@@ -110,6 +112,10 @@ pub struct LLMEngine {
     pub exit_flag: Arc<AtomicBool>,
     last_decoding_throughput_log_ms: usize,
     prompt_replay_candidates: Vec<Vec<u32>>,
+    model_name: String,
+    tokenizer: tokenizers::Tokenizer,
+    conversation: DefaultConversation,
+    image_config: Option<ImageProcessConfig>,
 }
 
 impl LLMEngine {
@@ -753,6 +759,18 @@ impl LLMEngine {
         }
 
         let num_threads: usize = pipelines.len();
+        let (model_name, tokenizer, conversation, image_config) = {
+            let (pipeline, _) = pipelines
+                .values()
+                .next()
+                .expect("LLMEngine requires at least one pipeline");
+            (
+                pipeline.name().to_string(),
+                pipeline.tokenizer.clone(),
+                pipeline.conversation.clone(),
+                pipeline.image_config.clone(),
+            )
+        };
         let engine = Arc::new(RwLock::new(Self {
             pipelines,
             scheduler: Scheduler::new(
@@ -779,6 +797,10 @@ impl LLMEngine {
             exit_flag: Arc::new(AtomicBool::new(false)),
             last_decoding_throughput_log_ms: 0,
             prompt_replay_candidates: Vec::new(),
+            model_name,
+            tokenizer,
+            conversation,
+            image_config,
         }));
         {
             let mut e = engine.write();
@@ -1013,6 +1035,22 @@ impl LLMEngine {
         rank: usize,
     ) -> Option<&mut (Box<DefaultPipeline>, CacheEngine)> {
         self.pipelines.get_mut(&rank)
+    }
+
+    pub fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    pub fn tokenizer(&self) -> &tokenizers::Tokenizer {
+        &self.tokenizer
+    }
+
+    pub fn conversation(&self) -> DefaultConversation {
+        self.conversation.clone()
+    }
+
+    pub fn image_config(&self) -> Option<ImageProcessConfig> {
+        self.image_config.clone()
     }
 
     /// Build prompt-replay candidates from the chat template.  Each candidate
@@ -1421,88 +1459,105 @@ impl LLMEngine {
     }
 
     fn execute_scheduled_batch(
-        &mut self,
+        engine: &Arc<RwLock<Self>>,
         scheduled: &VecDeque<Arc<SequenceGroup>>,
         rank: usize,
     ) -> Result<BatchExecution> {
-        let is_embedding = scheduled[0].is_embedding;
-        let is_prompt_request = Self::primary_sequence(&scheduled[0]).deref().is_prompt();
+        let (pipeline_entry, tokens, positions, metadata, images, is_embedding, model_name) = {
+            let mut guard = engine.write();
+            let is_embedding = scheduled[0].is_embedding;
+            let is_prompt_request = Self::primary_sequence(&scheduled[0]).deref().is_prompt();
 
-        if is_prompt_request {
-            self.restore_mamba_prefix_states_for_prompt(scheduled, rank)?;
-        }
-
-        let (pipeline, cache_engine) = self.get_pipeline(rank).unwrap();
-        let device = pipeline.device();
-        let model_name = pipeline.name().to_string();
-        #[cfg_attr(not(feature = "flashinfer"), allow(unused_mut))]
-        let mut prepared = if is_prompt_request {
-            self.prepare_prompt(scheduled, device, rank)
-        } else {
-            self.prepare_decode(scheduled, device, rank)
-        }?;
-        #[cfg(feature = "flashinfer")]
-        if !prepared.metadata.is_prefill {
-            let use_cuda_graph = prepared
-                .metadata
-                .flashinfer_metadata
-                .as_ref()
-                .map(|fm| fm.use_cuda_graph)
-                .unwrap_or(false);
-            if !use_cuda_graph {
-                self.ensure_flashinfer_decode_plan(
-                    rank,
-                    device,
-                    prepared.tokens.dim(0)?,
-                    &mut prepared.metadata,
-                )?;
+            if is_prompt_request {
+                guard.restore_mamba_prefix_states_for_prompt(scheduled, rank)?;
             }
-        }
-        let PreparedInputs {
-            tokens,
-            positions,
-            metadata,
-        } = prepared;
 
-        let images: Option<ImageData> = if is_prompt_request {
-            let seq = Self::primary_sequence(&scheduled[0]);
-            let seq_guard = seq.deref();
-            let seq_images = seq_guard.get_images();
-            let seq_token_ids = seq_guard.get_token_ids();
-            let seq_num_cached_tokens = seq_guard.get_num_cached_tokens();
-            drop(seq_guard);
-            if let Some(images) = seq_images {
-                if scheduled.len() > 1 {
-                    candle_core::bail!(
-                        "multimodal prefill does not support batching multiple sequence groups"
-                    );
+            let (pipeline, _) = guard.get_pipeline(rank).unwrap();
+            let device = pipeline.device();
+            let model_name = pipeline.name().to_string();
+            #[cfg_attr(not(feature = "flashinfer"), allow(unused_mut))]
+            let mut prepared = if is_prompt_request {
+                guard.prepare_prompt(scheduled, device, rank)
+            } else {
+                guard.prepare_decode(scheduled, device, rank)
+            }?;
+            #[cfg(feature = "flashinfer")]
+            if !prepared.metadata.is_prefill {
+                let use_cuda_graph = prepared
+                    .metadata
+                    .flashinfer_metadata
+                    .as_ref()
+                    .map(|fm| fm.use_cuda_graph)
+                    .unwrap_or(false);
+                if !use_cuda_graph {
+                    guard.ensure_flashinfer_decode_plan(
+                        rank,
+                        device,
+                        prepared.tokens.dim(0)?,
+                        &mut prepared.metadata,
+                    )?;
                 }
-                if images.image_idx == -1 {
-                    None
+            }
+            let PreparedInputs {
+                tokens,
+                positions,
+                metadata,
+            } = prepared;
+
+            let images: Option<ImageData> = if is_prompt_request {
+                let seq = Self::primary_sequence(&scheduled[0]);
+                let seq_guard = seq.deref();
+                let seq_images = seq_guard.get_images();
+                let seq_token_ids = seq_guard.get_token_ids();
+                let seq_num_cached_tokens = seq_guard.get_num_cached_tokens();
+                drop(seq_guard);
+                if let Some(images) = seq_images {
+                    if scheduled.len() > 1 {
+                        candle_core::bail!(
+                            "multimodal prefill does not support batching multiple sequence groups"
+                        );
+                    }
+                    if images.image_idx == -1 {
+                        None
+                    } else {
+                        compute_image_slice(&seq_token_ids, seq_num_cached_tokens, &images).map(
+                            |(image_idx, token_offset)| {
+                                let mut images = images.clone();
+                                images.image_idx = image_idx;
+                                images.image_token_offset = token_offset;
+                                images
+                            },
+                        )
+                    }
                 } else {
-                    compute_image_slice(&seq_token_ids, seq_num_cached_tokens, &images).map(
-                        |(image_idx, token_offset)| {
-                            let mut images = images.clone();
-                            images.image_idx = image_idx;
-                            images.image_token_offset = token_offset;
-                            images
-                        },
-                    )
+                    None
                 }
             } else {
                 None
-            }
-        } else {
-            None
+            };
+
+            let pipeline_entry = guard.pipelines.remove(&rank).ok_or_else(|| {
+                candle_core::Error::msg(format!("missing pipeline for rank {rank}"))
+            })?;
+            (
+                pipeline_entry,
+                tokens,
+                positions,
+                metadata,
+                images,
+                is_embedding,
+                model_name,
+            )
         };
 
+        let (pipeline, cache_engine) = (&pipeline_entry.0, &pipeline_entry.1);
         let logits = if is_embedding {
             pipeline.forward_embedding(
                 tokens,
                 &positions,
                 Some(&cache_engine.get_kv_cache()),
                 &metadata,
-            )?
+            )
         } else {
             pipeline.forward(
                 tokens,
@@ -1510,8 +1565,13 @@ impl LLMEngine {
                 Some(&cache_engine.get_kv_cache()),
                 &metadata,
                 images.as_ref(),
-            )?
+            )
         };
+        let mut guard = engine.write();
+        if guard.pipelines.insert(rank, pipeline_entry).is_some() {
+            candle_core::bail!("pipeline for rank {rank} was replaced while detached");
+        }
+        let logits = logits?;
 
         Ok(BatchExecution {
             logits,
