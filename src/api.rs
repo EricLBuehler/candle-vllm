@@ -317,6 +317,7 @@ impl EngineBuilder {
         let scheduler_config = SchedulerConfig {
             max_num_seqs: self.max_num_seqs,
             prefix_cache: PrefixCacheConfig::default(),
+            mamba_cache_capacity: None,
         };
 
         let notify = Arc::new(Notify::new());

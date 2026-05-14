@@ -47,6 +47,7 @@ pub struct SchedulerOutput {
 pub struct SchedulerConfig {
     pub max_num_seqs: usize,
     pub prefix_cache: PrefixCacheConfig,
+    pub mamba_cache_capacity: Option<usize>,
 }
 
 pub struct Scheduler {
@@ -102,20 +103,33 @@ impl Scheduler {
             let mut ignored_seq_groups = VecDeque::new();
             let mut blocks_to_copy = HashMap::new();
             let pre_existing_running = self.running.len();
+
+            let max_seqs_limit = if let Some(mamba_cap) = self.config.mamba_cache_capacity {
+                if mamba_cap > 0 {
+                    mamba_cap
+                } else {
+                    self.config.max_num_seqs
+                }
+            } else {
+                self.config.max_num_seqs
+            };
+
             while !self.waiting.is_empty() {
                 if self.is_last_prefill && pre_existing_running > 0 {
                     break; // interleaved scheduling
                 }
                 let seq_group = self.waiting.front().unwrap().clone();
 
+                let total_running = self.running.len() + scheduled.len();
                 // If adding this seq means we will have too many, stop as no more could be added.
-                if self.config.max_num_seqs
-                    == self
-                        .running
-                        .iter()
-                        .map(|group| group.get_seqs().len())
-                        .sum::<usize>()
-                        + 1
+                if total_running >= max_seqs_limit
+                    || self.config.max_num_seqs
+                        == self
+                            .running
+                            .iter()
+                            .map(|group| group.get_seqs().len())
+                            .sum::<usize>()
+                            + 1
                 {
                     break;
                 }
@@ -178,9 +192,26 @@ impl Scheduler {
         // Sorts by creation time, in descending order so that earliest are latest (first come first serve).
         self.sort_running_by_priority_fcfs();
 
+        let decode_max_seqs = if let Some(mamba_cap) = self.config.mamba_cache_capacity {
+            if mamba_cap > 0 {
+                std::cmp::min(mamba_cap, self.config.max_num_seqs)
+            } else {
+                self.config.max_num_seqs
+            }
+        } else {
+            self.config.max_num_seqs
+        };
+
         let mut running = VecDeque::new();
         let mut preempted = VecDeque::new();
         while !self.running.is_empty() {
+            if running.len() >= decode_max_seqs {
+                while let Some(excess) = self.running.pop_front() {
+                    self._preempt(excess.clone(), &mut blocks_to_swap_out);
+                    preempted.push_back(excess);
+                }
+                break;
+            }
             let seq_group = self.running.pop_front().unwrap();
             let mut finished_with_break = false;
             while !self.block_engine.can_append_token_to_seq(&seq_group) {
