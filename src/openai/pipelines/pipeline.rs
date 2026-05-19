@@ -1656,9 +1656,7 @@ impl DefaultPipeline {
             GLM4GGUF,
         );
         #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
-        let flashinfer_kv_params = if _kv_cache_dtype == DType::U8 {
-            None
-        } else if config.is_mla() {
+        let flashinfer_kv_params = if config.is_mla() {
             Some(FlashInferKvParams {
                 kv_dtype: _kv_cache_dtype,
                 out_dtype: dtype,

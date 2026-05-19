@@ -9,9 +9,8 @@ xbot -> Candle-vLLM (OpenAI-compatible)
 ## 1) Start candle-vLLM (at port 8000)
 
 ```bash
-cargo run --release --features cuda,nccl,graph,flashinfer,cutlass -- \
+cargo run --release --features cuda,nccl,flashinfer,cutlass -- \
   --m Qwen/Qwen3.6-27B-FP8 \
-  --prefix-cache \
   --p 8000 \
   --gpu-memory-fraction 0.5
 ```

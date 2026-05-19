@@ -15,8 +15,7 @@ Qwen3-VL example:
 ```bash
 cargo run --release --features cuda -- \
   --m Qwen/Qwen3-VL-8B-Instruct \
-  --p 8000 \
-  --prefix-cache
+  --p 8000
 ```
 
 Gemma3 vision example:
@@ -24,8 +23,7 @@ Gemma3 vision example:
 ```bash
 cargo run --release --features cuda -- \
   --m google/gemma-3-4b-it \
-  --p 8000 \
-  --prefix-cache
+  --p 8000
 ```
 
 ## Request payloads

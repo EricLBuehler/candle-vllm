@@ -156,9 +156,6 @@ impl SamplingParams {
             this.verify_beam_search()?;
         } else {
             this.verify_non_beam_search()?;
-            if this.temperature.unwrap_or(0.0f32) < SAMPLING_EPS {
-                this.verify_greedy_sampling()?;
-            }
         }
 
         Ok(this)
@@ -239,23 +236,6 @@ impl SamplingParams {
         {
             return Err(APIError::new_str("length_penalty is not effective and must be the default value of 1.0 when not using beam search."));
         }
-        Ok(())
-    }
-
-    fn verify_greedy_sampling(&self) -> Result<(), APIError> {
-        if self.best_of > 1 {
-            return Err(APIError::new(format!(
-                "best_of must be 1 when using greedy sampling. Got {}.",
-                self.best_of
-            )));
-        }
-
-        if self.top_p.is_some_and(|p| p < 1.0 - SAMPLING_EPS) {
-            return Err(APIError::new_str(
-                "top_p must be 1 when using greedy sampling (no temperature specified).",
-            ));
-        }
-
         Ok(())
     }
 }

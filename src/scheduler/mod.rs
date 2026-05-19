@@ -371,11 +371,11 @@ impl Scheduler {
         let kvcache_mem_size = self.block_engine.get_kvcache_mem_size() as f32 / 1024f32;
         let used_percent = (num_blocks - free_blocks) as f32 * 100f32 / num_blocks as f32;
         tracing::info!(
-            "Available {} KvCache tokens ({:.02}/{:.02}GB, used {:.02}%)",
-            free_blocks * self.block_engine.get_block_size(),
+            "GPU KvCache used {:.02}% ({:.02}/{:.02}GB, available {} KvCache tokens)",
             used_percent / 100f32 * kvcache_mem_size,
             kvcache_mem_size,
             used_percent,
+            free_blocks * self.block_engine.get_block_size(),
         );
     }
 

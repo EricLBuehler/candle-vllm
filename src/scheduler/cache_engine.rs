@@ -94,6 +94,21 @@ impl CacheEngine {
             cache_config.num_gpu_blocks.unwrap_or(32)
         };
 
+        #[cfg(all(feature = "flashattn", not(feature = "flashinfer"), feature = "cuda"))]
+        if matches!(dtype, DType::U8) && !device.is_cpu() {
+            let sm = device
+                .as_cuda_device()
+                .ok()
+                .and_then(|d| attention_rs::cuda_utils::sm_version(d))
+                .unwrap_or(0);
+            if sm != 90 {
+                candle_core::bail!(
+                    "FP8 KV cache with FlashAttention requires SM90 (Hopper), \
+                     but detected SM{sm}. Use FlashInfer backend for FP8 KV cache on current GPU."
+                );
+            }
+        }
+
         if model_config.is_mla() {
             let block_size = cache_config.block_size;
             let kv_lora_rank = model_config.mla_kv_lora_rank();

@@ -291,14 +291,14 @@ impl Scheduler {
             .fallback_sequence_to_full_prefill(sequence);
         if rebuilt {
             tracing::warn!(
-                "Seq {} {} (cached {} tokens); rebuilt block table and falling back to full prefill",
+                "Seq {} {} (cached {} tokens), falling back to full prefill",
                 seq_id,
                 reason,
                 cached_tokens
             );
         } else {
             tracing::warn!(
-                "Seq {} {} (cached {} tokens); unable to rebuild block table due memory pressure, keeping cached prefill",
+                "Seq {} {} (cached {} tokens), unable to rebuild block table due memory pressure",
                 seq_id,
                 reason,
                 cached_tokens

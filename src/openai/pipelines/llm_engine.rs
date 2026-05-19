@@ -640,6 +640,7 @@ impl LLMEngine {
         multi_process: bool,
         #[cfg(feature = "nccl")] daemon_manager: Option<DaemonManager>,
         prefill_chunk_size: Option<usize>,
+        disable_cuda_graph: bool,
     ) -> Result<Arc<RwLock<Self>>> {
         let devices: Vec<_> = pipelines
             .values()
@@ -829,18 +830,23 @@ impl LLMEngine {
             tokio::runtime::Handle::current().block_on(async move {
                 #[cfg(all(feature = "cuda", feature = "graph"))]
                 {
-                    let graph_capture_result = {
-                        let mut e = engine.write();
-                        e.graph_capture_all_pipelines()
-                    };
-                    let _ = graph_capture_tx.send(
-                        graph_capture_result
-                            .as_ref()
-                            .map(|_| ())
-                            .map_err(|e| format!("{e:?}")),
-                    );
-                    if graph_capture_result.is_err() {
-                        return;
+                    if disable_cuda_graph {
+                        tracing::warn!("CUDA graph capture disabled by --disable-cuda-graph");
+                        let _ = graph_capture_tx.send(Ok(()));
+                    } else {
+                        let graph_capture_result = {
+                            let mut e = engine.write();
+                            e.graph_capture_all_pipelines()
+                        };
+                        let _ = graph_capture_tx.send(
+                            graph_capture_result
+                                .as_ref()
+                                .map(|_| ())
+                                .map_err(|e| format!("{e:?}")),
+                        );
+                        if graph_capture_result.is_err() {
+                            return;
+                        }
                     }
                 }
                 loop {
@@ -1016,11 +1022,6 @@ impl LLMEngine {
                 seq_group.active_reasoning_end = task.prefilled_reasoning_end.clone();
             }
             if let Some(replay_ids) = self.match_prompt_replay_candidate(&task.prompt) {
-                tracing::info!(
-                    "Matched prompt replay candidate ({} token(s)) for group {}",
-                    replay_ids.len(),
-                    task.group_id
-                );
                 seq_group.prompt_replay_token_ids = Some(replay_ids);
             }
             tracing::debug!("Main process: add_sequence to group {}", task.group_id);
@@ -1217,10 +1218,6 @@ impl LLMEngine {
         }
 
         let (k_cache, _) = &kv_cache[0];
-        if k_cache.dtype() == candle_core::DType::U8 {
-            return Ok(None);
-        }
-
         let (_, page_size, num_kv_heads, head_dim) = k_cache.dims4()?;
         Ok(Some(FlashInferKvParams {
             kv_dtype: k_cache.dtype(),
