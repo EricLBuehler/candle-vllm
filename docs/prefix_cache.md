@@ -12,10 +12,10 @@ Prefix cache is block-granular. If a shared prefix ends in the middle of a block
 
 ## Flags
 
-- `--prefix-cache`: enable prefix cache
+- Prefix cache is **enabled by default**. Use `--disable-prefix-cache` to turn it off.
 - `--prefix-cache-max-tokens <N>`: cap cache size in tokens, rounded down to block size
 
-If `--prefix-cache-max-tokens` is omitted, the cache defaults to roughly 25% of GPU KV blocks in this project.
+If `--prefix-cache-max-tokens` is omitted, the cache defaults to roughly 50% of GPU KV blocks in this project.
 
 ## Usage Reporting
 

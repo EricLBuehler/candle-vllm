@@ -336,6 +336,7 @@ impl EngineBuilder {
             #[cfg(feature = "nccl")]
             None,
             self.prefill_chunk_size,
+            false,
         )?;
 
         let mut pipeline_config = PipelineConfig {

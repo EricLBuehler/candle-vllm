@@ -5,12 +5,13 @@ import click
 import os
 import openai
 import time
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.spinner import Spinner
 from rich.rule import Rule 
 from rich.panel import Panel
+from rich.text import Text
 from typing import Optional
 import uuid
 openai.api_key = "EMPTY"  # no key needed since we use local candle-vllm service
@@ -21,6 +22,23 @@ def clear_console():
     command = 'cls' if os.name in ('nt', 'dos') else 'clear'
     os.system(command)
     print("\n")
+
+def delta_text(delta, field):
+    value = getattr(delta, field, None)
+    return value or ""
+
+def response_panel(content, reasoning_content="", prefix=""):
+    renderables = []
+    if reasoning_content:
+        renderables.append(Text("Thinking Process:", style="bold yellow"))
+        renderables.append(Text(reasoning_content, style="yellow dim"))
+        if content:
+            renderables.append(Text(""))
+    if content:
+        renderables.append(Markdown(prefix + content))
+    if not renderables:
+        renderables.append("")
+    return Panel(Group(*renderables), title="Candle-vLLM Response", border_style="cyan")
 
 @click.command()
 @click.option("--system_prompt", type=str, default=None, 
@@ -85,10 +103,14 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                           "session_id": session_id if context_cache else None }
             # Model response
             try:
+                request_messages = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in messages
+                ]
                 with Live(Spinner("dots", text="Connecting...", style="green"), transient=True, console=console):
                     response = openai.chat.completions.create(
                         model="",
-                        messages=messages + [user_msg],
+                        messages=request_messages + [user_msg],
                         stream=True,
                         max_tokens = max_tokens,
                         temperature = temperature,
@@ -100,8 +122,9 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                 # Handle streaming response
                 prefix = ""
                 msg = ""
+                reasoning_msg = ""
                 if live:
-                    with Live(Panel("", title="Candle-vLLM Response", border_style="cyan"),
+                    with Live(response_panel("", ""),
                               console=console,
                               auto_refresh=True,
                               refresh_per_second=frequency,
@@ -109,19 +132,37 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                         for chunk in response:
                             if hasattr(chunk.choices[0], "error") and chunk.choices[0].error != None:
                                 raise Exception(chunk.choices[0].error)
-                            content = chunk.choices[0].delta.content
+                            delta = chunk.choices[0].delta
+                            reasoning_content = delta_text(delta, "reasoning_content")
+                            if reasoning_content:
+                                reasoning_msg += reasoning_content
+                            content = delta_text(delta, "content")
                             if content:
                                 if msg == "" and prefix == "" and content[0] == "<":
                                     prefix = content # <think> tag can cause Markdown problem in the first line
                                 msg += content
-                                l.update(Panel(Markdown(prefix + msg), title="Candle-vLLM Response", border_style="cyan"))
+                            if reasoning_content or content:
+                                l.update(response_panel(msg, reasoning_msg, prefix))
   
                 else:
+                    printed_reasoning_header = False
+                    printed_answer_break = False
                     for chunk in response:
                         if hasattr(chunk.choices[0], "error") and chunk.choices[0].error != None:
                             raise Exception(chunk.choices[0].error)
-                        content = chunk.choices[0].delta.content
+                        delta = chunk.choices[0].delta
+                        reasoning_content = delta_text(delta, "reasoning_content")
+                        if reasoning_content:
+                            reasoning_msg += reasoning_content
+                            if not printed_reasoning_header:
+                                console.print("Thinking Process:", style="bold yellow")
+                                printed_reasoning_header = True
+                            console.print(Text(reasoning_content, style="yellow dim"), end="")
+                        content = delta_text(delta, "content")
                         if content:
+                            if printed_reasoning_header and not printed_answer_break:
+                                console.out("\n\n")
+                                printed_answer_break = True
                             msg += content
                             console.out(content, end="")
                     console.out("")
@@ -129,7 +170,12 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
 
                 # Save conversation history
                 messages.append(user_msg)
-                messages.append({"role": "assistant", "content": msg})
+                assistant_msg = {"role": "assistant", "content": msg}
+                if reasoning_msg:
+                    assistant_msg["reasoning_content"] = reasoning_msg
+                if prefix:
+                    assistant_msg["prefix"] = prefix
+                messages.append(assistant_msg)
 
                 if live:
                     clear_console() # clear repetitive live outputs
@@ -140,12 +186,12 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                            console.out(" 🙋 Please Input: ", end="")
                            console.out(m["content"])
                         else:
-                            with Live(Panel("", title="Candle-vLLM Response", border_style="cyan"),
+                            with Live(response_panel("", ""),
                                     console=console,
                                     auto_refresh=True,
                                     refresh_per_second=frequency,
                                     vertical_overflow="visible") as l:
-                                l.update(Panel(Markdown(prefix + m["content"]), title="Candle-vLLM Response", border_style="cyan"))
+                                l.update(response_panel(m["content"], m.get("reasoning_content", ""), m.get("prefix", "")))
                     console.out("")
                     console.print(Rule(style="cyan"), "")
             except KeyboardInterrupt:

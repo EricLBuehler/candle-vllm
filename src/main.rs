@@ -139,13 +139,17 @@ struct Args {
     #[arg(long, default_value_t = false)]
     fp8_kvcache: bool,
 
-    /// Enable prefix cache to reuse KV cache for repeated prompt prefixes.
+    /// Disable prefix cache (enabled by default).
     #[arg(long, default_value_t = false)]
-    prefix_cache: bool,
+    disable_prefix_cache: bool,
 
     /// Prefix cache size limit in tokens (rounded down to block size).
     #[arg(long)]
     prefix_cache_max_tokens: Option<usize>,
+
+    /// Disable CUDA graph capture (enabled by default on CUDA builds).
+    #[arg(long, default_value_t = false)]
+    disable_cuda_graph: bool,
 
     #[arg(long, default_value_t = false)]
     ui_server: bool, //start candle-vllm with built-in web server
@@ -232,13 +236,6 @@ async fn main() -> Result<()> {
 
     let dtype = candle_vllm::get_dtype(args.dtype);
     let kv_cache_dtype = if args.fp8_kvcache { DType::U8 } else { dtype };
-
-    if cfg!(any(feature = "flashattn", feature = "flashinfer")) {
-        assert!(
-            !args.fp8_kvcache,
-            "fp8 kvcache is not compatible with `flashattn` or `flashinfer` features!"
-        );
-    }
 
     let device_ids: Vec<usize> = match args.device_ids {
         Some(ids) => ids,
@@ -429,7 +426,7 @@ async fn main() -> Result<()> {
                         detected * 1024 * 1024,
                         estimate,
                         args.max_num_seqs,
-                        args.prefix_cache,
+                        !args.disable_prefix_cache,
                         args.mamba_fraction,
                     ) {
                         let reserved_mamba_mb = plan.budget_bytes.div_ceil(1024 * 1024);
@@ -520,7 +517,7 @@ async fn main() -> Result<()> {
     } else {
         0
     };
-    let prefix_cache_max_blocks = if args.prefix_cache {
+    let prefix_cache_max_blocks = if !args.disable_prefix_cache {
         let max_blocks = args
             .prefix_cache_max_tokens
             .map(|tokens| tokens / cache_config.block_size)
@@ -530,7 +527,7 @@ async fn main() -> Result<()> {
         0
     };
     let prefix_cache_config = PrefixCacheConfig {
-        enabled: args.prefix_cache,
+        enabled: !args.disable_prefix_cache,
         max_cached_blocks: prefix_cache_max_blocks,
     };
 
@@ -550,6 +547,7 @@ async fn main() -> Result<()> {
         #[cfg(feature = "nccl")]
         daemon_manager,
         args.prefill_chunk_size,
+        args.disable_cuda_graph,
     )?;
 
     if args.temperature.is_some() || pipeline_config.generation_cfg.is_none() {

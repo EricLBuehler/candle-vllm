@@ -25,6 +25,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
 - Support Prefix Caching
 - Support Block-wise FP8 Models (SM90+, Qwen3 Series)
+- Support FP8 KV Cache on all CUDA and Metal platforms
 - Support Flashinfer Backend
 - Support manual YaRN RoPE scaling override from the command line via `--yarn-scaling-factor`
 - Support MXFP4/NVFP4 models
@@ -84,10 +85,10 @@ cd candle-vllm
 ```bash
 # Host driver version must >= specified cuda version, `flashattn` and `flashinfer` take longer time to build
 # Change `sm_80` to your hardware spec, e.g., sm_75 (V100), sm_80 (Ampere, A100), sm_86/89 (RTX30xx, RTX40xx), sm_90 (Hopper, H100/H200), sm_100/sm_120 (Blackwell, RTX50xx). 
-./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass" sm_90 13.0.0
+./build_docker.sh "cuda,nccl,flashinfer,cutlass" sm_90 13.0.0
 
 # Or switch to Flash attention backend, or use Rust crate China Mirror (used in Chinese Mainland)
-./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0 1
+./build_docker.sh "cuda,nccl,flashattn,cutlass" sm_80 12.9.0 1
 ```
 
  > Option 2 (Manual Installation)
@@ -109,7 +110,7 @@ Install for single node inference
 ```shell
 # Remove "flashattn,flashinfer,cutlass" for sm_75 and sm_70
 # Replace `flashinfer` with `flashattn` to use Flash attention backend
-cargo install --features cuda,nccl,graph,flashinfer,cutlass --path .
+cargo install --features cuda,nccl,flashinfer,cutlass --path .
 ```
 
 Install for multinode inference
@@ -117,10 +118,10 @@ Install for multinode inference
 # Use MPI (multi-gpus on multiple machines)
 sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
 sudo apt install clang libclang-dev
-cargo install --features cuda,nccl,graph,flashattn,cutlass,mpi --path .
+cargo install --features cuda,nccl,flashattn,cutlass,mpi --path .
 
 # FlashInfer backend
-cargo install --features cuda,nccl,graph,flashinfer,cutlass,mpi --path .
+cargo install --features cuda,nccl,flashinfer,cutlass,mpi --path .
 ```
 
 **Mac/Metal (single-node only)**
@@ -141,12 +142,12 @@ cargo install --features metal --path .
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass,graph] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.6-27B-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.6-27B-FP8] [--fp8-kvcache] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
 
-    `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass,graph
+    `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass
 
     `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0
 
@@ -156,7 +157,7 @@ cargo install --features metal --path .
 
     `WEB UI`: --ui-server
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * remaining_gpu_memory`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--yarn-scaling-factor` manually injects a YaRN RoPE scaling factor such as `4.0` to extend the effective context window for supported models; `--fp8-kvcache` used to enable fp8 kvcache; `--prefix-cache` enable prefix cache reuse; `--prefix-cache-max-tokens` cap prefix cache size; `--ui-server` start with a built-in ChatGPT-like Web UI sever. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * remaining_gpu_memory`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--yarn-scaling-factor` manually injects a YaRN RoPE scaling factor such as `4.0` to extend the effective context window for supported models; `--fp8-kvcache` used to enable fp8 kvcache; `--disable-prefix-cache` disable prefix cache (enabled by default); `--prefix-cache-max-tokens` cap prefix cache size; `--disable-cuda-graph` disable CUDA graph capture (enabled by default on CUDA builds); `--ui-server` start with a built-in ChatGPT-like Web UI sever. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
   </details>
 
 ## 📚 Docs
@@ -184,44 +185,49 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
 
     **Local Path (with port, device)**
     ```shell
-    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --prefix-cache
+    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
     ```
 
     **Local Path (ISQ, +UI Server)**
     ```shell
-    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3.6-27B/ --isq q4k --ui-server --prefix-cache
+    candle-vllm --p 8000 --d 0 --w /home/Qwen3.6-27B/ --isq q4k --ui-server
     ```
 
     **Model-ID (download from Huggingface)**
 
     ```shell
-    candle-vllm --m Qwen/Qwen3.6-35B-A3B --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-35B-A3B --ui-server
     ```
 
     **Manual YaRN scaling**
     ```shell
-    candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server
     ```
 
     **FP8 Model** (block-wise quant, build with `cutlass` feature)
     ```shell
-    candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
     ```
 
     ```shell
      # MacOS/Metal (Dense)
-    candle-vllm --m Qwen/Qwen3-4B-Instruct-2507-FP8 --ui-server --prefix-cache
+    candle-vllm --m Qwen/Qwen3-4B-Instruct-2507-FP8 --ui-server
     ```
 
     **FP4 Model** (MXFP4/NVFP4, MLX quantized format not supported)
     ```shell
-    candle-vllm --m GadflyII-GLM-4.7-Flash-NVFP4 --ui-server --prefix-cache
+    candle-vllm --m GadflyII-GLM-4.7-Flash-NVFP4 --ui-server
     ```
 
     ```shell
-    candle-vllm --m nm-testing/Qwen3-30B-A3B-MXFP4A16 --ui-server --prefix-cache
+    candle-vllm --m nm-testing/Qwen3-30B-A3B-MXFP4A16 --ui-server
     ```
   </details>
+
+- **FP8 KV Cache**
+    ```shell
+    cargo run --release --features cuda,nccl,flashinfer,cutlass -- --w /data/Qwen3.5-35B-A3B-FP8/ --fp8-kvcache
+    ```
 
 - Run **GGUF** models 
   <details open>
@@ -700,6 +706,7 @@ Chat frontend (any frontend compatible with openai API, simple options available
 
     where `isq` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"].
   </details>
+
 
 - **Use Marlin kernel to speedup GPTQ/AWQ models**
   <details>
