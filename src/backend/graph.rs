@@ -523,7 +523,7 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                             &kv_len_arr_host_bs,
                             bs,
                             self.is_mla,
-                            false,
+                            true,
                         )?;
                         (dp, mdp, Some(kv_len_arr_host_bs))
                     } else {
@@ -540,7 +540,7 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                     total_num_rows: None,
                     batch_indices: None,
                     positions: None,
-                    use_cuda_graph: false,
+                    use_cuda_graph: true,
                     decode_plan_info,
                     prefill_plan_info: None,
                     mla_decode_plan_info,
@@ -568,9 +568,11 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
             };
             let input_ids_bs = input_ids.narrow(0, 0, bs)?;
             let positions_bs = positions.narrow(0, 0, bs)?;
+            self.model.start_capture(bs)?;
             let _ = self
                 .model
                 .forward(&input_ids_bs, &positions_bs, kv_caches, &input_metadata)?;
+            self.model.end_capture()?;
         }
 
         let mut outputs = BTreeMap::<usize, Tensor>::new();
