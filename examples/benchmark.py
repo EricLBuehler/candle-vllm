@@ -5,9 +5,9 @@ import random
 import statistics
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from openai import AsyncOpenAI
+from openai import APIStatusError, AsyncOpenAI
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -20,13 +20,14 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 from rich.table import Table
+from rich.text import Text
 
 
 # Run candle-vllm service:
 #   cargo run --release -- --port 2000 --model-id <MODEL_ID> <MODEL_TYPE>
 #
 # Example benchmark:
-#   python3 examples/benchmark.py --num-prompts 64 --input-lens 128,512,2048 --output-lens 128,512 --concurrency 16
+#   python3 examples/benchmark.py --num-prompts 64 --input-lens 128,512,2048 --output-lens 128,512 --concurrency 8
 
 
 PROMPT_SEEDS = [
@@ -49,6 +50,7 @@ class RequestResult:
     ttft_s: Optional[float] = None
     output_text: str = ""
     error: Optional[str] = None
+    error_kind: Optional[str] = None
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
@@ -60,6 +62,8 @@ class RequestResult:
     first_chunk_s: Optional[float] = None
     last_chunk_s: Optional[float] = None
     chunk_count: int = 0
+    reasoning_text: str = ""
+    reasoning_chunk_tokens: int = 0
 
     @property
     def output_tokens_per_s(self) -> float:
@@ -69,19 +73,12 @@ class RequestResult:
     def total_tokens_per_s(self) -> float:
         return safe_div(self.total_tokens, self.latency_s)
 
-    @property
-    def server_prefill_tokens_per_s(self) -> float:
-        return safe_div(self.prompt_tokens * 1000.0, self.prompt_time_ms)
-
-    @property
-    def server_decode_tokens_per_s(self) -> float:
-        return safe_div(self.completion_tokens * 1000.0, self.completion_time_ms)
-
 
 @dataclass
 class BenchmarkCase:
     input_len: int
     output_len: int
+    concurrency: int
     results: List[RequestResult] = field(default_factory=list)
     duration_s: float = 0.0
 
@@ -92,6 +89,12 @@ class BenchmarkCase:
     @property
     def failed(self) -> List[RequestResult]:
         return [result for result in self.results if not result.success]
+
+    @property
+    def effective_concurrency(self) -> int:
+        if not self.successful:
+            return 1
+        return max(1, min(self.concurrency or len(self.successful), len(self.successful)))
 
 
 def safe_div(numerator: float, denominator: float) -> float:
@@ -164,6 +167,43 @@ def build_prompt(target_tokens: int, request_id: int) -> str:
     return " ".join(" ".join(output).split()[:target_tokens])
 
 
+def build_history_text(target_tokens: int, request_id: int, turn: int, label: str) -> str:
+    seed = PROMPT_SEEDS[(request_id + turn) % len(PROMPT_SEEDS)]
+    words = (
+        f"{label} history turn {turn} for request {request_id}. "
+        f"{seed} Keep the context deterministic for benchmarking."
+    ).split()
+    output = []
+    while len(output) < target_tokens:
+        output.extend(words)
+    return " ".join(output[:target_tokens])
+
+
+def build_messages(args: argparse.Namespace, prompt: str, request_id: int) -> List[Dict[str, str]]:
+    messages = []
+    for turn in range(args.history_turns):
+        messages.append(
+            {
+                "role": "user",
+                "content": build_history_text(args.history_tokens, request_id, turn, "User"),
+            }
+        )
+        assistant_message = {
+            "role": "assistant",
+            "content": build_history_text(args.history_tokens, request_id, turn, "Assistant"),
+        }
+        if args.history_reasoning_tokens:
+            assistant_message["reasoning_content"] = build_history_text(
+                args.history_reasoning_tokens,
+                request_id,
+                turn,
+                "Assistant reasoning",
+            )
+        messages.append(assistant_message)
+    messages.append({"role": "user", "content": prompt})
+    return messages
+
+
 def usage_value(usage: Any, name: str, default: int = 0) -> int:
     if usage is None:
         return default
@@ -183,6 +223,27 @@ def nested_usage_value(usage: Any, section: str, name: str, default: int = 0) ->
     return int(getattr(value, name, default) or default)
 
 
+def response_body_text(exc: APIStatusError) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    try:
+        text = response.text
+    except Exception:
+        return ""
+    return text.strip()
+
+
+def format_request_error(exc: Exception) -> Tuple[str, str]:
+    if isinstance(exc, APIStatusError):
+        body = response_body_text(exc)
+        status = getattr(exc, "status_code", None) or getattr(exc.response, "status_code", None)
+        if body:
+            return "HTTP", f"HTTP {status}: {body[:300]}"
+        return "HTTP", f"HTTP {status} from endpoint"
+    return "Transport", str(exc)
+
+
 def make_extra_body(args: argparse.Namespace) -> Dict[str, Any]:
     extra_body = {
         "top_k": args.top_k,
@@ -192,6 +253,39 @@ def make_extra_body(args: argparse.Namespace) -> Dict[str, Any]:
         "ignore_eos": args.ignore_eos,
     }
     return {key: value for key, value in extra_body.items() if value is not None}
+
+
+def apply_usage_to_result(
+    result: RequestResult,
+    usage: Any,
+    args: argparse.Namespace,
+    input_len: int,
+) -> None:
+    result.prompt_tokens = usage_value(usage, "prompt_tokens")
+    result.completion_tokens = usage_value(usage, "completion_tokens")
+    result.total_tokens = usage_value(usage, "total_tokens")
+    result.prompt_time_ms = usage_value(usage, "prompt_time_costs")
+    result.completion_time_ms = usage_value(usage, "completion_time_costs")
+    result.cached_tokens = nested_usage_value(usage, "prompt_tokens_details", "cached_tokens")
+    result.reasoning_tokens = nested_usage_value(
+        usage, "completion_tokens_details", "reasoning_tokens"
+    )
+    if result.reasoning_tokens == 0:
+        result.reasoning_tokens = result.reasoning_chunk_tokens
+
+    if usage:
+        return
+
+    fallback_reasoning_tokens = len(result.reasoning_text.split())
+    fallback_content_tokens = len(result.output_text.split())
+    result.prompt_tokens = input_len + args.history_turns * (
+        2 * args.history_tokens + args.history_reasoning_tokens
+    )
+    result.reasoning_tokens = result.reasoning_chunk_tokens or fallback_reasoning_tokens
+    result.completion_tokens = max(
+        1, fallback_content_tokens + fallback_reasoning_tokens
+    )
+    result.total_tokens = result.prompt_tokens + result.completion_tokens
 
 
 async def run_one_request(
@@ -220,7 +314,7 @@ async def run_one_request(
         try:
             stream = await client.chat.completions.create(
                 model=args.model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=build_messages(args, prompt, request_id),
                 max_tokens=output_len,
                 temperature=args.temperature,
                 top_p=args.top_p,
@@ -260,28 +354,21 @@ async def run_one_request(
                     result.chunk_count += 1
                     if content:
                         result.output_text += content
+                    if reasoning:
+                        result.reasoning_text += reasoning
+                        result.reasoning_chunk_tokens += 1
 
             ended = time.perf_counter()
             result.latency_s = ended - started
-            result.prompt_tokens = usage_value(usage, "prompt_tokens")
-            result.completion_tokens = usage_value(usage, "completion_tokens")
-            result.total_tokens = usage_value(usage, "total_tokens")
-            result.prompt_time_ms = usage_value(usage, "prompt_time_costs")
-            result.completion_time_ms = usage_value(usage, "completion_time_costs")
-            result.cached_tokens = nested_usage_value(usage, "prompt_tokens_details", "cached_tokens")
-            result.reasoning_tokens = nested_usage_value(
-                usage, "completion_tokens_details", "reasoning_tokens"
-            )
-
-            if not usage:
-                result.prompt_tokens = input_len
-                result.completion_tokens = max(1, len(result.output_text.split()))
-                result.total_tokens = result.prompt_tokens + result.completion_tokens
-
+            apply_usage_to_result(result, usage, args, input_len)
             result.success = True
         except Exception as exc:
             result.latency_s = time.perf_counter() - started
-            result.error = str(exc)
+            if usage is not None:
+                apply_usage_to_result(result, usage, args, input_len)
+                result.success = True
+            else:
+                result.error_kind, result.error = format_request_error(exc)
 
         return result
 
@@ -337,7 +424,13 @@ async def run_case(
             progress.advance(task_id)
 
     duration = time.perf_counter() - start
-    return BenchmarkCase(input_len=input_len, output_len=output_len, results=results, duration_s=duration)
+    return BenchmarkCase(
+        input_len=input_len,
+        output_len=output_len,
+        concurrency=args.concurrency or args.num_prompts,
+        results=results,
+        duration_s=duration,
+    )
 
 
 def summarize(case: BenchmarkCase) -> Dict[str, float]:
@@ -351,19 +444,43 @@ def summarize(case: BenchmarkCase) -> Dict[str, float]:
     total_tokens = sum(r.total_tokens for r in ok)
     prompt_time_s = sum(prompt_times)
     completion_time_s = sum(completion_times)
+    model_parallelism = case.effective_concurrency
+    has_usage_timing = bool(prompt_time_s or completion_time_s)
+    model_input_time_s = safe_div(prompt_time_s, model_parallelism) if prompt_time_s else case.duration_s
+    model_output_time_s = safe_div(completion_time_s, model_parallelism) if completion_time_s else case.duration_s
+    model_total_time_s = (
+        model_input_time_s + model_output_time_s if has_usage_timing else case.duration_s
+    )
+    avg_request_output_model_throughput = (
+        safe_div(completion_tokens, completion_time_s)
+        if completion_time_s
+        else statistics.mean([r.output_tokens_per_s for r in ok]) if ok else 0.0
+    )
+    avg_request_input_model_throughput = (
+        safe_div(prompt_tokens, prompt_time_s)
+        if prompt_time_s
+        else statistics.mean([safe_div(r.prompt_tokens, r.latency_s) for r in ok]) if ok else 0.0
+    )
+    avg_request_total_model_throughput = (
+        safe_div(total_tokens, prompt_time_s + completion_time_s)
+        if has_usage_timing
+        else statistics.mean([r.total_tokens_per_s for r in ok]) if ok else 0.0
+    )
 
     return {
         "successful": len(ok),
         "failed": len(case.failed),
         "duration_s": case.duration_s,
         "request_throughput": safe_div(len(ok), case.duration_s),
-        "input_throughput": safe_div(prompt_tokens, case.duration_s),
-        "output_throughput": safe_div(completion_tokens, case.duration_s),
-        "total_throughput": safe_div(total_tokens, case.duration_s),
-        "server_prefill_throughput": safe_div(prompt_tokens, prompt_time_s),
-        "server_decode_throughput": safe_div(completion_tokens, completion_time_s),
+        "input_throughput": safe_div(prompt_tokens, model_input_time_s),
+        "output_throughput": safe_div(completion_tokens, model_output_time_s),
+        "total_throughput": safe_div(total_tokens, model_total_time_s),
+        "avg_request_input_throughput": avg_request_input_model_throughput,
+        "avg_request_output_model_throughput": avg_request_output_model_throughput,
         "avg_request_output_throughput": statistics.mean([r.output_tokens_per_s for r in ok]) if ok else 0.0,
+        "avg_request_total_model_throughput": avg_request_total_model_throughput,
         "avg_request_total_throughput": statistics.mean([r.total_tokens_per_s for r in ok]) if ok else 0.0,
+        "timing_source": 1.0 if has_usage_timing else 0.0,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
@@ -393,6 +510,11 @@ def summarize(case: BenchmarkCase) -> Dict[str, float]:
 
 def render_case_summary(console: Console, case: BenchmarkCase) -> None:
     stats = summarize(case)
+    highlight_style = "bold yellow"
+
+    def highlighted(value: str) -> Text:
+        return Text(value, style=highlight_style)
+
     table = Table(
         title=f"Benchmark: input={case.input_len}, output={case.output_len}",
         box=box.SIMPLE_HEAVY,
@@ -406,18 +528,13 @@ def render_case_summary(console: Console, case: BenchmarkCase) -> None:
     rows = [
         ("Successful requests", f"{int(stats['successful'])}", "Failed requests", f"{int(stats['failed'])}"),
         ("Benchmark duration (s)", fmt_float(stats["duration_s"]), "Request throughput (req/s)", fmt_float(stats["request_throughput"])),
-        ("Total input tokens", f"{int(stats['prompt_tokens'])}", "Total output tokens", f"{int(stats['completion_tokens'])}"),
+        (highlighted("Total input tokens"), highlighted(str(stats['prompt_tokens'])), highlighted("Total output tokens"), highlighted(str(stats['completion_tokens']))),
         ("Max input tokens", f"{int(stats['max_input_tokens'])}", "Max output tokens", f"{int(stats['max_output_tokens'])}"),
         ("Avg input tokens", fmt_float(stats["avg_input_tokens"]), "Avg output tokens", fmt_float(stats["avg_output_tokens"])),
-        ("Input throughput (tok/s)", fmt_float(stats["input_throughput"]), "Output throughput (tok/s)", fmt_float(stats["output_throughput"])),
-        ("Total throughput (tok/s)", fmt_float(stats["total_throughput"]), "Avg req output tok/s", fmt_float(stats["avg_request_output_throughput"])),
-        ("Prefill throughput (tok/s)", fmt_float(stats["server_prefill_throughput"]), "Decode throughput (tok/s)", fmt_float(stats["server_decode_throughput"])),
-        ("Avg req total tok/s", fmt_float(stats["avg_request_total_throughput"]), "Server timing source", "usage chunk" if stats["server_prefill_throughput"] or stats["server_decode_throughput"] else "client fallback"),
-        ("Latency avg (ms)", fmt_float(stats["latency_avg_ms"]), "Latency p95 (ms)", fmt_float(stats["latency_p95_ms"])),
-        ("Latency p50 (ms)", fmt_float(stats["latency_p50_ms"]), "Latency p99 (ms)", fmt_float(stats["latency_p99_ms"])),
+        (highlighted("Input throughput (tok/s)"), highlighted(fmt_float(stats["input_throughput"])), highlighted("Output throughput (tok/s)"), highlighted(fmt_float(stats["output_throughput"]))),
+        (highlighted("Avg input tok/s per request"), highlighted(fmt_float(stats["avg_request_input_throughput"])), highlighted("Avg output tok/s per request"), highlighted(fmt_float(stats["avg_request_output_model_throughput"]))),
         ("TTFT avg (ms)", fmt_float(stats["ttft_avg_ms"]), "TTFT p95 (ms)", fmt_float(stats["ttft_p95_ms"])),
-        ("Server prefill avg (ms)", fmt_float(stats["server_prefill_avg_ms"]), "Server decode avg (ms)", fmt_float(stats["server_decode_avg_ms"])),
-        ("TPOT decode (ms/token)", fmt_float(stats["tpot_avg_ms"]), "Cached tokens", f"{int(stats['cached_tokens'])}"),
+        ("Prefill avg (ms)", fmt_float(stats["server_prefill_avg_ms"]), "TPOT decode (ms/token)", fmt_float(stats["tpot_avg_ms"])),
         ("Reasoning tokens", f"{int(stats['reasoning_tokens'])}", "Total tokens", f"{int(stats['total_tokens'])}"),
     ]
     for row in rows:
@@ -425,11 +542,16 @@ def render_case_summary(console: Console, case: BenchmarkCase) -> None:
     console.print(table)
 
     if case.failed:
-        errors = Table(title="Request errors", box=box.SIMPLE, header_style="bold red")
+        errors = Table(title="HTTP/transport failures", box=box.SIMPLE, header_style="bold red")
         errors.add_column("Request", justify="right")
+        errors.add_column("Kind")
         errors.add_column("Error")
         for result in case.failed[:5]:
-            errors.add_row(str(result.request_id), result.error or "unknown error")
+            errors.add_row(
+                str(result.request_id),
+                result.error_kind or "Error",
+                result.error or "unknown error",
+            )
         console.print(errors)
 
 
@@ -445,8 +567,7 @@ def render_comparison(console: Console, cases: Sequence[BenchmarkCase]) -> None:
     throughput.add_column("Input tok/s", justify="right")
     throughput.add_column("Output tok/s", justify="right")
     throughput.add_column("Total tok/s", justify="right")
-    throughput.add_column("Prefill tok/s", justify="right")
-    throughput.add_column("Decode tok/s", justify="right")
+    throughput.add_column("Avg req out tok/s", justify="right")
 
     latency = Table(title="Latency Comparison", box=box.SIMPLE_HEAVY, header_style="bold cyan")
     latency.add_column("Input", justify="right")
@@ -469,8 +590,7 @@ def render_comparison(console: Console, cases: Sequence[BenchmarkCase]) -> None:
             fmt_float(stats["input_throughput"]),
             fmt_float(stats["output_throughput"]),
             fmt_float(stats["total_throughput"]),
-            fmt_float(stats["server_prefill_throughput"]),
-            fmt_float(stats["server_decode_throughput"]),
+            fmt_float(stats["avg_request_output_model_throughput"]),
         )
         latency.add_row(
             str(case.input_len),
@@ -524,6 +644,7 @@ async def main(args: argparse.Namespace) -> None:
                     f"Request rate: {'unlimited' if args.request_rate <= 0 else args.request_rate}",
                     f"Input lengths: {', '.join(map(str, input_lens))}",
                     f"Output lengths: {', '.join(map(str, output_lens))}",
+                    f"History turns: {args.history_turns}",
                 ]
             ),
             title="candle-vllm benchmark",
@@ -548,13 +669,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", default=2000, type=int, help="candle-vllm server port.")
     parser.add_argument("--api-key", default="EMPTY", help="API key placeholder for local servers.")
     parser.add_argument("--model", default="any", help="Model name sent to the server.")
-    parser.add_argument("--num-prompts", "--batch", dest="num_prompts", default=16, type=int)
-    parser.add_argument("--concurrency", default=16, type=int, help="Maximum in-flight requests.")
+    parser.add_argument("--num-prompts", "--batch", dest="num_prompts", default=8, type=int)
+    parser.add_argument("--concurrency", default=8, type=int, help="Maximum in-flight requests.")
     parser.add_argument("--request-rate", default=0.0, type=float, help="Requests per second; <=0 sends immediately.")
-    parser.add_argument("--input-len", "--input_len", default=128, type=int, help="Synthetic input length target.")
+    parser.add_argument("--input-len", "--input_len", default=4096, type=int, help="Synthetic input length target.")
     parser.add_argument("--output-len", "--output_len", "--max-tokens", "--max_tokens", dest="output_len", default=1024, type=int)
     parser.add_argument("--input-lens", default=None, help="Comma-separated input length sweep, e.g. 128,512,2048.")
     parser.add_argument("--output-lens", default=None, help="Comma-separated output length sweep, e.g. 128,512.")
+    parser.add_argument("--history-turns", "--history_turns", default=0, type=int, help="Synthetic user/assistant history turns to include before each benchmark prompt.")
+    parser.add_argument("--history-tokens", "--history_tokens", default=64, type=int, help="Approximate tokens per synthetic history message.")
+    parser.add_argument("--history-reasoning-tokens", "--history_reasoning_tokens", default=0, type=int, help="Approximate reasoning_content tokens per synthetic assistant history message.")
     parser.add_argument("--temperature", default=0.0, type=float)
     parser.add_argument("--top-p", "--top_p", default=None, type=float)
     parser.add_argument("--top-k", "--top_k", default=None, type=int)
@@ -565,7 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--thinking", default=None, type=str2bool, help="Enable thinking for reasoning models.")
     parser.add_argument("--ignore-eos", action="store_true", help="Ask server to ignore EOS and target max output length.")
     parser.add_argument("--timeout", default=600.0, type=float, help="Per-request timeout in seconds.")
-    parser.add_argument("--max-retries", default=0, type=int, help="OpenAI client retries per request.")
+    parser.add_argument("--max-retries", default=2, type=int, help="HTTP retries per request for transient endpoint failures.")
     parser.add_argument("--seed", default=0, type=int)
     parser.add_argument("--print-samples", default=0, type=int, help="Print N sample outputs per case.")
     parser.add_argument("--sample-chars", default=1200, type=int, help="Maximum characters per sample output.")

@@ -27,6 +27,16 @@ def delta_text(delta, field):
     value = getattr(delta, field, None)
     return value or ""
 
+def message_for_request(message):
+    request_message = {
+        "role": message["role"],
+        "content": message.get("content", ""),
+    }
+    reasoning_content = message.get("reasoning_content")
+    if reasoning_content:
+        request_message["reasoning_content"] = reasoning_content
+    return request_message
+
 def response_panel(content, reasoning_content="", prefix=""):
     renderables = []
     if reasoning_content:
@@ -103,10 +113,7 @@ def chatloop(system_prompt: Optional[str], stream: bool, live: bool,
                           "session_id": session_id if context_cache else None }
             # Model response
             try:
-                request_messages = [
-                    {"role": m["role"], "content": m["content"]}
-                    for m in messages
-                ]
+                request_messages = [message_for_request(m) for m in messages]
                 with Live(Spinner("dots", text="Connecting...", style="green"), transient=True, console=console):
                     response = openai.chat.completions.create(
                         model="",

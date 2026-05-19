@@ -1022,11 +1022,6 @@ impl LLMEngine {
                 seq_group.active_reasoning_end = task.prefilled_reasoning_end.clone();
             }
             if let Some(replay_ids) = self.match_prompt_replay_candidate(&task.prompt) {
-                tracing::info!(
-                    "Matched prompt replay candidate ({} token(s)) for group {}",
-                    replay_ids.len(),
-                    task.group_id
-                );
                 seq_group.prompt_replay_token_ids = Some(replay_ids);
             }
             tracing::debug!("Main process: add_sequence to group {}", task.group_id);
