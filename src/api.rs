@@ -1,4 +1,4 @@
-use crate::openai::models::Config;
+use crate::openai::models::{Config, KvCacheDtype};
 use crate::openai::multimodal::build_messages_and_images;
 use crate::openai::pipelines::llm_engine::LLMEngine;
 use crate::openai::pipelines::pipeline::DefaultLoader;
@@ -41,7 +41,7 @@ pub struct EngineBuilder {
     isq: Option<String>,
     dtype: Option<DType>,
     flash_attn: Option<bool>,
-    fp8_kvcache: Option<bool>,
+    kvcache_dtype: Option<KvCacheDtype>,
     device_ids: Option<Vec<usize>>,
     max_num_seqs: usize,
     block_size: usize,
@@ -66,7 +66,7 @@ impl EngineBuilder {
             isq: None,
             dtype: None,
             flash_attn: None,
-            fp8_kvcache: None,
+            kvcache_dtype: None,
             device_ids: None,
             max_num_seqs: 8,
             block_size: if cfg!(feature = "cuda") { 64 } else { 32 },
@@ -101,7 +101,12 @@ impl EngineBuilder {
     }
 
     pub fn with_fp8_kvcache(mut self) -> Self {
-        self.fp8_kvcache = Some(true);
+        self.kvcache_dtype = Some(KvCacheDtype::Fp8);
+        self
+    }
+
+    pub fn with_kvcache_dtype(mut self, kvcache_dtype: KvCacheDtype) -> Self {
+        self.kvcache_dtype = Some(kvcache_dtype);
         self
     }
 
@@ -201,11 +206,13 @@ impl EngineBuilder {
         let (paths, gguf) = loader.prepare_model_weights(None, None)?;
 
         let dtype = self.dtype.unwrap_or_else(|| crate::get_dtype(None));
-        let kv_cache_dtype = if self.fp8_kvcache.unwrap_or(false) {
+        let kvcache_dtype_enum = self.kvcache_dtype.unwrap_or(KvCacheDtype::Auto);
+        let kv_cache_dtype = if kvcache_dtype_enum.is_fp8_keys() {
             DType::U8
         } else {
             dtype
         };
+        KvCacheDtype::set_global(kvcache_dtype_enum);
 
         let device_ids = self.device_ids.unwrap_or(vec![0]);
         // TODO: Handle multi-rank logic. For checking, stick to simpler single rank first or map to loader.
@@ -281,6 +288,9 @@ impl EngineBuilder {
             .enumerate()
             .map(|(rank, pipeline)| {
                 let cfg = pipeline.get_model_config();
+                let kvcache_dtype_enum = self
+                    .kvcache_dtype
+                    .unwrap_or(crate::openai::models::KvCacheDtype::Auto);
                 let mut cache_cfg = crate::get_cache_config(
                     kvcache_mem_gpu,
                     self.kvcache_mem_cpu,
@@ -288,6 +298,7 @@ impl EngineBuilder {
                     &cfg,
                     kv_cache_dtype,
                     num_shards,
+                    kvcache_dtype_enum,
                 );
                 cache_cfg.mamba_cache_budget_bytes = mamba_cache_budget_bytes;
 

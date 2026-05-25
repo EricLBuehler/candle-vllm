@@ -1,5 +1,5 @@
 use super::rotary_emb::ScalingRotaryEmbedding;
-use super::{attention::QuantizedAttention, Config, MoEConfig, QwenMoEConfig};
+use super::{attention::QuantizedAttention, Config, KvCacheDtype, MoEConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::linear::Linear;
@@ -137,7 +137,7 @@ impl GGUFQWenMoE {
         original_max_position_embeddings: Option<usize>,
         partial_rotary_factor: Option<f32>,
         moe_cfg: &QwenMoEConfig,
-        kv_cache_dtype: DType,
+        _kv_cache_dtype: DType,
     ) -> Config {
         Config {
             architectures: Some(vec![arch]),
@@ -172,7 +172,7 @@ impl GGUFQWenMoE {
             quantization_config: None,
             moe_config: Some(MoEConfig::QwenMoE(moe_cfg.clone())),
             isq_quant: None,
-            fp8_kvcache: Some(kv_cache_dtype == DType::U8),
+            kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: None,
         }
     }

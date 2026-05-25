@@ -1209,6 +1209,9 @@ impl LLMEngine {
 
     #[cfg(feature = "flashinfer")]
     fn flashinfer_kv_params_for_rank(&self, rank: usize) -> Result<Option<FlashInferKvParams>> {
+        if attention_rs::get_turboquant_mode().is_some() {
+            return Ok(None);
+        }
         let (_, cache_engine) = self
             .get_pipeline(rank)
             .ok_or_else(|| candle_core::Error::msg(format!("missing pipeline for rank {rank}")))?;

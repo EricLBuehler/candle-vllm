@@ -578,6 +578,7 @@ impl DefaultLoader {
         #[cfg(not(feature = "nccl"))]
         let pipeline_num_shards = local_world_size.unwrap_or(device_ids.len());
         let _guard = candle_core::InferenceMode::enter();
+        attention_rs::reset_paged_attention_layer_counter();
         let (models, devices, config, sep_style) = if gguf {
             let device = crate::new_device(device_ids[0]).unwrap();
             let path = paths.get_weight_filenames()[0].clone();
@@ -902,7 +903,22 @@ impl DefaultLoader {
             ) {
                 config.apply_runtime_rope_overrides(self.yarn_scaling_factor);
             }
-            config.fp8_kvcache = Some(kv_cache_dtype == DType::U8);
+            let global_kvcache = crate::openai::models::KvCacheDtype::get_global();
+            if global_kvcache != crate::openai::models::KvCacheDtype::Auto {
+                if global_kvcache.is_turboquant()
+                    && !cfg!(feature = "cuda")
+                    && !cfg!(feature = "metal")
+                {
+                    tracing::warn!(
+                        "TurboQuant ({:?}) requires CUDA or Metal, ignoring on this platform.",
+                        global_kvcache
+                    );
+                } else {
+                    config.kvcache_dtype = global_kvcache;
+                }
+            } else if kv_cache_dtype == DType::U8 {
+                config.kvcache_dtype = crate::openai::models::KvCacheDtype::Fp8;
+            }
 
             if let Some(qcfg) = &mut config.quantization_config {
                 qcfg.normalize_compressed_tensors();
@@ -1656,7 +1672,20 @@ impl DefaultPipeline {
             GLM4GGUF,
         );
         #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
-        let flashinfer_kv_params = if config.is_mla() {
+        let skip_flashinfer = config.kvcache_dtype.is_turboquant()
+            || (config.kvcache_dtype.is_fp8_keys() && !attention_rs::has_flashinfer_fp8_e4m3())
+            || config.gemma4_per_layer_cache_config().is_some();
+
+        #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
+        let flashinfer_kv_params = if skip_flashinfer {
+            if config.kvcache_dtype.is_turboquant() {
+                tracing::info!(
+                    "Use native flash backend ({:?} kvcache, flashinfer disabled)",
+                    config.kvcache_dtype
+                );
+            }
+            None
+        } else if config.is_mla() {
             Some(FlashInferKvParams {
                 kv_dtype: _kv_cache_dtype,
                 out_dtype: dtype,

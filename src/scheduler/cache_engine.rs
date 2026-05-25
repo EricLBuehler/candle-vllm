@@ -1,4 +1,4 @@
-use crate::openai::models::Config;
+use crate::openai::models::{Config, KvCacheDtype};
 use candle_core::{DType, Device, Result, Tensor};
 use std::{
     collections::HashMap,
@@ -14,6 +14,7 @@ pub struct CacheConfig {
     pub num_cpu_blocks: Option<usize>, // Set after profiling init
     pub fully_init: bool,
     pub dtype: DType,
+    pub kvcache_dtype: crate::openai::models::KvCacheDtype,
     pub kvcache_mem_gpu: usize, // in MB
     pub mamba_cache_budget_bytes: usize,
 }
@@ -50,7 +51,7 @@ impl CacheEngine {
         device: &Device,
         num_shards: usize,
     ) -> Result<Self> {
-        Ok(Self {
+        let engine = Self {
             gpu_cache: Arc::new(Mutex::new(Self::allocate_kv_cache(
                 model_config,
                 cache_config,
@@ -66,7 +67,20 @@ impl CacheEngine {
                 num_shards,
             )?,
             num_layers: model_config.kv_cache_num_layers(),
-        })
+        };
+
+        if cache_config.kvcache_dtype.is_turboquant() && !device.is_cpu() {
+            let num_gpu_blocks = cache_config.num_gpu_blocks.unwrap_or(32);
+            Self::init_turboquant_cache(
+                model_config,
+                cache_config,
+                num_gpu_blocks,
+                device,
+                num_shards,
+            )?;
+        }
+
+        Ok(engine)
     }
 
     pub fn get_kv_cache(&self) -> MutexGuard<'_, Vec<KVCache>> {
@@ -84,14 +98,30 @@ impl CacheEngine {
         device: &Device,
         num_shards: usize,
     ) -> Result<Vec<KVCache>> {
+        let tq_full = matches!(
+            cache_config.kvcache_dtype,
+            KvCacheDtype::Turbo4 | KvCacheDtype::Turbo3
+        );
+
         #[cfg(feature = "cuda")]
-        let num_blocks = cache_config.num_gpu_blocks.unwrap_or(32);
-        // dummy cpu kvcache on Metal
-        #[cfg(not(feature = "cuda"))]
-        let num_blocks = if device.is_cpu() {
+        let num_blocks = if tq_full {
             1
         } else {
             cache_config.num_gpu_blocks.unwrap_or(32)
+        };
+        #[cfg(not(feature = "cuda"))]
+        let num_blocks = if device.is_cpu() {
+            if tq_full {
+                1
+            } else {
+                cache_config.num_cpu_blocks.unwrap_or(1)
+            }
+        } else {
+            if tq_full {
+                1
+            } else {
+                cache_config.num_gpu_blocks.unwrap_or(32)
+            }
         };
 
         #[cfg(all(feature = "flashattn", not(feature = "flashinfer"), feature = "cuda"))]
@@ -125,7 +155,11 @@ impl CacheEngine {
         }
 
         let per_layer_config = model_config.gemma4_per_layer_cache_config();
-        let use_flash_layout = cfg!(any(feature = "flashattn", feature = "flashinfer"));
+        let use_flash_layout = cfg!(any(
+            feature = "flashattn",
+            feature = "flashinfer",
+            feature = "metal"
+        ));
         let block_size = cache_config.block_size;
         let element_size = dtype.size_in_bytes();
         let x = 16 / element_size;
@@ -193,11 +227,11 @@ impl CacheEngine {
             }
             Ok(cache)
         } else {
-            let fp8_kvcache = matches!(dtype, DType::U8);
+            let kvcache_dtype = model_config.kvcache_dtype;
             if !device.is_cpu() {
                 println!(
-                    "Using FP8 KV Cache? {}, cache dtype {:?}",
-                    fp8_kvcache, dtype
+                    "KV cache dtype: {}, storage dtype {:?}",
+                    kvcache_dtype, dtype
                 );
             }
 
@@ -316,6 +350,101 @@ impl CacheEngine {
         unsafe {
             copy_blocks(key_caches, value_caches, src_to_dst)?;
         }
+        Ok(())
+    }
+
+    fn init_turboquant_cache(
+        model_config: &Config,
+        cache_config: &CacheConfig,
+        num_gpu_blocks: usize,
+        device: &Device,
+        num_shards: usize,
+    ) -> Result<()> {
+        let tq_mode = match cache_config.kvcache_dtype {
+            KvCacheDtype::Turbo8 => attention_rs::TurboquantMode::Turbo8,
+            KvCacheDtype::Turbo4 => attention_rs::TurboquantMode::Turbo4,
+            KvCacheDtype::Turbo3 => attention_rs::TurboquantMode::Turbo3,
+            _ => return Ok(()),
+        };
+
+        let block_size = cache_config.block_size;
+        let num_kv_layers = model_config.kv_cache_num_layers();
+        let per_layer_config = model_config.gemma4_per_layer_cache_config();
+
+        let mut tq_layers = Vec::new();
+        for layer_idx in 0..num_kv_layers {
+            let (kv_heads, hd) = if let Some(ref configs) = per_layer_config {
+                let (h, d) = configs[layer_idx];
+                (h / num_shards, d)
+            } else {
+                (
+                    model_config
+                        .num_key_value_heads
+                        .unwrap_or(model_config.num_attention_heads)
+                        / num_shards,
+                    model_config
+                        .head_dim
+                        .unwrap_or(model_config.hidden_size / model_config.num_attention_heads),
+                )
+            };
+
+            let v_absmax = Tensor::zeros(
+                (num_gpu_blocks, block_size, kv_heads),
+                candle_core::DType::F32,
+                device,
+            )?;
+            let v_quant = Tensor::zeros(
+                (num_gpu_blocks, block_size, kv_heads, hd / 2),
+                candle_core::DType::U8,
+                device,
+            )?;
+
+            let (k_absmax, k_quant) = match tq_mode {
+                attention_rs::TurboquantMode::Turbo4 => {
+                    let ka = Tensor::zeros(
+                        (num_gpu_blocks, block_size, kv_heads),
+                        candle_core::DType::F32,
+                        device,
+                    )?;
+                    let kq = Tensor::zeros(
+                        (num_gpu_blocks, block_size, kv_heads, hd / 2),
+                        candle_core::DType::U8,
+                        device,
+                    )?;
+                    (Some(ka), Some(kq))
+                }
+                attention_rs::TurboquantMode::Turbo3 => {
+                    let ka = Tensor::zeros(
+                        (num_gpu_blocks, block_size, kv_heads),
+                        candle_core::DType::F32,
+                        device,
+                    )?;
+                    let k_bytes_per_head = (hd * 3 + 7) / 8;
+                    let kq = Tensor::zeros(
+                        (num_gpu_blocks, block_size, kv_heads, k_bytes_per_head),
+                        candle_core::DType::U8,
+                        device,
+                    )?;
+                    (Some(ka), Some(kq))
+                }
+                _ => (None, None),
+            };
+
+            tq_layers.push(attention_rs::TurboquantLayerCache {
+                k_absmax,
+                k_quant,
+                v_absmax,
+                v_quant,
+            });
+        }
+
+        tracing::warn!(
+            "Initialized TurboQuant {} cache: {} layers, {} blocks",
+            cache_config.kvcache_dtype,
+            num_kv_layers,
+            num_gpu_blocks,
+        );
+        attention_rs::init_turboquant_cache(tq_mode, tq_layers, block_size);
         Ok(())
     }
 }

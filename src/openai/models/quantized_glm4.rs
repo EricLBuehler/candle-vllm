@@ -1,4 +1,6 @@
-use super::{attention::QuantizedAttention, rotary_emb::ScalingRotaryEmbedding, Config};
+use super::{
+    attention::QuantizedAttention, rotary_emb::ScalingRotaryEmbedding, Config, KvCacheDtype,
+};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::mask::get_attention_causal_mask;
@@ -74,7 +76,7 @@ impl GGUFGLM4 {
         rms_eps: f64,
         max_seq_len: usize,
         partial_rotary_factor: Option<f32>,
-        kv_cache_dtype: DType,
+        _kv_cache_dtype: DType,
     ) -> Config {
         Config {
             architectures: Some(vec!["glm4".to_string()]),
@@ -109,7 +111,7 @@ impl GGUFGLM4 {
             quantization_config: None,
             moe_config: None,
             isq_quant: None,
-            fp8_kvcache: Some(kv_cache_dtype == DType::U8),
+            kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: None,
         }
     }
