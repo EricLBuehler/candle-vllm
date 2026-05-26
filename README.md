@@ -26,6 +26,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support Prefix Caching
 - Support Block-wise FP8 Models (SM90+, Qwen3 Series)
 - Support FP8 KV Cache on all CUDA and Metal platforms
+- Support TurboQuant KV Cache (turbo8/turbo4/turbo3) with native flash attention kernels
 - Support Flashinfer Backend
 - Support manual YaRN RoPE scaling override from the command line via `--yarn-scaling-factor`
 - Support MXFP4/NVFP4 models
@@ -142,7 +143,7 @@ cargo install --features metal --path .
     **Example:**
 
     ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.6-27B-FP8] [--fp8-kvcache] [--ui-server]
+    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass] -- [--log --dtype bf16 --p 2000 --d 0,1 --gpu-memory-fraction 0.5 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.6-27B-FP8] [--kvcache-dtype fp8] [--ui-server]
     ```
 
     `ENV_PARAM`: RUST_LOG=warn
@@ -153,11 +154,11 @@ cargo install --features metal --path .
 
     `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.6-27B-FP8 (or `--w` specify local model path)
 
-    `CACHE CONFIG`: --fp8-kvcache
+    `CACHE CONFIG`: --kvcache-dtype auto/fp8/turbo8/turbo4/turbo3
 
     `WEB UI`: --ui-server
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * remaining_gpu_memory`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--yarn-scaling-factor` manually injects a YaRN RoPE scaling factor such as `4.0` to extend the effective context window for supported models; `--fp8-kvcache` used to enable fp8 kvcache; `--disable-prefix-cache` disable prefix cache (enabled by default); `--prefix-cache-max-tokens` cap prefix cache size; `--disable-cuda-graph` disable CUDA graph capture (enabled by default on CUDA builds); `--ui-server` start with a built-in ChatGPT-like Web UI sever. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
+    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--gpu-memory-fraction` auto-sizes KV cache after model load using `fraction * remaining_gpu_memory`; `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--yarn-scaling-factor` manually injects a YaRN RoPE scaling factor such as `4.0` to extend the effective context window for supported models; `--kvcache-dtype` sets KV cache quantization mode (`auto`/`fp8`/`turbo8`/`turbo4`/`turbo3`); `--disable-prefix-cache` disable prefix cache (enabled by default); `--prefix-cache-max-tokens` cap prefix cache size; `--disable-cuda-graph` disable CUDA graph capture (enabled by default on CUDA builds); `--ui-server` start with a built-in ChatGPT-like Web UI sever. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
   </details>
 
 ## 📚 Docs
@@ -226,8 +227,31 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
 
 - **FP8 KV Cache**
     ```shell
-    cargo run --release --features cuda,nccl,flashinfer,cutlass -- --w /data/Qwen3.5-35B-A3B-FP8/ --fp8-kvcache
+    cargo run --release --features cuda,nccl,flashinfer,cutlass -- --w /data/Qwen3.5-35B-A3B-FP8/ --kvcache-dtype fp8
     ```
+
+- **TurboQuant KV Cache** (4-bit/3-bit quantized KV cache with native flash kernels)
+
+    TurboQuant compresses the KV cache using Walsh-Hadamard transform for higher throughput and longer context:
+
+    | Mode | Description | KV Cache Compression | Recommended Use |
+    |------|-------------|---------------------|-----------------|
+    | `turbo8` | FP8 K + 4-bit V | ~2.6x | Best quality-compression trade-off |
+    | `turbo4` | 4-bit K + 4-bit V | ~3.7x | Balanced quality and memory savings |
+    | `turbo3` | 3-bit K + 4-bit V | ~4.7x | Maximum memory savings |
+
+    ```shell
+    # Turbo4 (4-bit KV cache, ~3.7x compression)
+    candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo4
+
+    # Turbo8 (FP8 K + 4-bit V, ~2.6x compression)
+    candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo8
+
+    # Turbo3 (3-bit K + 4-bit V, ~4.7x compression)
+    candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo3
+    ```
+
+    > **Note**: TurboQuant uses native flash attention kernels (flashinfer is automatically disabled). Supported on both CUDA (SM70+) and Metal (Apple Silicon) platforms. MLA models (DeepSeek, GLM4) auto-fallback to standard KV cache as TurboQuant is incompatible with their compressed KV layout.
 
 - Run **GGUF** models 
   <details open>

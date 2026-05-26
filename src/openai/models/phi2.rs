@@ -170,7 +170,7 @@ impl Attention {
                 cfg.sliding_window,
                 vb.device().clone(),
                 None,
-                cfg.fp8_kvcache.unwrap_or(false),
+                cfg.kvcache_dtype.is_fp8_keys(),
             )?,
         })
     }

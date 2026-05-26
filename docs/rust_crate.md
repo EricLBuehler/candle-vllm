@@ -67,7 +67,7 @@ Useful `EngineBuilder` controls include:
 - memory budgeting: `.with_gpu_memory_fraction()`
 - sampling defaults: `.with_temperature()`, `.with_top_p()`
 - device selection: `.with_device_ids()`
-- dtype and quantization: `.with_dtype()`, `.with_isq()`, `.with_fp8_kvcache()`
+- dtype and quantization: `.with_dtype()`, `.with_isq()`, `.with_kvcache_dtype()`
 
 ## Serving HTTP
 

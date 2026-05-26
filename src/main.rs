@@ -136,8 +136,9 @@ struct Args {
     #[arg(long)]
     prefill_chunk_size: Option<usize>,
 
-    #[arg(long, default_value_t = false)]
-    fp8_kvcache: bool,
+    /// KV cache dtype: auto (default), fp8, turbo8, turbo4, turbo3
+    #[arg(long)]
+    kvcache_dtype: Option<String>,
 
     /// Disable prefix cache (enabled by default).
     #[arg(long, default_value_t = false)]
@@ -235,7 +236,22 @@ async fn main() -> Result<()> {
     let (paths, gguf) = loader.prepare_model_weights(args.hf_token, args.hf_token_path)?;
 
     let dtype = candle_vllm::get_dtype(args.dtype);
-    let kv_cache_dtype = if args.fp8_kvcache { DType::U8 } else { dtype };
+    let kvcache_dtype_enum = if let Some(ref s) = args.kvcache_dtype {
+        candle_vllm::openai::models::KvCacheDtype::from_str_opt(s).unwrap_or_else(|| {
+            panic!(
+                "Invalid --kvcache-dtype value: {}. Use auto/fp8/turbo8/turbo4/turbo3.",
+                s
+            )
+        })
+    } else {
+        candle_vllm::openai::models::KvCacheDtype::Auto
+    };
+    let kv_cache_dtype = if kvcache_dtype_enum.is_fp8_keys() {
+        DType::U8
+    } else {
+        dtype
+    };
+    candle_vllm::openai::models::KvCacheDtype::set_global(kvcache_dtype_enum);
 
     let device_ids: Vec<usize> = match args.device_ids {
         Some(ids) => ids,
@@ -482,11 +498,12 @@ async fn main() -> Result<()> {
             let cfg = pipeline.get_model_config();
             let mut cache_cfg = candle_vllm::get_cache_config(
                 kvcache_mem_gpu,
-                args.kvcache_mem_cpu, //dummy 512MB for cpu
+                args.kvcache_mem_cpu,
                 block_size,
                 &cfg,
                 kv_cache_dtype,
                 num_shards,
+                kvcache_dtype_enum,
             );
             cache_cfg.mamba_cache_budget_bytes = mamba_cache_budget_bytes;
             let cache_engine = CacheEngine::new(

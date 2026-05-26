@@ -1,6 +1,6 @@
 use super::quantized_qwen3_5::{parse_gguf_hybrid_config, QuantizedGatedDeltaNet};
 use super::rotary_emb::ScalingRotaryEmbedding;
-use super::{attention::QuantizedAttention, Config, MoEConfig, QwenMoEConfig};
+use super::{attention::QuantizedAttention, Config, KvCacheDtype, MoEConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::linear::Linear;
@@ -137,7 +137,7 @@ impl GGUFQWen3_5MoE {
         original_max_position_embeddings: Option<usize>,
         partial_rotary_factor: Option<f32>,
         moe_cfg: &QwenMoEConfig,
-        kv_cache_dtype: DType,
+        _kv_cache_dtype: DType,
         extra_config_json: Option<String>,
     ) -> Config {
         Config {
@@ -173,7 +173,7 @@ impl GGUFQWen3_5MoE {
             quantization_config: None,
             moe_config: Some(MoEConfig::QwenMoE(moe_cfg.clone())),
             isq_quant: None,
-            fp8_kvcache: Some(kv_cache_dtype == DType::U8),
+            kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json,
         }
     }

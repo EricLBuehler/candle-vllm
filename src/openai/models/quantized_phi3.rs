@@ -1,5 +1,6 @@
 use super::rotary_emb::ScalingRotaryEmbedding;
 use super::Config;
+use super::KvCacheDtype;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::{InputMetadata, PagedAttention};
@@ -154,7 +155,7 @@ impl GGUFPhi3 {
         max_seq_len: usize,
         original_max_position_embeddings: Option<usize>,
         partial_rotary_factor: Option<f32>,
-        kv_cache_dtype: DType,
+        _kv_cache_dtype: DType,
     ) -> Config {
         Config {
             architectures: Some(vec!["phi3".to_string()]),
@@ -189,7 +190,7 @@ impl GGUFPhi3 {
             quantization_config: None,
             moe_config: None,
             isq_quant: None,
-            fp8_kvcache: Some(kv_cache_dtype == DType::U8),
+            kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: None,
         }
     }
@@ -307,7 +308,7 @@ impl GGUFPhi3 {
                     None,
                     device.clone(),
                     None,
-                    cfg.fp8_kvcache.unwrap_or(false),
+                    cfg.kvcache_dtype.is_fp8_keys(),
                 )?,
                 rotary_emb: rotary_emb.clone(),
                 dtype,

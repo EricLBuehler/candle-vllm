@@ -1,6 +1,6 @@
 use super::{
-    attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config, MoEConfig,
-    QuantConfig, QwenMoEConfig,
+    attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config, KvCacheDtype,
+    MoEConfig, QuantConfig, QwenMoEConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, Comm, ReplicatedLinear, VarBuilder};
@@ -726,7 +726,7 @@ impl Gemma4 {
                 .or(top_level_quant_config),
             moe_config,
             isq_quant: quant,
-            fp8_kvcache: None,
+            kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: Some(raw),
         };
         Ok(config)

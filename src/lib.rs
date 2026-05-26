@@ -120,53 +120,118 @@ pub fn get_cache_config(
     config: &crate::openai::models::Config,
     kv_dtype: candle::DType,
     num_shards: usize,
+    kvcache_dtype: crate::openai::models::KvCacheDtype,
 ) -> crate::scheduler::cache_engine::CacheConfig {
+    use crate::openai::models::KvCacheDtype;
+
+    let kvcache_dtype =
+        if kvcache_dtype.is_turboquant() && !cfg!(feature = "cuda") && !cfg!(feature = "metal") {
+            tracing::warn!(
+                "TurboQuant ({}) requires CUDA or Metal. Falling back to auto.",
+                kvcache_dtype
+            );
+            KvCacheDtype::Auto
+        } else if config.is_mla() && kvcache_dtype.is_turboquant() {
+            tracing::warn!(
+                "TurboQuant ({}) is not supported for MLA models. Falling back to auto.",
+                kvcache_dtype
+            );
+            KvCacheDtype::Auto
+        } else {
+            kvcache_dtype
+        };
+
     let kv_layers = config.kv_cache_num_layers().max(1);
     let dsize = kv_dtype.size_in_bytes();
     let size_in_mb = 1024 * 1024;
-    let (num_gpu_blocks, num_cpu_blocks) = if config.is_mla() {
-        let per_block = block_size
-            * (config.mla_kv_lora_rank() + config.mla_qk_rope_head_dim())
-            * dsize
-            * kv_layers;
-        let gpu = kvcache_mem_gpu * size_in_mb / per_block.max(1);
-        let cpu = kvcache_mem_cpu * size_in_mb / per_block.max(1);
-        (gpu, cpu)
-    } else if let Some(per_layer_cfg) = config.gemma4_per_layer_cache_config() {
-        // For Gemma4 with heterogeneous head_dim, calculate per-layer cache size
-        let mut total_per_block_bytes = 0usize;
-        for &(kv_heads, head_dim) in &per_layer_cfg {
+
+    let tq_full = matches!(kvcache_dtype, KvCacheDtype::Turbo4 | KvCacheDtype::Turbo3);
+
+    let base_per_block = if tq_full {
+        0
+    } else if config.is_mla() {
+        block_size * (config.mla_kv_lora_rank() + config.mla_qk_rope_head_dim()) * dsize * kv_layers
+    } else if let Some(ref per_layer_cfg) = config.gemma4_per_layer_cache_config() {
+        let mut total = 0usize;
+        for &(kv_heads, head_dim) in per_layer_cfg {
             let kv_heads_sharded = kv_heads / num_shards;
-            // 2 for key and value tensors
-            total_per_block_bytes += block_size * kv_heads_sharded * head_dim * dsize * 2;
+            total += block_size * kv_heads_sharded * head_dim * dsize * 2;
         }
-        let per_block = total_per_block_bytes.max(1);
-        let gpu = kvcache_mem_gpu * size_in_mb / per_block;
-        let cpu = kvcache_mem_cpu * size_in_mb / per_block;
-        (gpu, cpu)
+        total
     } else {
-        let num_gpu_blocks = kvcache_mem_gpu * size_in_mb
-            / dsize
-            / block_size
-            / (config.num_key_value_heads.unwrap() / num_shards)
-            / config.k_head_dim()
-            / kv_layers
-            / 2;
-        let num_cpu_blocks = kvcache_mem_cpu * size_in_mb
-            / dsize
-            / block_size
-            / (config.num_key_value_heads.unwrap() / num_shards)
-            / config.k_head_dim()
-            / kv_layers
-            / 2;
-        (num_gpu_blocks, num_cpu_blocks)
+        dsize
+            * block_size
+            * (config.num_key_value_heads.unwrap() / num_shards)
+            * config.k_head_dim()
+            * kv_layers
+            * 2
     };
+
+    let tq_per_block = match kvcache_dtype {
+        KvCacheDtype::Turbo8 => {
+            if let Some(ref per_layer_cfg) = config.gemma4_per_layer_cache_config() {
+                per_layer_cfg
+                    .iter()
+                    .map(|&(kv_heads, hd)| {
+                        let heads = kv_heads / num_shards;
+                        block_size * heads * 4 + block_size * heads * (hd / 2)
+                    })
+                    .sum()
+            } else {
+                let heads = config.num_key_value_heads.unwrap() / num_shards;
+                let hd = config.k_head_dim();
+                (block_size * heads * 4 + block_size * heads * (hd / 2)) * kv_layers
+            }
+        }
+        KvCacheDtype::Turbo4 => {
+            if let Some(ref per_layer_cfg) = config.gemma4_per_layer_cache_config() {
+                per_layer_cfg
+                    .iter()
+                    .map(|&(kv_heads, hd)| {
+                        let heads = kv_heads / num_shards;
+                        block_size * heads * 4 * 2 + block_size * heads * (hd / 2) * 2
+                    })
+                    .sum()
+            } else {
+                let heads = config.num_key_value_heads.unwrap() / num_shards;
+                let hd = config.k_head_dim();
+                (block_size * heads * 4 * 2 + block_size * heads * (hd / 2) * 2) * kv_layers
+            }
+        }
+        KvCacheDtype::Turbo3 => {
+            if let Some(ref per_layer_cfg) = config.gemma4_per_layer_cache_config() {
+                per_layer_cfg
+                    .iter()
+                    .map(|&(kv_heads, hd)| {
+                        let heads = kv_heads / num_shards;
+                        block_size * heads * 4 * 2
+                            + block_size * heads * ((hd * 3 + 7) / 8)
+                            + block_size * heads * (hd / 2)
+                    })
+                    .sum()
+            } else {
+                let heads = config.num_key_value_heads.unwrap() / num_shards;
+                let hd = config.k_head_dim();
+                (block_size * heads * 4 * 2
+                    + block_size * heads * ((hd * 3 + 7) / 8)
+                    + block_size * heads * (hd / 2))
+                    * kv_layers
+            }
+        }
+        _ => 0,
+    };
+
+    let per_block = (base_per_block + tq_per_block).max(1);
+    let num_gpu_blocks = kvcache_mem_gpu * size_in_mb / per_block;
+    let num_cpu_blocks = kvcache_mem_cpu * size_in_mb / per_block;
+
     crate::scheduler::cache_engine::CacheConfig {
         block_size,
         num_gpu_blocks: Some(num_gpu_blocks),
         num_cpu_blocks: Some(num_cpu_blocks),
         fully_init: true,
         dtype: kv_dtype,
+        kvcache_dtype,
         kvcache_mem_gpu,
         mamba_cache_budget_bytes: 0,
     }

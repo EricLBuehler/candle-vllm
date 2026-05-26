@@ -1,5 +1,5 @@
 #![allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-use super::{Config, MoEConfig, QuantConfig, QwenMoEConfig};
+use super::{Config, KvCacheDtype, MoEConfig, QuantConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
     embedding, Comm, ReplicatedLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
@@ -411,7 +411,7 @@ impl DeepSeek {
             quantization_config: quant_config,
             moe_config: Some(MoEConfig::QwenMoE(qwen_moe)),
             isq_quant,
-            fp8_kvcache: None,
+            kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: Some(raw),
         };
 

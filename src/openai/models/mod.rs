@@ -41,6 +41,84 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum KvCacheDtype {
+    Auto,
+    Fp8,
+    Turbo8,
+    Turbo4,
+    Turbo3,
+}
+
+static GLOBAL_KVCACHE_DTYPE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+impl KvCacheDtype {
+    pub fn is_turboquant(&self) -> bool {
+        matches!(self, Self::Turbo8 | Self::Turbo4 | Self::Turbo3)
+    }
+
+    pub fn is_fp8_keys(&self) -> bool {
+        matches!(self, Self::Fp8 | Self::Turbo8)
+    }
+
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "auto" | "bf16" | "bfloat16" => Some(Self::Auto),
+            "fp8" | "e4m3" => Some(Self::Fp8),
+            "turbo8" | "k8v4" => Some(Self::Turbo8),
+            "turbo4" | "4bit" => Some(Self::Turbo4),
+            "turbo3" | "k3v4" => Some(Self::Turbo3),
+            _ => None,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            Self::Auto => 0,
+            Self::Fp8 => 1,
+            Self::Turbo8 => 2,
+            Self::Turbo4 => 3,
+            Self::Turbo3 => 4,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => Self::Fp8,
+            2 => Self::Turbo8,
+            3 => Self::Turbo4,
+            4 => Self::Turbo3,
+            _ => Self::Auto,
+        }
+    }
+
+    pub fn set_global(dtype: Self) {
+        GLOBAL_KVCACHE_DTYPE.store(dtype.to_u8(), std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub fn get_global() -> Self {
+        Self::from_u8(GLOBAL_KVCACHE_DTYPE.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+impl Default for KvCacheDtype {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl std::fmt::Display for KvCacheDtype {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Fp8 => write!(f, "fp8"),
+            Self::Turbo8 => write!(f, "turbo8"),
+            Self::Turbo4 => write!(f, "turbo4"),
+            Self::Turbo3 => write!(f, "turbo3"),
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum ScalingValue {
@@ -478,7 +556,8 @@ pub struct Config {
     pub moe_config: Option<MoEConfig>,
     pub quantization_config: Option<QuantConfig>,
     pub isq_quant: Option<String>,
-    pub fp8_kvcache: Option<bool>,
+    #[serde(default)]
+    pub kvcache_dtype: KvCacheDtype,
     pub extra_config_json: Option<String>,
 }
 
@@ -766,7 +845,7 @@ mod tests {
             moe_config: None,
             quantization_config: None,
             isq_quant: None,
-            fp8_kvcache: None,
+            kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: None,
         }
     }
@@ -1228,7 +1307,7 @@ impl AttentionSelect {
                     sliding_window,
                     device.clone(),
                     None,
-                    cfg.fp8_kvcache.unwrap_or(false),
+                    cfg.kvcache_dtype.is_fp8_keys(),
                 )
                 .unwrap(),
             )
