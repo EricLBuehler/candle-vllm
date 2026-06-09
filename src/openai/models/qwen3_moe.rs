@@ -3,7 +3,7 @@ use super::{
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, rms_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
+    embedding, rms_norm_with_dtype, Comm, ReplicatedLinear, TensorParallelColumnLinear,
     TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::layers::deepstack::ApplyDeepStack;
@@ -263,12 +263,22 @@ impl DecoderLayer {
             MoeOrMlp::Mlp(mlp)
         };
 
-        let input_layernorm =
-            rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
-        let post_attention_layernorm = rms_norm(
+        let norm_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
+        let input_layernorm = rms_norm_with_dtype(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb.pp("input_layernorm"),
+            norm_dtype,
+        )?;
+        let post_attention_layernorm = rms_norm_with_dtype(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
+            norm_dtype,
         )?;
 
         //shared experts weights in Qwen2 MoE models
@@ -400,7 +410,17 @@ impl Qwen3MoE {
             layers.push(layer);
             reporter.write().set_progress(layer_idx + 1);
         }
-        let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
+        let norm_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
+        let norm = rms_norm_with_dtype(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb_m.pp("norm"),
+            norm_dtype,
+        )?;
         let lm_head = ReplicatedLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,

@@ -1441,6 +1441,8 @@ impl LnMxfp4 {
     ) -> Result<Self> {
         let blocks = if vb.contains_tensor("weight_packed") {
             vb.get_with_hints_dtype((out_dim, in_dim / 2), "weight_packed", shard, DType::U8)?
+        } else if vb.contains_tensor("weight") {
+            vb.get_with_hints_dtype((out_dim, in_dim / 2), "weight", shard, DType::U8)?
         } else {
             vb.get_with_hints_dtype((out_dim, in_dim / 2), "blocks", shard, DType::U8)?
         };
@@ -1585,7 +1587,7 @@ impl LnNvfp4 {
                 .unwrap_or(0) as usize;
             if sm >= 100 {
                 Some(attention_rs::nvfp4_linear::swizzle_nvfp4_weight_scales(
-                    &scales, out_dim, in_dim,
+                    &scales,
                 )?)
             } else {
                 None

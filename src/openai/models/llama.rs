@@ -1,6 +1,8 @@
 use super::{attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{embedding, rms_norm, Comm, ReplicatedLinear, VarBuilder};
+use crate::openai::distributed::{
+    embedding, rms_norm_with_dtype, Comm, ReplicatedLinear, VarBuilder,
+};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle::{DType, Device, Result, Tensor};
@@ -76,11 +78,22 @@ impl Block {
             cfg.sliding_window,
         )?;
         let mlp = Mlp::new(cfg, vb.pp("mlp"), comm.clone())?;
-        let rms_1 = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
-        let rms_2 = rms_norm(
+        let norm_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            vb.dtype()
+        };
+        let rms_1 = rms_norm_with_dtype(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb.pp("input_layernorm"),
+            norm_dtype,
+        )?;
+        let rms_2 = rms_norm_with_dtype(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
+            norm_dtype,
         )?;
         Ok(Self {
             rms_1,
@@ -201,7 +214,17 @@ impl Llama {
         )?;
 
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, true)?);
-        let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("model.norm"))?;
+        let norm_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
+        let norm = rms_norm_with_dtype(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb.pp("model.norm"),
+            norm_dtype,
+        )?;
         let reporter = progress_reporter.clone();
         let blocks: Vec<_> = (0..cfg.num_hidden_layers)
             .map(|i| {

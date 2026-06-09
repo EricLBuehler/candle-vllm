@@ -37,24 +37,24 @@
 
     | 模型ID | 模型类型 | 解码速度 / 单请求（`BF16`) | 量化（`Q4K`或`Marlin`） |
     |--|--|--|--|
-    | #1 | **LLAMA** |105 tks/s (8B) | 154 tks/s (8B, Q4k), 163 tks/s (8B, **Marlin**) |
-    | #2 | **Mistral** |112 tks/s (7B)| 171 tks/s (7B, Q4k), 175 tks/s (7B, **Marlin**) |
-    | #3 | **Phi3/Phi4** |139 tks/s (3.8B)|180 tks/s (3.8B, Q4k)|
-    | #4 | **QWen2/Qwen3 Dense** |96 tks/s (8B)|135 tks/s **(8B, Q4k)**|
-    | #5 | **QWen3 MoE** |92 tks/s **(30B)**|114 tks/s **(30B, Q4K)** |
-    | #6 | **QWen3-Next MoE** |71 tks/s **(80B, BF16, tp=2)**|TBD|
-    | #7 | **QWen3.5/3.6 Dense** |30 tks/s **(27B, BF16)**|~42 tks/s **(27B, Q4K / FP8)** |
-    | #8 | **QWen3.5/3.6 MoE** |82 tks/s **(35B)**|93 tks/s **(35B, Q4K)** |
-    | #9 | **Yi** |148 tks/s (6B)| 180 tks/s (6B, Q4k)|
-    | #10 | **StableLM** |223 tks/s (3B)|-|
-    | #11 | **Gemma-2/Gemma-3** |92 tks/s (9B)|115 tks/s (9B, **Marlin**)|
+   | #1 | **LLAMA** |119 tks/s (8B) | 163 tks/s (8B, Q4k), 171 tks/s (8B, **Marlin**) |
+    | #2 | **Mistral** |122 tks/s (7B)| 181 tks/s (7B, Q4k), 190 tks/s (7B, **Marlin**) |
+    | #3 | **Phi3/Phi4** |153 tks/s (3.8B)|196 tks/s (3.8B, Q4k)|
+    | #4 | **QWen2/Qwen3 Dense** |127 tks/s (8B)|154 tks/s **(8B, Q4k)**|
+    | #5 | **QWen3 MoE** |102 tks/s **(30B)**|124 tks/s **(30B, Q4K)** |
+    | #6 | **QWen3-Next MoE** |80 tks/s **(80B, BF16, tp=2)**|TBD|
+    | #7 | **QWen3.5/3.6 Dense** |36 tks/s **(27B, BF16)**|~49 tks/s **(27B, Q4K / FP8)** |
+    | #8 | **QWen3.5/3.6 MoE** |90 tks/s **(35B)**|105 tks/s **(35B, Q4K)** |
+    | #9 | **Yi** |168 tks/s (6B)| 199 tks/s (6B, Q4k)|
+    | #10 | **StableLM** |251 tks/s (3B)|-|
+    | #11 | **Gemma-2/Gemma-3** |103 tks/s (9B)|130 tks/s (9B, **Marlin**)|
     | #12 | **DeepSeek V2/V3/R1** |TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|
-    | #13 | **QwQ-32B** |45 tks/s **(32B, tp=2)**|63 tks/s **(32B, Q4K)**|
-    | #14 | **GLM4** |89 tks/s **(9B)**|124 tks/s **(9B, Q4K)**|
-    | #15 | **GLM4.7 Flash** |TBD|75 tks/s **(31B, NVFP4)**|
-    | #16 | **LLama4** |TBD|43 tks/s **(107B, NVFP4)**|
-    | #17 | **Gemma4** |(26B) 75 tks/s|72 tks/s **(26B, NVFP4)**|
-    | #18 | **MiniMax-M2.5/M2.7** |TBD|60 tks/s **(229B, NVFP4, TP=2)**|
+    | #13 | **QwQ-32B** |51 tks/s **(32B, tp=2)**|70 tks/s **(32B, Q4K)**|
+    | #14 | **GLM4** |96 tks/s **(9B)**|139 tks/s **(9B, Q4K)**|
+    | #15 | **GLM4.7 Flash** |TBD|82 tks/s **(31B, NVFP4)**|
+    | #16 | **LLama4** |TBD|47 tks/s **(107B, NVFP4)**|
+    | #17 | **Gemma4** |(26B) 83 tks/s|82 tks/s **(26B, NVFP4)**|
+    | #18 | **MiniMax-M2.5/M2.7** |TBD|72 tks/s **(229B, NVFP4, TP=2)**|
 
 _注：结果为单个请求的解码速度（输入 4k，输出 1k，`Hopper` 80G）。_
   </details>
@@ -82,12 +82,9 @@ cd candle-vllm
 
  > 方案 1 (安装进docker)
 ```bash
-# 主机驱动版本需要 >= 选定的CUDA版本；启用`flashattn`或`flashinfer`特性需要更长的编译时间
-# 将 `sm_80` 更改为当前硬件特性, 例如, sm_75 (V100), sm_80 (Ampere, A100), sm_86/89 (RTX30xx, RTX40xx), sm_90 (Hopper, H100/H200), sm_100/sm_120 (Blackwell, RTX50xx)
-./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass" sm_90 13.0.0
-
-# 或切换为 Flah attention 后端, 或 传 1 使用Rust 中国区镜像 (适用于中国大陆)
-./build_docker.sh "cuda,nccl,graph,flashattn,cutlass" sm_80 12.9.0 1
+# 主机驱动版本需要 >= 选定的CUDA版本
+# 通过追加如 "sm_90 13.0.0" 参数来编译指定SM版本及CUDA版本
+./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass"
 ```
 
  > 方案 2 (手动安装)
@@ -116,10 +113,7 @@ cargo install --features cuda,nccl,flashinfer,cutlass --path .
 ```shell
 sudo apt install git libopenmpi-dev openmpi-bin -y #安装MPI
 sudo apt install clang libclang-dev
-cargo install --features cuda,nccl,flashattn,cutlass,mpi --path . #同时包含flash attention与MPI功能
-
-# FlashInfer 后端
-cargo install --features cuda,nccl,flashinfer,cutlass,mpi --path .
+cargo install --features cuda,nccl,flashinfer,cutlass,mpi --path . #同时包含flashinfer与MPI功能
 ```
 
 **Mac/Metal平台**

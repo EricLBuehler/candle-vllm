@@ -54,6 +54,8 @@ pub struct GatedDeltaNet {
     gdn_layer_idx: usize,
     rms_norm_eps: f64,
     scale: f64,
+    kernel_dtype: DType,
+    projection_dtype: DType,
 }
 
 impl GatedDeltaNet {
@@ -272,6 +274,11 @@ impl GatedDeltaNet {
         &self,
         xs: &Tensor,
     ) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor, Tensor)> {
+        let xs = &if xs.dtype() != self.projection_dtype {
+            xs.to_dtype(self.projection_dtype)?
+        } else {
+            xs.clone()
+        };
         match &self.projection {
             GdnProjection::FusedQkvzBa {
                 in_proj_qkvz,
@@ -371,6 +378,12 @@ impl GatedDeltaNet {
 
         let is_quantized = config.quantization_config.is_some();
         let dtype = vb.dtype();
+        let kernel_dtype = if config.is_f16_mode {
+            DType::F32
+        } else {
+            dtype
+        };
+        let projection_dtype = dtype;
 
         let num_v_heads = num_v_heads_global / world_size;
         let num_k_heads = num_k_heads_global / world_size;
@@ -470,6 +483,8 @@ impl GatedDeltaNet {
             gdn_layer_idx,
             rms_norm_eps: config.rms_norm_eps,
             scale,
+            kernel_dtype,
+            projection_dtype,
         })
     }
 
@@ -484,10 +499,24 @@ impl GatedDeltaNet {
         if slot_count == 0 {
             candle_core::bail!("Linear attention requires non-empty sequence slots");
         }
+        let original_dtype = xs.dtype();
         let (token_count, _hidden) = xs.dims2()?;
         let is_prefill = input_metadata.is_prefill;
 
         let (q, k, v, z, b, a) = self.project_inputs(xs)?;
+
+        let (q, k, v, z, b, a) = if q.dtype() != self.kernel_dtype {
+            (
+                q.to_dtype(self.kernel_dtype)?,
+                k.to_dtype(self.kernel_dtype)?,
+                v.to_dtype(self.kernel_dtype)?,
+                z.to_dtype(self.kernel_dtype)?,
+                b.to_dtype(self.kernel_dtype)?,
+                a.to_dtype(self.kernel_dtype)?,
+            )
+        } else {
+            (q, k, v, z, b, a)
+        };
         let mixed_qkv = Tensor::cat(&[&q, &k, &v], 1)?;
 
         let (kv_conv, prefill_conv_state) = if is_prefill {
@@ -544,48 +573,73 @@ impl GatedDeltaNet {
         let v = v_conv.reshape((token_count, self.num_v_heads, self.head_v_dim))?;
         let q = gdn::l2_norm_last_dim(&q, 1e-6)?;
         let k = gdn::l2_norm_last_dim(&k, 1e-6)?;
-        let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
 
         let output = if is_prefill {
-            // S1: Use batched varlen recurrence — one CUDA launch for all sequences
-            let q_scaled = (&q * self.scale)?;
-
             let cu_seqlens = input_metadata
                 .cu_seqlens_q
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
-
-            // Get mutable reference to global state for in-place update (optimized prefill)
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            // xs.device().synchronize()?;
-
-            gdn::gated_delta_rule_recurrence_varlen(
-                &q_scaled,
-                &k,
-                &v,
-                &g,
-                &beta,
-                global_state,
-                seq_slots,
-                &cu_seqlens,
-            )?
+            if self.num_k_heads != self.num_v_heads {
+                gdn::gated_delta_rule_recurrence_varlen_gqa(
+                    &q,
+                    &k,
+                    &v,
+                    &g,
+                    &beta,
+                    global_state,
+                    seq_slots,
+                    &cu_seqlens,
+                    self.scale as f32,
+                )?
+            } else {
+                let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
+                let q_scaled = (&q * self.scale)?;
+                gdn::gated_delta_rule_recurrence_varlen(
+                    &q_scaled,
+                    &k,
+                    &v,
+                    &g,
+                    &beta,
+                    global_state,
+                    seq_slots,
+                    &cu_seqlens,
+                )?
+            }
         } else {
             let batch = slot_count;
-            let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
-            let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
             let v_b = v.reshape((batch, self.num_v_heads, self.head_v_dim))?;
             let g_b = g.reshape((batch, self.num_v_heads))?;
             let beta_b = beta.reshape((batch, self.num_v_heads))?;
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            gdn::gated_delta_rule_decode_slots(
-                &q_b,
-                &k_b,
-                &v_b,
-                &g_b,
-                &beta_b,
-                global_state,
-                seq_slots,
-            )?
+            if self.num_k_heads != self.num_v_heads {
+                gdn::gated_delta_rule_decode_slots_gqa(
+                    &q,
+                    &k,
+                    &v_b,
+                    &g_b,
+                    &beta_b,
+                    global_state,
+                    seq_slots,
+                    self.scale as f32,
+                )?
+            } else {
+                let (q, k) = (
+                    self.repeat_kv_heads(q.clone())?,
+                    self.repeat_kv_heads(k.clone())?,
+                );
+                let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
+                let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
+                gdn::gated_delta_rule_decode_slots(
+                    &q_b,
+                    &k_b,
+                    &v_b,
+                    &g_b,
+                    &beta_b,
+                    global_state,
+                    seq_slots,
+                )?
+            }
         };
 
         // output: [seq_len, num_v_heads, head_v_dim] -> [seq_len, value_dim]
@@ -601,7 +655,13 @@ impl GatedDeltaNet {
             self.head_v_dim,
         )?;
 
-        // Output projection
-        self.out_proj.forward(&gated_output.to_dtype(xs.dtype())?)
+        let out = self
+            .out_proj
+            .forward(&gated_output.to_dtype(self.projection_dtype)?)?;
+        if out.dtype() != original_dtype {
+            out.to_dtype(original_dtype)
+        } else {
+            Ok(out)
+        }
     }
 }

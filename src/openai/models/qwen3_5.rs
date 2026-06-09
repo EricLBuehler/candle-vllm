@@ -61,7 +61,6 @@ struct DecoderLayer {
     mlp: Mlp,
     input_layernorm: RmsNorm,
     post_attention_layernorm: RmsNorm,
-    dtype: DType,
 }
 
 impl DecoderLayer {
@@ -70,7 +69,7 @@ impl DecoderLayer {
         cfg: &Config,
         vb: VarBuilder,
         comm: Rc<Comm>,
-        dtype: DType,
+        _dtype: DType,
         layer_type: &str,
         gdn_layer_idx: usize,
     ) -> Result<Self> {
@@ -112,7 +111,6 @@ impl DecoderLayer {
             mlp,
             input_layernorm,
             post_attention_layernorm,
-            dtype,
         })
     }
 
@@ -137,17 +135,7 @@ impl DecoderLayer {
                 attn.forward(&xs, attention_mask, input_positions, cache, input_metadata)?
             }
             AttnType::LinearAttention(gdn) => {
-                if xs.dtype() != self.dtype {
-                    gdn.forward(
-                        &xs.to_dtype(self.dtype)?,
-                        mamba_cache,
-                        input_metadata,
-                        seq_slots,
-                    )?
-                    .to_dtype(xs.dtype())?
-                } else {
-                    gdn.forward(&xs, mamba_cache, input_metadata, seq_slots)?
-                }
+                gdn.forward(&xs, mamba_cache, input_metadata, seq_slots)?
             }
         };
         let xs = (xs + residual)?;
@@ -200,7 +188,7 @@ impl Qwen3_5 {
         };
         let tie_word_embeddings = text_backbone.tie_word_embeddings;
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, true)?);
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, false)?);
 
         let hybrid = resolve_qwen3_hybrid_config(cfg);
         let layer_types = &hybrid.layer_types;
@@ -271,6 +259,11 @@ impl Qwen3_5 {
         let num_k_heads = hybrid.num_k_heads / world_size;
         let d_conv = num_k_heads * hybrid.key_head_dim * 2 + num_v_heads * hybrid.value_head_dim;
 
+        let conv_cache_dtype = if cfg.isq_quant.is_some() || cfg.is_f16_mode {
+            DType::F32
+        } else {
+            dtype
+        };
         let mamba_cache = if gdn_layer_idx > 0 {
             MambaCache::new(
                 gdn_layer_idx,
@@ -280,12 +273,12 @@ impl Qwen3_5 {
                 num_v_heads,
                 hybrid.key_head_dim,
                 hybrid.value_head_dim,
-                dtype,
+                conv_cache_dtype,
                 DType::F32,
                 device,
             )?
         } else {
-            MambaCache::new(0, 1, 1, 2, 1, 1, 1, dtype, DType::F32, device)?
+            MambaCache::new(0, 1, 1, 2, 1, 1, 1, conv_cache_dtype, DType::F32, device)?
         };
 
         Ok(Self {

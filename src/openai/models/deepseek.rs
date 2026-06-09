@@ -413,6 +413,7 @@ impl DeepSeek {
             isq_quant,
             kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: Some(raw),
+            is_f16_mode: false,
         };
 
         config.apply_rope_overrides();

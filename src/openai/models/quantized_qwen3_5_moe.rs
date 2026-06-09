@@ -175,6 +175,7 @@ impl GGUFQWen3_5MoE {
             isq_quant: None,
             kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json,
+            is_f16_mode: false,
         }
     }
 
@@ -289,7 +290,12 @@ impl GGUFQWen3_5MoE {
             Some(extra_config_json),
         );
         cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
+            DType::F32,
+            &cfg,
+            device,
+            false,
+        )?);
 
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;

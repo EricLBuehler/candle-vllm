@@ -1,147 +1,206 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Positional args:
-#   1: WITH_FEATURES   (default: cuda,nccl,graph,flashinfer)
-#                        use `flashattn` instead of `flashattn` for the Flash attention backend
-#   2: SM_ARG          (default: sm_80)  accepts sm_XX, XX, or comma list sm_80,sm_86
-#   3: CUDA_VERSION    (default: 12.9.0) accepts X.Y.Z, X.Y, or shorthand like 129/124
-#   4: CHINA_MIRROR    (default: 0)      0=off, 1=on
-#   5: IMAGE_TAG       (default: candle-vllm:latest)
+# Build candle-vllm Docker image with automatic GPU/CUDA detection.
+#
+# Flags:
+#   --help / -h    Show usage
+#
+# Positional args (all optional — auto-detected if omitted):
+#   1: SM_ARG        Auto-detected via nvidia-smi, or provide sm_XX / XX
+#   2: CUDA_VERSION  Auto-selected from SM (13.0.0 for SM80+, 12.9.0 for SM70/75)
+#   3: IMAGE_TAG     (default: candle-vllm:latest)
+#   4: CHINA_MIRROR  Auto-detected (China network → 1), or 0/1 to override
+#
+# Features auto-selected from SM:
+#   SM80+      → cuda,nccl,flashinfer,cutlass
+#   SM70/SM75  → cuda,nccl (no flashinfer/cutlass)
+#
+# Override via environment variables:
+#   WITH_FEATURES="cuda,nccl" ./build_docker.sh
 
-WITH_FEATURES="${1:-cuda,nccl,graph,flashinfer}"
-SM_ARG="${2:-sm_80}"
-CUDA_VERSION_ARG="${3:-12.9.0}"
-CHINA_MIRROR="${4:-0}"
-IMAGE_TAG="${5:-candle-vllm:latest}"
+usage() {
+  cat <<'EOF'
+Usage:
+  ./build_docker.sh [SM_ARG] [CUDA_VERSION] [IMAGE_TAG] [CHINA_MIRROR]
 
-# Optional environment override (kept as env rather than positional to avoid breaking callers)
+All arguments are optional. If SM_ARG is omitted, the GPU is auto-detected
+via nvidia-smi. CUDA version and features are derived from SM automatically.
+
+SM_ARG accepts: sm_XX or XX (e.g. sm_90, 80, sm_70)
+CUDA_VERSION accepts: X.Y.Z or X.Y (e.g. 13.0.0, 12.9)
+
+Auto-detection rules:
+  SM70/SM75  → CUDA 12.9.0, features: cuda,nccl
+  SM80+      → CUDA 13.0.0, features: cuda,nccl,flashinfer,cutlass
+
+Examples:
+  ./build_docker.sh                           # Auto-detect GPU, CUDA, features
+  ./build_docker.sh sm_90                     # SM90, auto CUDA 13.0.0
+  ./build_docker.sh sm_70                     # SM70, auto CUDA 12.9.0
+  ./build_docker.sh sm_80 13.0.0             # SM80, explicit CUDA 13.0.0
+  ./build_docker.sh 80 13.0.0 myimg:v1 1    # SM80, custom tag, China mirrors
+
+Override features via environment variable:
+  WITH_FEATURES="cuda,nccl" ./build_docker.sh sm_90
+EOF
+}
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    --)
+      shift
+      while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done
+      ;;
+    -*) echo "ERROR: Unknown flag: $1" >&2; usage >&2; exit 2 ;;
+    *)  POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+
 UBUNTU_VERSION="${UBUNTU_VERSION:-22.04}"
 
-# Accept: sm_80 -> 80
-# Also accept: 80 -> 80
-# Optionally accept list: sm_80,sm_86 -> 80,86
-normalize_sm_list() {
-  local in="$1"
-  local out=""
-  local part
-
-  IFS=',' read -ra parts <<< "$in"
-  for part in "${parts[@]}"; do
-    if [[ "$part" =~ ^sm_([0-9]+)$ ]]; then
-      part="${BASH_REMATCH[1]}"
-    elif [[ "$part" =~ ^[0-9]+$ ]]; then
-      : # already numeric
-    else
-      echo "ERROR: Invalid compute cap '$part'. Use sm_XX (e.g., sm_80) or XX (e.g., 80)." >&2
-      exit 1
-    fi
-    out+="${out:+,}${part}"
-  done
-
-  echo "$out"
-}
-
-# Accept CUDA version in forms:
-# - X.Y.Z (pass through)
-# - X.Y   -> X.Y.0
-# - 129   -> 12.9.0
-# - 124   -> 12.4.0
-normalize_cuda_version() {
+normalize_sm() {
   local v="$1"
-
-  if [[ "$v" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-    echo "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
-    return 0
-  fi
-
-  if [[ "$v" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-    echo "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.0"
-    return 0
-  fi
-
-  if [[ "$v" =~ ^([0-9]{2})([0-9]{1})$ ]]; then
-    echo "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.0"
-    return 0
-  fi
-
-  echo "ERROR: Invalid CUDA version '$v'. Use X.Y.Z (e.g., 12.9.0) or X.Y (e.g., 12.9) or shorthand like 129." >&2
-  exit 1
-}
-
-cuda_major() {
-  local v="$1"
-  echo "${v%%.*}"
-}
-
-# IMPORTANT:
-# Dockerfile cannot do shell evaluation inside FROM. We precompute a flavor string and pass it as a build arg.
-# Your original intent:
-#   - CUDA major >= 13 => "devel"
-#   - else             => "cudnn-devel"
-cuda_flavor_for_version() {
-  local v="$1"
-  local major
-  major="$(cuda_major "$v")"
-  if [[ "$major" -ge 13 ]]; then
-    echo "devel"
+  if [[ "$v" =~ ^sm_([0-9]+)$ ]]; then
+    echo "${BASH_REMATCH[1]}"
+  elif [[ "$v" =~ ^[0-9]+$ ]]; then
+    echo "$v"
   else
-    echo "cudnn-devel"
+    echo "ERROR: Invalid SM arg '$v'. Use sm_XX or XX (e.g. sm_80, 90)." >&2
+    exit 1
   fi
 }
 
-CUDA_COMPUTE_CAP="$(normalize_sm_list "$SM_ARG")"
-CUDA_VERSION="$(normalize_cuda_version "$CUDA_VERSION_ARG")"
-CUDA_FLAVOR="$(cuda_flavor_for_version "$CUDA_VERSION")"
+detect_sm() {
+  if ! command -v nvidia-smi &>/dev/null; then
+    echo "ERROR: nvidia-smi not found and no SM version supplied." >&2
+    echo "  Install NVIDIA drivers or pass SM explicitly: ./build_docker.sh sm_80" >&2
+    exit 1
+  fi
+  local cc
+  cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits | head -1 | tr -d '[:space:]')"
+  if [[ -z "$cc" ]]; then
+    echo "ERROR: Could not detect GPU compute capability." >&2
+    exit 1
+  fi
+  local sm="${cc/./}"
+  echo "$sm"
+}
+
+SM_INPUT="${1:-}"
+if [[ -n "$SM_INPUT" ]]; then
+  SM_NUM="$(normalize_sm "$SM_INPUT")"
+  SM_SOURCE="user"
+else
+  SM_NUM="$(detect_sm)"
+  SM_SOURCE="auto-detected"
+fi
+
+CUDA_VERSION_INPUT="${2:-}"
+IMAGE_TAG="${3:-candle-vllm:latest}"
+CHINA_MIRROR_INPUT="${4:-}"
+
+detect_china() {
+  if [[ "$(timedatectl show -p Timezone --value 2>/dev/null)" == "Asia/Shanghai" ]] ||
+     [[ "$(cat /etc/timezone 2>/dev/null)" == "Asia/Shanghai" ]] ||
+     [[ "${TZ:-}" == "Asia/Shanghai" ]] ||
+     [[ "${LANG:-}" == zh_CN* ]]; then
+    echo "1"
+    return
+  fi
+  if curl -s --connect-timeout 2 --max-time 3 -o /dev/null https://www.baidu.com 2>/dev/null; then
+    if ! curl -s --connect-timeout 2 --max-time 3 -o /dev/null https://www.google.com 2>/dev/null; then
+      echo "1"
+      return
+    fi
+  fi
+  echo "0"
+}
+
+if [[ -n "$CHINA_MIRROR_INPUT" ]]; then
+  CHINA_MIRROR="$CHINA_MIRROR_INPUT"
+  CHINA_SOURCE="user"
+else
+  CHINA_MIRROR="$(detect_china)"
+  if [[ "$CHINA_MIRROR" == "1" ]]; then
+    CHINA_SOURCE="auto-detected (China network)"
+  else
+    CHINA_SOURCE="auto (international)"
+  fi
+fi
+
+if [[ "$SM_NUM" -lt 80 ]]; then
+  DEFAULT_CUDA="12.9.0"
+  DEFAULT_FEATURES="cuda,nccl"
+else
+  DEFAULT_CUDA="13.0.0"
+  DEFAULT_FEATURES="cuda,nccl,flashinfer,cutlass"
+fi
+
+if [[ -n "$CUDA_VERSION_INPUT" ]]; then
+  CUDA_VERSION="$CUDA_VERSION_INPUT"
+  CUDA_SOURCE="user"
+else
+  CUDA_VERSION="$DEFAULT_CUDA"
+  CUDA_SOURCE="auto (from SM${SM_NUM})"
+fi
+
+if [[ "$CUDA_VERSION" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+  CUDA_VERSION="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.0"
+fi
+
+WITH_FEATURES="${WITH_FEATURES:-$DEFAULT_FEATURES}"
+
+CUDA_MAJOR="${CUDA_VERSION%%.*}"
+if [[ "$CUDA_MAJOR" -ge 13 ]]; then
+  CUDA_FLAVOR="devel"
+else
+  CUDA_FLAVOR="cudnn-devel"
+fi
 
 echo "[build] IMAGE_TAG=${IMAGE_TAG}"
-echo "[build] WITH_FEATURES=${WITH_FEATURES}"
-echo "[build] CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP} (input: ${SM_ARG})"
-echo "[build] CUDA_VERSION=${CUDA_VERSION} (input: ${CUDA_VERSION_ARG})"
+echo "[build] SM=${SM_NUM} (${SM_SOURCE})"
+echo "[build] CUDA_VERSION=${CUDA_VERSION} (${CUDA_SOURCE})"
 echo "[build] CUDA_FLAVOR=${CUDA_FLAVOR}"
+echo "[build] WITH_FEATURES=${WITH_FEATURES}"
 echo "[build] UBUNTU_VERSION=${UBUNTU_VERSION}"
-echo "[build] CHINA_MIRROR=${CHINA_MIRROR}"
+echo "[build] CHINA_MIRROR=${CHINA_MIRROR} (${CHINA_SOURCE})"
 
 docker build --network=host -t "${IMAGE_TAG}" \
   --build-arg CUDA_VERSION="${CUDA_VERSION}" \
   --build-arg UBUNTU_VERSION="${UBUNTU_VERSION}" \
   --build-arg CUDA_FLAVOR="${CUDA_FLAVOR}" \
   --build-arg WITH_FEATURES="${WITH_FEATURES}" \
-  --build-arg CUDA_COMPUTE_CAP="${CUDA_COMPUTE_CAP}" \
+  --build-arg CUDA_COMPUTE_CAP="${SM_NUM}" \
   --build-arg CHINA_MIRROR="${CHINA_MIRROR}" \
   .
-
 
 cat <<EOF
 
 ============================================================
 Build finished: ${IMAGE_TAG}
 
-WITH_FEATURES: ${WITH_FEATURES}
-CUDA_COMPUTE_CAP: ${CUDA_COMPUTE_CAP}   (input: ${SM_ARG})
-CUDA_VERSION: ${CUDA_VERSION}           (input: ${CUDA_VERSION_ARG})
-CUDA_FLAVOR: ${CUDA_FLAVOR}
-UBUNTU_VERSION: ${UBUNTU_VERSION}
+SM: ${SM_NUM}  (${SM_SOURCE})
+CUDA: ${CUDA_VERSION}  (${CUDA_SOURCE}, flavor: ${CUDA_FLAVOR})
+Features: ${WITH_FEATURES}
+Ubuntu: ${UBUNTU_VERSION}
+China mirror: ${CHINA_MIRROR} (${CHINA_SOURCE})
 
-China mirror mode: ${CHINA_MIRROR}
-  - 0 = disabled
-  - 1 = enabled (Rustup/Cargo mirrors)
-
-Binary available in the image:
-  - candle-vllm
-
-Examples:
+Commands:
 
 1) Candle-vLLM Help:
    docker run --rm -it --gpus all --network host ${IMAGE_TAG} candle-vllm --help
 
-2) Run API server (make sure `--network host`):
+2) Run API server:
    docker run --rm -it --gpus all --network host ${IMAGE_TAG} candle-vllm --m Qwen/Qwen3-0.6B
 
 3) Run UI + API Server:
     a) Run interactively:
       docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data ${IMAGE_TAG} bash
-    b) Start the UI + API server
+    b) Start the UI + API server:
       candle-vllm --w /home/path/Qwen3-Coder-30B-A3B-Instruct-FP8 --ui-server
 ============================================================
 
