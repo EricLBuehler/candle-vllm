@@ -10,8 +10,8 @@ use super::{
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, rms_norm_x, Comm, ReplicatedLinear, TensorParallelColumnLinear,
-    TensorParallelRowLinear, VarBuilder,
+    embedding, rms_norm_x, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
+    VocabParallelLinear,
 };
 use crate::openai::models::layers::deepstack::ApplyDeepStack;
 use crate::openai::models::layers::moe::{
@@ -381,7 +381,7 @@ pub struct Qwen3_5MoE {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     mamba_cache: RwLock<MambaCache>,
     device: Device,
     dtype: DType,
@@ -464,7 +464,7 @@ impl Qwen3_5MoE {
             DType::F32,
             true,
         )?;
-        let lm_head = ReplicatedLinear::load_no_bias(
+        let lm_head = VocabParallelLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             if tie_word_embeddings {
@@ -474,8 +474,10 @@ impl Qwen3_5MoE {
             } else {
                 vb.pp("lm_head")
             },
+            comm.clone(),
             &None,
             &None,
+            dtype,
         )?;
 
         let world_size = comm.world_size();

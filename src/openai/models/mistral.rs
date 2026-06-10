@@ -1,6 +1,6 @@
 use super::{attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{embedding, rms_norm, Comm, ReplicatedLinear, VarBuilder};
+use crate::openai::distributed::{embedding, rms_norm, Comm, VarBuilder, VocabParallelLinear};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle_core::{DType, Device, Module, Result, Tensor};
@@ -99,7 +99,7 @@ pub struct Mistral {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     device: Device,
     dtype: DType,
     cfg: Config,
@@ -144,7 +144,7 @@ impl Mistral {
             reporter.write().set_progress(layer_idx + 1);
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = ReplicatedLinear::load_no_bias(
+        let lm_head = VocabParallelLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             if cfg.tie_word_embeddings {
@@ -152,8 +152,10 @@ impl Mistral {
             } else {
                 vb_root.pp("lm_head")
             },
+            comm.clone(),
             &None,
             &None,
+            dtype,
         )?;
 
         Ok(Self {

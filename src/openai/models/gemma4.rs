@@ -3,7 +3,9 @@ use super::{
     MoEConfig, QuantConfig, QwenMoEConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{embedding, Comm, ReplicatedLinear, VarBuilder};
+use crate::openai::distributed::{
+    embedding, Comm, ReplicatedLinear, VarBuilder, VocabParallelLinear,
+};
 use crate::openai::models::layers::moe::{
     FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4,
 };
@@ -597,7 +599,7 @@ pub struct Gemma4 {
     per_layer_projection_norm: Option<NormX>,
     layers: Vec<Gemma4DecoderLayer>,
     norm: NormX,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     device: Device,
     dtype: DType,
     hidden_size: usize,
@@ -991,7 +993,7 @@ impl Gemma4 {
             DType::F32,
             false,
         )?;
-        let lm_head = ReplicatedLinear::load_no_bias(
+        let lm_head = VocabParallelLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             if cfg.tie_word_embeddings {
@@ -999,8 +1001,10 @@ impl Gemma4 {
             } else {
                 vb.pp("lm_head")
             },
+            comm.clone(),
             &None,
             &None,
+            dtype,
         )?;
 
         Ok(Self {

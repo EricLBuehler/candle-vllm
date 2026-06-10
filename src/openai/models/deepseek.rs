@@ -2,8 +2,8 @@
 use super::{Config, KvCacheDtype, MoEConfig, QuantConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, Comm, ReplicatedLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
-    VarBuilder,
+    embedding, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
+    VocabParallelLinear,
 };
 use crate::openai::models::layers::mla_attention::{MlaAttention, MlaConfig};
 use crate::openai::models::layers::moe::{
@@ -322,7 +322,7 @@ pub struct DeepSeek {
     embed_tokens: Embedding,
     layers: Vec<DeepSeekDecoderLayer>,
     norm: NormX,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     device: Device,
     config: Config,
     dtype: DType,
@@ -478,14 +478,22 @@ impl DeepSeek {
         )?;
 
         let lm_head = if cfg.tie_word_embeddings {
-            ReplicatedLinear::from_weight_bias(embed_tokens.embeddings().clone(), None)?
+            VocabParallelLinear::from_weight_bias(
+                embed_tokens.embeddings().clone(),
+                None,
+                comm.clone(),
+                cfg.vocab_size,
+                dtype,
+            )?
         } else {
-            ReplicatedLinear::load_no_bias(
+            VocabParallelLinear::load_no_bias(
                 cfg.hidden_size,
                 cfg.vocab_size,
                 vb.pp("lm_head"),
+                comm.clone(),
                 &cfg.isq_quant,
                 &cfg.quantization_config,
+                dtype,
             )?
         };
 

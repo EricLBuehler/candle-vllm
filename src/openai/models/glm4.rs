@@ -1,8 +1,8 @@
 use super::{attention::Attention, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, rms_norm_with_dtype, Comm, MergedParallelColumnLinear, ReplicatedLinear,
-    TensorParallelRowLinear, VarBuilder,
+    embedding, rms_norm_with_dtype, Comm, MergedParallelColumnLinear, TensorParallelRowLinear,
+    VarBuilder, VocabParallelLinear,
 };
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
@@ -187,7 +187,7 @@ impl DecoderLayer {
 pub struct GLM4 {
     embedding: Embedding,
     layers: Vec<DecoderLayer>,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     norm: RmsNorm,
     dtype: DType,
     device: Device,
@@ -218,12 +218,14 @@ impl GLM4 {
             reporter.write().set_progress(layer_index + 1);
         }
 
-        let lm_head = ReplicatedLinear::load_no_bias(
+        let lm_head = VocabParallelLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
+            comm.clone(),
             &None,
             &None,
+            dtype,
         )?;
         let norm_dtype = if cfg.higher_precision_required() {
             DType::F32

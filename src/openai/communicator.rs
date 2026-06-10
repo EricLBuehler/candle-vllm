@@ -1,7 +1,5 @@
 #[allow(unused_imports)]
 use crate::openai::distributed::{Comm, Id};
-use crate::openai::sampling_params::Logprobs;
-use crate::openai::TaskData;
 use bincode;
 use core::ffi::c_char;
 use interprocess::local_socket::traits::{Listener, Stream};
@@ -94,25 +92,43 @@ pub enum RankData {
     },
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub enum TaskSampleData {
-    Token { seq_id: usize, logprobs: Logprobs },
-    StopReason { seq_id: usize, reason: String },
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct FlashInferHostData {
+    pub indptr: Vec<u32>,
+    pub indices: Vec<u32>,
+    pub last_len: Vec<u32>,
+    pub kv_len_arr: Vec<u32>,
+    pub use_cuda_graph: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ForwardPayload {
+    pub input_ids: Vec<u32>,
+    pub positions: Vec<i64>,
+    pub slot_mapping: Vec<i64>,
+    pub block_tables_flat: Vec<u32>,
+    pub block_tables_rows: usize,
+    pub block_tables_cols: usize,
+    pub context_lens: Option<Vec<u32>>,
+    pub cu_seqlens_q: Option<Vec<u32>>,
+    pub cu_seqlens_k: Option<Vec<u32>>,
+    pub max_seqlen_q: usize,
+    pub max_seqlen_k: usize,
+    pub max_context_len: usize,
+    pub sequence_ids: Vec<usize>,
+    pub seqlens: Option<Vec<u32>>,
+    pub is_prefill: bool,
+    pub is_mla: bool,
+    pub flashinfer_host: Option<FlashInferHostData>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum MessageType {
-    Start,
-    Data(Vec<TaskData>),
-    Sample(Vec<TaskSampleData>),
-    PromptCacheStatusRequest(Vec<usize>),
-    PromptCacheStatusReply(Vec<(usize, usize, bool)>),
-    PromptCacheSync(Vec<(usize, usize)>),
-    Continue,
-    Abort(Vec<usize>),
-    Finish,
-    HeartBeat,                //command channel
-    Progress((usize, usize)), //command channel
+    RunForward(ForwardPayload),
+    FinishSequences(Vec<usize>),
+    Shutdown,
+    HeartBeat,
+    Progress((usize, usize)),
     Close,
 }
 
@@ -202,11 +218,11 @@ impl DaemonManager {
             //sync mpi processes across nodes
             if DaemonManager::is_master_rank() {
                 info!("Sync MPI processes across nodes (from master rank)!");
-                self.send_message(&MessageType::Continue).is_ok()
+                self.send_message(&MessageType::HeartBeat).is_ok()
             } else {
                 info!("Sync MPI processes across nodes (from daemon rank)!");
                 match self.receive_message() {
-                    Ok(MessageType::Continue) => true,
+                    Ok(MessageType::HeartBeat) => true,
                     _ => false,
                 }
             }

@@ -9,7 +9,11 @@ use super::{LLMEngine, PreparedInputs, Sequence, SequenceGroup, PREFILL_CHUNK_SI
 use crate::InputMetadata;
 
 impl LLMEngine {
-    fn used_blocks_for_len(seq_len: usize, block_size: usize, table_len: usize) -> usize {
+    pub(crate) fn used_blocks_for_len(
+        seq_len: usize,
+        block_size: usize,
+        table_len: usize,
+    ) -> usize {
         if seq_len == 0 {
             0
         } else {

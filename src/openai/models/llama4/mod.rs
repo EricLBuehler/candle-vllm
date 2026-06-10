@@ -2,7 +2,7 @@ pub mod config;
 mod vision;
 
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{Comm, ReplicatedLinear, VarBuilder};
+use crate::openai::distributed::{Comm, ReplicatedLinear, VarBuilder, VocabParallelLinear};
 use crate::openai::models::layers::attention::Attention;
 use crate::openai::models::layers::mask::get_attention_causal_mask;
 use crate::openai::models::layers::mlp::Mlp;
@@ -327,7 +327,7 @@ pub struct LLama4ForConditionalGeneration {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<LLama4DecoderLayer>,
     norm: NormX,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     vision_model: Option<Llama4VisionModel>,
     multi_modal_projector: Option<Llama4MultiModalProjector>,
     image_token_index: u32,
@@ -418,20 +418,24 @@ impl LLama4ForConditionalGeneration {
         )?;
 
         let lm_head = if config.tie_word_embeddings {
-            ReplicatedLinear::load_no_bias(
+            VocabParallelLinear::load_no_bias(
                 config.hidden_size,
                 vocab_size,
                 vb.pp("language_model.model.embed_tokens"),
+                comm.clone(),
                 &None,
                 &None,
+                dtype,
             )?
         } else {
-            ReplicatedLinear::load_no_bias(
+            VocabParallelLinear::load_no_bias(
                 config.hidden_size,
                 vocab_size,
                 vb.pp("language_model.lm_head"),
+                comm.clone(),
                 &None,
                 &None,
+                dtype,
             )?
         };
 
