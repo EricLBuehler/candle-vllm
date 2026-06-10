@@ -63,7 +63,7 @@ itertools = "0.13.0"
 chrono = "0.4.41"
 which = "8.0.0"
 ahash = "0.8.11"
-rustchatui = "0.3.0"
+rustchatui = "0.3.1"
 base64 = "0.22.1"
 bytes = "1.5"
 reqwest = { version = "0.12.24", features = ["blocking", "json", "rustls-tls"]}
