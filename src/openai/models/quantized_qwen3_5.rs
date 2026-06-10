@@ -395,43 +395,73 @@ impl QuantizedGatedDeltaNet {
         let v = v_conv.reshape((token_count, self.num_v_heads, self.head_v_dim))?;
         let q = gdn::l2_norm_last_dim(&q, 1e-6)?;
         let k = gdn::l2_norm_last_dim(&k, 1e-6)?;
-        let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
 
         let output = if is_prefill {
-            let q_scaled = (&q * self.scale)?;
             let cu_seqlens = input_metadata
                 .cu_seqlens_q
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            // xs.device().synchronize()?;
-            gdn::gated_delta_rule_recurrence_varlen(
-                &q_scaled,
-                &k,
-                &v,
-                &g,
-                &beta,
-                global_state,
-                seq_slots,
-                cu_seqlens,
-            )?
+            if self.num_k_heads != self.num_v_heads {
+                gdn::gated_delta_rule_recurrence_varlen_gqa(
+                    &q,
+                    &k,
+                    &v,
+                    &g,
+                    &beta,
+                    global_state,
+                    seq_slots,
+                    cu_seqlens,
+                    self.scale as f32,
+                )?
+            } else {
+                let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
+                let q_scaled = (&q * self.scale)?;
+                gdn::gated_delta_rule_recurrence_varlen(
+                    &q_scaled,
+                    &k,
+                    &v,
+                    &g,
+                    &beta,
+                    global_state,
+                    seq_slots,
+                    cu_seqlens,
+                )?
+            }
         } else {
             let batch = slot_count;
-            let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
-            let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
             let v_b = v.reshape((batch, self.num_v_heads, self.head_v_dim))?;
             let g_b = g.reshape((batch, self.num_v_heads))?;
             let beta_b = beta.reshape((batch, self.num_v_heads))?;
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            gdn::gated_delta_rule_decode_slots(
-                &q_b,
-                &k_b,
-                &v_b,
-                &g_b,
-                &beta_b,
-                global_state,
-                seq_slots,
-            )?
+            if self.num_k_heads != self.num_v_heads {
+                gdn::gated_delta_rule_decode_slots_gqa(
+                    &q,
+                    &k,
+                    &v_b,
+                    &g_b,
+                    &beta_b,
+                    global_state,
+                    seq_slots,
+                    self.scale as f32,
+                )?
+            } else {
+                let (q, k) = (
+                    self.repeat_kv_heads(q.clone())?,
+                    self.repeat_kv_heads(k.clone())?,
+                );
+                let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
+                let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
+                gdn::gated_delta_rule_decode_slots(
+                    &q_b,
+                    &k_b,
+                    &v_b,
+                    &g_b,
+                    &beta_b,
+                    global_state,
+                    seq_slots,
+                )?
+            }
         };
 
         let output = output.reshape((token_count, self.value_dim))?;
@@ -616,6 +646,7 @@ impl GGUFQWen3_5 {
             isq_quant: None,
             kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json,
+            is_f16_mode: false,
         }
     }
 
@@ -695,7 +726,12 @@ impl GGUFQWen3_5 {
             Some(extra_config_json),
         );
         cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
+            DType::F32,
+            &cfg,
+            device,
+            false,
+        )?);
 
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;

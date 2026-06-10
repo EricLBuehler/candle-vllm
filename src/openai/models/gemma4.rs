@@ -728,6 +728,7 @@ impl Gemma4 {
             isq_quant: quant,
             kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: Some(raw),
+            is_f16_mode: false,
         };
         Ok(config)
     }

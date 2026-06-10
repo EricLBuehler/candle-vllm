@@ -361,6 +361,25 @@ pub struct GraphCapturer<M: CudaGraphModule> {
     pub flashinfer_kv_params: Option<FlashInferKvParams>,
 }
 
+#[derive(Clone, Copy)]
+enum CapturePhase {
+    CachePrewarm,
+    Warmup,
+    Capture,
+}
+
+impl CapturePhase {
+    const ALL: [Self; 3] = [Self::CachePrewarm, Self::Warmup, Self::Capture];
+
+    fn is_cache_prewarm(self) -> bool {
+        matches!(self, Self::CachePrewarm)
+    }
+
+    fn is_warmup(self) -> bool {
+        !matches!(self, Self::Capture)
+    }
+}
+
 pub fn planned_graph_capture_batches(max_num_seqs: usize) -> Vec<usize> {
     let small_max = max_num_seqs.clamp(1, 15);
     let mut graph_bs = (1..=small_max).collect::<Vec<_>>();
@@ -493,9 +512,15 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
             )
         };
 
+        #[cfg(feature = "flashinfer")]
+        let capture_in_warmup = self.flashinfer_kv_params.is_some();
+        #[cfg(not(feature = "flashinfer"))]
+        let capture_in_warmup = false;
+
         let mut outputs = BTreeMap::<usize, Tensor>::new();
-        for is_warmup in [true, false] {
-            let iter: Box<dyn Iterator<Item = usize>> = if is_warmup {
+        let _guard = candle_core::cuda_backend::cuda_param_cache_scope(true);
+        for phase in CapturePhase::ALL {
+            let iter: Box<dyn Iterator<Item = usize>> = if phase.is_warmup() {
                 Box::new(0..self.graph_bs.len())
             } else {
                 Box::new(tqdm(0..self.graph_bs.len()).desc(Some("Graph capturing")))
@@ -576,15 +601,13 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                     seqlens: None,
                     flashinfer_metadata,
                 };
-                #[cfg(feature = "flashinfer")]
-                let capture_in_warmup = self.flashinfer_kv_params.is_some();
-                #[cfg(not(feature = "flashinfer"))]
-                let capture_in_warmup = false;
 
-                if !is_warmup || capture_in_warmup {
+                let should_capture =
+                    !phase.is_cache_prewarm() && (!phase.is_warmup() || capture_in_warmup);
+                if should_capture {
                     self.model.start_capture(bs)?;
                 }
-                if is_warmup {
+                if phase.is_warmup() {
                     let _ = self.model.forward(
                         &input_ids_bs,
                         &positions_bs,
@@ -600,15 +623,14 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                     )?;
                     outputs.insert(bs, out);
                 }
-                if !is_warmup || capture_in_warmup {
-                    self.model.end_capture(!is_warmup)?;
+                if should_capture {
+                    self.model.end_capture(!phase.is_warmup())?;
                 }
+                // device.synchronize()?;
             }
         }
         let _ = self.model.report_graph_pool_usage();
-
         tracing::warn!("Captured batches {:?}", outputs.keys());
-
         self.graph_vars = Some(GraphCaptureVars {
             input_ids,
             positions,

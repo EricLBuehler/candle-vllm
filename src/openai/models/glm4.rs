@@ -1,7 +1,7 @@
 use super::{attention::Attention, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, rms_norm, Comm, MergedParallelColumnLinear, ReplicatedLinear,
+    embedding, rms_norm_with_dtype, Comm, MergedParallelColumnLinear, ReplicatedLinear,
     TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::mask::get_attention_causal_mask;
@@ -110,22 +110,34 @@ impl DecoderLayer {
         vb: VarBuilder,
         comm: Rc<Comm>,
     ) -> Result<Self> {
-        let input_layernorm =
-            rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb.pp("input_layernorm"))?;
-        let post_attention_layernorm = rms_norm(
+        let norm_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            vb.dtype()
+        };
+        let input_layernorm = rms_norm_with_dtype(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb.pp("input_layernorm"),
+            norm_dtype,
+        )?;
+        let post_attention_layernorm = rms_norm_with_dtype(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
+            norm_dtype,
         )?;
-        let post_self_attn_layernorm = rms_norm(
+        let post_self_attn_layernorm = rms_norm_with_dtype(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_self_attn_layernorm"),
+            norm_dtype,
         )?;
-        let post_mlp_layernorm = rms_norm(
+        let post_mlp_layernorm = rms_norm_with_dtype(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_mlp_layernorm"),
+            norm_dtype,
         )?;
         let self_attn = Attention::new(
             rotary_emb.clone(),
@@ -213,7 +225,17 @@ impl GLM4 {
             &None,
             &None,
         )?;
-        let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
+        let norm_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
+        let norm = rms_norm_with_dtype(
+            cfg.hidden_size,
+            cfg.rms_norm_eps,
+            vb_m.pp("norm"),
+            norm_dtype,
+        )?;
         Ok(Self {
             embedding,
             layers,

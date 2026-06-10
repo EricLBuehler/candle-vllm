@@ -559,6 +559,8 @@ pub struct Config {
     #[serde(default)]
     pub kvcache_dtype: KvCacheDtype,
     pub extra_config_json: Option<String>,
+    #[serde(default)]
+    pub is_f16_mode: bool,
 }
 
 impl Config {
@@ -617,7 +619,8 @@ impl Config {
     }
 
     pub fn higher_precision_required(&self) -> bool {
-        self.isq_quant.is_some()
+        self.is_f16_mode
+            || self.isq_quant.is_some()
             || self
                 .quantization_config
                 .as_ref()
