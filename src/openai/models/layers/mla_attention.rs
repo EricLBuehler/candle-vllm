@@ -1,4 +1,4 @@
-use crate::openai::distributed::{shard, Comm, ReplicatedLinear, TensorParallelRowLinear};
+use crate::openai::distributed::{shard, Comm, ReplicatedLinear};
 use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::layers::rotary_emb::ScalingRotaryEmbedding;
 use crate::openai::models::Config;
@@ -67,7 +67,7 @@ pub struct MlaAttention {
     kv_a_proj_with_mqa: ReplicatedLinear,
     kv_a_layernorm: NormX,
     kv_b_proj: ReplicatedLinear,
-    o_proj: TensorParallelRowLinear,
+    o_proj: ReplicatedLinear,
     w_uk: Tensor,
     w_uv_t: Tensor,
     num_heads: usize,
@@ -86,7 +86,7 @@ pub struct MlaAttention {
 impl MlaAttention {
     pub fn new(
         vb: VarBuilder,
-        comm: Rc<Comm>,
+        _comm: Rc<Comm>,
         mla_cfg: &MlaConfig,
         config: &Config,
         dtype: DType,
@@ -169,12 +169,10 @@ impl MlaAttention {
             &config.quantization_config,
         )?;
 
-        let o_proj = TensorParallelRowLinear::load_with_hints(
+        let o_proj = ReplicatedLinear::load_no_bias(
             num_heads * v_head_dim,
             hidden_size,
-            false,
             vb.pp("o_proj"),
-            comm,
             &config.isq_quant,
             &config.quantization_config,
         )?;

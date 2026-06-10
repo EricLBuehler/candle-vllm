@@ -1728,7 +1728,7 @@ impl DefaultPipeline {
                 page_size: block_size,
                 num_kv_heads: 1,
                 head_dim: config.mla_kv_lora_rank(),
-                num_qo_heads: config.num_attention_heads / _num_shards,
+                num_qo_heads: config.num_attention_heads,
             })
         } else if let Some(per_layer_cfg) = config.gemma4_per_layer_cache_config() {
             // For Gemma4 with heterogeneous head_dim, find the first layer with head_dim <= 256

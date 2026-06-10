@@ -2,8 +2,8 @@ use super::rotary_emb::ScalingRotaryEmbedding;
 use super::Config;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, layer_norm, Comm, ReplicatedLinear, TensorParallelColumnLinear,
-    TensorParallelRowLinear, VarBuilder,
+    embedding, layer_norm, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
+    VocabParallelLinear,
 };
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::{InputMetadata, PagedAttention};
@@ -286,7 +286,7 @@ pub struct Phi2 {
     embed_tokens: Embedding,
     layers: Vec<DecoderLayer>,
     final_layernorm: LayerNorm,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     cfg: Config,
     device: Device,
     dtype: DType,
@@ -320,12 +320,14 @@ impl Phi2 {
             layers.push(layer);
             reporter.write().set_progress(layer_idx + 1);
         }
-        let lm_head = ReplicatedLinear::load_no_bias(
+        let lm_head = VocabParallelLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
+            comm.clone(),
             &None,
             &None,
+            dtype,
         )?;
 
         Ok(Self {

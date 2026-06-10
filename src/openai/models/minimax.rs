@@ -6,7 +6,7 @@ use super::{
     Config, MoEConfig, QwenMoEConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{embedding, rms_norm_x, Comm, ReplicatedLinear, VarBuilder};
+use crate::openai::distributed::{embedding, rms_norm_x, Comm, VarBuilder, VocabParallelLinear};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle::{DType, Device, Module, Result, Tensor};
@@ -140,7 +140,7 @@ pub struct MiniMaxForCausalLM {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<MiniMaxDecoderLayer>,
     norm: RmsNorm,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     device: Device,
     dtype: DType,
     cfg: Config,
@@ -247,7 +247,7 @@ impl MiniMaxForCausalLM {
             false,
         )?;
 
-        let lm_head = ReplicatedLinear::load_no_bias(
+        let lm_head = VocabParallelLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             if cfg.tie_word_embeddings {
@@ -255,8 +255,10 @@ impl MiniMaxForCausalLM {
             } else {
                 vb.pp("lm_head")
             },
+            comm.clone(),
             &None,
             &None,
+            dtype,
         )?;
 
         Ok(Self {

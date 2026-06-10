@@ -1,7 +1,7 @@
 use super::{attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, rms_norm_with_dtype, Comm, ReplicatedLinear, VarBuilder,
+    embedding, rms_norm_with_dtype, Comm, VarBuilder, VocabParallelLinear,
 };
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
@@ -108,7 +108,7 @@ pub struct Llama {
     wte: Embedding,
     blocks: Vec<Block>,
     norm: RmsNorm,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     cfg: Config,
     dtype: DType,
     device: Device,
@@ -208,12 +208,14 @@ impl Llama {
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
         let wte = embedding(cfg.vocab_size, cfg.hidden_size, vb.pp("model.embed_tokens"))?;
-        let lm_head = ReplicatedLinear::load_no_bias(
+        let lm_head = VocabParallelLinear::load_no_bias(
             cfg.hidden_size,
             cfg.vocab_size,
             vb.pp("lm_head"),
+            comm.clone(),
             &None,
             &None,
+            dtype,
         )?;
 
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, true)?);

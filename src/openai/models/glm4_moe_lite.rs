@@ -1,8 +1,8 @@
 use super::{Config, MoEConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, Comm, ReplicatedLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
-    VarBuilder,
+    embedding, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
+    VocabParallelLinear,
 };
 use crate::openai::models::layers::mla_attention::{MlaAttention, MlaConfig};
 use crate::openai::models::layers::moe::{
@@ -277,7 +277,7 @@ pub struct GLM4MoeLiteForCausalLM {
     embed_tokens: Embedding,
     layers: Vec<GLM4MoeLiteDecoderLayer>,
     norm: NormX,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     device: Device,
     config: Config,
     dtype: DType,
@@ -386,7 +386,7 @@ impl GLM4MoeLiteForCausalLM {
             false,
         )?;
 
-        let lm_head = ReplicatedLinear::load_no_bias(
+        let lm_head = VocabParallelLinear::load_no_bias(
             config.hidden_size,
             config.vocab_size,
             if config.tie_word_embeddings {
@@ -394,8 +394,10 @@ impl GLM4MoeLiteForCausalLM {
             } else {
                 vb.pp("lm_head")
             },
+            comm.clone(),
             &config.isq_quant,
             &config.quantization_config,
+            dtype,
         )?;
 
         Ok(Self {

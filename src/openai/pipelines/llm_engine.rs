@@ -307,11 +307,6 @@ impl LLMEngine {
         )
     }
 
-    #[cfg(feature = "nccl")]
-    fn primary_sequence_id(group: &Arc<SequenceGroup>) -> usize {
-        Self::primary_sequence(group).deref().get_id()
-    }
-
     fn capture_mamba_prefix_states_for_prefill_progress(
         &mut self,
         groups: &VecDeque<Arc<SequenceGroup>>,
@@ -822,7 +817,7 @@ impl LLMEngine {
         #[cfg(feature = "nccl")]
         let is_master_rank = DaemonManager::is_master_rank();
         #[cfg(not(feature = "nccl"))]
-        let is_master_rank = true;
+        let _is_master_rank = true;
         #[cfg(all(feature = "cuda", feature = "graph"))]
         let (graph_capture_tx, graph_capture_rx) = std::sync::mpsc::sync_channel(1);
 
@@ -849,42 +844,28 @@ impl LLMEngine {
                         }
                     }
                 }
+                #[cfg(feature = "nccl")]
+                if multi_process && !is_master_rank {
+                    Self::run_daemon_loop(engine);
+                    return;
+                }
+
                 loop {
                     if engine.read().exit_flag.load(Ordering::Relaxed) {
                         break;
                     }
-                    if is_master_rank {
-                        notify.notified().await;
-                        if engine.read().exit_flag.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
+                    notify.notified().await;
+                    if engine.read().exit_flag.load(Ordering::Relaxed) {
+                        break;
                     }
-                    {
-                        let should_continue = if multi_process {
-                            #[cfg(feature = "nccl")]
-                            {
-                                Self::sync_multiprocess_waiting_tasks_before_cycle(&engine)
-                            }
-                            #[cfg(not(feature = "nccl"))]
-                            {
-                                false
-                            }
-                        } else {
-                            Self::sync_threaded_waiting_tasks_before_cycle(&engine)
-                        };
-                        if should_continue {
-                            let _ = tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-                            continue;
-                        }
+                    let _ = tokio::time::sleep(tokio::time::Duration::from_millis(holding_time as u64)).await;
+
+                    if !multi_process {
+                        Self::sync_threaded_waiting_tasks_before_cycle(&engine);
                     }
 
                     let results = Self::generate_parallel(&engine, ranks.clone(), multi_process).await;
 
-                    #[cfg(feature = "nccl")]
-                    if multi_process && !is_master_rank {
-                        continue;
-                    }
                     if results.is_empty() {
                         continue;
                     }
@@ -957,6 +938,12 @@ impl LLMEngine {
                         decode_tps,
                         decode_tps * result.len() as f32,
                     );
+                }
+
+                #[cfg(feature = "nccl")]
+                if multi_process {
+                    let e = engine.read();
+                    e.broadcast_shutdown();
                 }
             });
         });
@@ -1222,6 +1209,7 @@ impl LLMEngine {
 
         let (k_cache, _) = &kv_cache[0];
         let (_, page_size, num_kv_heads, head_dim) = k_cache.dims4()?;
+        let is_mla = self.config.is_mla();
         Ok(Some(FlashInferKvParams {
             kv_dtype: k_cache.dtype(),
             out_dtype: self
@@ -1231,7 +1219,11 @@ impl LLMEngine {
             page_size,
             num_kv_heads,
             head_dim,
-            num_qo_heads: self.config.num_attention_heads / self.num_shards,
+            num_qo_heads: if is_mla {
+                self.config.num_attention_heads
+            } else {
+                self.config.num_attention_heads / self.num_shards
+            },
         }))
     }
 

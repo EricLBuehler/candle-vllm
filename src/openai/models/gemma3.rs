@@ -3,7 +3,7 @@ use super::{
     QuantConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{embedding, Comm, ReplicatedLinear, VarBuilder};
+use crate::openai::distributed::{embedding, Comm, VarBuilder, VocabParallelLinear};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::rotary_emb::DefaultRotaryEmbedding;
 use crate::openai::models::ScalingValue;
@@ -328,7 +328,7 @@ pub struct Gemma3 {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
     norm: RmsNorm,
-    lm_head: ReplicatedLinear,
+    lm_head: VocabParallelLinear,
     device: Device,
     dtype: DType,
     hidden_size: usize,
@@ -384,7 +384,13 @@ impl Gemma3 {
             reporter.write().set_progress(layer_idx + 1);
         }
         let norm = rms_norm(cfg.hidden_size, cfg.rms_norm_eps, vb_m.pp("norm"))?;
-        let lm_head = ReplicatedLinear::from_weight_bias(embed_tokens.embeddings().clone(), None)?;
+        let lm_head = VocabParallelLinear::from_weight_bias(
+            embed_tokens.embeddings().clone(),
+            None,
+            comm.clone(),
+            cfg.vocab_size,
+            dtype,
+        )?;
         Ok(Self {
             embed_tokens,
             layers,
