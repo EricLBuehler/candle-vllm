@@ -411,7 +411,12 @@ impl GLM4MoeLiteForCausalLM {
     }
 
     pub fn embed_forward(&self, xs: &Tensor) -> Result<Tensor> {
-        self.embed_tokens.forward(xs)
+        let xs = self.embed_tokens.forward(xs)?;
+        if self.config.isq_quant.is_some() && xs.dtype() != DType::F32 {
+            xs.to_dtype(DType::F32)
+        } else {
+            Ok(xs)
+        }
     }
 
     pub fn forward(

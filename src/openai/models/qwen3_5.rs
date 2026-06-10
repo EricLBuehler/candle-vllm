@@ -188,7 +188,7 @@ impl Qwen3_5 {
         };
         let tie_word_embeddings = text_backbone.tie_word_embeddings;
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, false)?);
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, true)?);
 
         let hybrid = resolve_qwen3_hybrid_config(cfg);
         let layer_types = &hybrid.layer_types;
@@ -259,11 +259,6 @@ impl Qwen3_5 {
         let num_k_heads = hybrid.num_k_heads / world_size;
         let d_conv = num_k_heads * hybrid.key_head_dim * 2 + num_v_heads * hybrid.value_head_dim;
 
-        let conv_cache_dtype = if cfg.isq_quant.is_some() || cfg.is_f16_mode {
-            DType::F32
-        } else {
-            dtype
-        };
         let mamba_cache = if gdn_layer_idx > 0 {
             MambaCache::new(
                 gdn_layer_idx,
@@ -273,12 +268,12 @@ impl Qwen3_5 {
                 num_v_heads,
                 hybrid.key_head_dim,
                 hybrid.value_head_dim,
-                conv_cache_dtype,
+                DType::F32,
                 DType::F32,
                 device,
             )?
         } else {
-            MambaCache::new(0, 1, 1, 2, 1, 1, 1, conv_cache_dtype, DType::F32, device)?
+            MambaCache::new(0, 1, 1, 2, 1, 1, 1, DType::F32, DType::F32, device)?
         };
 
         Ok(Self {
@@ -295,7 +290,12 @@ impl Qwen3_5 {
     }
 
     pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
-        self.embed_tokens.forward(input_ids)
+        let xs = self.embed_tokens.forward(input_ids)?;
+        if self.cfg.isq_quant.is_some() && xs.dtype() != DType::F32 {
+            xs.to_dtype(DType::F32)
+        } else {
+            Ok(xs)
+        }
     }
 
     pub fn forward(

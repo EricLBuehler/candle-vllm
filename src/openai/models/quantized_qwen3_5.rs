@@ -434,34 +434,21 @@ impl QuantizedGatedDeltaNet {
             let g_b = g.reshape((batch, self.num_v_heads))?;
             let beta_b = beta.reshape((batch, self.num_v_heads))?;
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            if self.num_k_heads != self.num_v_heads {
-                gdn::gated_delta_rule_decode_slots_gqa(
-                    &q,
-                    &k,
-                    &v_b,
-                    &g_b,
-                    &beta_b,
-                    global_state,
-                    seq_slots,
-                    self.scale as f32,
-                )?
-            } else {
-                let (q, k) = (
-                    self.repeat_kv_heads(q.clone())?,
-                    self.repeat_kv_heads(k.clone())?,
-                );
-                let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
-                let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
-                gdn::gated_delta_rule_decode_slots(
-                    &q_b,
-                    &k_b,
-                    &v_b,
-                    &g_b,
-                    &beta_b,
-                    global_state,
-                    seq_slots,
-                )?
-            }
+            let (q, k) = (
+                self.repeat_kv_heads(q.clone())?,
+                self.repeat_kv_heads(k.clone())?,
+            );
+            let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
+            let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
+            gdn::gated_delta_rule_decode_slots(
+                &q_b,
+                &k_b,
+                &v_b,
+                &g_b,
+                &beta_b,
+                global_state,
+                seq_slots,
+            )?
         };
 
         let output = output.reshape((token_count, self.value_dim))?;
@@ -726,12 +713,7 @@ impl GGUFQWen3_5 {
             Some(extra_config_json),
         );
         cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
-            DType::F32,
-            &cfg,
-            device,
-            false,
-        )?);
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 
         let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
         let tok_embeddings = tok_embeddings.dequantize(device)?;

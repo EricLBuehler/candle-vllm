@@ -3,7 +3,7 @@
 // Adapted from https://github.com/guoqingbao/vllm.rs/blob/main/src/models/layers/deltanet.rs
 
 use crate::openai::distributed::{
-    Comm, MergedParallelColumnLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
+    shard, Comm, MergedParallelColumnLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
     VarBuilder,
 };
 use crate::openai::models::{resolve_qwen3_hybrid_config, Config};
@@ -397,15 +397,10 @@ impl GatedDeltaNet {
         let conv_kernel_size = hybrid.conv_kernel_size;
         let conv_dim_global = key_dim_global * 2 + value_dim_global;
 
-        // Learned GDN parameters
-        let a_log = vb
-            .get((num_v_heads_global,), "A_log")?
-            .narrow(0, rank * num_v_heads, num_v_heads)?
-            .contiguous()?;
-        let dt_bias = vb
-            .get((num_v_heads_global,), "dt_bias")?
-            .narrow(0, rank * num_v_heads, num_v_heads)?
-            .contiguous()?;
+        // Learned GDN parameters (always F32 - required by fused_gdn_gating kernel).
+        let sd = shard(0, rank, world_size);
+        let a_log = vb.get_with_hints_dtype((num_v_heads_global,), "A_log", sd, DType::F32)?;
+        let dt_bias = vb.get_with_hints_dtype((num_v_heads_global,), "dt_bias", sd, DType::F32)?;
 
         let projection = Self::load_projection(
             &vb,
@@ -457,12 +452,19 @@ impl GatedDeltaNet {
         )?;
 
         // GDN output norm (gated RMSNorm): both Qwen3.5 and Qwen3Next use per-head params.
-        let gdn_norm_weight = vb.get((head_v_dim,), "norm.weight").map_err(|err| {
-            candle_core::Error::Msg(format!(
-                "Unable to load linear_attn.norm.weight as per-head [{head_v_dim}]: {err}"
-            ))
-        })?;
-        let gdn_norm_bias = vb.get((head_v_dim,), "norm.bias").ok();
+        // Always F32 to match vllm.rs precision.
+        let gdn_norm_weight = vb
+            .get_with_hints_dtype((head_v_dim,), "norm.weight", Default::default(), DType::F32)
+            .map_err(|err| {
+                candle_core::Error::Msg(format!(
+                    "Unable to load linear_attn.norm.weight as per-head [{head_v_dim}]: {err}"
+                ))
+            })?;
+        let gdn_norm_bias = vb
+            .get((head_v_dim,), "norm.bias")
+            .ok()
+            .map(|b| b.to_dtype(DType::F32))
+            .transpose()?;
         let scale = 1.0f64 / (head_k_dim as f64).sqrt();
         Ok(Self {
             projection,
@@ -612,34 +614,21 @@ impl GatedDeltaNet {
             let g_b = g.reshape((batch, self.num_v_heads))?;
             let beta_b = beta.reshape((batch, self.num_v_heads))?;
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            if self.num_k_heads != self.num_v_heads {
-                gdn::gated_delta_rule_decode_slots_gqa(
-                    &q,
-                    &k,
-                    &v_b,
-                    &g_b,
-                    &beta_b,
-                    global_state,
-                    seq_slots,
-                    self.scale as f32,
-                )?
-            } else {
-                let (q, k) = (
-                    self.repeat_kv_heads(q.clone())?,
-                    self.repeat_kv_heads(k.clone())?,
-                );
-                let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
-                let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
-                gdn::gated_delta_rule_decode_slots(
-                    &q_b,
-                    &k_b,
-                    &v_b,
-                    &g_b,
-                    &beta_b,
-                    global_state,
-                    seq_slots,
-                )?
-            }
+            let (q, k) = (
+                self.repeat_kv_heads(q.clone())?,
+                self.repeat_kv_heads(k.clone())?,
+            );
+            let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
+            let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
+            gdn::gated_delta_rule_decode_slots(
+                &q_b,
+                &k_b,
+                &v_b,
+                &g_b,
+                &beta_b,
+                global_state,
+                seq_slots,
+            )?
         };
 
         // output: [seq_len, num_v_heads, head_v_dim] -> [seq_len, value_dim]

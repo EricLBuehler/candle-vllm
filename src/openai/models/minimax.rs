@@ -272,7 +272,12 @@ impl MiniMaxForCausalLM {
     }
 
     pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
-        self.embed_tokens.forward(input_ids)
+        let xs = self.embed_tokens.forward(input_ids)?;
+        if self.cfg.isq_quant.is_some() && xs.dtype() != DType::F32 {
+            xs.to_dtype(DType::F32)
+        } else {
+            Ok(xs)
+        }
     }
 
     fn forward_inner(

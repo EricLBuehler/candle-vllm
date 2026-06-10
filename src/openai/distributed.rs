@@ -356,9 +356,9 @@ impl AllReduce {
         Self { comm: comm.clone() }
     }
     pub fn apply(&self, xs: &Tensor) -> Result<Tensor> {
-        // use candle_core::cuda::cudarc::driver::result;
-        // unsafe { result::ctx::set_current(*self.comm.comm.device().cu_primary_ctx()) }.unwrap();
-        // self.comm.barrier.wait()?;
+        if self.comm.world_size() <= 1 {
+            return Ok(xs.clone());
+        }
         xs.apply_op1_no_bwd(self)
     }
 }
@@ -446,7 +446,7 @@ impl TensorParallelRowLinear {
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let xs = self.linear.forward(x)?;
         #[cfg(feature = "nccl")]
-        let xs = xs.apply_op1_no_bwd(&self.all_reduce)?;
+        let xs = self.all_reduce.apply(&xs)?;
 
         if let Some(bias) = &self.bias {
             let xs = xs.broadcast_add(bias)?;

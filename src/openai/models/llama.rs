@@ -162,6 +162,9 @@ impl Llama {
             input_metadata.is_prefill,
         );
         let mut xs = self.wte.forward(x)?;
+        if self.cfg.isq_quant.is_some() && xs.dtype() != DType::F32 {
+            xs = xs.to_dtype(DType::F32)?;
+        }
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), block) in zip(kv_caches.iter(), &self.blocks) {
                 xs = block.forward(
