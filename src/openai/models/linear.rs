@@ -556,30 +556,58 @@ impl QLinear {
             None => {
                 use quantized::GgmlDType;
                 let ggml_dtype = match quant.as_str() {
-                    "q4_0" => GgmlDType::Q4_0,
-                    "q4_1" => GgmlDType::Q4_1,
-                    "q5_0" => GgmlDType::Q5_0,
-                    "q5_1" => GgmlDType::Q5_1,
-                    "q8_0" => GgmlDType::Q8_0,
-                    "q2k" => GgmlDType::Q2K,
-                    "q3k" => GgmlDType::Q3K,
-                    "q4k" => GgmlDType::Q4K,
-                    "q5k" => GgmlDType::Q5K,
-                    "q6k" => GgmlDType::Q6K,
+                    "q4_0" | "q40" => GgmlDType::Q4_0,
+                    "q4_1" | "q4" | "q41" => GgmlDType::Q4_1,
+                    "q5_0" | "q50" => GgmlDType::Q5_0,
+                    "q5_1" | "q5" | "q51" => GgmlDType::Q5_1,
+                    "q8_0" | "q8" | "q80" => GgmlDType::Q8_0,
+                    "q2k" | "q2_k" => GgmlDType::Q2K,
+                    "q3k" | "q3_k" => GgmlDType::Q3K,
+                    "q4k" | "q4_k" => GgmlDType::Q4K,
+                    "q5k" | "q5_k" => GgmlDType::Q5K,
+                    "q6k" | "q6_k" => GgmlDType::Q6K,
                     _ => panic!("Unsupported GGML data type!"),
                 };
                 let weight = linear.weight();
                 let qbias = linear.bias().cloned();
                 let dtype = weight.dtype();
-                let dims = weight.dims();
-                let (w, transposed) = if dims[dims.len() - 1] % ggml_dtype.block_size() != 0 {
-                    (weight.t().unwrap().contiguous().unwrap(), true)
+                let last_dim = weight.dim(candle_core::D::Minus1).unwrap();
+                let actual_ggml_dtype = if last_dim % ggml_dtype.block_size() != 0 {
+                    if last_dim % GgmlDType::Q8_0.block_size() == 0 {
+                        tracing::warn!(
+                            "ISQ: weight {:?} incompatible with {:?} (block_size {}), \
+                            falling back to Q8_0 (block_size {})",
+                            weight.shape(),
+                            ggml_dtype,
+                            ggml_dtype.block_size(),
+                            GgmlDType::Q8_0.block_size()
+                        );
+                        GgmlDType::Q8_0
+                    } else {
+                        tracing::warn!(
+                            "ISQ: weight {:?} incompatible with any GGUF dtype, keeping unquantized",
+                            weight.shape()
+                        );
+                        let inner = QMatMul::Tensor(weight.clone());
+                        return QLinear {
+                            inner,
+                            bias: qbias,
+                            scales: None,
+                            qzeros: None,
+                            g_idx: None,
+                            workspace: None,
+                            group_size: 0,
+                            bits: 0,
+                            dtype,
+                            is_awq: false,
+                            transposed_weight: false,
+                        };
+                    }
                 } else {
-                    (weight.to_owned(), false)
+                    ggml_dtype
                 };
-
-                let qtensor = QTensor::quantize(&w, ggml_dtype).unwrap();
-                QLinear::from_qparts_x(qtensor, qbias, dtype, transposed)
+                let qtensor = QTensor::quantize(weight, actual_ggml_dtype).unwrap();
+                QLinear::from_qparts_x(qtensor, qbias, dtype, false)
             }
         }
     }
@@ -683,9 +711,9 @@ impl QLinear {
         };
 
         if let Some(bias) = &self.bias {
-            xs.broadcast_add(bias)?.to_dtype(self.dtype)
+            xs.broadcast_add(bias)
         } else {
-            xs.to_dtype(self.dtype)
+            Ok(xs)
         }
     }
 

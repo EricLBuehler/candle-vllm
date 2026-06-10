@@ -503,7 +503,9 @@ impl DeepSeek {
 
     pub fn embed_forward(&self, xs: &Tensor) -> Result<Tensor> {
         let xs = self.embed_tokens.forward(xs)?;
-        let needs_f32 = if let Some(qcfg) = &self.config.quantization_config {
+        let needs_f32 = if self.config.isq_quant.is_some() {
+            true
+        } else if let Some(qcfg) = &self.config.quantization_config {
             !matches!(qcfg.quant_method.as_str(), "nvfp4" | "mxfp4" | "fp8")
         } else {
             false

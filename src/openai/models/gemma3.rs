@@ -462,7 +462,12 @@ impl Gemma3 {
 
     pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
         let xs = self.embed_tokens.forward(input_ids)?;
-        xs.broadcast_mul(&Tensor::new((self.hidden_size as f64).sqrt(), xs.device())?)
+        let xs = xs.broadcast_mul(&Tensor::new((self.hidden_size as f64).sqrt(), xs.device())?)?;
+        if self.cfg.isq_quant.is_some() && xs.dtype() != DType::F32 {
+            xs.to_dtype(DType::F32)
+        } else {
+            Ok(xs)
+        }
     }
 
     pub fn forward_embeds(

@@ -1061,7 +1061,12 @@ impl Gemma4 {
 
     pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
         let xs = self.embed_tokens.forward(input_ids)?;
-        xs * (self.hidden_size as f64).sqrt()
+        let xs = (xs * (self.hidden_size as f64).sqrt())?;
+        if self.cfg.isq_quant.is_some() && xs.dtype() != DType::F32 {
+            xs.to_dtype(DType::F32)
+        } else {
+            Ok(xs)
+        }
     }
 
     fn get_per_layer_embeddings(

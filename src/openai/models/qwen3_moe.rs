@@ -285,11 +285,16 @@ impl DecoderLayer {
         let (shared_gate, shared_expert) =
             if let Some(intermediate_size) = moe_cfg.shared_expert_intermediate_size {
                 if intermediate_size > 0 {
+                    let gate_dtype = if cfg.isq_quant.is_some() {
+                        DType::F32
+                    } else {
+                        dtype
+                    };
                     let ws = vb.pp("mlp.shared_expert_gate").get_with_hints_dtype(
                         (1, cfg.hidden_size),
                         "weight",
                         Default::default(),
-                        dtype,
+                        gate_dtype,
                     )?;
 
                     let shared_gate = Linear::new(ws, None, &None, &None);
@@ -445,7 +450,12 @@ impl Qwen3MoE {
     }
 
     pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
-        self.embed_tokens.forward(input_ids)
+        let xs = self.embed_tokens.forward(input_ids)?;
+        if self.cfg.isq_quant.is_some() && xs.dtype() != DType::F32 {
+            xs.to_dtype(DType::F32)
+        } else {
+            Ok(xs)
+        }
     }
 
     pub fn forward(

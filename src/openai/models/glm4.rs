@@ -273,6 +273,9 @@ impl GLM4 {
             input_metadata.is_prefill,
         );
         let mut xs = self.embedding.forward(input_ids)?;
+        if self.cfg.isq_quant.is_some() && xs.dtype() != DType::F32 {
+            xs = xs.to_dtype(DType::F32)?;
+        }
 
         if let Some(kv_caches) = kv_caches {
             for ((k_cache, v_cache), layer) in zip(kv_caches.iter(), self.layers.iter()) {
