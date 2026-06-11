@@ -1,0 +1,486 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: validate-version
+    runs-on: ubuntu-latest
+    if: github.repository == 'EricLBuehler/candle-vllm'
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate tag matches Cargo.toml version
+        id: version
+        run: |
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          expected_tag="v${cargo_version}"
+          if [ "${{ github.ref_name }}" != "$expected_tag" ]; then
+            echo "Tag ${{ github.ref_name }} must match Cargo.toml version $expected_tag" >&2
+            exit 1
+          fi
+          echo "version=${cargo_version}" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # CUDA legacy builds: SM70/SM75 on GitHub free runners (no flashinfer/cutlass)
+  # These older archs work on 2-vCPU runners with limited parallelism.
+  # ---------------------------------------------------------------------------
+  cuda-legacy:
+    name: cuda-${{ matrix.sm_name }}
+    runs-on: ubuntu-latest
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sm: "70"
+            sm_name: sm70
+            cuda_version: "12.9.0"
+            features: "cuda,nccl"
+          - sm: "75"
+            sm_name: sm75
+            cuda_version: "12.9.0"
+            features: "cuda,nccl"
+    container:
+      image: docker.io/nvidia/cuda:${{ matrix.cuda_version }}-cudnn-devel-ubuntu22.04
+    env:
+      CUDA_COMPUTE_CAP: ${{ matrix.sm }}
+      DEBIAN_FRONTEND: noninteractive
+      CUDAFORGE_THREADS: "2"
+      RAYON_NUM_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends --allow-change-held-packages \
+            libnccl-dev libnccl2 \
+            curl git ca-certificates \
+            libssl-dev pkg-config \
+            clang libclang-dev \
+            patchelf dpkg-dev
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-deb
+
+      - name: Build candle-vllm binary
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --release --features "${{ matrix.features }}"
+
+      - name: Bundle CUDA runtime with binary
+        run: |
+          CUDA_LIB="$(find /usr/local/cuda -follow -name 'libcudart.so.*.*' -not -name '*.a' 2>/dev/null | head -1)"
+          if [ -z "$CUDA_LIB" ]; then CUDA_LIB="$(ldconfig -p | grep 'libcudart.so\.' | awk '{print $NF}' | head -1)"; fi
+          mkdir -p target/release/lib
+          if [ -n "$CUDA_LIB" ]; then
+            cp "$CUDA_LIB" target/release/lib/
+            CUDA_SONAME="$(objdump -p "$CUDA_LIB" 2>/dev/null | awk '/SONAME/{print $2}')"
+            if [ -n "$CUDA_SONAME" ]; then
+              ln -sf "$(basename "$CUDA_LIB")" "target/release/lib/$CUDA_SONAME"
+              ln -sf "$CUDA_SONAME" target/release/lib/libcudart.so
+            fi
+          fi
+          patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/candle-vllm' target/release/candle-vllm
+          ls -la target/release/lib/
+
+      - name: Package deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo deb --no-build --output "dist/candle-vllm-linux-x64-${{ matrix.sm_name }}.deb"
+
+      - name: Package tar.gz
+        run: |
+          mkdir -p dist/candle-vllm
+          cp target/release/candle-vllm dist/candle-vllm/candle-vllm
+          cp -a target/release/lib dist/candle-vllm/lib
+          tar -C dist/candle-vllm -czf "dist/candle-vllm-${{ needs.validate.outputs.version }}-linux-x64-${{ matrix.sm_name }}.tar.gz" candle-vllm lib
+          rm -rf dist/candle-vllm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candle-vllm-cuda-${{ matrix.sm_name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+
+  # ---------------------------------------------------------------------------
+  # CUDA builds: SM80+ on GitHub free runners with limited parallelism
+  # max-parallel: 1 to avoid OOM on shared runners.
+  # ---------------------------------------------------------------------------
+  cuda:
+    name: cuda-${{ matrix.sm_name }}
+    runs-on: ubuntu-latest
+    needs: validate
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - sm: "80"
+            sm_name: sm80
+            cuda_version: "13.0.0"
+            features: "cuda,nccl,flashinfer,cutlass"
+          - sm: "89"
+            sm_name: sm89
+            cuda_version: "13.0.0"
+            features: "cuda,nccl,flashinfer,cutlass"
+          - sm: "90"
+            sm_name: sm90
+            cuda_version: "13.0.0"
+            features: "cuda,nccl,flashinfer,cutlass"
+          - sm: "120"
+            sm_name: sm120
+            cuda_version: "13.0.0"
+            features: "cuda,nccl,flashinfer,cutlass"
+    container:
+      image: docker.io/nvidia/cuda:${{ matrix.cuda_version }}-cudnn-devel-ubuntu22.04
+    env:
+      CUDA_COMPUTE_CAP: ${{ matrix.sm }}
+      DEBIAN_FRONTEND: noninteractive
+      CUDAFORGE_THREADS: "2"
+      RAYON_NUM_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends --allow-change-held-packages \
+            libnccl-dev libnccl2 \
+            curl git ca-certificates \
+            libssl-dev pkg-config \
+            clang libclang-dev \
+            patchelf dpkg-dev
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-deb
+
+      - name: Build candle-vllm binary
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --release --features "${{ matrix.features }}"
+
+      - name: Bundle CUDA runtime with binary
+        run: |
+          CUDA_LIB="$(find /usr/local/cuda -follow -name 'libcudart.so.*.*' -not -name '*.a' 2>/dev/null | head -1)"
+          if [ -z "$CUDA_LIB" ]; then CUDA_LIB="$(ldconfig -p | grep 'libcudart.so\.' | awk '{print $NF}' | head -1)"; fi
+          mkdir -p target/release/lib
+          if [ -n "$CUDA_LIB" ]; then
+            cp "$CUDA_LIB" target/release/lib/
+            CUDA_SONAME="$(objdump -p "$CUDA_LIB" 2>/dev/null | awk '/SONAME/{print $2}')"
+            if [ -n "$CUDA_SONAME" ]; then
+              ln -sf "$(basename "$CUDA_LIB")" "target/release/lib/$CUDA_SONAME"
+              ln -sf "$CUDA_SONAME" target/release/lib/libcudart.so
+            fi
+          fi
+          patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/candle-vllm' target/release/candle-vllm
+          ls -la target/release/lib/
+
+      - name: Package deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo deb --no-build --output "dist/candle-vllm-linux-x64-${{ matrix.sm_name }}.deb"
+
+      - name: Package tar.gz
+        run: |
+          mkdir -p dist/candle-vllm
+          cp target/release/candle-vllm dist/candle-vllm/candle-vllm
+          cp -a target/release/lib dist/candle-vllm/lib
+          tar -C dist/candle-vllm -czf "dist/candle-vllm-${{ needs.validate.outputs.version }}-linux-x64-${{ matrix.sm_name }}.tar.gz" candle-vllm lib
+          rm -rf dist/candle-vllm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candle-vllm-cuda-${{ matrix.sm_name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+
+  # ---------------------------------------------------------------------------
+  # Metal build (macOS) — GitHub-hosted runner
+  # ---------------------------------------------------------------------------
+  metal:
+    name: metal-darwin-arm64
+    runs-on: macos-latest
+    needs: validate
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build candle-vllm binary
+        run: cargo build --release --target aarch64-apple-darwin --features "metal"
+
+      - name: Package tar.gz
+        run: |
+          mkdir -p "dist/candle-vllm"
+          cp "target/aarch64-apple-darwin/release/candle-vllm" "dist/candle-vllm/candle-vllm"
+          tar -C dist/candle-vllm -czf "dist/candle-vllm-${{ needs.validate.outputs.version }}-darwin-arm64-metal.tar.gz" candle-vllm
+          rm -rf dist/candle-vllm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candle-vllm-darwin-arm64-metal
+          path: |
+            dist/*.tar.gz
+
+  # ---------------------------------------------------------------------------
+  # Checksums + GitHub Release
+  # ---------------------------------------------------------------------------
+  checksums:
+    name: checksums
+    runs-on: ubuntu-latest
+    needs: [validate, cuda-legacy, cuda, metal]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd dist
+          find . -type f \( -name "*.tar.gz" -o -name "*.deb" \) \
+            -exec sha256sum {} + > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candle-vllm-release-artifacts
+          path: dist/*
+
+      - name: Upload artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: candle-vllm v${{ needs.validate.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS
+
+  # ---------------------------------------------------------------------------
+  # Publish download page + install script to GitHub Pages
+  # ---------------------------------------------------------------------------
+  publish-pages:
+    name: publish-pages
+    runs-on: ubuntu-latest
+    needs: [validate, checksums]
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: pages
+
+      - name: Build site
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p site
+          OWNER="$(echo "${REPO}" | cut -d/ -f1)"
+          PAGES_HOST="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]').github.io"
+
+          sed -e "s|var CANDLE_VLLM_VER='[^']*';|var CANDLE_VLLM_VER='${VERSION}';|" \
+              -e "s|__PAGES_HOST__|${PAGES_HOST}|g" \
+              -e "s|__REPO__|${REPO}|g" \
+              pages/index.html > site/index.html
+
+          cat > site/install.sh << 'SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          VERSION="__VERSION__"
+          PAGES_BASE="https://__OWNER__.github.io/candle-vllm"
+          RELEASE_BASE="https://github.com/__REPO__/releases/download/v${VERSION}"
+
+          detect_platform() {
+            if [ "$(uname -s)" = "Darwin" ]; then
+              echo "metal"
+              return
+            fi
+            if ! command -v nvidia-smi &>/dev/null; then
+              echo "ERROR: No NVIDIA GPU detected and no platform specified." >&2
+              echo "  Set CANDLE_VLLM_PLATFORM=sm80 (or sm70/sm75/sm89/sm90/sm120) and re-run." >&2
+              exit 1
+            fi
+            local cc
+            cc="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits | head -1 | tr -d '[:space:]' | tr -d '.')"
+            case "$cc" in
+              70|72) echo "sm70" ;;
+              75)    echo "sm75" ;;
+              80|86|87) echo "sm80" ;;
+              89)    echo "sm89" ;;
+              90|90a) echo "sm90" ;;
+              100|110) echo "sm90" ;;
+              120)   echo "sm120" ;;
+              *) echo "sm80" ;;
+            esac
+          }
+
+          PLATFORM="${CANDLE_VLLM_PLATFORM:-$(detect_platform)}"
+          echo "Detected platform: ${PLATFORM}"
+          echo ""
+
+          need_sudo() {
+            [ "$(id -u)" -ne 0 ]
+          }
+
+          SUDO=""
+          if need_sudo; then
+            if command -v sudo &>/dev/null; then
+              SUDO="sudo"
+            fi
+          fi
+
+          print_binary_hints() {
+            echo ""
+            echo "============================================"
+            echo " candle-vllm installed successfully!"
+            echo "============================================"
+            echo ""
+            echo " HuggingFace model:"
+            echo "   candle-vllm --p 2000 --m <model-id>"
+            echo ""
+            echo " Local weights + Web UI:"
+            echo "   candle-vllm --p 2000 --w /path/to/model/ --ui-server"
+            echo "============================================"
+          }
+
+          install_deb() {
+            local variant="$1"
+            local deb="candle-vllm-linux-x64-${variant}.deb"
+            local url="${RELEASE_BASE}/${deb}"
+            local tmp
+            tmp="$(mktemp -d)"
+            echo "Downloading ${deb}..."
+            if ! curl -fSL -o "${tmp}/${deb}" "$url"; then
+              echo "ERROR: Failed to download ${url}" >&2
+              rm -rf "$tmp"
+              return 1
+            fi
+            echo "Installing ${deb}..."
+            if ! ${SUDO} dpkg -i "${tmp}/${deb}"; then
+              echo ""
+              echo "ERROR: dpkg -i failed. You may need root privileges:" >&2
+              echo "  sudo dpkg -i ${tmp}/${deb}" >&2
+              echo "  Or re-run with: curl -sSL ${PAGES_BASE}/install.sh | sudo bash" >&2
+              return 1
+            fi
+            rm -rf "$tmp"
+            print_binary_hints
+          }
+
+          install_tarball() {
+            local tarball="$1"
+            local url="${RELEASE_BASE}/${tarball}"
+            local install_dir="/usr/local/bin"
+            local lib_dir="/usr/local/lib/candle-vllm"
+            local tmp
+            tmp="$(mktemp -d)"
+            echo "Downloading ${tarball}..."
+            if ! curl -fSL -o "${tmp}/${tarball}" "$url"; then
+              echo "ERROR: Failed to download ${url}" >&2
+              rm -rf "$tmp"
+              return 1
+            fi
+            echo "Extracting..."
+            tar -xzf "${tmp}/${tarball}" -C "${tmp}"
+            echo "Installing candle-vllm to ${install_dir}..."
+            if ! ${SUDO} install -m 755 "${tmp}/candle-vllm" "${install_dir}/candle-vllm"; then
+              echo ""
+              echo "ERROR: Could not install to ${install_dir}." >&2
+              echo "  Try: sudo install -m 755 ${tmp}/candle-vllm ${install_dir}/candle-vllm" >&2
+              echo "  Or re-run with: curl -sSL ${PAGES_BASE}/install.sh | sudo bash" >&2
+              return 1
+            fi
+            if [ -d "${tmp}/lib" ]; then
+              ${SUDO} mkdir -p "${lib_dir}"
+              ${SUDO} cp -a "${tmp}/lib/"* "${lib_dir}/"
+            fi
+            rm -rf "$tmp"
+            print_binary_hints
+          }
+
+          if [ "$PLATFORM" = "metal" ]; then
+            TARBALL="candle-vllm-${VERSION}-darwin-arm64-metal.tar.gz"
+            echo "Installing candle-vllm (Metal/macOS)..."
+            install_tarball "$TARBALL"
+          else
+            DEB="candle-vllm-linux-x64-${PLATFORM}.deb"
+            TARBALL="candle-vllm-${VERSION}-linux-x64-${PLATFORM}.tar.gz"
+            echo "Install options:"
+            echo "  1) deb package  — installs 'candle-vllm' system-wide (Linux)"
+            echo "  2) binary       — installs 'candle-vllm' to /usr/local/bin"
+            echo ""
+
+            MODE="${CANDLE_VLLM_MODE:-}"
+            if [ -z "$MODE" ]; then
+              if [ -e /dev/tty ]; then
+                printf "Choose [1/2] (default: 1): "
+                read -r MODE < /dev/tty
+                MODE="${MODE:-1}"
+              else
+                MODE="1"
+              fi
+            fi
+
+            case "$MODE" in
+              1|deb)     install_deb "$PLATFORM" ;;
+              2|binary)  install_tarball "$TARBALL" ;;
+              *)         echo "Invalid choice: $MODE"; exit 1 ;;
+            esac
+          fi
+          SCRIPT
+
+          sed -i "s|__VERSION__|${VERSION}|g" site/install.sh
+          sed -i "s|__REPO__|${REPO}|g" site/install.sh
+          sed -i "s|__OWNER__|${OWNER}|g" site/install.sh
+          sed -i 's/^          //' site/install.sh
+          chmod +x site/install.sh
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - uses: actions/deploy-pages@v4
+        id: deploy

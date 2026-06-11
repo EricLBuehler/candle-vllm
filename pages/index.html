@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>candle-vllm — Downloads</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0f1117;--card:#1a1d27;--border:#2a2d3a;--text:#e0e4ec;--dim:#7a8299;--accent:#60a5fa;--mono:'JetBrains Mono','Fira Code',Consolas,monospace;--font:Inter,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.6;padding:0 20px}
+.wrap{max-width:860px;margin:0 auto;padding:60px 0 40px}
+h1{font-size:1.8rem;font-weight:700;margin-bottom:6px}
+.sub{color:var(--dim);font-size:.95rem;margin-bottom:32px}
+.install-cmd{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px 18px;margin-bottom:32px;position:relative;font-family:var(--mono);font-size:.85rem;overflow-x:auto;white-space:pre}
+.install-cmd .cp{position:absolute;top:10px;right:10px;background:var(--border);border:none;color:var(--dim);padding:4px 10px;border-radius:5px;font-size:.72rem;cursor:pointer}
+.install-cmd .cp:hover{color:var(--text);background:#3a3d4a}
+h2{font-size:1.2rem;font-weight:600;margin:28px 0 14px}
+.tabs{display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap}
+.tabs button{padding:7px 14px;border-radius:6px;font-size:.82rem;font-weight:500;color:var(--dim);background:none;border:1px solid transparent;cursor:pointer}
+.tabs button:hover{color:var(--text);background:var(--card)}
+.tabs button.on{color:var(--text);background:var(--card);border-color:var(--border)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px}
+.card{display:block;padding:16px;border-radius:8px;background:var(--card);border:1px solid var(--border);text-decoration:none;color:inherit;transition:.2s}
+.card:hover{border-color:var(--accent);transform:translateY(-1px)}
+.card h3{font-size:.9rem;font-weight:600;margin-bottom:2px}
+.card p{font-size:.78rem;color:var(--dim);margin-bottom:4px}
+.card .file{font-family:var(--mono);font-size:.68rem;color:var(--dim);opacity:.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block;margin-bottom:8px}
+.card .dl{font-size:.78rem;color:var(--accent);font-weight:500}
+footer{text-align:center;padding:32px 0 20px;color:var(--dim);font-size:.78rem;border-top:1px solid var(--border);margin-top:40px}
+a{color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>candle-vllm</h1>
+<p class="sub">High-performance LLM inference engine in Rust. Download pre-built packages by GPU architecture.</p>
+
+<div class="install-cmd"><span style="color:#7ee787">$</span> <span style="color:#79c0ff">curl</span> <span style="color:#ffa657">-sSL</span> <span style="color:#a5d6ff">https://__PAGES_HOST__/candle-vllm/install.sh</span> | <span style="color:#79c0ff">bash</span><button class="cp" onclick="navigator.clipboard.writeText('curl -sSL https://__PAGES_HOST__/candle-vllm/install.sh | bash').then(function(){this.textContent='Copied!'}.bind(this))">Copy</button></div>
+
+<h2>Pre-built Packages</h2>
+<div class="tabs">
+  <button class="on" onclick="renderCards('deb',this)">Deb Package</button>
+  <button onclick="renderCards('tar',this)">Tarball</button>
+</div>
+<div class="grid" id="cards"></div>
+
+<footer>
+  <a href="https://github.com/__REPO__" target="_blank">GitHub</a> &middot;
+  <a href="https://github.com/__REPO__/releases" target="_blank">All Releases</a>
+</footer>
+</div>
+
+<script>
+(function(){
+'use strict';
+var CANDLE_VLLM_VER='0.8.3';
+var DL='https://github.com/__REPO__/releases/download/v'+CANDLE_VLLM_VER+'/';
+var archs=[
+  {sm:'sm70',name:'SM70',gpu:'V100',cuda:'CUDA 12'},
+  {sm:'sm75',name:'SM75',gpu:'T4 / Turing',cuda:'CUDA 12'},
+  {sm:'sm80',name:'SM80',gpu:'A100 / A10',cuda:'CUDA 13'},
+  {sm:'sm89',name:'SM89',gpu:'RTX 4090 / L40',cuda:'CUDA 13'},
+  {sm:'sm90',name:'SM90',gpu:'H800 / H200',cuda:'CUDA 13'},
+  {sm:'sm120',name:'SM120',gpu:'RTX 5090 / B200',cuda:'CUDA 13'}
+];
+var metalA={sm:'metal',name:'Metal',gpu:'macOS Apple Silicon',cuda:''};
+
+window.renderCards=function(type,btn){
+  document.querySelectorAll('.tabs button').forEach(function(b){b.classList.remove('on')});
+  if(btn)btn.classList.add('on');
+  var el=document.getElementById('cards');
+  el.innerHTML='';
+  var items=archs.slice();
+  items.push(metalA);
+  items.forEach(function(a){
+    var fname;
+    if(a.sm==='metal'){
+      fname='candle-vllm-'+CANDLE_VLLM_VER+'-darwin-arm64-metal.tar.gz';
+    }else if(type==='deb'){
+      fname='candle-vllm-linux-x64-'+a.sm+'.deb';
+    }else{
+      fname='candle-vllm-'+CANDLE_VLLM_VER+'-linux-x64-'+a.sm+'.tar.gz';
+    }
+    var c=document.createElement('a');
+    c.href=DL+fname;c.target='_blank';c.className='card';
+    c.innerHTML='<h3>'+a.name+' — '+a.gpu+'</h3>'
+      +(a.cuda?'<p>'+a.cuda+'</p>':'<p>Apple Silicon (tarball)</p>')
+      +'<span class="file">'+fname+'</span>'
+      +'<span class="dl">Download &rarr;</span>';
+    el.appendChild(c);
+  });
+};
+renderCards('deb',null);
+})();
+</script>
+</body>
+</html>

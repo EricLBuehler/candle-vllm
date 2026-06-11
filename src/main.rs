@@ -83,10 +83,10 @@ struct Args {
     #[arg(long = "mem", default_value_t = 4096)]
     kvcache_mem_gpu: usize,
 
-    /// Auto-size GPU KV cache after model load using `fraction * remaining_gpu_mem`.
-    /// Defaults to 0.5 and takes priority over `--mem` on CUDA/Metal.
+    /// After model loading, the fraction of remaining GPU memory available for KV cache.
+    /// Takes priority over `--mem` on CUDA/Metal.
     #[arg(long)]
-    gpu_memory_fraction: Option<f32>,
+    kv_fraction: Option<f32>,
 
     /// Fraction of the auto-sized combined cache budget reserved for hybrid Mamba/GDN states.
     #[arg(long)]
@@ -422,13 +422,33 @@ async fn main() -> Result<()> {
         .expect("at least one pipeline must be loaded");
     let first_config = first_pipeline.get_model_config();
     let first_model_dtype = first_pipeline.dtype;
-    let requested_gpu_memory_fraction = args.gpu_memory_fraction.unwrap_or(0.5);
-    let explicit_gpu_memory_fraction = args.gpu_memory_fraction.is_some();
+    let kv_fraction = args.kv_fraction.unwrap_or(0.6);
+    let explicit_kv_fraction = args.kv_fraction.is_some();
+    let prefill_chunk_size = args.prefill_chunk_size.unwrap_or(8192);
+
+    let workspace_params = candle_vllm::WorkspaceBudgetParams::from_config(
+        &first_config,
+        first_model_dtype,
+        num_shards,
+        prefill_chunk_size,
+    );
+    let workspace_budget = candle_vllm::compute_workspace_budget(&workspace_params);
+    info!(
+        "Workspace memory reserve: {:.2} GB (flashinfer {:.0} MB, cutlass {:.0} MB, \
+         moe_pool {:.0} MB, flash_splitk {:.0} MB, transient {:.0} MB)",
+        workspace_budget.total_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+        workspace_budget.flashinfer_bytes as f64 / 1024.0 / 1024.0,
+        workspace_budget.cutlass_bytes as f64 / 1024.0 / 1024.0,
+        workspace_budget.moe_pool_bytes as f64 / 1024.0 / 1024.0,
+        workspace_budget.flash_splitk_bytes as f64 / 1024.0 / 1024.0,
+        workspace_budget.transient_bytes as f64 / 1024.0 / 1024.0,
+    );
 
     let (kvcache_mem_gpu, mamba_cache_budget_bytes, kvcache_budget_desc) =
-        match candle_vllm::detect_kvcache_mem_gpu_mb_for_devices(
+        match candle_vllm::detect_kvcache_mem_gpu_mb_for_devices_with_workspace(
             &devices,
-            requested_gpu_memory_fraction,
+            kv_fraction,
+            Some(&workspace_budget),
         ) {
             Ok(detected) => {
                 let mut effective_kvcache_mem_gpu = detected;
@@ -466,19 +486,19 @@ async fn main() -> Result<()> {
                     }
                 }
                 info!(
-                "Using auto-detected KV cache budget of {} MB per rank (gpu_memory_fraction={} of post-load free GPU memory)",
-                effective_kvcache_mem_gpu, requested_gpu_memory_fraction
-            );
+                    "Using auto-detected KV cache budget of {} MB per rank (kv_fraction={} of post-load free GPU memory)",
+                    effective_kvcache_mem_gpu, kv_fraction
+                );
                 (
                     effective_kvcache_mem_gpu,
                     mamba_cache_budget_bytes,
                     format!(
-                        "--gpu-memory-fraction {} -> {} MB per rank",
-                        requested_gpu_memory_fraction, effective_kvcache_mem_gpu
+                        "--kv-fraction {} -> {} MB per rank",
+                        kv_fraction, effective_kvcache_mem_gpu
                     ),
                 )
             }
-            Err(err) if !explicit_gpu_memory_fraction => {
+            Err(err) if !explicit_kv_fraction => {
                 warn!(
                     "Auto KV cache sizing unavailable ({}), falling back to fixed --mem {} MB",
                     err, args.kvcache_mem_gpu

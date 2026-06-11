@@ -1494,13 +1494,20 @@ impl LnMxfp4 {
 
 impl Module for LnMxfp4 {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let input_dtype = x.dtype();
+        let x = if input_dtype == DType::F32 {
+            std::borrow::Cow::Owned(x.to_dtype(DType::BF16)?)
+        } else {
+            std::borrow::Cow::Borrowed(x)
+        };
+
         let orig_dims = x.dims().to_vec();
         let x_2d = if orig_dims.len() > 2 {
             let features = orig_dims[orig_dims.len() - 1];
             let batch_size: usize = orig_dims[..orig_dims.len() - 1].iter().product();
             x.reshape((batch_size, features))?
         } else {
-            x.clone()
+            x.into_owned()
         };
 
         let result = attention_rs::mxfp4_linear::mxfp4_matmul(
@@ -1511,10 +1518,16 @@ impl Module for LnMxfp4 {
             linear_is_prefill(),
         )?;
 
-        if orig_dims.len() > 2 {
+        let result = if orig_dims.len() > 2 {
             let mut new_dims = orig_dims[..orig_dims.len() - 1].to_vec();
             new_dims.push(result.dim(1)?);
-            result.reshape(new_dims)
+            result.reshape(new_dims)?
+        } else {
+            result
+        };
+
+        if input_dtype == DType::F32 {
+            result.to_dtype(DType::F32)
         } else {
             Ok(result)
         }

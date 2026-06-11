@@ -46,7 +46,7 @@ pub struct EngineBuilder {
     max_num_seqs: usize,
     block_size: usize,
     kvcache_mem_gpu: usize,
-    gpu_memory_fraction: Option<f32>,
+    kv_fraction: Option<f32>,
     mamba_fraction: Option<f32>,
     kvcache_mem_cpu: usize,
     temperature: Option<f32>,
@@ -71,7 +71,7 @@ impl EngineBuilder {
             max_num_seqs: 8,
             block_size: if cfg!(feature = "cuda") { 64 } else { 32 },
             kvcache_mem_gpu: 4096,
-            gpu_memory_fraction: Some(0.5),
+            kv_fraction: Some(0.6),
             mamba_fraction: None,
             kvcache_mem_cpu: 128,
             temperature: None,
@@ -130,8 +130,8 @@ impl EngineBuilder {
         self
     }
 
-    pub fn with_gpu_memory_fraction(mut self, gpu_memory_fraction: f32) -> Self {
-        self.gpu_memory_fraction = Some(gpu_memory_fraction);
+    pub fn with_kv_fraction(mut self, kv_fraction: f32) -> Self {
+        self.kv_fraction = Some(kv_fraction);
         self
     }
 
@@ -249,10 +249,20 @@ impl EngineBuilder {
         let first_config = first_pipeline.get_model_config();
         let first_model_dtype = first_pipeline.dtype;
         let devices: Vec<_> = pipelines.iter().map(|pipeline| pipeline.device()).collect();
-        let (kvcache_mem_gpu, mamba_cache_budget_bytes) = match self.gpu_memory_fraction {
-            Some(gpu_memory_fraction) => {
-                let detected =
-                    crate::detect_kvcache_mem_gpu_mb_for_devices(&devices, gpu_memory_fraction)?;
+        let (kvcache_mem_gpu, mamba_cache_budget_bytes) = match self.kv_fraction {
+            Some(kv_fraction) => {
+                let workspace_params = crate::WorkspaceBudgetParams::from_config(
+                    &first_config,
+                    first_model_dtype,
+                    num_shards,
+                    8192,
+                );
+                let workspace_budget = crate::compute_workspace_budget(&workspace_params);
+                let detected = crate::detect_kvcache_mem_gpu_mb_for_devices_with_workspace(
+                    &devices,
+                    kv_fraction,
+                    Some(&workspace_budget),
+                )?;
                 let mut effective_kvcache_mem_gpu = detected;
                 let mut mamba_cache_budget_bytes = 0usize;
                 if let Some(estimate) =

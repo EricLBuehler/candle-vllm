@@ -12,7 +12,7 @@ xbot -> Candle-vLLM (OpenAI-compatible)
 cargo run --release --features cuda,nccl,flashinfer,cutlass -- \
   --m Qwen/Qwen3.6-27B-FP8 \
   --p 8000 \
-  --gpu-memory-fraction 0.5
+  --kv-fraction 0.6
 ```
 
 If you prefer FlashAttention, replace `flashinfer` with `flashattn`.
