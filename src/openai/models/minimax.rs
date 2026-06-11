@@ -2,16 +2,16 @@ use super::{
     attention::Attention,
     layers::moe::{FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4},
     rotary_emb::ScalingRotaryEmbedding,
-    utils::{apply_rms_norm_fp32, resolve_input_seqlens},
+    utils::resolve_input_seqlens,
     Config, MoEConfig, QwenMoEConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{embedding, rms_norm_x, Comm, VarBuilder, VocabParallelLinear};
+use crate::openai::distributed::{embedding, Comm, VarBuilder, VocabParallelLinear};
+use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
-use candle_nn::RmsNorm;
 use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -40,8 +40,8 @@ impl MoeVariant {
 struct MiniMaxDecoderLayer {
     self_attn: Attention,
     moe: MoeVariant,
-    input_layernorm: RmsNorm,
-    post_attention_layernorm: RmsNorm,
+    input_layernorm: NormX,
+    post_attention_layernorm: NormX,
 }
 
 impl MiniMaxDecoderLayer {
@@ -92,14 +92,14 @@ impl MiniMaxDecoderLayer {
             MoeVariant::FusedMoe(FusedMoe::new(cfg, moe_vb.clone(), comm.clone(), dtype)?)
         };
 
-        let input_layernorm = rms_norm_x(
+        let input_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("input_layernorm"),
             DType::F32,
             false,
         )?;
-        let post_attention_layernorm = rms_norm_x(
+        let post_attention_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
@@ -124,13 +124,13 @@ impl MiniMaxDecoderLayer {
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
         let residual = xs;
-        let xs = apply_rms_norm_fp32(&self.input_layernorm, xs)?;
+        let xs = self.input_layernorm.forward(xs)?;
         let attn_output =
             self.self_attn
                 .forward(&xs, attention_mask, input_positions, cache, input_metadata)?;
         let xs = (attn_output + residual)?;
         let residual = &xs;
-        let xs = apply_rms_norm_fp32(&self.post_attention_layernorm, &xs)?;
+        let xs = self.post_attention_layernorm.forward(&xs)?;
         let mlp_output = self.moe.forward(&xs, input_metadata.is_prefill)?;
         residual + mlp_output
     }
@@ -139,7 +139,7 @@ impl MiniMaxDecoderLayer {
 pub struct MiniMaxForCausalLM {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<MiniMaxDecoderLayer>,
-    norm: RmsNorm,
+    norm: NormX,
     lm_head: VocabParallelLinear,
     device: Device,
     dtype: DType,
@@ -239,7 +239,7 @@ impl MiniMaxForCausalLM {
             reporter.write().set_progress(layer_idx + 1);
         }
 
-        let norm = rms_norm_x(
+        let norm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb_m.pp("norm"),
@@ -326,7 +326,7 @@ impl MiniMaxForCausalLM {
             xs = xs.index_select(&Tensor::from_vec(indices, (batch,), xs.device())?, 0)?;
         }
 
-        let xs = apply_rms_norm_fp32(&self.norm, &xs)?;
+        let xs = self.norm.forward(&xs)?;
 
         if return_hidden {
             return xs.to_dtype(DType::F32);

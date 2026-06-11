@@ -238,6 +238,122 @@ pub fn get_cache_config(
 }
 
 const SIZE_IN_MB: usize = 1024 * 1024;
+const MIN_ACTIVATION_RESERVE_BYTES: usize = 256 * 1024 * 1024; // 256 MB floor
+
+#[derive(Debug, Clone)]
+pub struct GpuMemoryBudget {
+    pub flashinfer_bytes: usize,
+    pub cutlass_bytes: usize,
+    pub moe_pool_bytes: usize,
+    pub flash_splitk_bytes: usize,
+    pub transient_bytes: usize,
+    pub total_bytes: usize,
+}
+
+pub struct WorkspaceBudgetParams {
+    pub hidden_size: usize,
+    pub num_attention_heads: usize,
+    pub num_kv_layers: usize,
+    pub head_dim: usize,
+    pub prefill_chunk_size: usize,
+    pub model_dtype_size: usize,
+    pub num_shards: usize,
+    pub is_moe: bool,
+    pub moe_num_experts_per_tok: usize,
+    pub moe_intermediate_size: usize,
+}
+
+impl WorkspaceBudgetParams {
+    pub fn from_config(
+        config: &crate::openai::models::Config,
+        model_dtype: candle::DType,
+        num_shards: usize,
+        prefill_chunk_size: usize,
+    ) -> Self {
+        use crate::openai::models::MoEConfig;
+        let (is_moe, moe_num_experts_per_tok, moe_intermediate_size) = match &config.moe_config {
+            Some(MoEConfig::QwenMoE(cfg)) => {
+                (true, cfg.num_experts_per_tok, cfg.moe_intermediate_size)
+            }
+            Some(MoEConfig::DeepSeekMoE(cfg)) => (
+                true,
+                cfg.num_experts_per_tok.unwrap_or(0),
+                cfg.moe_intermediate_size,
+            ),
+            None => (false, 0, 0),
+        };
+        Self {
+            hidden_size: config.hidden_size,
+            num_attention_heads: config.num_attention_heads,
+            num_kv_layers: config.kv_cache_num_layers().max(1),
+            head_dim: config.get_head_size(),
+            prefill_chunk_size,
+            model_dtype_size: model_dtype.size_in_bytes(),
+            num_shards: num_shards.max(1),
+            is_moe,
+            moe_num_experts_per_tok,
+            moe_intermediate_size,
+        }
+    }
+}
+
+pub fn compute_workspace_budget(params: &WorkspaceBudgetParams) -> GpuMemoryBudget {
+    let flashinfer_bytes: usize = if cfg!(feature = "flashinfer") {
+        (512 + 128) * 1024 * 1024
+    } else {
+        0
+    };
+
+    let cutlass_bytes: usize = if cfg!(feature = "cutlass") {
+        512 * 1024 * 1024
+    } else {
+        0
+    };
+
+    let moe_pool_bytes: usize =
+        if cfg!(feature = "cutlass") && params.is_moe && params.moe_num_experts_per_tok > 0 {
+            let topk = params.moe_num_experts_per_tok;
+            let size_m = params.prefill_chunk_size * topk;
+            let hidden = params.hidden_size / params.num_shards;
+            let inter = params.moe_intermediate_size / params.num_shards;
+            let largest_dim = hidden.max(2 * inter);
+            let gathered = size_m * hidden * params.model_dtype_size;
+            let rep_out = size_m * inter * params.model_dtype_size;
+            let act_packed = size_m * hidden / 2;
+            let act_scales = size_m * (hidden / 16 + 128);
+            let pool_total = gathered + rep_out + act_packed + act_scales;
+            let transient_output = size_m * largest_dim * params.model_dtype_size;
+            pool_total + transient_output
+        } else {
+            0
+        };
+
+    let flash_splitk_bytes: usize = if cfg!(feature = "flash") || cfg!(feature = "flashattn") {
+        let q_heads_per_shard = params.num_attention_heads / params.num_shards;
+        let splits = 8usize;
+        let per_layer = 64 * q_heads_per_shard * splits * (params.head_dim + 2) * 4;
+        per_layer * params.num_kv_layers
+    } else {
+        0
+    };
+
+    let transient_bytes =
+        2 * params.prefill_chunk_size * params.hidden_size * params.model_dtype_size;
+
+    let total_bytes =
+        (flashinfer_bytes + cutlass_bytes + moe_pool_bytes + flash_splitk_bytes + transient_bytes)
+            .max(MIN_ACTIVATION_RESERVE_BYTES);
+
+    GpuMemoryBudget {
+        flashinfer_bytes,
+        cutlass_bytes,
+        moe_pool_bytes,
+        flash_splitk_bytes,
+        transient_bytes,
+        total_bytes,
+    }
+}
+
 pub const MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV: &str = "CANDLE_VLLM_MAMBA_SNAPSHOT_STRIDE_BLOCKS";
 pub const DEFAULT_MAMBA_SNAPSHOT_BLOCK_STRIDE: usize = 1;
 
@@ -282,7 +398,7 @@ const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 8;
 fn compute_kvcache_budget_bytes(free_bytes: usize, fraction: f32) -> Result<usize> {
     if !(0.0 < fraction && fraction <= 1.0) {
         return Err(candle::Error::msg(format!(
-            "gpu_memory_fraction must be in (0, 1], got {fraction}"
+            "kv_fraction must be in (0, 1], got {fraction}"
         )));
     }
 
@@ -316,11 +432,11 @@ pub fn query_device_memory(device: &Device) -> Result<DeviceMemoryReport> {
             })
         }
         Device::Cpu => Err(candle::Error::msg(
-            "gpu_memory_fraction requires a CUDA or Metal device",
+            "kv_fraction requires a CUDA or Metal device",
         )),
         #[allow(unreachable_patterns)]
         _ => Err(candle::Error::msg(
-            "gpu_memory_fraction is not supported on this backend",
+            "kv_fraction is not supported on this backend",
         )),
     }
 }
@@ -332,15 +448,15 @@ pub fn query_device_memory_for_devices(devices: &[&Device]) -> Result<Vec<Device
         .collect()
 }
 
-pub fn detect_kvcache_mem_gpu_mb(device: &Device, gpu_memory_fraction: f32) -> Result<usize> {
+pub fn detect_kvcache_mem_gpu_mb(device: &Device, kv_fraction: f32) -> Result<usize> {
     let report = query_device_memory(device)?;
-    let budget_bytes = compute_kvcache_budget_bytes(report.free_bytes, gpu_memory_fraction)?;
+    let budget_bytes = compute_kvcache_budget_bytes(report.free_bytes, kv_fraction)?;
 
     let budget_mb = budget_bytes / SIZE_IN_MB;
     if budget_mb == 0 {
         return Err(candle::Error::msg(format!(
-            "gpu_memory_fraction {} leaves no room for KV cache after model load",
-            gpu_memory_fraction
+            "kv_fraction {} leaves no room for KV cache after model load",
+            kv_fraction
         )));
     }
 
@@ -349,22 +465,39 @@ pub fn detect_kvcache_mem_gpu_mb(device: &Device, gpu_memory_fraction: f32) -> R
 
 pub fn detect_kvcache_mem_gpu_mb_for_devices(
     devices: &[&Device],
-    gpu_memory_fraction: f32,
+    kv_fraction: f32,
+) -> Result<usize> {
+    detect_kvcache_mem_gpu_mb_for_devices_with_workspace(devices, kv_fraction, None)
+}
+
+pub fn detect_kvcache_mem_gpu_mb_for_devices_with_workspace(
+    devices: &[&Device],
+    kv_fraction: f32,
+    workspace: Option<&GpuMemoryBudget>,
 ) -> Result<usize> {
     let mut min_budget_mb: Option<usize> = None;
     let reports = query_device_memory_for_devices(devices)?;
+    let workspace_bytes = workspace.map_or(0, |w| w.total_bytes);
+
     for (rank, report) in reports.iter().enumerate() {
-        let budget_bytes = compute_kvcache_budget_bytes(report.free_bytes, gpu_memory_fraction)?;
-        let budget_mb = budget_bytes / SIZE_IN_MB;
+        let usable_bytes = compute_kvcache_budget_bytes(report.free_bytes, kv_fraction)?;
+        let cache_bytes = usable_bytes.saturating_sub(workspace_bytes);
+        let budget_mb = cache_bytes / SIZE_IN_MB;
+
         tracing::info!(
-            "Rank {} GPU memory after model load: total {:.2} GB, free {:.2} GB, used {:.2} GB, gpu_memory_fraction {:.0}% of remaining memory, usable combined cache budget {:.2} GB",
+            "Rank {} GPU memory: total {:.2} GB, free {:.2} GB, used {:.2} GB, \
+             kv_fraction {:.0}% -> usable {:.2} GB, workspace reserve {:.2} GB, \
+             cache budget {:.2} GB",
             rank,
             report.total_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
             report.free_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
             report.used_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
-            gpu_memory_fraction as f64 * 100.0,
-            budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+            kv_fraction as f64 * 100.0,
+            usable_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+            workspace_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
+            cache_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
         );
+
         min_budget_mb = Some(min_budget_mb.map_or(budget_mb, |current| current.min(budget_mb)));
     }
 

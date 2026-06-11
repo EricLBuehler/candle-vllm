@@ -64,7 +64,7 @@ Useful `EngineBuilder` controls include:
 
 - model source: `ModelRepo::ModelID`, `ModelRepo::ModelPath`, `ModelRepo::ModelFile`
 - KV cache sizing: `.with_kvcache_mem_gpu()`, `.with_kvcache_mem_cpu()`
-- memory budgeting: `.with_gpu_memory_fraction()`
+- memory budgeting: `.with_kv_fraction()`
 - sampling defaults: `.with_temperature()`, `.with_top_p()`
 - device selection: `.with_device_ids()`
 - dtype and quantization: `.with_dtype()`, `.with_isq()`, `.with_kvcache_dtype()`

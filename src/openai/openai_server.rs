@@ -303,7 +303,7 @@ pub async fn chat_completions(
             return ChatResponder::ValidationError(APIError::new(format!(
                 "Requested prompt({} tokens, {} new after prefix cache) is  \
                 larger than available kvcache (maximum {} tokens).\n \
-                You can increase kvcache by setting `--gpu-memory-fraction` (default 0.5) to a larger value!",
+                You can increase kvcache by setting `--kv-fraction` (default 0.6) to a larger value!",
                 token_ids.len(),
                 new_tokens,
                 available_tokens
@@ -312,7 +312,7 @@ pub async fn chat_completions(
         return ChatResponder::ValidationError(APIError::new(format!(
             "Requested prompt({} tokens, {} new after prefix cache) plus {} decode budget tokens is \
             larger than available kvcache (maximum {} tokens).\n \
-            You can increase kvcache by setting `--gpu-memory-fraction` (default 0.5) to a larger value!",
+            You can increase kvcache by setting `--kv-fraction` (default 0.6) to a larger value!",
             token_ids.len(),
             new_tokens,
             minimum_decode_budget_tokens,

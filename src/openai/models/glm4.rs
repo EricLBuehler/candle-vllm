@@ -1,14 +1,15 @@
 use super::{attention::Attention, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, rms_norm_with_dtype, Comm, MergedParallelColumnLinear, TensorParallelRowLinear,
-    VarBuilder, VocabParallelLinear,
+    embedding, Comm, MergedParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
+    VocabParallelLinear,
 };
+use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle::{DType, Device, Result, Tensor};
 use candle_core as candle;
-use candle_nn::{Embedding, Module, RmsNorm};
+use candle_nn::{Embedding, Module};
 use parking_lot::RwLock;
 use std::iter::zip;
 use std::path::PathBuf;
@@ -95,11 +96,11 @@ impl Module for MLP {
 }
 
 struct DecoderLayer {
-    input_layernorm: RmsNorm,
+    input_layernorm: NormX,
     self_attn: Attention,
-    post_attention_layernorm: RmsNorm,
-    post_mlp_layernorm: RmsNorm,
-    post_self_attn_layernorm: RmsNorm,
+    post_attention_layernorm: NormX,
+    post_mlp_layernorm: NormX,
+    post_self_attn_layernorm: NormX,
     mlp: MLP,
 }
 
@@ -115,29 +116,33 @@ impl DecoderLayer {
         } else {
             vb.dtype()
         };
-        let input_layernorm = rms_norm_with_dtype(
+        let input_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("input_layernorm"),
             norm_dtype,
+            false,
         )?;
-        let post_attention_layernorm = rms_norm_with_dtype(
+        let post_attention_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
             norm_dtype,
+            false,
         )?;
-        let post_self_attn_layernorm = rms_norm_with_dtype(
+        let post_self_attn_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_self_attn_layernorm"),
             norm_dtype,
+            false,
         )?;
-        let post_mlp_layernorm = rms_norm_with_dtype(
+        let post_mlp_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_mlp_layernorm"),
             norm_dtype,
+            false,
         )?;
         let self_attn = Attention::new(
             rotary_emb.clone(),
@@ -188,7 +193,7 @@ pub struct GLM4 {
     embedding: Embedding,
     layers: Vec<DecoderLayer>,
     lm_head: VocabParallelLinear,
-    norm: RmsNorm,
+    norm: NormX,
     dtype: DType,
     device: Device,
     cfg: Config,
@@ -232,11 +237,12 @@ impl GLM4 {
         } else {
             dtype
         };
-        let norm = rms_norm_with_dtype(
+        let norm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb_m.pp("norm"),
             norm_dtype,
+            false,
         )?;
         Ok(Self {
             embedding,

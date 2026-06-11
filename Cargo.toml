@@ -22,8 +22,8 @@ anyhow = "1.0.75"
 rand = "0.9.0"
 rayon="1.10.0"
 hyper = { version = "0.14", features = ["full"] }
-candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "9b66476" }
-candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "9b66476" }
+candle-core = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "3bcb218" }
+candle-nn = { git = "https://github.com/guoqingbao/candle.git", version = "0.8.3", rev = "3bcb218" }
 dyn-fmt = "0.4.0"
 safetensors = "0.4"
 serde = { version = "1.0.190", features = ["serde_derive"] }
@@ -46,7 +46,7 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.6.0", rev = "ab3fd74" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.6.1", rev = "2cba5b9" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 lazy_static = {version = "1.4.0"}
 interprocess = "2.2.2"
@@ -90,3 +90,15 @@ mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl"]
 nccl = ["candle-core/nccl"]
 mpi = ["candle-core/nccl", "dep:mpi"]
 graph = ["flash", "attention-rs/graph", "candle-core/graph"]
+
+[package.metadata.deb]
+maintainer = "guoqingbao"
+copyright = "2024, guoqingbao"
+extended-description = "candle-vllm — a high-performance LLM inference engine in Rust with CUDA/Metal acceleration"
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/candle-vllm", "usr/local/bin/candle-vllm", "755"],
+    ["target/release/lib/*", "usr/local/lib/candle-vllm/", "644"],
+]

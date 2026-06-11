@@ -3,27 +3,25 @@ use super::{
     layers::deltanet::GatedDeltaNet,
     resolve_qwen3_hybrid_config,
     rotary_emb::ScalingRotaryEmbedding,
-    utils::{
-        apply_rms_norm_fp32, resolve_input_seqlens, resolve_mamba_seq_slots, resolve_text_backbone,
-    },
+    utils::{resolve_input_seqlens, resolve_mamba_seq_slots, resolve_text_backbone},
     Config, InputMetadata, MoEConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{
-    embedding, rms_norm_x, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
+    embedding, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
     VocabParallelLinear,
 };
 use crate::openai::models::layers::deepstack::ApplyDeepStack;
 use crate::openai::models::layers::moe::{
     FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4,
 };
+use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::linear::LinearX as Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::QwenMoEConfig;
 use attention_rs::mamba_cache::MambaCache;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
-use candle_nn::RmsNorm;
 use parking_lot::{RwLock, RwLockWriteGuard};
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -189,8 +187,8 @@ struct DecoderLayer {
     mlp: MoeOrMlp,
     shared_gate: Option<Linear>,
     shared_expert: Option<Mlp>,
-    input_layernorm: RmsNorm,
-    post_attention_layernorm: RmsNorm,
+    input_layernorm: NormX,
+    post_attention_layernorm: NormX,
 }
 
 impl DecoderLayer {
@@ -274,14 +272,14 @@ impl DecoderLayer {
             )?)
         };
 
-        let input_layernorm = rms_norm_x(
+        let input_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("input_layernorm"),
             DType::F32,
             true,
         )?;
-        let post_attention_layernorm = rms_norm_x(
+        let post_attention_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
@@ -344,7 +342,7 @@ impl DecoderLayer {
         seq_slots: &Tensor,
     ) -> Result<Tensor> {
         let residual = xs;
-        let xs = apply_rms_norm_fp32(&self.input_layernorm, xs)?;
+        let xs = self.input_layernorm.forward(xs)?;
         let xs = match &self.attn {
             AttnType::FullAttention(attn) => {
                 attn.forward(&xs, attention_mask, input_positions, cache, input_metadata)?
@@ -356,7 +354,7 @@ impl DecoderLayer {
 
         let xs = (xs + residual)?;
         let residual = &xs;
-        let xs = apply_rms_norm_fp32(&self.post_attention_layernorm, &xs)?;
+        let xs = self.post_attention_layernorm.forward(&xs)?;
 
         let shared_output = match (&self.shared_gate, &self.shared_expert) {
             (Some(shared_gate), Some(shared_expert)) => {
@@ -380,7 +378,7 @@ impl DecoderLayer {
 pub struct Qwen3_5MoE {
     embed_tokens: candle_nn::Embedding,
     layers: Vec<DecoderLayer>,
-    norm: RmsNorm,
+    norm: NormX,
     lm_head: VocabParallelLinear,
     mamba_cache: RwLock<MambaCache>,
     device: Device,
@@ -457,7 +455,7 @@ impl Qwen3_5MoE {
             reporter.write().set_progress(layer_idx + 1);
         }
 
-        let norm = rms_norm_x(
+        let norm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb_m.pp("norm"),
@@ -645,7 +643,7 @@ impl Qwen3_5MoE {
             xs = xs.index_select(&Tensor::from_vec(indices, (batch,), xs.device())?, 0)?;
         }
 
-        let xs = apply_rms_norm_fp32(&self.norm, &xs)?;
+        let xs = self.norm.forward(&xs)?;
 
         if return_hidden {
             return xs.to_dtype(DType::F32);

@@ -1,13 +1,12 @@
 use super::{attention::Attention, mlp::Mlp, rotary_emb::ScalingRotaryEmbedding, Config};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::openai::distributed::{
-    embedding, rms_norm_with_dtype, Comm, VarBuilder, VocabParallelLinear,
-};
+use crate::openai::distributed::{embedding, Comm, VarBuilder, VocabParallelLinear};
+use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
 use candle::{DType, Device, Result, Tensor};
 use candle_core as candle;
-use candle_nn::{Embedding, Module, RmsNorm};
+use candle_nn::{Embedding, Module};
 use parking_lot::RwLock;
 use std::iter::zip;
 use std::path::PathBuf;
@@ -38,9 +37,9 @@ impl Llama {
 }
 
 struct Block {
-    rms_1: RmsNorm,
+    rms_1: NormX,
     attn: Attention,
-    rms_2: RmsNorm,
+    rms_2: NormX,
     mlp: Mlp,
 }
 
@@ -83,17 +82,19 @@ impl Block {
         } else {
             vb.dtype()
         };
-        let rms_1 = rms_norm_with_dtype(
+        let rms_1 = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("input_layernorm"),
             norm_dtype,
+            false,
         )?;
-        let rms_2 = rms_norm_with_dtype(
+        let rms_2 = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
             norm_dtype,
+            false,
         )?;
         Ok(Self {
             rms_1,
@@ -107,7 +108,7 @@ impl Block {
 pub struct Llama {
     wte: Embedding,
     blocks: Vec<Block>,
-    norm: RmsNorm,
+    norm: NormX,
     lm_head: VocabParallelLinear,
     cfg: Config,
     dtype: DType,
@@ -224,11 +225,12 @@ impl Llama {
         } else {
             dtype
         };
-        let norm = rms_norm_with_dtype(
+        let norm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("model.norm"),
             norm_dtype,
+            false,
         )?;
         let reporter = progress_reporter.clone();
         let blocks: Vec<_> = (0..cfg.num_hidden_layers)
