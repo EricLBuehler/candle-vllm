@@ -150,6 +150,10 @@ jobs:
             sm_name: sm90
             cuda_version: "13.0.0"
             features: "cuda,nccl,flashinfer,cutlass"
+          - sm: "100"
+            sm_name: sm100
+            cuda_version: "13.0.0"
+            features: "cuda,nccl,flashinfer,cutlass"
           - sm: "120"
             sm_name: sm120
             cuda_version: "13.0.0"
@@ -305,6 +309,9 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
         with:
@@ -340,7 +347,7 @@ jobs:
             fi
             if ! command -v nvidia-smi &>/dev/null; then
               echo "ERROR: No NVIDIA GPU detected and no platform specified." >&2
-              echo "  Set CANDLE_VLLM_PLATFORM=sm80 (or sm70/sm75/sm89/sm90/sm120) and re-run." >&2
+              echo "  Set CANDLE_VLLM_PLATFORM=sm80 (or sm70/sm75/sm89/sm90/sm100/sm120/sm121) and re-run." >&2
               exit 1
             fi
             local cc
@@ -351,8 +358,9 @@ jobs:
               80|86|87) echo "sm80" ;;
               89)    echo "sm89" ;;
               90|90a) echo "sm90" ;;
-              100|110) echo "sm90" ;;
-              120)   echo "sm120" ;;
+              100|100a) echo "sm100" ;;
+              120|120a) echo "sm120" ;;
+              121|121a) echo "sm121" ;;
               *) echo "sm80" ;;
             esac
           }
@@ -388,7 +396,9 @@ jobs:
 
           install_deb() {
             local variant="$1"
-            local deb="candle-vllm-linux-x64-${variant}.deb"
+            local cpu_arch="x64"
+            if [ "$variant" = "sm121" ]; then cpu_arch="arm64"; fi
+            local deb="candle-vllm-linux-${cpu_arch}-${variant}.deb"
             local url="${RELEASE_BASE}/${deb}"
             local tmp
             tmp="$(mktemp -d)"
@@ -446,8 +456,11 @@ jobs:
             echo "Installing candle-vllm (Metal/macOS)..."
             install_tarball "$TARBALL"
           else
-            DEB="candle-vllm-linux-x64-${PLATFORM}.deb"
-            TARBALL="candle-vllm-${VERSION}-linux-x64-${PLATFORM}.tar.gz"
+            if [ "$PLATFORM" = "sm121" ]; then
+              TARBALL="candle-vllm-${VERSION}-linux-arm64-sm121.tar.gz"
+            else
+              TARBALL="candle-vllm-${VERSION}-linux-x64-${PLATFORM}.tar.gz"
+            fi
             echo "Install options:"
             echo "  1) deb package  — installs 'candle-vllm' system-wide (Linux)"
             echo "  2) binary       — installs 'candle-vllm' to /usr/local/bin"

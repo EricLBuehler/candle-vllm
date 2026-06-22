@@ -18,6 +18,7 @@ pub fn get_or_load_func(
         DType::F16 => "_f16",
         DType::F32 => "_f32",
         DType::F64 => "_f64",
+        DType::F8E8M0 | DType::F8E4M3 => "_u8",
     };
     let spec = if let Some(suffix) = suffix {
         spec.to_owned() + suffix

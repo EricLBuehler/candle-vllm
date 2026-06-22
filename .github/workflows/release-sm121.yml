@@ -1,0 +1,154 @@
+name: release-sm121
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # CUDA ARM build: SM121 (DGX Spark / GB10) — native aarch64 GitHub runner
+  # Runs in parallel with the main release workflow on the same tag.
+  # Uses GitHub's free ARM64 runner with CUDA 13 container.
+  # Limited parallelism (2 threads) to fit free-tier runner resources.
+  # Pages deployment is handled by the main release.yml workflow.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: validate-version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version from tag
+        id: version
+        run: |
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          echo "version=${cargo_version}" >> "$GITHUB_OUTPUT"
+
+  build-sm121:
+    name: cuda-sm121
+    runs-on: ubuntu-24.04-arm
+    needs: validate
+    container:
+      image: docker.io/nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04
+    env:
+      CUDA_COMPUTE_CAP: "121"
+      DEBIAN_FRONTEND: noninteractive
+      CUDAFORGE_THREADS: "2"
+      RAYON_NUM_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends --allow-change-held-packages \
+            libnccl-dev libnccl2 \
+            curl git ca-certificates \
+            libssl-dev pkg-config \
+            clang libclang-dev \
+            patchelf dpkg-dev
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Install cargo-deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo install cargo-deb
+
+      - name: Build candle-vllm binary
+        run: |
+          . "$HOME/.cargo/env"
+          cargo build --release --features "cuda,nccl,flashinfer,cutlass"
+
+      - name: Bundle CUDA runtime with binary
+        run: |
+          CUDA_LIB="$(find /usr/local/cuda -follow -name 'libcudart.so.*.*' -not -name '*.a' 2>/dev/null | head -1)"
+          if [ -z "$CUDA_LIB" ]; then CUDA_LIB="$(ldconfig -p | grep 'libcudart.so\.' | awk '{print $NF}' | head -1)"; fi
+          mkdir -p target/release/lib
+          if [ -n "$CUDA_LIB" ]; then
+            cp "$CUDA_LIB" target/release/lib/
+            CUDA_SONAME="$(objdump -p "$CUDA_LIB" 2>/dev/null | awk '/SONAME/{print $2}')"
+            if [ -n "$CUDA_SONAME" ]; then
+              ln -sf "$(basename "$CUDA_LIB")" "target/release/lib/$CUDA_SONAME"
+              ln -sf "$CUDA_SONAME" target/release/lib/libcudart.so
+            fi
+          fi
+          patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/candle-vllm' target/release/candle-vllm
+          ls -la target/release/lib/
+
+      - name: Package deb
+        run: |
+          . "$HOME/.cargo/env"
+          cargo deb --no-build --output "dist/candle-vllm-linux-arm64-sm121.deb"
+
+      - name: Package tar.gz
+        run: |
+          mkdir -p dist/candle-vllm
+          cp target/release/candle-vllm dist/candle-vllm/candle-vllm
+          cp -a target/release/lib dist/candle-vllm/lib
+          tar -C dist/candle-vllm -czf "dist/candle-vllm-${{ needs.validate.outputs.version }}-linux-arm64-sm121.tar.gz" candle-vllm lib
+          rm -rf dist/candle-vllm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candle-vllm-cuda-sm121
+          path: |
+            dist/*.tar.gz
+            dist/*.deb
+
+  # ---------------------------------------------------------------------------
+  # Append SM121 artifacts to the existing GitHub Release created by release.yml
+  # ---------------------------------------------------------------------------
+  append-release:
+    name: append-to-release
+    runs-on: ubuntu-latest
+    needs: [validate, build-sm121]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: candle-vllm-cuda-sm121
+          path: dist
+
+      - name: Generate SHA256SUMS for SM121
+        run: |
+          cd dist
+          find . -type f \( -name "*.tar.gz" -o -name "*.deb" \) \
+            -exec sha256sum {} + > SHA256SUMS-sm121
+          cat SHA256SUMS-sm121
+
+      - name: Wait for main release to be created
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ github.ref_name }}"
+          for i in $(seq 1 60); do
+            if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+              echo "Release $TAG found."
+              exit 0
+            fi
+            echo "Waiting for release $TAG... (attempt $i/60)"
+            sleep 30
+          done
+          echo "Release $TAG not found after 30 minutes, uploading anyway."
+
+      - name: Upload SM121 artifacts to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: false
+          files: |
+            dist/*.tar.gz
+            dist/*.deb
+            dist/SHA256SUMS-sm121

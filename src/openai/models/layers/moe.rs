@@ -675,9 +675,35 @@ impl FusedMoeISQ {
             (gate_experts, up_experts, down_experts)
         };
 
-        let gate_experts = QTensor::quantize(&gate_experts, quant_type)?;
-        let up_experts = QTensor::quantize(&up_experts, quant_type)?;
-        let down_experts = QTensor::quantize(&down_experts, GgmlDType::Q8_0)?;
+        let gate_last_dim = gate_experts.dim(candle_core::D::Minus1)?;
+        let gate_up_quant_type = if gate_last_dim % quant_type.block_size() == 0 {
+            quant_type
+        } else if gate_last_dim % GgmlDType::Q8_0.block_size() == 0 {
+            GgmlDType::Q8_0
+        } else {
+            candle::bail!(
+                "ISQ MoE gate/up last dim {} incompatible with any GGUF block size",
+                gate_last_dim
+            );
+        };
+        let down_last_dim = down_experts.dim(candle_core::D::Minus1)?;
+        let hp_dtype =
+            crate::openai::models::layers::isq_high_precision_dtype(cfg.isq_quant.as_deref());
+        let down_quant_type = if down_last_dim % hp_dtype.block_size() == 0 {
+            hp_dtype
+        } else if down_last_dim % quant_type.block_size() == 0 {
+            quant_type
+        } else if down_last_dim % GgmlDType::Q8_0.block_size() == 0 {
+            GgmlDType::Q8_0
+        } else {
+            candle::bail!(
+                "ISQ MoE down_experts last dim {} incompatible with any GGUF block size",
+                down_last_dim
+            );
+        };
+        let gate_experts = QTensor::quantize(&gate_experts, gate_up_quant_type)?;
+        let up_experts = QTensor::quantize(&up_experts, gate_up_quant_type)?;
+        let down_experts = QTensor::quantize(&down_experts, down_quant_type)?;
         let world_size = comm.world_size();
 
         Ok(Self {
@@ -820,9 +846,35 @@ impl FusedMoeISQ {
         let (gate_experts, up_experts, down_experts) =
             load_packed_experts(cfg, experts_vb, comm.clone())?;
 
-        let gate_experts = QTensor::quantize(&gate_experts, quant_type)?;
-        let up_experts = QTensor::quantize(&up_experts, quant_type)?;
-        let down_experts = QTensor::quantize(&down_experts, GgmlDType::Q8_0)?;
+        let gate_last_dim = gate_experts.dim(candle_core::D::Minus1)?;
+        let gate_up_quant_type = if gate_last_dim % quant_type.block_size() == 0 {
+            quant_type
+        } else if gate_last_dim % GgmlDType::Q8_0.block_size() == 0 {
+            GgmlDType::Q8_0
+        } else {
+            candle::bail!(
+                "ISQ MoE gate/up last dim {} incompatible with any GGUF block size",
+                gate_last_dim
+            );
+        };
+        let down_last_dim = down_experts.dim(candle_core::D::Minus1)?;
+        let hp_dtype =
+            crate::openai::models::layers::isq_high_precision_dtype(cfg.isq_quant.as_deref());
+        let down_quant_type = if down_last_dim % hp_dtype.block_size() == 0 {
+            hp_dtype
+        } else if down_last_dim % quant_type.block_size() == 0 {
+            quant_type
+        } else if down_last_dim % GgmlDType::Q8_0.block_size() == 0 {
+            GgmlDType::Q8_0
+        } else {
+            candle::bail!(
+                "ISQ MoE down_experts last dim {} incompatible with any GGUF block size",
+                down_last_dim
+            );
+        };
+        let gate_experts = QTensor::quantize(&gate_experts, gate_up_quant_type)?;
+        let up_experts = QTensor::quantize(&up_experts, gate_up_quant_type)?;
+        let down_experts = QTensor::quantize(&down_experts, down_quant_type)?;
         let world_size = comm.world_size();
 
         Ok(Self {

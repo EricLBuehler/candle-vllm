@@ -429,6 +429,80 @@ pub struct QLinear {
 }
 
 impl QLinear {
+    fn ggml_dtype_from_str(quant: &str) -> quantized::GgmlDType {
+        use quantized::GgmlDType;
+        match quant.to_lowercase().as_str() {
+            "q40" | "q4_0" => GgmlDType::Q4_0,
+            "q4" | "q41" | "q4_1" => GgmlDType::Q4_1,
+            "q50" | "q5_0" => GgmlDType::Q5_0,
+            "q5" | "q51" | "q5_1" => GgmlDType::Q5_1,
+            "q8" | "q80" | "q8_0" => GgmlDType::Q8_0,
+            "q2k" | "q2_k" => GgmlDType::Q2K,
+            "q3k" | "q3_k" => GgmlDType::Q3K,
+            "q4k" | "q4_k" => GgmlDType::Q4K,
+            "q5k" | "q5_k" => GgmlDType::Q5K,
+            "q6k" | "q6_k" => GgmlDType::Q6K,
+            _ => {
+                tracing::warn!("ISQ: unknown quant type '{}', defaulting to Q4K", quant);
+                GgmlDType::Q4K
+            }
+        }
+    }
+
+    fn compatible_ggml_dtype(
+        weight: &Tensor,
+        ggml_dtype: quantized::GgmlDType,
+    ) -> Result<Option<quantized::GgmlDType>> {
+        use quantized::GgmlDType;
+        let last_dim = weight.dim(candle_core::D::Minus1)?;
+        if last_dim % ggml_dtype.block_size() == 0 {
+            Ok(Some(ggml_dtype))
+        } else if last_dim % GgmlDType::Q8_0.block_size() == 0 {
+            tracing::warn!(
+                "ISQ: weight {:?} incompatible with {:?} (block_size {}), \
+                falling back to Q8_0 (block_size {})",
+                weight.shape(),
+                ggml_dtype,
+                ggml_dtype.block_size(),
+                GgmlDType::Q8_0.block_size()
+            );
+            Ok(Some(GgmlDType::Q8_0))
+        } else {
+            tracing::warn!(
+                "ISQ: weight {:?} incompatible with any GGUF dtype, keeping unquantized",
+                weight.shape()
+            );
+            Ok(None)
+        }
+    }
+
+    pub fn native_quantize_supported(
+        last_dim: usize,
+        quant: &str,
+        device: &Device,
+    ) -> Result<bool> {
+        use quantized::GgmlDType;
+        let ggml_dtype = Self::ggml_dtype_from_str(quant);
+        let actual_ggml_dtype = if last_dim % ggml_dtype.block_size() == 0 {
+            Some(ggml_dtype)
+        } else if last_dim % GgmlDType::Q8_0.block_size() == 0 {
+            Some(GgmlDType::Q8_0)
+        } else {
+            None
+        };
+        Ok(actual_ggml_dtype
+            .map(|dtype| QTensor::supports_native_quantize(device, dtype))
+            .unwrap_or(false))
+    }
+
+    fn local_last_dim(in_dim: usize, shards: Shard) -> usize {
+        if shards.world_size > 1 && shards.dim == 1 {
+            in_dim / shards.world_size
+        } else {
+            in_dim
+        }
+    }
+
     pub fn new<R: std::io::Read + std::io::Seek>(
         ct: &gguf_file::Content,
         r: &mut R,
@@ -554,62 +628,68 @@ impl QLinear {
                 )
             }
             None => {
-                use quantized::GgmlDType;
-                let ggml_dtype = match quant.as_str() {
-                    "q4_0" | "q40" => GgmlDType::Q4_0,
-                    "q4_1" | "q4" | "q41" => GgmlDType::Q4_1,
-                    "q5_0" | "q50" => GgmlDType::Q5_0,
-                    "q5_1" | "q5" | "q51" => GgmlDType::Q5_1,
-                    "q8_0" | "q8" | "q80" => GgmlDType::Q8_0,
-                    "q2k" | "q2_k" => GgmlDType::Q2K,
-                    "q3k" | "q3_k" => GgmlDType::Q3K,
-                    "q4k" | "q4_k" => GgmlDType::Q4K,
-                    "q5k" | "q5_k" => GgmlDType::Q5K,
-                    "q6k" | "q6_k" => GgmlDType::Q6K,
-                    _ => panic!("Unsupported GGML data type!"),
-                };
-                let weight = linear.weight();
+                let ggml_dtype = Self::ggml_dtype_from_str(quant.as_str());
+                let weight = linear.weight().clone();
                 let qbias = linear.bias().cloned();
                 let dtype = weight.dtype();
-                let last_dim = weight.dim(candle_core::D::Minus1).unwrap();
-                let actual_ggml_dtype = if last_dim % ggml_dtype.block_size() != 0 {
-                    if last_dim % GgmlDType::Q8_0.block_size() == 0 {
-                        tracing::warn!(
-                            "ISQ: weight {:?} incompatible with {:?} (block_size {}), \
-                            falling back to Q8_0 (block_size {})",
-                            weight.shape(),
-                            ggml_dtype,
-                            ggml_dtype.block_size(),
-                            GgmlDType::Q8_0.block_size()
-                        );
-                        GgmlDType::Q8_0
-                    } else {
-                        tracing::warn!(
-                            "ISQ: weight {:?} incompatible with any GGUF dtype, keeping unquantized",
-                            weight.shape()
-                        );
-                        let inner = QMatMul::Tensor(weight.clone());
-                        return QLinear {
-                            inner,
-                            bias: qbias,
-                            scales: None,
-                            qzeros: None,
-                            g_idx: None,
-                            workspace: None,
-                            group_size: 0,
-                            bits: 0,
-                            dtype,
-                            is_awq: false,
-                            transposed_weight: false,
-                        };
-                    }
-                } else {
-                    ggml_dtype
+                let Some(actual_ggml_dtype) =
+                    Self::compatible_ggml_dtype(&weight, ggml_dtype).unwrap()
+                else {
+                    let inner = QMatMul::Tensor(weight);
+                    return QLinear {
+                        inner,
+                        bias: qbias,
+                        scales: None,
+                        qzeros: None,
+                        g_idx: None,
+                        workspace: None,
+                        group_size: 0,
+                        bits: 0,
+                        dtype,
+                        is_awq: false,
+                        transposed_weight: false,
+                    };
                 };
-                let qtensor = QTensor::quantize(weight, actual_ggml_dtype).unwrap();
+                let qtensor = QTensor::quantize_owned(weight, actual_ggml_dtype).unwrap();
                 QLinear::from_qparts_x(qtensor, qbias, dtype, false)
             }
         }
+    }
+
+    pub fn from_linear_x_on_device(
+        linear: Linear,
+        quant: String,
+        quant_config: &Option<QuantConfig>,
+        device: &Device,
+    ) -> Self {
+        if quant_config.is_some() {
+            return Self::from_linear_x(linear, quant, quant_config);
+        }
+        let ggml_dtype = Self::ggml_dtype_from_str(quant.as_str());
+        let weight = linear.weight();
+        let qbias = linear
+            .bias()
+            .map(|b| b.to_device(device).unwrap().to_dtype(DType::F32).unwrap());
+        let dtype = weight.dtype();
+        let Some(actual_ggml_dtype) = Self::compatible_ggml_dtype(weight, ggml_dtype).unwrap()
+        else {
+            let inner = QMatMul::Tensor(weight.to_device(device).unwrap());
+            return QLinear {
+                inner,
+                bias: qbias,
+                scales: None,
+                qzeros: None,
+                g_idx: None,
+                workspace: None,
+                group_size: 0,
+                bits: 0,
+                dtype,
+                is_awq: false,
+                transposed_weight: false,
+            };
+        };
+        let qtensor = QTensor::quantize_on_device(weight, actual_ggml_dtype, device).unwrap();
+        QLinear::from_qparts_x(qtensor, qbias, dtype, false)
     }
 
     pub fn from_old_and_qmatmul(inner: QMatMul, old: &Self) -> Self {

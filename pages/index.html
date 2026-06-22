@@ -53,15 +53,17 @@ a{color:var(--accent)}
 <script>
 (function(){
 'use strict';
-var CANDLE_VLLM_VER='0.8.3';
+var CANDLE_VLLM_VER='0.8.4';
 var DL='https://github.com/__REPO__/releases/download/v'+CANDLE_VLLM_VER+'/';
 var archs=[
-  {sm:'sm70',name:'SM70',gpu:'V100',cuda:'CUDA 12'},
-  {sm:'sm75',name:'SM75',gpu:'T4 / Turing',cuda:'CUDA 12'},
-  {sm:'sm80',name:'SM80',gpu:'A100 / A10',cuda:'CUDA 13'},
-  {sm:'sm89',name:'SM89',gpu:'RTX 4090 / L40',cuda:'CUDA 13'},
-  {sm:'sm90',name:'SM90',gpu:'H800 / H200',cuda:'CUDA 13'},
-  {sm:'sm120',name:'SM120',gpu:'RTX 5090 / B200',cuda:'CUDA 13'}
+  {sm:'sm70',name:'SM70',gpu:'V100',cuda:'CUDA 12',arch:'x64'},
+  {sm:'sm75',name:'SM75',gpu:'T4 / Turing',cuda:'CUDA 12',arch:'x64'},
+  {sm:'sm80',name:'SM80',gpu:'A100 / A10',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm89',name:'SM89',gpu:'RTX 4090 / L40',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm90',name:'SM90',gpu:'H800 / H200',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm100',name:'SM100',gpu:'B100 / B200',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm120',name:'SM120',gpu:'RTX 5090 / RTX PRO 6000',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm121',name:'SM121',gpu:'DGX Spark / GB10',cuda:'CUDA 13',arch:'arm64'}
 ];
 var metalA={sm:'metal',name:'Metal',gpu:'macOS Apple Silicon',cuda:''};
 
@@ -73,18 +75,19 @@ window.renderCards=function(type,btn){
   var items=archs.slice();
   items.push(metalA);
   items.forEach(function(a){
-    var fname;
+    var fname,cpuArch=a.arch||'x64';
     if(a.sm==='metal'){
       fname='candle-vllm-'+CANDLE_VLLM_VER+'-darwin-arm64-metal.tar.gz';
     }else if(type==='deb'){
-      fname='candle-vllm-linux-x64-'+a.sm+'.deb';
+      fname='candle-vllm-linux-'+cpuArch+'-'+a.sm+'.deb';
     }else{
-      fname='candle-vllm-'+CANDLE_VLLM_VER+'-linux-x64-'+a.sm+'.tar.gz';
+      fname='candle-vllm-'+CANDLE_VLLM_VER+'-linux-'+cpuArch+'-'+a.sm+'.tar.gz';
     }
     var c=document.createElement('a');
     c.href=DL+fname;c.target='_blank';c.className='card';
+    var archLabel=cpuArch==='arm64'?' (ARM64)':'';
     c.innerHTML='<h3>'+a.name+' — '+a.gpu+'</h3>'
-      +(a.cuda?'<p>'+a.cuda+'</p>':'<p>Apple Silicon (tarball)</p>')
+      +(a.cuda?'<p>'+a.cuda+archLabel+'</p>':'<p>Apple Silicon (tarball)</p>')
       +'<span class="file">'+fname+'</span>'
       +'<span class="dl">Download &rarr;</span>';
     el.appendChild(c);

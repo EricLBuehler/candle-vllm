@@ -203,7 +203,7 @@ pub fn gguf_vision_tensors_to_vb(
         .iter()
         .map(|(k, v)| (k.as_str(), v.clone()))
         .collect();
-    let bytes = safetensors::tensor::serialize(data, &None)
+    let bytes = safetensors::tensor::serialize(data, None)
         .map_err(|e| candle_core::Error::Msg(format!("safetensors serialize: {e}")))?;
 
     let path = write_to_memfd_or_tmpfs(&bytes)?;
