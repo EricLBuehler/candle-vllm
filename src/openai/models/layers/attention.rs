@@ -443,7 +443,9 @@ impl Attention {
                 &cfg.isq_quant,
                 &cfg.quantization_config,
             )?;
-            let q8_0_quant = Some("q8_0".to_string());
+            let high_precision_quant = cfg.isq_quant.as_deref().map(|quant| {
+                crate::openai::models::layers::isq_high_precision_quant(quant).to_string()
+            });
             let v_proj_quant = if cfg.quantization_config.is_some() {
                 &cfg.isq_quant
             } else if cfg.isq_quant.is_some()
@@ -452,7 +454,7 @@ impl Attention {
                     "gptq" | "awq" | "marlin"
                 )
             {
-                &q8_0_quant
+                &high_precision_quant
             } else {
                 &cfg.isq_quant
             };

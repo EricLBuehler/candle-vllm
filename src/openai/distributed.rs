@@ -402,6 +402,7 @@ impl CustomOp1 for AllReduce {
         l: &Layout,
     ) -> Result<(candle_core::CudaStorage, Shape)> {
         use candle_core::backend::BackendStorage;
+        use candle_core::cuda_backend::cudarc::driver::DeviceSlice;
         use candle_core::cuda_backend::cudarc::nccl::safe::ReduceOp;
         use candle_core::cuda_backend::WrapErr;
         use candle_core::DType;
@@ -417,8 +418,17 @@ impl CustomOp1 for AllReduce {
         let dst = match s.dtype() {
             DType::BF16 => {
                 let full_slice = s.as_cuda_slice::<bf16>()?;
-                // Slice to only the valid elements (handles narrow/view tensors)
-                let src_slice = full_slice.slice(start_offset..start_offset + elem_count);
+                let full_len = full_slice.len();
+                let end_offset = start_offset.saturating_add(elem_count);
+                if end_offset > full_len {
+                    candle_core::bail!(
+                        "all_reduce BF16 slice out of bounds: start={}, elem_count={}, len={}",
+                        start_offset,
+                        elem_count,
+                        full_len
+                    );
+                }
+                let src_slice = full_slice.slice(start_offset..end_offset);
                 let mut dst = unsafe { dev.alloc::<bf16>(elem_count) }.w()?;
                 self.comm
                     .all_reduce(&src_slice, &mut dst, &ReduceOp::Sum)
@@ -427,9 +437,37 @@ impl CustomOp1 for AllReduce {
             }
             DType::F16 => {
                 let full_slice = s.as_cuda_slice::<f16>()?;
-                // Slice to only the valid elements (handles narrow/view tensors)
-                let src_slice = full_slice.slice(start_offset..start_offset + elem_count);
+                let full_len = full_slice.len();
+                let end_offset = start_offset.saturating_add(elem_count);
+                if end_offset > full_len {
+                    candle_core::bail!(
+                        "all_reduce F16 slice out of bounds: start={}, elem_count={}, len={}",
+                        start_offset,
+                        elem_count,
+                        full_len
+                    );
+                }
+                let src_slice = full_slice.slice(start_offset..end_offset);
                 let mut dst = unsafe { dev.alloc::<f16>(elem_count) }.w()?;
+                self.comm
+                    .all_reduce(&src_slice, &mut dst, &ReduceOp::Sum)
+                    .map_err(candle_core::Error::debug)?;
+                candle_core::CudaStorage::wrap_cuda_slice(dst, dev)
+            }
+            DType::F32 => {
+                let full_slice = s.as_cuda_slice::<f32>()?;
+                let full_len = full_slice.len();
+                let end_offset = start_offset.saturating_add(elem_count);
+                if end_offset > full_len {
+                    candle_core::bail!(
+                        "all_reduce F32 slice out of bounds: start={}, elem_count={}, len={}",
+                        start_offset,
+                        elem_count,
+                        full_len
+                    );
+                }
+                let src_slice = full_slice.slice(start_offset..end_offset);
+                let mut dst = unsafe { dev.alloc::<f32>(elem_count) }.w()?;
                 self.comm
                     .all_reduce(&src_slice, &mut dst, &ReduceOp::Sum)
                     .map_err(candle_core::Error::debug)?;
@@ -842,7 +880,8 @@ impl MergedParallelColumnLinear {
                 let ln = crate::openai::models::linear::Linear::new(ws_chunk, None);
                 let linear = if let Some(quantized_type) = quant {
                     let quantized_type = if chunk_idx == chunks.len() - 1 {
-                        "q8_0".to_string()
+                        crate::openai::models::layers::isq_high_precision_quant(quantized_type)
+                            .to_string()
                     } else {
                         quantized_type.clone()
                     };
