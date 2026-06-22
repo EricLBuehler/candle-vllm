@@ -2,8 +2,9 @@ name: release-sm121
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [master]
+    paths:
+      - "Cargo.toml"
 
 permissions:
   contents: write
@@ -14,7 +15,7 @@ env:
 jobs:
   # ---------------------------------------------------------------------------
   # CUDA ARM build: SM121 (DGX Spark / GB10) — native aarch64 GitHub runner
-  # Runs in parallel with the main release workflow on the same tag.
+  # Runs in parallel with the main release workflow on version change.
   # Uses GitHub's free ARM64 runner with CUDA 13 container.
   # Limited parallelism (2 threads) to fit free-tier runner resources.
   # Pages deployment is handled by the main release.yml workflow.
@@ -24,18 +25,30 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      changed: ${{ steps.version.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
-      - name: Extract version from tag
+        with:
+          fetch-depth: 2
+      - name: Detect version change in Cargo.toml
         id: version
         run: |
           cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          prev_version="$(git show HEAD~1:Cargo.toml 2>/dev/null | sed -n 's/^version = "\(.*\)"/\1/p' | head -n 1)" || prev_version=""
           echo "version=${cargo_version}" >> "$GITHUB_OUTPUT"
+          if [ "$cargo_version" != "$prev_version" ] && [ -n "$prev_version" ]; then
+            echo "Version changed: ${prev_version} -> ${cargo_version}"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version unchanged (${cargo_version}), skipping release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
   build-sm121:
     name: cuda-sm121
     runs-on: ubuntu-24.04-arm
     needs: validate
+    if: needs.validate.outputs.changed == 'true'
     container:
       image: docker.io/nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04
     env:
@@ -115,6 +128,7 @@ jobs:
     name: append-to-release
     runs-on: ubuntu-latest
     needs: [validate, build-sm121]
+    if: needs.validate.outputs.changed == 'true'
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -132,7 +146,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ github.ref_name }}"
+          TAG="v${{ needs.validate.outputs.version }}"
           for i in $(seq 1 60); do
             if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
               echo "Release $TAG found."
@@ -146,7 +160,7 @@ jobs:
       - name: Upload SM121 artifacts to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: v${{ needs.validate.outputs.version }}
           generate_release_notes: false
           files: |
             dist/*.tar.gz

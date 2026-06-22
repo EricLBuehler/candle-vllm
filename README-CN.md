@@ -73,21 +73,29 @@ _注：结果为单个请求的解码速度（输入 4k，输出 1k，`Hopper` 8
 
 ## 基本用法
 ### 安装Candle-vLLM
-**下载源代码**
+
+**方案 1 — 一键安装（DEB或二进制）**
+```bash
+curl -sSL https://ericlbuehler.github.io/candle-vllm/install.sh | bash
+```
+
+**方案 2 — 从源代码构建**
+
+下载源代码
 ```shell
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
 ```
 **CUDA平台（11+, 12+, 13.0）**
 
- > 方案 1 (安装进docker)
+ > 方案 A (安装进docker)
 ```bash
 # 主机驱动版本需要 >= 选定的CUDA版本
 # 通过追加如 "sm_90 13.0.0" 参数来编译指定SM版本及CUDA版本
 ./build_docker.sh "cuda,nccl,graph,flashinfer,cutlass"
 ```
 
- > 方案 2 (手动安装)
+ > 方案 B (手动安装)
 
 安装依赖项
 ```shell

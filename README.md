@@ -75,21 +75,28 @@ _Note: results are decoding speed per request (input 4k, output 1k, on `Hopper` 
 ## General Usage
 ### Install Candle-vLLM
 
-**Clone code**
+**Option 1 — One-line install (DEB or binary)**
+```bash
+curl -sSL https://ericlbuehler.github.io/candle-vllm/install.sh | bash
+```
+
+**Option 2 — Build from source**
+
+Clone code
 ```shell
 git clone git@github.com:EricLBuehler/candle-vllm.git
 cd candle-vllm
 ```
 
 **CUDA (CUDA 11+, 12+, 13.0)**
- > Option 1 (Install into docker)
+ > Option A (Install into docker)
 ```bash
 # Host driver version must >= specified cuda version (default 12.9.0)
 # You may pass custom SM version and CUDA version by adding parameters like "sm_90 13.0.0"
 ./build_docker.sh "cuda,nccl,flashinfer,cutlass"
 ```
 
- > Option 2 (Manual Installation)
+ > Option B (Manual Installation)
 
 Install dependencies
 ```shell

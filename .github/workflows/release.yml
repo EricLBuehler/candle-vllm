@@ -2,8 +2,9 @@ name: release
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [master]
+    paths:
+      - "Cargo.toml"
 
 permissions:
   contents: write
@@ -20,18 +21,24 @@ jobs:
     if: github.repository == 'EricLBuehler/candle-vllm'
     outputs:
       version: ${{ steps.version.outputs.version }}
+      changed: ${{ steps.version.outputs.changed }}
     steps:
       - uses: actions/checkout@v4
-      - name: Validate tag matches Cargo.toml version
+        with:
+          fetch-depth: 2
+      - name: Detect version change in Cargo.toml
         id: version
         run: |
           cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          expected_tag="v${cargo_version}"
-          if [ "${{ github.ref_name }}" != "$expected_tag" ]; then
-            echo "Tag ${{ github.ref_name }} must match Cargo.toml version $expected_tag" >&2
-            exit 1
-          fi
+          prev_version="$(git show HEAD~1:Cargo.toml 2>/dev/null | sed -n 's/^version = "\(.*\)"/\1/p' | head -n 1)" || prev_version=""
           echo "version=${cargo_version}" >> "$GITHUB_OUTPUT"
+          if [ "$cargo_version" != "$prev_version" ] && [ -n "$prev_version" ]; then
+            echo "Version changed: ${prev_version} -> ${cargo_version}"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version unchanged (${cargo_version}), skipping release."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
 
   # ---------------------------------------------------------------------------
   # CUDA legacy builds: SM70/SM75 on GitHub free runners (no flashinfer/cutlass)
@@ -41,6 +48,7 @@ jobs:
     name: cuda-${{ matrix.sm_name }}
     runs-on: ubuntu-latest
     needs: validate
+    if: needs.validate.outputs.changed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -133,6 +141,7 @@ jobs:
     name: cuda-${{ matrix.sm_name }}
     runs-on: ubuntu-latest
     needs: validate
+    if: needs.validate.outputs.changed == 'true'
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -237,6 +246,7 @@ jobs:
     name: metal-darwin-arm64
     runs-on: macos-latest
     needs: validate
+    if: needs.validate.outputs.changed == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -266,6 +276,7 @@ jobs:
     name: checksums
     runs-on: ubuntu-latest
     needs: [validate, cuda-legacy, cuda, metal]
+    if: needs.validate.outputs.changed == 'true'
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -284,10 +295,10 @@ jobs:
           name: candle-vllm-release-artifacts
           path: dist/*
 
-      - name: Upload artifacts to release
+      - name: Create tag and upload artifacts to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: v${{ needs.validate.outputs.version }}
           name: candle-vllm v${{ needs.validate.outputs.version }}
           generate_release_notes: true
           files: |
@@ -302,6 +313,7 @@ jobs:
     name: publish-pages
     runs-on: ubuntu-latest
     needs: [validate, checksums]
+    if: needs.validate.outputs.changed == 'true'
     permissions:
       contents: read
       pages: write
@@ -321,7 +333,6 @@ jobs:
         env:
           VERSION: ${{ needs.validate.outputs.version }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
         run: |
           mkdir -p site
           OWNER="$(echo "${REPO}" | cut -d/ -f1)"
@@ -485,9 +496,10 @@ jobs:
           fi
           SCRIPT
 
+          OWNER_LC="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
           sed -i "s|__VERSION__|${VERSION}|g" site/install.sh
           sed -i "s|__REPO__|${REPO}|g" site/install.sh
-          sed -i "s|__OWNER__|${OWNER}|g" site/install.sh
+          sed -i "s|__OWNER__|${OWNER_LC}|g" site/install.sh
           sed -i 's/^          //' site/install.sh
           chmod +x site/install.sh
 
