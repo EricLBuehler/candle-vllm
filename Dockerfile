@@ -25,8 +25,7 @@ RUN set -eux; \
     pkg-config \
     clang \
     libclang-dev \
-    libopenmpi-dev \
-    openmpi-bin; \
+    ; \
   rm -rf /var/lib/apt/lists/*
 
 # Rust (stable) + optional China mirrors (SJTU for crates.io index)

@@ -19,7 +19,7 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - `GPTQ/Marlin` format quantization (4-bit)
 - Support `Mac/Metal` devices
 - Support `Multi-GPU` inference (both `multi-process` and  `multi-threaded` mode)
-- Support `Multi-node` inference with MPI runner
+- Support `Multi-node` inference via TCP-based coordination
 - Support Chunked Prefilling (default chunk size 8K)
 - Support CUDA Graph
 - Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
@@ -111,19 +111,12 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 export PATH=$PATH:/usr/local/cuda/bin/
 ```
 
-Install for single node inference
+Install candle-vllm
 ```shell
 # Remove "flashattn,flashinfer,cutlass" for sm_75 and sm_70
 # Replace `flashinfer` with `flashattn` to use Flash attention backend
 cargo install --features cuda,nccl,flashinfer,cutlass --path .
 ```
-
-Install for multinode inference
-```shell
-# Use MPI (multi-gpus on multiple machines)
-sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
-sudo apt install clang libclang-dev
-cargo install --features cuda,nccl,flashinfer,cutlass,mpi --path .
 ```
 
 **Mac/Metal (single-node only)**
@@ -427,13 +420,11 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
   <details>
     <summary>Show command</summary>
 
-    **1. Install MPI and build with MPI feature**
+    **1. Build with NCCL feature**
     ```shell
     sudo apt update
-    sudo apt install libopenmpi-dev openmpi-bin -y #install mpi
-    sudo apt install clang libclang-dev
-    #clone the repo on the same directory of the two node and build
-    cargo install --features cuda,nccl,mpi #build with mpi feature
+    # Clone the repo on both nodes and build
+    cargo install --features cuda,nccl,flashinfer,cutlass --path .
     ```
 
     **2. Convert AWQ deepseek to Marlin-compatible format**
@@ -441,20 +432,27 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ 
     ```
 
-    **3. Config Multi-node Environment**
+    **3. Requirements**
 
-    MPI Runner requires `identical` hardware and software configurations for all nodes, please ensure weights and candle-vllm binaries located in the identical folders in difference nodes. The the nodes need to be ssh (port 22 in this case) passwordless for each other (root user if `--allow-run-as-root`). `%NET_INTERFACE%` is the active network interface obtained through command 'ifconfig -a'. You may disable InfiniBand if it's not available in the nodes by insert env "-x NCCL_IB_DISABLE=1". Where, `hostfile` can be defined as:
+    Multi-node inference requires `identical` hardware and software configurations on all nodes. Ensure model weights and candle-vllm binaries are located in the same path on every node. NCCL must be able to communicate between nodes (check firewall/network settings). You may disable InfiniBand if it's not available by setting `NCCL_IB_DISABLE=1`.
 
-    Example (two nodes, each with 8 GPUs)
-    ```
-    192.168.1.100 slots=8
-    192.168.1.101 slots=8
-    ```
-
-    **4. Run the model on two nodes with MPI runner**
+    **4. Run the model on two nodes (each with same number of GPUs)**
     ```shell
-    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/
+    # On master node (192.168.1.100):
+    candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ \
+      --num-nodes 2 --node-rank 0 --master-addr 192.168.1.100 --master-port 29500
+
+    # On worker node (192.168.1.101):
+    candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ \
+      --num-nodes 2 --node-rank 1 --master-addr 192.168.1.100 --master-port 29500
     ```
+
+    | Flag | Description |
+    |------|-------------|
+    | `--num-nodes N` | Total number of nodes in the cluster |
+    | `--node-rank R` | This node's rank (0 = master) |
+    | `--master-addr ADDR` | IP address of the master node |
+    | `--master-port PORT` | Port for NCCL ID exchange (default: 29500) |
   </details>
 
 - Run with **NUMA binding**

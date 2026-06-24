@@ -178,6 +178,22 @@ struct Args {
     /// YARN RoPE scaling factor (explicit override, no auto-calculation)
     #[arg(long)]
     yarn_scaling_factor: Option<f64>,
+
+    /// Number of nodes for multi-node tensor parallel inference (default: 1 = single node)
+    #[arg(long, default_value_t = 1)]
+    num_nodes: usize,
+
+    /// Rank of this node (0 = master, 1..num_nodes-1 = workers)
+    #[arg(long, default_value_t = 0)]
+    node_rank: usize,
+
+    /// Master node address for multi-node coordination (e.g. "192.168.1.100")
+    #[arg(long, default_value = "")]
+    master_addr: String,
+
+    /// Master node port for multi-node NCCL ID exchange
+    #[arg(long, default_value_t = 29500)]
+    master_port: u16,
 }
 
 fn config_log(logger: ftail::Ftail, log_enable: bool, log_file: String) -> Result<()> {
@@ -276,8 +292,57 @@ async fn main() -> Result<()> {
         "Error: prefill_chunk_size must be divisible by 1024!"
     );
 
-    let multi_process = if num_shards > 1 {
-        if args.multithread {
+    // Multi-node validation
+    let is_multi_node = args.num_nodes > 1;
+    let master_addr = if is_multi_node && args.node_rank == 0 && args.master_addr.is_empty() {
+        "0.0.0.0".to_string()
+    } else {
+        args.master_addr.clone()
+    };
+    if is_multi_node {
+        assert!(
+            args.node_rank < args.num_nodes,
+            "--node-rank ({}) must be less than --num-nodes ({})",
+            args.node_rank,
+            args.num_nodes
+        );
+        assert!(
+            args.node_rank == 0 || (!master_addr.is_empty() && master_addr != "0.0.0.0"),
+            "--master-addr must be the reachable master node address on worker nodes"
+        );
+        assert!(
+            args.master_port < u16::MAX,
+            "--master-port must be less than 65535 for multi-node coordination"
+        );
+        tracing::info!(
+            "Multi-node mode: {} nodes, this is node {} ({}), master at {}:{}",
+            args.num_nodes,
+            args.node_rank,
+            if args.node_rank == 0 {
+                "master"
+            } else {
+                "worker"
+            },
+            master_addr,
+            args.master_port,
+        );
+        num_shards = local_world_size * args.num_nodes;
+    }
+
+    let multi_node_config = if is_multi_node {
+        Some(candle_vllm::openai::communicator::MultiNodeConfig {
+            num_nodes: args.num_nodes,
+            node_rank: args.node_rank,
+            master_addr: master_addr.clone(),
+            master_port: args.master_port,
+            local_num_gpus: local_world_size,
+        })
+    } else {
+        None
+    };
+
+    let multi_process = if num_shards > 1 || is_multi_node {
+        if args.multithread && !is_multi_node {
             tracing::warn!("The program is forced running under multithread mode (for debug purpose), which may not stable!");
             false
         } else {
@@ -311,7 +376,7 @@ async fn main() -> Result<()> {
     let (pipelines, global_rank, daemon_manager) = if multi_process {
         use candle_vllm::openai::communicator::init_subprocess;
         let (id, local_rank, global_rank, global_world_size, daemon_manager) =
-            init_subprocess(device_ids.clone()).unwrap();
+            init_subprocess(device_ids.clone(), multi_node_config.as_ref()).unwrap();
         num_shards = global_world_size;
         let log_file = format!("candle-vllm-rank-{}.log", global_rank);
         let _ = config_log(logger, args.log, log_file);
