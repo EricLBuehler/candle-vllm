@@ -56,7 +56,6 @@ ftail = "0.2"
 tqdm = "0.8.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 indicatif = "0.17.11"
-mpi = { version = "0.8.0", optional = true}
 parking_lot = "0.12"
 akin = "0.4.0"
 itertools = "0.13.0"
@@ -88,7 +87,6 @@ flashattn = ["attention-rs/flashattn"]
 flashinfer = ["attention-rs/flashinfer"]
 mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl"]
 nccl = ["candle-core/nccl"]
-mpi = ["candle-core/nccl", "dep:mpi"]
 graph = ["flash", "attention-rs/graph", "candle-core/graph"]
 
 [package.metadata.deb]

@@ -19,7 +19,7 @@
 - 支持`GPTQ/Marlin`格式量化（4位）。
 - 支持`Mac/Metal`设备。
 - 支持`多GPU`推理（包括`多进程`和`多线程`模式）。
-- 支持`多节点`推理（使用MPI运行）。
+- 支持`多节点`推理（基于TCP协调）。
 - 支持分块Prefilling (默认块大小8K)
 - 支持CUDA Graph
 - 支持Prefix Caching
@@ -110,18 +110,12 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 export PATH=$PATH:/usr/local/cuda/bin/
 ```
 
-适用于单节点推理
+编译安装Candle-vLLM
 ```shell
 # sm+70/sm_75硬件平台需要去除“flashattn,flashinfer,cutlass”特性
 # 将 `flashinfer` 替换为 `flashattn` 则启用Flash attention后端
 cargo install --features cuda,nccl,flashinfer,cutlass --path .
 ```
-
-适用于多节点推理
-```shell
-sudo apt install git libopenmpi-dev openmpi-bin -y #安装MPI
-sudo apt install clang libclang-dev
-cargo install --features cuda,nccl,flashinfer,cutlass,mpi --path . #同时包含flashinfer与MPI功能
 ```
 
 **Mac/Metal平台**
@@ -419,13 +413,11 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
   <details>
     <summary>显示命令</summary>
 
-    **1. 安装MPI并构建MPI功能**
+    **1. 构建NCCL功能**
     ```shell
     sudo apt update
-    sudo apt install libopenmpi-dev openmpi-bin -y #安装MPI
-    sudo apt install clang libclang-dev
-    #在两个节点的相同目录下克隆仓库并构建
-    cargo install --features cuda,nccl,mpi #构建MPI功能
+    # 在两个节点的相同目录下克隆仓库并构建
+    cargo install --features cuda,nccl,flashinfer,cutlass --path .
     ```
 
     **2. 将AWQ DeepSeek模型转换为Marlin兼容格式**
@@ -433,20 +425,27 @@ docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data cand
     python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ 
     ```
 
-    **3. 配置多节点环境**
+    **3. 环境要求**
 
-    MPI运行器要求所有节点具有`相同的`硬件和软件配置，请确保权重和candle-vllm二进制文件位于不同节点的相同文件夹中。节点之间需要通过SSH（端口22）无密码互相访问（如果是`--allow-run-as-root`则需要root用户）。`%NET_INTERFACE%`是通过命令`ifconfig -a`获取的活动网络接口。如果节点中没有InfiniBand，可以通过插入环境变量`-x NCCL_IB_DISABLE=1`来禁用它。`hostfile`可以定义如下：
+    多节点推理要求所有节点具有`相同的`硬件和软件配置，请确保模型权重和candle-vllm二进制文件位于不同节点的相同路径。NCCL必须能够在节点之间通信（请检查防火墙/网络设置）。如果节点中没有InfiniBand，可以设置环境变量`NCCL_IB_DISABLE=1`来禁用。
 
-    示例（两个节点，每个节点8块GPU）：
-    ```
-    192.168.1.100 slots=8
-    192.168.1.101 slots=8
-    ```
-
-    **4. 使用MPI运行器在两个节点上运行模型**
+    **4. 在两个节点上运行模型（每个节点具有相当数量GPU）**
     ```shell
-    sudo mpirun -np 16 -x RUST_LOG=info -hostfile ./hostfile --allow-run-as-root -bind-to none -map-by slot --mca plm_rsh_args "-p 22" --mca btl_tcp_if_include %NET_INTERFACE% candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/
+    # 在主节点 (192.168.1.100) 上运行:
+    candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ \
+      --num-nodes 2 --node-rank 0 --master-addr 192.168.1.100 --master-port 29500
+
+    # 在工作节点 (192.168.1.101) 上运行:
+    candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ \
+      --num-nodes 2 --node-rank 1 --master-addr 192.168.1.100 --master-port 29500
     ```
+
+    | 参数 | 说明 |
+    |------|------|
+    | `--num-nodes N` | 集群中的节点总数 |
+    | `--node-rank R` | 本节点的排名（0 = 主节点） |
+    | `--master-addr ADDR` | 主节点的IP地址 |
+    | `--master-port PORT` | NCCL ID交换端口（默认：29500） |
   </details>
 
 - 在多核CPU机器上使用 **NUMA绑定**运行模型
