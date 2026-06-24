@@ -2,7 +2,7 @@ use super::streaming::Streamer;
 use crate::openai::sampling_params::Logprobs;
 use axum::extract::Json;
 use axum::http::{self, StatusCode};
-use axum::response::{IntoResponse, Sse};
+use axum::response::{sse::KeepAliveStream, IntoResponse, Sse};
 use derive_more::{Display, Error};
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Display, Error, Serialize)]
@@ -148,7 +148,7 @@ impl JsonError {
 impl ErrorToResponse for JsonError {}
 
 pub enum ChatResponder {
-    Streamer(Sse<Streamer>),
+    Streamer(Sse<KeepAliveStream<Streamer>>),
     Completion(ChatCompletionResponse),
     Embedding(EmbeddingResponse),
     ModelError(APIError),

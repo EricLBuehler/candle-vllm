@@ -159,7 +159,15 @@ cargo install --features metal --path .
 
     `WEB UI`: --ui-server
 
-    where, `--p`: server port; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--kv-fraction` auto-sizes KV cache after model load using `fraction * remaining_gpu_memory - workspace_reserve` (default 0.6); `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--yarn-scaling-factor` manually injects a YaRN RoPE scaling factor such as `4.0` to extend the effective context window for supported models; `--kvcache-dtype` sets KV cache quantization mode (`auto`/`fp8`/`turbo8`/`turbo4`/`turbo3`); `--disable-prefix-cache` disable prefix cache (enabled by default); `--prefix-cache-max-tokens` cap prefix cache size; `--disable-cuda-graph` disable CUDA graph capture (enabled by default on CUDA builds); `--ui-server` start with a built-in ChatGPT-like Web UI sever. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
+    where, `--h`: bind address, default `0.0.0.0`, supporting `host`, `host:port`, `[ipv6]:port`, `tcp://host[:port]`, `file:///path`, `socket:///path`, and `unix:///path`; `--p`: TCP server port used when `--h` does not include a port, default `2000`; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--kv-fraction` auto-sizes KV cache after model load using `fraction * remaining_gpu_memory - workspace_reserve` (default 0.6); `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--yarn-scaling-factor` manually injects a YaRN RoPE scaling factor such as `4.0` to extend the effective context window for supported models; `--kvcache-dtype` sets KV cache quantization mode (`auto`/`fp8`/`turbo8`/`turbo4`/`turbo3`); `--disable-prefix-cache` disable prefix cache (enabled by default); `--prefix-cache-max-tokens` cap prefix cache size; `--disable-cuda-graph` disable CUDA graph capture (enabled by default on CUDA builds); `--ui-server` start with a built-in ChatGPT-like Web UI server. Unix sockets do not support `--ui-server`; for TCP, the UI server uses the API port minus one. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
+
+    Binding examples:
+    ```shell
+    candle-vllm --h 127.0.0.1 --p 8000 --m Qwen/Qwen3.6-27B-FP8
+    candle-vllm --h 127.0.0.1:8000 --m Qwen/Qwen3.6-27B-FP8
+    candle-vllm --h '[::1]:8000' --m Qwen/Qwen3.6-27B-FP8
+    candle-vllm --h unix:///tmp/candle-vllm.sock --m Qwen/Qwen3.6-27B-FP8
+    ```
   </details>
 
 ## 📚 Docs
