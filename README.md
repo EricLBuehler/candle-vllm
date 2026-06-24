@@ -3,22 +3,119 @@
 </p>
 
 <p align="center">
-  <a href="./README.md">English</a> |
-  <a href="./README-CN.md">简体中文</a> |
+  <b>Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.</b><br>
+  <a href="./README.md">English</a> | <a href="./README-CN.md">简体中文</a>
 </p>
 
-Efficient, easy-to-use platform for inference and serving local LLMs including an OpenAI compatible API server.
+---
 
-## Features
-- OpenAI compatible API server provided for serving LLMs.
-- Highly extensible trait-based system to allow rapid implementation of new module pipelines,
-- Streaming support in generation.
-- Efficient management of key-value cache with PagedAttention.
-- Continuous batching (batched decoding for incoming requests over time).
-- `In-situ` quantization (and `In-situ` marlin format conversion)
+## ✨ Why Candle-vLLM?
+
+| | Feature | Details |
+|---|---|---|
+| **⚡** | High Performance | Native Flash Attention, FlashInfer, CUDA Graphs, continuous batching, prefix caching. |
+| **🗜️** | Aggressive KV Compression | TurboQuant (`2–4 bit` KV cache) extends context up to **4.7×** with minimal quality loss |
+| **🌍** | Cross-platform | CUDA (Linux), Metal (macOS). Same codebase, same API |
+| **🏭** | Production-ready | OpenAI-compatible API server, built-in ChatGPT-style Web UI, MCP tool calling, streaming |
+| **📦** | Easy to deploy | One-line install script, Docker images, or build from source |
+| **🔧** | Extensible | Trait-based architecture for rapid implementation of new model pipelines |
+| **🖥️** | Multi-GPU & Multi-Node | Multi-process and multi-threaded tensor parallelism, TCP-based multi-node inference |
+
+---
+
+## 🚀 Quick Start
+
+### 📦 Install
+
+**Option 1 — One-line install (DEB or binary)**
+```bash
+curl -sSL https://ericlbuehler.github.io/candle-vllm/install.sh | bash
+```
+
+**Option 2 — Build from source**
+```bash
+git clone git@github.com:EricLBuehler/candle-vllm.git
+cd candle-vllm
+
+# CUDA (11+, 12+, 13.0) — remove flashinfer,cutlass for sm_70/sm_75
+cargo install --features cuda,nccl,flashinfer,cutlass --path .
+
+# macOS/Metal
+cargo install --features metal --path .
+```
+
+**Option 3 — Docker**
+```bash
+# Pass custom SM version and CUDA version: ./build_docker.sh "cuda,nccl,flashinfer,cutlass" sm_90 13.0.0
+./build_docker.sh "cuda,nccl,flashinfer,cutlass"
+```
+
+---
+
+### ▶️ Run
+
+**Using HuggingFace Model ID:**
+```bash
+candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+```
+
+**Using local model path:**
+```bash
+candle-vllm --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --ui-server
+```
+
+> **Tip:** Add `--ui-server` to launch the built-in ChatGPT-style Web UI. The UI server uses the API port minus one (e.g., API on `2000`, UI on `1999`).
+
+---
+
+## 📈 Performance
+
+> Single-request decode speed (input 4k, output 1k, on `Hopper` 80G)
+
+| # | Model | BF16 (Decode Speed / req) | Quantized |
+|---|---|---|---|
+| 1 | **LLAMA** | 119 tks/s (8B) | 163 tks/s (8B, Q4K), 171 tks/s (8B, **Marlin**) |
+| 2 | **Mistral** | 122 tks/s (7B) | 181 tks/s (7B, Q4K), 190 tks/s (7B, **Marlin**) |
+| 3 | **Phi3/Phi4** | 153 tks/s (3.8B) | 196 tks/s (3.8B, Q4K) |
+| 4 | **QWen2/Qwen3 Dense** | 127 tks/s (8B) | 154 tks/s **(8B, Q4K)** |
+| 5 | **QWen3 MoE** | 102 tks/s **(30B)** | 124 tks/s **(30B, Q4K)** |
+| 6 | **QWen3-Next MoE** | 80 tks/s **(80B, BF16, tp=2)** | TBD |
+| 7 | **QWen3.5/3.6 Dense** | 36 tks/s **(27B, BF16)** | ~49 tks/s **(27B, Q4K / FP8)** |
+| 8 | **QWen3.5/3.6 MoE** | 90 tks/s **(35B)** | 105 tks/s **(35B, Q4K)** |
+| 9 | **Yi** | 168 tks/s (6B) | 199 tks/s (6B, Q4K) |
+| 10 | **StableLM** | 251 tks/s (3B) | - |
+| 11 | **Gemma-2/Gemma-3** | 103 tks/s (9B) | 130 tks/s (9B, **Marlin**) |
+| 12 | **DeepSeek V2/V3/R1** | TBD | ~20 tks **(AWQ 671B, tp=8, offloading)** |
+| 13 | **QwQ-32B** | 51 tks/s **(32B, tp=2)** | 70 tks/s **(32B, Q4K)** |
+| 14 | **GLM4** | 96 tks/s **(9B)** | 139 tks/s **(9B, Q4K)** |
+| 15 | **GLM4.7 Flash** | TBD | 82 tks/s **(31B, Software NVFP4)** |
+| 16 | **LLama4** | TBD | 47 tks/s **(107B, Software NVFP4)** |
+| 17 | **Gemma4** | (26B) 83 tks/s | 82 tks/s **(26B, Software NVFP4)** |
+| 18 | **MiniMax-M2.5/M2.7** | TBD | 72 tks/s **(229B, Software NVFP4, TP=2)** |
+
+<details>
+<summary><b>Demo Video — GPU & Apple Silicon</b></summary>
+
+Chat demo on **GPU** (A100, BF16, QWen3-8B Reasoning Model)
+<img src="res/Qwen3-8B-Reasoning-A100.gif" width="85%" height="85%" >
+
+Chat demo on **Apple Silicon** (M4, 16GB unified memory, Q2K, QWen3-8B)
+<img src="res/Qwen3-8B-Apple-M4.gif" width="85%" height="85%" >
+
+</details>
+
+---
+
+## 🧠 Features
+
+- OpenAI compatible API server for serving LLMs
+- Streaming support in generation
+- Efficient KV cache management with PagedAttention
+- Continuous batching (batched decoding for incoming requests over time)
+- `In-situ` quantization (and `In-situ` Marlin format conversion)
 - `GPTQ/Marlin` format quantization (4-bit)
 - Support `Mac/Metal` devices
-- Support `Multi-GPU` inference (both `multi-process` and  `multi-threaded` mode)
+- Support `Multi-GPU` inference (both `multi-process` and `multi-threaded` mode)
 - Support `Multi-node` inference via TCP-based coordination
 - Support Chunked Prefilling (default chunk size 8K)
 - Support CUDA Graph
@@ -28,750 +125,298 @@ Efficient, easy-to-use platform for inference and serving local LLMs including a
 - Support FP8 KV Cache on all CUDA and Metal platforms
 - Support TurboQuant KV Cache (turbo8/turbo4/turbo3) with native flash attention kernels
 - Support Flashinfer Backend
-- Support manual YaRN RoPE scaling override from the command line via `--yarn-scaling-factor`
+- Support manual YaRN RoPE scaling override via `--yarn-scaling-factor`
 - Support MXFP4/NVFP4 models
 
-## Supported Models
-- Currently, candle-vllm supports chat serving for the following model structures.
-  <details open>
-    <summary>Show supported model architectures</summary>
+---
 
-    | Model ID | Model Type | `BF16` (Decoding Speed / req) | Quantized |
-    |--|--|--|--|
-    | #1 | **LLAMA** |119 tks/s (8B) | 163 tks/s (8B, Q4k), 171 tks/s (8B, **Marlin**) |
-    | #2 | **Mistral** |122 tks/s (7B)| 181 tks/s (7B, Q4k), 190 tks/s (7B, **Marlin**) |
-    | #3 | **Phi3/Phi4** |153 tks/s (3.8B)|196 tks/s (3.8B, Q4k)|
-    | #4 | **QWen2/Qwen3 Dense** |127 tks/s (8B)|154 tks/s **(8B, Q4k)**|
-    | #5 | **QWen3 MoE** |102 tks/s **(30B)**|124 tks/s **(30B, Q4K)** |
-    | #6 | **QWen3-Next MoE** |80 tks/s **(80B, BF16, tp=2)**|TBD|
-    | #7 | **QWen3.5/3.6 Dense** |36 tks/s **(27B, BF16)**|~49 tks/s **(27B, Q4K / FP8)** |
-    | #8 | **QWen3.5/3.6 MoE** |90 tks/s **(35B)**|105 tks/s **(35B, Q4K)** |
-    | #9 | **Yi** |168 tks/s (6B)| 199 tks/s (6B, Q4k)|
-    | #10 | **StableLM** |251 tks/s (3B)|-|
-    | #11 | **Gemma-2/Gemma-3** |103 tks/s (9B)|130 tks/s (9B, **Marlin**)|
-    | #12 | **DeepSeek V2/V3/R1** |TBD|~20 tks **(AWQ 671B, tp=8, offloading)**|
-    | #13 | **QwQ-32B** |51 tks/s **(32B, tp=2)**|70 tks/s **(32B, Q4K)**|
-    | #14 | **GLM4** |96 tks/s **(9B)**|139 tks/s **(9B, Q4K)**|
-    | #15 | **GLM4.7 Flash** |TBD|82 tks/s **(31B, NVFP4)**|
-    | #16 | **LLama4** |TBD|47 tks/s **(107B, NVFP4)**|
-    | #17 | **Gemma4** |(26B) 83 tks/s|82 tks/s **(26B, NVFP4)**|
-    | #18 | **MiniMax-M2.5/M2.7** |TBD|72 tks/s **(229B, NVFP4, TP=2)**|
+## 📘 Usage
 
-_Note: results are decoding speed per request (input 4k, output 1k, on `Hopper` 80G)_
-  </details>
+### Running Models
 
-### Demo Video
-- Nvidia GPU and Apple Silicon
+> **Tip:** By default, candle-vllm starts an OpenAI-compatible API server at `http://localhost:2000`. Add `--ui-server` to also launch the built-in ChatGPT-style Web UI.
 
-  <details>
-    <summary>Show Demo Video</summary>
-    Chat demo on **GPU** (A100, BF16, QWen3-8B Reasoning Model)
-    <img src="res/Qwen3-8B-Reasoning-A100.gif" width="85%" height="85%" >
-
-    Chat demo on **Apple Silicon** (M4 with 16GB unified memory, Q2K, QWen3-8B)
-    <img src="res/Qwen3-8B-Apple-M4.gif" width="85%" height="85%" >
-  </details>
-
-## General Usage
-### Install Candle-vLLM
-
-**Option 1 — One-line install (DEB or binary)**
 ```bash
-curl -sSL https://ericlbuehler.github.io/candle-vllm/install.sh | bash
+# FP8 model + Web UI
+candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+
+# Unquantized Safetensors (multi-GPU)
+candle-vllm --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
+
+# ISQ on-the-fly quantization
+candle-vllm --m Qwen/Qwen3.6-27B --isq q4k
+
+# FP4 Model
+candle-vllm --m GadflyII/GLM-4.7-Flash-NVFP4 --ui-server
+
+# GGUF model
+candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
+
+# Manual YaRN scaling
+candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server
 ```
 
-**Option 2 — Build from source**
+<details open>
+<summary><b>FP8 / FP4 models</b></summary>
 
-Clone code
-```shell
-git clone git@github.com:EricLBuehler/candle-vllm.git
-cd candle-vllm
-```
-
-**CUDA (CUDA 11+, 12+, 13.0)**
- > Option A (Install into docker)
 ```bash
-# Host driver version must >= specified cuda version (default 12.9.0)
-# You may pass custom SM version and CUDA version by adding parameters like "sm_90 13.0.0"
-./build_docker.sh "cuda,nccl,flashinfer,cutlass"
+# FP8 Model (block-wise quant, build with cutlass feature)
+candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+
+# FP8 on MacOS/Metal (Dense)
+candle-vllm --m Qwen/Qwen3-4B-Instruct-2507-FP8 --ui-server
+
+# FP4 Model (MXFP4/NVFP4, MLX quantized format not supported)
+candle-vllm --m GadflyII/GLM-4.7-Flash-NVFP4 --ui-server
+
+# MXFP4
+candle-vllm --m nm-testing/Qwen3-30B-A3B-MXFP4A16 --ui-server
 ```
 
- > Option B (Manual Installation)
+</details>
 
-Install dependencies
-```shell
-sudo apt update
-# Install CUDA toolkit (optional)
-sudo apt install git libssl-dev pkg-config curl -y
-sudo apt install -y cuda-toolkit-12-9 # must <= host driver version
-# Install rust, 1.83.0+ required
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+<details>
+<summary><b>GGUF models</b></summary>
 
-# Make sure the CUDA Toolkit can be found in the system PATH
-export PATH=$PATH:/usr/local/cuda/bin/
+```bash
+# Local path
+candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
+
+# From HuggingFace
+candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
+
+# GGUF on Apple Silicon
+candle-vllm --f /home/qwq-32b-q4_k_m.gguf --ui-server
+candle-vllm --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf --ui-server
 ```
 
-Install candle-vllm
-```shell
-# Remove "flashattn,flashinfer,cutlass" for sm_75 and sm_70
-# Replace `flashinfer` with `flashattn` to use Flash attention backend
-cargo install --features cuda,nccl,flashinfer,cutlass --path .
-```
-```
+</details>
 
-**Mac/Metal (single-node only)**
+<details>
+<summary><b>ISQ (In-situ quantization)</b></summary>
 
-Install [Xcode command line tools](https://mac.install.guide/commandlinetools/)
+Simply add `--isq` parameter when running unquantized models:
 
-Install with `metal` feature
-```shell
-cargo install --features metal --path .
+```bash
+candle-vllm --m Qwen/Qwen3.6-27B --isq q4k
 ```
 
-### Run Directly (Without installation)
+Options: `q4_0`, `q4_1`, `q5_0`, `q5_1`, `q8_0`, `q2k`, `q3k`, `q4k`, `q5k`, `q6k`
 
-- [`ENV_PARAM`] cargo run [`BUILD_PARAM`] -- [`PROGRAM_PARAM`] [`MODEL_ID/MODEL_WEIGHT_PATH`] [`CACHE CONFIG`] [`WEB UI`]
-  <details open>
-    <summary>Show details</summary>
+</details>
 
-    **Example:**
+<details>
+<summary><b>GPTQ / AWQ / Marlin models</b></summary>
 
-    ```shell
-    [RUST_LOG=warn] cargo run [--release --features cuda,nccl,flashinfer,cutlass] -- [--log --dtype bf16 --p 2000 --d 0,1 --kv-fraction 0.6 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0] [--m Qwen/Qwen3.6-27B-FP8] [--kvcache-dtype fp8] [--ui-server]
-    ```
+```bash
+# Marlin-compatible GPTQ (4-bit, 128-group, desc_act=False)
+candle-vllm --m thesven/Llama-3-8B-GPTQ-4bit
 
-    `ENV_PARAM`: RUST_LOG=warn
+# Convert uncompressed model to Marlin-compatible format
+python3 examples/convert_marlin.py --src /home/DeepSeek-R1-Distill-Qwen-14B/ --dst /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
+candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
 
-    `BUILD_PARAM`: --release --features cuda,nccl,flashinfer,cutlass
+# Convert AWQ to Marlin-compatible format
+python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
+candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
 
-    `PROGRAM_PARAM`：--log --dtype bf16 --p 2000 --d 0,1 --kv-fraction 0.6 --isq q4k --prefill-chunk-size 8192 --frequency-penalty 1.1 --presence-penalty 1.1 --enforce-parser qwen_coder --yarn-scaling-factor 4.0
-
-    `MODEL_ID/MODEL_WEIGHT_PATH`: --m Qwen/Qwen3.6-27B-FP8 (or `--w` specify local model path)
-
-    `CACHE CONFIG`: --kvcache-dtype auto/fp8/turbo8/turbo4/turbo3
-
-    `WEB UI`: --ui-server
-
-    where, `--h`: bind address, default `0.0.0.0`, supporting `host`, `host:port`, `[ipv6]:port`, `tcp://host[:port]`, `file:///path`, `socket:///path`, and `unix:///path`; `--p`: TCP server port used when `--h` does not include a port, default `2000`; `--d`: device ids; `--w`: weight path (safetensors folder); `--f`: weight file (for gguf); `--m`: huggingface model-id; `--isq q4k`: convert weights into `q4k` format during model loading; `--prefill-chunk-size` chunk the prefill into size defined in this flag (default 8K, `0` for disable); `--frequency-penalty` and `--presence-penalty` repetition penalty (value from -2.0 to 2.0); `--mem` (`kvcache-mem-gpu`) sets a fixed KV cache budget in MB; `--kv-fraction` auto-sizes KV cache after model load using `fraction * remaining_gpu_memory - workspace_reserve` (default 0.6); `--enforce-parser` forces a specific tool parser backend such as `qwen_coder`, `qwen`, `json`, or `mistral`; `--yarn-scaling-factor` manually injects a YaRN RoPE scaling factor such as `4.0` to extend the effective context window for supported models; `--kvcache-dtype` sets KV cache quantization mode (`auto`/`fp8`/`turbo8`/`turbo4`/`turbo3`); `--disable-prefix-cache` disable prefix cache (enabled by default); `--prefix-cache-max-tokens` cap prefix cache size; `--disable-cuda-graph` disable CUDA graph capture (enabled by default on CUDA builds); `--ui-server` start with a built-in ChatGPT-like Web UI server. Unix sockets do not support `--ui-server`; for TCP, the UI server uses the API port minus one. Replace `flashinfer` in `BUILD_PARAM` with `flashattn` to use the Flash attention backend instead.
-
-    Binding examples:
-    ```shell
-    candle-vllm --h 127.0.0.1 --p 8000 --m Qwen/Qwen3.6-27B-FP8
-    candle-vllm --h 127.0.0.1:8000 --m Qwen/Qwen3.6-27B-FP8
-    candle-vllm --h '[::1]:8000' --m Qwen/Qwen3.6-27B-FP8
-    candle-vllm --h unix:///tmp/candle-vllm.sock --m Qwen/Qwen3.6-27B-FP8
-    ```
-  </details>
-
-## 📚 Docs
-- [Rust Crate Usage](docs/rust_crate.md)
-- [Embedding Model Usage](docs/embedding.md)
-- [MCP & Tool Calling](docs/mcp_tool_calling.md)
-- [Tool Call Parsing](docs/tool_parsing.md)
-- [Prefix Cache](docs/prefix_cache.md)
-- [Multimodal Model Usage](docs/multimodal.md)
-- [Work with xbot](docs/xbot.md)
-- [Work with OpenCode](docs/opencode.md)
-- [Work with Kilo Code](docs/kilocode.md)
-
-## How to serve models?
-
-- **Note:** for docker build, execute the following command to enter docker:
-
-```shell
-docker run --rm -it --gpus all --network host -v /home:/home -v /data:/data candle-vllm:latest bash
+# Direct Marlin-format model
+candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/
 ```
 
-- Run **Uncompressed, FP8 or FP4** models 
-  <details open>
-    <summary>Show command</summary>
+</details>
 
-    **Local Path (with port, device)**
-    ```shell
-    candle-vllm --p 8000 --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
-    ```
+---
 
-    **Local Path (ISQ, +UI Server)**
-    ```shell
-    candle-vllm --p 8000 --d 0 --w /home/Qwen3.6-27B/ --isq q4k --ui-server
-    ```
+### 🗜️ TurboQuant KV Cache
 
-    **Model-ID (download from Huggingface)**
+TurboQuant compresses the KV cache using Walsh-Hadamard transform for higher throughput and longer context:
 
-    ```shell
-    candle-vllm --m Qwen/Qwen3.6-35B-A3B --ui-server
-    ```
+| Mode | Description | KV Cache Compression | Recommended Use |
+|------|-------------|---------------------|-----------------|
+| `turbo8` | FP8 K + 4-bit V | ~2.6x | Best quality-compression trade-off |
+| `turbo4` | 4-bit K + 4-bit V | ~3.7x | Balanced quality and memory savings |
+| `turbo3` | 3-bit K + 4-bit V | ~4.7x | Maximum memory savings |
 
-    **Manual YaRN scaling**
-    ```shell
-    candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server
-    ```
+```bash
+# Turbo4 (4-bit KV cache, ~3.7x compression)
+candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo4
 
-    **FP8 Model** (block-wise quant, build with `cutlass` feature)
-    ```shell
-    candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
-    ```
+# Turbo8 (FP8 K + 4-bit V, ~2.6x compression)
+candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo8
 
-    ```shell
-     # MacOS/Metal (Dense)
-    candle-vllm --m Qwen/Qwen3-4B-Instruct-2507-FP8 --ui-server
-    ```
+# Turbo3 (3-bit K + 4-bit V, ~4.7x compression)
+candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo3
 
-    **FP4 Model** (MXFP4/NVFP4, MLX quantized format not supported)
-    ```shell
-    candle-vllm --m GadflyII-GLM-4.7-Flash-NVFP4 --ui-server
-    ```
+# FP8 KV Cache
+candle-vllm --w /data/Qwen3.5-35B-A3B-FP8/ --kvcache-dtype fp8
+```
 
-    ```shell
-    candle-vllm --m nm-testing/Qwen3-30B-A3B-MXFP4A16 --ui-server
-    ```
-  </details>
+> **Note**: TurboQuant uses native flash attention kernels (flashinfer is automatically disabled). Supported on both CUDA (SM70+) and Metal (Apple Silicon) platforms. MLA models (DeepSeek, GLM4) auto-fallback to standard KV cache as TurboQuant is incompatible with their compressed KV layout.
 
-- **FP8 KV Cache**
-    ```shell
-    cargo run --release --features cuda,nccl,flashinfer,cutlass -- --w /data/Qwen3.5-35B-A3B-FP8/ --kvcache-dtype fp8
-    ```
+---
 
-- **TurboQuant KV Cache** (4-bit/3-bit quantized KV cache with native flash kernels)
+### 🖥️ Multi-GPU Inference
 
-    TurboQuant compresses the KV cache using Walsh-Hadamard transform for higher throughput and longer context:
+<details>
+<summary><b>Multi-process mode (recommended)</b></summary>
 
-    | Mode | Description | KV Cache Compression | Recommended Use |
-    |------|-------------|---------------------|-----------------|
-    | `turbo8` | FP8 K + 4-bit V | ~2.6x | Best quality-compression trade-off |
-    | `turbo4` | 4-bit K + 4-bit V | ~3.7x | Balanced quality and memory savings |
-    | `turbo3` | 3-bit K + 4-bit V | ~4.7x | Maximum memory savings |
+```bash
+# QwQ-32B BF16 on two GPUs
+candle-vllm --d 0,1 --w /home/QwQ-32B/
 
-    ```shell
-    # Turbo4 (4-bit KV cache, ~3.7x compression)
-    candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo4
+# QwQ-32B 4-bit AWQ on two GPUs
+python3 examples/convert_awq_marlin.py --src /home/QwQ-32B-AWQ/ --dst /home/QwQ-32B-AWQ-Marlin/ --bits 4 --method awq --group 128 --nk False
+candle-vllm --d 0,1 --w /home/QwQ-32B-AWQ-Marlin/
+```
 
-    # Turbo8 (FP8 K + 4-bit V, ~2.6x compression)
-    candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo8
+**Note:** Number of GPUs (`--d`) must be a power of 2 (e.g., 2, 4, or 8).
 
-    # Turbo3 (3-bit K + 4-bit V, ~4.7x compression)
-    candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo3
-    ```
+</details>
 
-    > **Note**: TurboQuant uses native flash attention kernels (flashinfer is automatically disabled). Supported on both CUDA (SM70+) and Metal (Apple Silicon) platforms. MLA models (DeepSeek, GLM4) auto-fallback to standard KV cache as TurboQuant is incompatible with their compressed KV layout.
+<details>
+<summary><b>Multi-threaded mode (debug)</b></summary>
 
-- Run **GGUF** models 
-  <details open>
-    <summary>Show command</summary>
+```bash
+# Add --multithread parameter
+candle-vllm --multithread --d 0,1 --w /home/QwQ-32B/
 
-    **Local Path**
+# Troubleshooting
+export NCCL_P2P_DISABLE=1  # disable P2P if encountering illegal memory access
+```
 
-    ```shell
-    candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
-    ```
+</details>
 
-    **Model-ID (download from Huggingface)**
+---
 
-    ```shell
-    candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
-    ```
+### 🌐 Multi-Node Inference
 
-  </details>
+Distribute inference across multiple machines using TCP-based NCCL bootstrap. No MPI required.
 
-- Run **GGUF** models on **Apple Silicon**
-  <details>
-    <summary>Show command</summary>
+```bash
+# On master node (192.168.1.100):
+candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ \
+  --num-nodes 2 --node-rank 0 --master-addr 192.168.1.100 --master-port 29500
 
-    **Local Path (assume model downloaded in /home)**
+# On worker node (192.168.1.101):
+candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ \
+  --num-nodes 2 --node-rank 1 --master-addr 192.168.1.100 --master-port 29500
+```
 
-    ```shell
-    candle-vllm --f /home/qwq-32b-q4_k_m.gguf --ui-server
-    ```
+All nodes must have model weights locally and be TCP-reachable on `--master-port` (default 29500).
 
-    **Model-ID (download from Huggingface)**
+| Flag | Description |
+|------|-------------|
+| `--num-nodes N` | Total number of nodes in the cluster |
+| `--node-rank R` | This node's rank (0 = master) |
+| `--master-addr ADDR` | IP address of the master node |
+| `--master-port PORT` | Port for NCCL ID exchange (default: 29500) |
 
-    ```shell
-    candle-vllm --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf --ui-server
-    ```
+---
 
-  </details>
+### 📐 NUMA Binding
 
-- Run **Any uncompressed models as quantized with in-situ quantization**
-  <details>
-    <summary>Show command</summary>
+<details>
+<summary><b>Show command</b></summary>
 
-    **Simply add `isq` parameter when running unquantized models**
+```bash
+sudo apt-get install numactl
 
-    ```shell
-    candle-vllm --p 2000 --m Qwen/Qwen3.6-27B --isq q4k
-    ```
+# 8 GPUs, 2 NUMA nodes
+MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,3,4,5,6,7 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
 
-    Options for in-site `isq` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
+# 4 GPUs
+MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,3 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
+```
+
+`numactl --cpunodebind=0 --membind=0` specifies the master rank's NUMA binding and must match `MAP_NUMA_NODE`.
+
+</details>
+
+---
+
+## ⚙️ CLI Reference
+
+| Flag | Description |
+|------|-------------|
+| `--h` | Bind address (default `0.0.0.0`). Supports `host`, `host:port`, `[ipv6]:port`, `tcp://host[:port]`, `file:///path`, `socket:///path`, `unix:///path` |
+| `--p` | TCP server port when `--h` does not include a port (default `2000`) |
+| `--d` | Device IDs (e.g. `--d 0,1`) |
+| `--m` | HuggingFace model ID |
+| `--w` | Local weight path (Safetensors folder) |
+| `--f` | Weight file (for GGUF) |
+| `--dtype` | Data type (`bf16`, `f16`) |
+| `--isq` | In-situ quantization: `q4_0`, `q4_1`, `q5_0`, `q5_1`, `q8_0`, `q2k`, `q3k`, `q4k`, `q5k`, `q6k` |
+| `--kvcache-dtype` | KV cache quantization: `auto`, `fp8`, `turbo8`, `turbo4`, `turbo3` |
+| `--kv-fraction` | Auto-size KV cache as fraction of remaining GPU memory (default `0.6`) |
+| `--mem` | Fixed KV cache budget in MB |
+| `--prefill-chunk-size` | Prefill chunk size (default 8K, `0` to disable) |
+| `--max-gen-tokens` | Max output tokens per response (default: 1/5 of max_sequence_len) |
+| `--frequency-penalty` | Frequency penalty (−2.0 to 2.0) |
+| `--presence-penalty` | Presence penalty (−2.0 to 2.0) |
+| `--yarn-scaling-factor` | YaRN RoPE context extension factor |
+| `--enforce-parser` | Force tool parser backend: `qwen_coder`, `qwen`, `json`, `mistral` |
+| `--ui-server` | Start with built-in ChatGPT-like Web UI |
+| `--multithread` | Use multi-threaded mode (debug) |
+| `--num-nodes` | Total nodes in cluster (multi-node) |
+| `--node-rank` | This node's rank (0 = master) |
+| `--master-addr` | Master node IP address |
+| `--master-port` | NCCL ID exchange port (default `29500`) |
+| `--disable-prefix-cache` | Disable prefix caching (enabled by default) |
+| `--prefix-cache-max-tokens` | Cap prefix cache size |
+| `--disable-cuda-graph` | Disable CUDA graph capture (enabled by default on CUDA) |
+
+**Binding examples:**
+```bash
+candle-vllm --h 127.0.0.1 --p 8000 --m Qwen/Qwen3.6-27B-FP8
+candle-vllm --h 127.0.0.1:8000 --m Qwen/Qwen3.6-27B-FP8
+candle-vllm --h '[::1]:8000' --m Qwen/Qwen3.6-27B-FP8
+candle-vllm --h unix:///tmp/candle-vllm.sock --m Qwen/Qwen3.6-27B-FP8
+```
+
+---
+
+## 📚 Documentation
+
+| Guide | Description |
+|---|---|
+| [Rust Crate Usage](docs/rust_crate.md) | Use as a Rust library |
+| [Embedding Models](docs/embedding.md) | Text embedding API |
+| [MCP & Tool Calling](docs/mcp_tool_calling.md) | Model Context Protocol integration |
+| [Tool Call Parsing](docs/tool_parsing.md) | Tool call detection and parsing |
+| [Prefix Cache](docs/prefix_cache.md) | Automatic KV cache reuse |
+| [Multimodal Models](docs/multimodal.md) | Vision-language models |
+
+**Using Agents under Candle-vLLM backend:** [xbot](docs/xbot.md) · [OpenCode](docs/opencode.md) · [Kilo Code](docs/kilocode.md)
+
+---
+
+## 🛠️ Roadmap
+
+* [x] OpenAI-compatible API server (streaming)
+* [x] Continuous batching
+* [x] Flash Attention (CUDA)
+* [x] FlashInfer backend
+* [x] CUDA Graph
+* [x] Chunked Prefill
+* [x] Prefix Caching (CUDA & Metal)
+* [x] Multi-GPU inference (multi-process & multi-threaded)
+* [x] Multi-node tensor parallelism (TCP-based NCCL, no MPI)
+* [x] In-situ quantization (GGML/GGUF + Marlin)
+* [x] FP8 KV Cache (CUDA & Metal, all backends)
+* [x] TurboQuant KV Cache (2–4 bit compression)
+* [x] FP8 Models (block-wise, SM90+)
+* [x] MXFP4/NVFP4 Model Support
+* [x] MCP Integration & Tool Calling
+* [x] Built-in ChatGPT-style Web UI
+
+---
+
+## 📚 References
 
-  </details>
-
-- Run **Marlin-compatible GPTQ models** models (4-bit GPTQ, 128-group, desc_act=False)
-  <details>
-    <summary>Show command</summary>
-
-    **Local Path**
-
-    ```shell
-    candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
-    ```
-
-    **Model-ID (download from Huggingface)**
-
-    ```shell
-    candle-vllm --m thesven/Llama-3-8B-GPTQ-4bit
-    ```
-
-    **Convert Any uncompressed model to marlin-compatible format**
-    ```shell
-    python3 examples/convert_marlin.py --src /home/DeepSeek-R1-Distill-Qwen-14B/ --dst /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
-    candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
-    ```
-
-  </details>
-
-- Run **Marlin-compatible AWQ models** models
-  <details>
-    <summary>Show command</summary>
-
-    **Convert AWQ model to Marlin-compatible format**
-    ```shell
-    python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-    ```
-
-    **Run the converted AWQ model**
-    ```shell
-    candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
-    ```
-
-  </details>
-
-- Run **Marlin-format** models
-  <details>
-    <summary>Show command</summary>
-
-    ```shell
-    candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/
-    ```
-
-  </details>
-
-
-- Run **Large models using multi-process mode (Multi-GPU)**
-  <details>
-    <summary>Show command</summary>
-
-    **QwQ-32B BF16 model on two GPUs**
-    ```shell
-    candle-vllm --d 0,1 --w /home/QwQ-32B/
-    ```
-
-    **QwQ-32B 4-bit AWQ model on two GPUs**
-
-    1) Convert AWQ model to Marlin-compatible format
-    ```shell
-    python3 examples/convert_awq_marlin.py --src /home/QwQ-32B-AWQ/ --dst /home/QwQ-32B-AWQ-Marlin/ --bits 4 --method awq --group 128 --nk False
-    ```
-
-    2) Run the converted AWQ model
-    ```shell
-    candle-vllm --d 0,1 --w /home/QwQ-32B-AWQ-Marlin/
-    ```
-
-    **Note:** number of GPUs (`--d`) used must be aligned to 2^n (e.g., 2, 4, or 8).
-  </details>
-
-- Run **Large models using multi-threaded mode (Multi-GPU, for debug purpose)**
-  <details>
-    <summary>Show command</summary>
-
-    Simply add the `--multithread` parameter
-
-    **QwQ-32B BF16 model on two GPUs**
-    ```shell
-    candle-vllm --multithread --d 0,1 --w /home/QwQ-32B/
-    ```
-
-    If you encountered problems under Multi-threaded Multi-GPU mode, you may:
-    ```shell
-    export NCCL_P2P_DISABLE=1 # disable p2p cause this feature can cause illegal memory access in certain environments
-    ```
-
-  </details>
-
-- Run **DeepSeek-R1 (671B/685B) on Lower GPU Memories (CPU offloading)**
-  <details>
-    <summary>Show command</summary>
-
-    **1. Convert DeepSeek-R1-AWQ model to Marlin-compatible format**
-    ```shell
-    python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ 
-    ```
-
-    **2. Run DeepSeek-R1 model on 8 x A100(40GB)**
-    ```shell
-    candle-vllm --log --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/--num-experts-offload-per-rank 15
-    ```
-
-    **Note:** This setup offloads 15 experts per rank (a total of 120 out of 256 experts) to the CPU (around 150GB additional host memory required). During inference, these offloaded experts are swapped back into GPU memory as needed. If you have even less GPU memory, consider increasing the `--num-experts-offload-per-rank` parameter (up to a maximum of 32 experts per rank in this case).
-
-  </details>
-
-- Run **DeepSeek-R1 (671B/685B) on Multi-node**
-  <details>
-    <summary>Show command</summary>
-
-    **1. Build with NCCL feature**
-    ```shell
-    sudo apt update
-    # Clone the repo on both nodes and build
-    cargo install --features cuda,nccl,flashinfer,cutlass --path .
-    ```
-
-    **2. Convert AWQ deepseek to Marlin-compatible format**
-    ```shell
-    python3 examples/convert_awq_marlin.py --src /data/DeepSeek-R1-AWQ/ --dst /data/DeepSeek-R1-AWQ-Marlin/ 
-    ```
-
-    **3. Requirements**
-
-    Multi-node inference requires `identical` hardware and software configurations on all nodes. Ensure model weights and candle-vllm binaries are located in the same path on every node. NCCL must be able to communicate between nodes (check firewall/network settings). You may disable InfiniBand if it's not available by setting `NCCL_IB_DISABLE=1`.
-
-    **4. Run the model on two nodes (each with same number of GPUs)**
-    ```shell
-    # On master node (192.168.1.100):
-    candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ \
-      --num-nodes 2 --node-rank 0 --master-addr 192.168.1.100 --master-port 29500
-
-    # On worker node (192.168.1.101):
-    candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ \
-      --num-nodes 2 --node-rank 1 --master-addr 192.168.1.100 --master-port 29500
-    ```
-
-    | Flag | Description |
-    |------|-------------|
-    | `--num-nodes N` | Total number of nodes in the cluster |
-    | `--node-rank R` | This node's rank (0 = master) |
-    | `--master-addr ADDR` | IP address of the master node |
-    | `--master-port PORT` | Port for NCCL ID exchange (default: 29500) |
-  </details>
-
-- Run with **NUMA binding**
-  <details>
-    <summary>Show command</summary>
-
-    **Prerequisite**
-    Ensure your machine has more than one NUMA node (i.e., more than one physical CPU), and install numactl:
-    ```shell
-    sudo apt-get install numactl
-    ```
-
-    Suppose your machine has 8 GPUs and 2 NUMA nodes, with each set of 4 GPUs bound to a different NUMA node.
-    To achieve optimal performance during inference using all GPUs, use the following NUMA binding:
-
-    ```shell
-    MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,3,4,5,6,7 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
-    ```
-
-    To use only 4 GPUs, you can apply this NUMA binding:
-    
-    ```shell
-    MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,3 --w /home/data/DeepSeek-V2-Chat-AWQ-Marlin
-    ```
-    *where* `numactl --cpunodebind=0 --membind=0` above indicates NUMA binding for the master rank (master process) which should be matched to `MAP_NUMA_NODE`.
-
-    Note: The exact NUMA binding sequence may vary depending on your hardware configuration.
-  </details>
-
-## How to send request(s) to the backend?
-
-**Run chat frontend after starting the backend service**
-
-Chat frontend (any frontend compatible with openai API, simple options available below):
-
-- **Option 1: Chat with Chat.py (for simple tests)**
-  <details>
-    <summary>Show Option 1</summary>
-    
-    Install API and chatbot dependencies (openai package is only used for local chat with candle-vllm)
-
-    ```shell
-    python3 -m pip install openai rich click
-    ```
-
-    Chat with the mini chatbot (plain text)
-    ```shell
-    python3 examples/chat.py
-    ```
-
-    Pass generation parameters (to reasoning models with `--thinking True`)
-    ```shell
-    python3 examples/chat.py --temperature 0.7 --top_k 64 --top_p 0.9 --thinking True --system_prompt "Thinking big!"
-    ```
-
-    Chat with the mini chatbot (live update with Markdown, may cause flick)
-    ```shell
-    python3 examples/chat.py --live
-    ```
-  <details>
-
-- **Option 2: Chat with naive ChatUI (or popular dify frontend)**
-  <details>
-    <summary>Show Option 2</summary>
-
-    Install naive ChatUI and its dependencies:
-
-    ```
-    git clone git@github.com:guoqingbao/candle-vllm-demo.git
-    cd candle-vllm-demo
-    apt install npm #install npm if needed
-    npm install n -g #update node js if needed
-    n stable #update node js if needed
-    npm i -g pnpm #install pnpm manager
-    pnpm install #install ChatUI dependencies
-    ```
-
-    Launching the ChatUI:
-    ```
-    pnpm run dev # run the ChatUI
-    ```
-
-    **Trouble shooting for Nodejs error**
-    `ENOSPC: System limit for number of file watchers reached`
-    ```
-    echo fs.inotify.max_user_watches=524288 | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
-    ```
-  </details>
-
-- **Option 3: Chat completion request with HTTP post**
-  <details>
-    <summary>Show Option 3</summary>
-
-    ``` shell
-    curl -X POST "http://127.0.0.1:2000/v1/chat/completions" \
-        -H "Content-Type: application/json" \
-        -H "Authorization: Bearer YOUR_API_KEY" \
-        -d '{
-            "model": "llama7b",
-            "messages": [
-                {"role": "user", "content": "Explain how to best learn Rust."}
-            ],
-            "temperature": 0.7,
-            "max_tokens": 128,
-            "stop": {"Single":"</s>"}
-        }'
-    ```
-    Sample response:
-
-    ```
-    {"id":"cmpl-53092967-c9cf-40e0-ae26-d7ac786d59e8","choices":[{"message":{"content":" Learning any programming language requires a combination of theory, practice, and dedication. Here are some steps and resources to help you learn Rust effectively:\n\n1. Start with the basics:\n\t* Understand the syntax and basic structure of Rust programs.\n\t* Learn about variables, data types, loops, and control structures.\n\t* Familiarize yourself with Rust's ownership system and borrowing mechanism.\n2. Read the Rust book:\n\t* The Rust book is an official resource that provides a comprehensive introduction to the language.\n\t* It covers topics such","role":"[INST]"},"finish_reason":"length","index":0,"logprobs":null}],"created":1718784498,"model":"llama7b","object":"chat.completion","usage":{"completion_tokens":129,"prompt_tokens":29,"total_tokens":158}}
-    ```
-  </details>
-
-- **Option 4: Chat completion with with openai package**
-  <details>
-    <summary>Show Option 4</summary>
-
-    In your terminal, install the `openai` Python package by running `pip install openai`. I use version `1.3.5`.
-
-    Then, create a new Python file and write the following code:
-    ```python
-    import openai
-
-    openai.api_key = "EMPTY"
-
-    openai.base_url = "http://localhost:2000/v1/"
-
-    completion = openai.chat.completions.create(
-        model="llama",
-        messages=[
-            {
-                "role": "user",
-                "content": "Explain how to best learn Rust.",
-            },
-        ],
-        max_tokens = 64,
-    )
-    print(completion.choices[0].message.content)
-    ```
-    After the `candle-vllm` service is running, run the Python script and enjoy efficient inference with an OpenAI compatible API server!
-
-
-    **Batched requests**
-
-    Install openai API first
-    ```
-    python3 -m pip install openai
-    ```
-
-    Run the benchmark test
-    ``` shell
-    python3 examples/benchmark.py --batch 16 --max_tokens 1024
-    ```
-    Refer to `examples/benchmark.py`
-
-    ``` python
-    async def benchmark():
-        model = "mistral7b"
-        max_tokens = 1024
-        # 16 requests
-        prompts = ["Explain how to best learn Rust.", 
-                "Please talk about deep learning in 100 words.", 
-                "Do you know the capital city of China? Talk the details of you known.", 
-                "Who is the best female actor in the world? Explain why.",
-                "How to dealing with depression?",
-                "How to make money in short time?",
-                "What is the future trend of large language model?",
-                "The famous tech companies in the world.",
-                "Explain how to best learn Rust.", 
-                "Please talk about deep learning in 100 words.", 
-                "Do you know the capital city of China? Talk the details of you known.", 
-                "Who is the best female actor in the world? Explain why.",
-                "How to dealing with depression?",
-                "How to make money in short time?",
-                "What is the future trend of large language model?",
-                "The famous tech companies in the world."]
-        
-        # send 16 chat requests at the same time
-        tasks: List[asyncio.Task] = []
-        for i in range(len(prompts)):
-            tasks.append(
-                asyncio.create_task(
-                    chat_completion(model, max_tokens, prompts[i]))
-            )
-
-        # obtain the corresponding stream object for each request
-        outputs: List[Stream[ChatCompletionChunk]] = await asyncio.gather(*tasks)
-
-        # tasks for streaming chat responses
-        tasks_stream: List[asyncio.Task] = []
-        for i in range(len(outputs)):
-            tasks_stream.append(
-                asyncio.create_task(
-                    stream_response(i, outputs[i]))
-            )
-
-        # gathering the response texts
-        outputs: List[(int, str)] = await asyncio.gather(*tasks_stream)
-
-        # print the results, you may find chat completion statistics in the backend server (i.e., candle-vllm)
-        for idx, output in outputs:
-            print("\n\n Response {}: \n\n {}".format(idx, output))
-
-    asyncio.run(benchmark())
-    ```
-  </details>
-
-## In-situ quantization
-- **Loading unquantized models as gguf quantized or marlin format**
-  <details>
-    <summary>Show quantization config</summary>
-
-    Candle-vllm supports in-situ quantization, allowing the transformation of default weights (F32/F16/BF16) into any GGML/GGUF format, or `4-bit GPTQ/AWQ` weights into `marlin format` during model loading. This feature helps conserve GPU memory and speedup inference performance, making it more efficient for consumer-grade GPUs (e.g., RTX 4090). To use this feature, simply supply the `isq` parameter when running candle-vllm.
-
-    **For unquantized models:**
-
-    ```
-    candle-vllm --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
-    ```
-
-    Options for `isq` parameters: ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k"]
-
-    **For quantized 4-bit GPTQ model:**
-
-    ```
-    candle-vllm --p 2000 --w /home/mistral_7b-int4/
-    ```
-
-    **Please note for marlin**:
-
-    1) It may takes few minutes to load F32/F16/BF16 models into quantized;
-
-    2) Marlin format in-situ conversion only support 4-bit GPTQ (with `sym=True`, `groupsize=128` or -1, `desc_act=False`) and 4-bit AWQ (after conversion using the given script, refer to `Other Usage`);
-
-    3) Marlin format only supported in CUDA platform.
-  </details>
-
-## Other Usage
-- KV Cache config, sampling parameter, etc.
-  <details>
-    <summary>Show details</summary>
-    The `--mem` (`kvcache-mem-gpu`) parameter sets a fixed KV cache budget in MB. By default this is `4096` MB.
-
-    The `--kv-fraction` parameter is a lighter-weight auto mode. When omitted, it defaults to `0.6`. After the model finishes loading, candle-vllm probes each loaded CUDA or Metal device and computes the KV cache budget as:
-
-    ```
-    cache_budget = kv_fraction * remaining_gpu_memory - workspace_reserve
-    ```
-
-    The workspace reserve is a model-aware estimate of GPU memory needed for runtime buffers (FlashInfer workspace, CUTLASS workspace, MoE activation pools, flash split-K buffers, and transient activations). This reserve is computed automatically from model config and compile features, ensuring the KV cache allocation does not compete with runtime workspace memory. The minimum detected budget across ranks is used as the KV cache budget per rank. For example:
-
-    ```
-    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --d 0,1 --kv-fraction 0.6
-    ```
-
-    Use `--mem` when you want an explicit fixed budget. Use `--kv-fraction` when you want the server to adapt to the currently available GPU memory after model load.
-
-    The `--enforce-parser` parameter forces a specific tool-calling parser backend instead of the model-based default selection. This is useful when a model is compatible with a parser but does not get auto-detected correctly. Common values are `qwen_coder`, `qwen`, `json`, and `mistral`. For example:
-
-    ```
-    candle-vllm --w /home/Qwen3-Coder-30B-A3B-Instruct-FP8 --enforce-parser qwen_coder
-    ```
-
-    Invalid parser names are rejected at startup.
-
-    For chat history settings, set `record_conversation` to `true` to let candle-vllm remember chat history. By `default`, candle-vllm `does not` record chat history; instead, the client sends both the messages and the contextual history to candle-vllm. If record_conversation is set to `true`, the client sends only new chat messages to candle-vllm, and candle-vllm is responsible for recording the previous chat messages. However, this approach requires per-session chat recording, which is not yet implemented, so the default approach `record_conversation=false` is recommended.
-
-    For chat streaming, the `stream` flag in chat request need to be set to `True`.
-
-    ```
-    candle-vllm --p 2000 --w /home/mistral_7b/
-    ```
-
-    `--max-gen-tokens` parameter is used to control the maximum output tokens per chat response. The value will be set to 1/5 of max_sequence_len by default.
-
-    For `consumer GPUs`, it is suggested to run the models under GGML formats (or Marlin format), e.g.,
-
-    ```
-    candle-vllm --p 2000 --w /home/Meta-Llama-3.1-8B-Instruct/ --isq q4k
-    ```
-
-    where `isq` is one of ["q4_0", "q4_1", "q5_0", "q5_1", "q8_0", "q2k", "q3k","q4k","q5k","q6k", "awq", "gptq", "marlin", "gguf", "ggml"].
-  </details>
-
-
-- **Use Marlin kernel to speedup GPTQ/AWQ models**
-  <details>
-    <summary>Show details</summary>
-
-    Candle-vllm now supports GPTQ/AWQ Marlin kernel, you can run these models directly, such as:
-
-    ```shell
-    candle-vllm --dtype f16 --w /home/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4-Marlin/
-    ```
-
-    or, convert existing AWQ 4bit model to marlin compatible format
-
-    ```shell
-    python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
-    candle-vllm --dtype f16 --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
-    ```
-
-    You may also use `GPTQModel` to transform a model to marlin-compatible format using the given script `examples/convert_marlin.py`. 
-
-    **Note:** for using Marlin fast kernel, only 4-bit GPTQ quantization supported at the moment. 
-  </details>
-
-## Report issue
-Installing `candle-vllm` is as simple as the following steps. If you have any problems, please create an
-[issue](https://github.com/EricLBuehler/candle-vllm/issues).
-
-
-## Contributing
-The following features are planned to be implemented, but contributions are especially welcome:
-- Sampling methods:
-  - Beam search ([huggingface/candle#1319](https://github.com/huggingface/candle/issues/1319))
-- More pipelines (from `candle-transformers`)
-
-## Resources
 - Python implementation: [`vllm-project`](https://github.com/vllm-project/vllm)
 - [`vllm` paper](https://arxiv.org/abs/2309.06180)
+
+## Report Issue
+
+If you encounter any problems, please create an [issue](https://github.com/EricLBuehler/candle-vllm/issues).
