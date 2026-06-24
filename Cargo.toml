@@ -13,7 +13,7 @@ name = "candle-vllm"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.7.4", features = ["tokio"] }
+axum = { version = "0.8.9", features = ["tokio"] }
 utoipa = { version = "4.2", features = ["axum_extras"] }
 tower-http = { version = "0.6.6", features = ["cors"]}
 flume = "0.10.14"

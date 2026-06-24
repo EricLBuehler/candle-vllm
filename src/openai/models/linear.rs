@@ -495,14 +495,6 @@ impl QLinear {
             .unwrap_or(false))
     }
 
-    fn local_last_dim(in_dim: usize, shards: Shard) -> usize {
-        if shards.world_size > 1 && shards.dim == 1 {
-            in_dim / shards.world_size
-        } else {
-            in_dim
-        }
-    }
-
     pub fn new<R: std::io::Read + std::io::Seek>(
         ct: &gguf_file::Content,
         r: &mut R,

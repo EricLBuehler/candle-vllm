@@ -1,3 +1,5 @@
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use candle_core::quantized::gguf_file;
@@ -17,7 +19,12 @@ pub(crate) fn get_created_time_secs() -> u64 {
 /// model weights.  Prints a user-friendly error and exits the process when the
 /// port is occupied.
 pub fn ensure_port_free(host: &str, port: u16) {
-    let addr = format!("{host}:{port}");
+    let addr = (host, port)
+        .to_socket_addrs()
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| format!("{host}:{port}"));
     match std::net::TcpListener::bind(&addr) {
         Ok(_listener) => { /* port is free; drop the listener immediately */ }
         Err(e) => {
@@ -27,6 +34,155 @@ pub fn ensure_port_free(host: &str, port: u16) {
             );
             std::process::exit(1);
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ServerBindAddr {
+    Tcp(SocketAddr),
+    Unix(PathBuf),
+}
+
+pub enum ApiListener {
+    Tcp(tokio::net::TcpListener),
+    Unix(tokio::net::UnixListener),
+}
+
+fn tcp_authority_has_port(authority: &str) -> bool {
+    if authority.starts_with('[') {
+        return authority
+            .rsplit_once("]:")
+            .is_some_and(|(_, port)| port.parse::<u16>().is_ok());
+    }
+
+    if authority.matches(':').count() != 1 {
+        return false;
+    }
+
+    let Some((host, port)) = authority.rsplit_once(':') else {
+        return false;
+    };
+    !host.is_empty() && port.parse::<u16>().is_ok()
+}
+
+fn tcp_host_without_port(authority: &str) -> &str {
+    authority
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(authority)
+}
+
+pub fn resolve_server_bind_addr(host: &str, port: u16) -> Result<ServerBindAddr> {
+    for prefix in ["file://", "socket://", "unix://"] {
+        if let Some(path) = host.strip_prefix(prefix) {
+            if path.is_empty() {
+                candle_core::bail!("Unix socket path cannot be empty.");
+            }
+            return Ok(ServerBindAddr::Unix(PathBuf::from(path)));
+        }
+    }
+
+    let authority = host
+        .strip_prefix("tcp://")
+        .or_else(|| host.strip_prefix("http://"))
+        .unwrap_or(host);
+
+    let sock_addr = if tcp_authority_has_port(authority) {
+        authority
+            .to_socket_addrs()
+            .map_err(|e| candle_core::Error::msg(format!("Failed to resolve {authority}: {e}")))?
+            .next()
+    } else {
+        let host = tcp_host_without_port(authority);
+        (host, port)
+            .to_socket_addrs()
+            .map_err(|e| candle_core::Error::msg(format!("Failed to resolve {authority}: {e}")))?
+            .next()
+    }
+    .ok_or_else(|| candle_core::Error::msg(format!("No addresses resolved for {authority}")))?;
+
+    Ok(ServerBindAddr::Tcp(sock_addr))
+}
+
+fn ensure_unix_socket_available(path: &Path) -> Result<()> {
+    let listener = std::os::unix::net::UnixListener::bind(path).map_err(|e| {
+        candle_core::Error::msg(format!(
+            "Unix socket {} is not available ({e}).",
+            path.display()
+        ))
+    })?;
+    drop(listener);
+    std::fs::remove_file(path).map_err(|e| {
+        candle_core::Error::msg(format!(
+            "Failed to clean up temporary Unix socket check at {} ({e}).",
+            path.display()
+        ))
+    })
+}
+
+pub fn ensure_server_bindings_or_exit(addr: &ServerBindAddr, with_ui_server: bool) -> Result<()> {
+    match addr {
+        ServerBindAddr::Tcp(sock_addr) => {
+            ensure_port_free(&sock_addr.ip().to_string(), sock_addr.port());
+        }
+        ServerBindAddr::Unix(path) => {
+            if with_ui_server {
+                candle_core::bail!("--ui-server is not supported with Unix sockets.");
+            }
+            ensure_unix_socket_available(path)?;
+        }
+    }
+
+    if with_ui_server {
+        let ServerBindAddr::Tcp(sock_addr) = addr else {
+            candle_core::bail!("--ui-server is not supported with Unix sockets.");
+        };
+        let ui_port = sock_addr.port().checked_sub(1).ok_or_else(|| {
+            candle_core::Error::msg(
+                "Cannot start UI server because API port 0 has no preceding UI port.",
+            )
+        })?;
+        ensure_port_free("0.0.0.0", ui_port);
+    }
+
+    Ok(())
+}
+
+pub fn bind_addr_for_rank(addr: &ServerBindAddr, global_rank: usize) -> ServerBindAddr {
+    match addr {
+        // Non-zero ranks still bind a distinct local endpoint, matching the
+        // previous `port += global_rank` behavior while also supporting Unix sockets.
+        ServerBindAddr::Tcp(sock_addr) if global_rank > 0 => ServerBindAddr::Tcp(SocketAddr::new(
+            sock_addr.ip(),
+            sock_addr.port().saturating_add(global_rank as u16),
+        )),
+        ServerBindAddr::Unix(path) if global_rank > 0 => ServerBindAddr::Unix(PathBuf::from(
+            format!("{}.rank{}", path.display(), global_rank),
+        )),
+        _ => addr.clone(),
+    }
+}
+
+pub fn tcp_api_url(addr: SocketAddr) -> String {
+    format!("http://{addr}/v1/")
+}
+
+pub async fn bind_api_listener(addr: &ServerBindAddr) -> Result<ApiListener> {
+    match addr {
+        ServerBindAddr::Tcp(sock_addr) => tokio::net::TcpListener::bind(sock_addr)
+            .await
+            .map(ApiListener::Tcp)
+            .map_err(|e| {
+                candle_core::Error::msg(format!("Failed to bind API server to {sock_addr}: {e}"))
+            }),
+        ServerBindAddr::Unix(path) => tokio::net::UnixListener::bind(path)
+            .map(ApiListener::Unix)
+            .map_err(|e| {
+                candle_core::Error::msg(format!(
+                    "Failed to bind API server to {}: {e}",
+                    path.display()
+                ))
+            }),
     }
 }
 

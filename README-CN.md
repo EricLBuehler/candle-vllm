@@ -157,7 +157,15 @@ cargo install --features metal --path .
 
     `WEB UI`: --ui-server
 
-    其中，`--p`: 服务端口; `--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--kv-fraction` 会在模型加载完成后按 `fraction * 剩余显存 - 工作空间预留` 自动计算 KV Cache 大小（默认 0.6）；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--yarn-scaling-factor` 用于手动注入 YaRN RoPE 缩放因子，例如 `4.0`，以在支持的模型上扩展有效上下文长度；`--kvcache-dtype` 设置 KV Cache 量化模式（`auto`/`fp8`/`turbo8`/`turbo4`/`turbo3`）；`--disable-prefix-cache` 禁用前缀缓存（默认开启）；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--disable-cuda-graph` 禁用 CUDA Graph 捕获（CUDA 构建默认开启）；`--ui-server` 启动内置 Web UI。若要使用 Flash attention 后端，可将示例中的 `flashinfer` 替换为 `flashattn`。
+    其中，`--h`: 绑定地址，默认 `0.0.0.0`，支持 `host`、`host:port`、`[ipv6]:port`、`tcp://host[:port]`、`file:///path`、`socket:///path`、`unix:///path`；`--p`: 当 `--h` 未包含端口时使用的 TCP 服务端口，默认 `2000`；`--d`: 设备序列号; `--w`: 权重路径 (safetensors路径); `--f`: 权重文件 (GGUF模型使用); `--m`: Huggingface model-id; `--isq`将权重在加载过程中量化为`q4k`格式；`--prefill-chunk-size`指定分块prefill时的块大小（默认8K，`0`为禁用），`--frequency-penalty`和`--presence-penalty`为重复输出惩罚项 (取值-2.0到2.0)；`--mem` (`kvcache-mem-gpu`) 用于以 MB 为单位设置固定 KV Cache 预算；`--kv-fraction` 会在模型加载完成后按 `fraction * 剩余显存 - 工作空间预留` 自动计算 KV Cache 大小（默认 0.6）；`--enforce-parser` 用于强制指定 tool calling 解析器后端，例如 `qwen_coder`、`qwen`、`json` 或 `mistral`；`--yarn-scaling-factor` 用于手动注入 YaRN RoPE 缩放因子，例如 `4.0`，以在支持的模型上扩展有效上下文长度；`--kvcache-dtype` 设置 KV Cache 量化模式（`auto`/`fp8`/`turbo8`/`turbo4`/`turbo3`）；`--disable-prefix-cache` 禁用前缀缓存（默认开启）；`--prefix-cache-max-tokens` 限制前缀缓存大小；`--disable-cuda-graph` 禁用 CUDA Graph 捕获（CUDA 构建默认开启）；`--ui-server` 启动内置 Web UI。Unix socket 不支持 `--ui-server`；TCP 模式下 UI server 使用 API 端口减 1。若要使用 Flash attention 后端，可将示例中的 `flashinfer` 替换为 `flashattn`。
+
+    绑定示例：
+    ```shell
+    candle-vllm --h 127.0.0.1 --p 8000 --m Qwen/Qwen3.6-27B-FP8
+    candle-vllm --h 127.0.0.1:8000 --m Qwen/Qwen3.6-27B-FP8
+    candle-vllm --h '[::1]:8000' --m Qwen/Qwen3.6-27B-FP8
+    candle-vllm --h unix:///tmp/candle-vllm.sock --m Qwen/Qwen3.6-27B-FP8
+    ```
   </details>
 
 ## 📚 文档
