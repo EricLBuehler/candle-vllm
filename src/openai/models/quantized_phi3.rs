@@ -1,10 +1,13 @@
+use super::layers::quantized_var_builder::VarBuilder as QVarBuilder;
 use super::rotary_emb::ScalingRotaryEmbedding;
 use super::Config;
 use super::KvCacheDtype;
 use crate::backend::progress::{ProgressLike, ProgressReporter};
+#[cfg(feature = "nccl")]
+use crate::openai::distributed::AllReduce;
+use crate::openai::distributed::{Comm, Rc, VocabParallelLinear};
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::{InputMetadata, PagedAttention};
-use candle_core::quantized::gguf_file;
 use candle_core::quantized::QTensor;
 use candle_core::{DType, Device, Module, Result, Tensor, D};
 use candle_nn::{Embedding, RmsNorm};
@@ -19,14 +22,22 @@ struct QLinear {
 }
 
 impl QLinear {
-    fn new<R: std::io::Read + std::io::Seek>(
-        ct: &gguf_file::Content,
-        r: &mut R,
+    fn new(vb: &QVarBuilder, name: &str) -> Result<Self> {
+        let w = vb.get_no_shape(&format!("{name}.weight"))?;
+        let inner = candle_core::quantized::QMatMul::from_arc(w)?;
+        Ok(Self { inner })
+    }
+
+    fn new_sharded(
+        vb: &QVarBuilder,
         name: &str,
-        device: &Device,
+        _device: &Device,
+        dim: usize,
+        rank: usize,
+        world_size: usize,
     ) -> Result<Self> {
-        let w = ct.tensor(r, &format!("{name}.weight"), device)?;
-        let inner = candle_core::quantized::QMatMul::from_qtensor(w)?;
+        let w = vb.get_sharded_no_shape(&format!("{name}.weight"), dim, rank, world_size)?;
+        let inner = candle_core::quantized::QMatMul::from_arc(w)?;
         Ok(Self { inner })
     }
 }
@@ -37,24 +48,34 @@ impl Module for QLinear {
     }
 }
 
-#[derive(Debug, Clone)]
 struct Mlp {
     ffn_up: QLinear,
     ffn_down: QLinear,
     i_size: usize,
+    #[cfg(feature = "nccl")]
+    all_reduce: Option<AllReduce>,
+    #[cfg(feature = "nccl")]
+    dtype: DType,
 }
 
-impl Module for Mlp {
+impl Mlp {
+    #[allow(unused_mut)]
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let up_states = xs.apply(&self.ffn_up)?;
         let gate = up_states.narrow(D::Minus1, 0, self.i_size)?;
         let up_states = up_states.narrow(D::Minus1, self.i_size, self.i_size)?;
-        let up_states = (up_states * gate.silu()?)?;
-        up_states.apply(&self.ffn_down)
+        let mut y = (up_states * gate.silu()?)?;
+        y = y.apply(&self.ffn_down)?;
+        #[cfg(feature = "nccl")]
+        if let Some(all_reduce) = &self.all_reduce {
+            y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
+            y = y.to_dtype(DType::F32)?;
+        }
+        Ok(y)
     }
 }
 
-fn rms_norm(w: QTensor, eps: f64) -> Result<RmsNorm> {
+fn rms_norm(w: Arc<QTensor>, eps: f64) -> Result<RmsNorm> {
     let w = w.dequantize(&w.device())?;
     let rms = RmsNorm::new(w, eps);
     Ok(rms)
@@ -72,9 +93,12 @@ struct LayerWeights {
     attn: PagedAttention,
     rotary_emb: Arc<ScalingRotaryEmbedding>,
     dtype: DType,
+    #[cfg(feature = "nccl")]
+    all_reduce: Option<AllReduce>,
 }
 
 impl LayerWeights {
+    #[allow(unused_mut)]
     fn forward_attn(
         &self,
         x: &Tensor,
@@ -128,7 +152,12 @@ impl LayerWeights {
             )?
             .reshape((seq_len, ()))?;
 
-        let y = self.attn_output.forward(&y.to_dtype(x.dtype())?)?;
+        let mut y = self.attn_output.forward(&y.to_dtype(x.dtype())?)?;
+        #[cfg(feature = "nccl")]
+        if let Some(all_reduce) = &self.all_reduce {
+            y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
+            y = y.to_dtype(DType::F32)?;
+        }
         Ok(y)
     }
 }
@@ -137,7 +166,7 @@ pub struct GGUFPhi3 {
     tok_embeddings: Embedding,
     layers: Vec<LayerWeights>,
     output_norm: RmsNorm,
-    output: QLinear,
+    output: VocabParallelLinear,
     cfg: Config,
     dtype: DType,
     device: Device,
@@ -196,16 +225,20 @@ impl GGUFPhi3 {
         }
     }
 
-    pub fn from_gguf<R: std::io::Seek + std::io::Read>(
-        ct: &gguf_file::Content,
-        reader: &mut R,
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_gguf(
+        vb: &QVarBuilder,
         device: &Device,
         dtype: DType,
         kv_cache_dtype: DType,
         yarn_scaling_factor: Option<f64>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
+        rank: usize,
+        world_size: usize,
+        #[allow(unused_variables)] comm: Rc<Comm>,
     ) -> Result<Self> {
-        let md_get = |s: &str| match ct.metadata.get(s) {
+        let metadata = vb.first_content_metadata();
+        let md_get = |s: &str| match metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
             Some(v) => Ok(v),
         };
@@ -233,10 +266,22 @@ impl GGUFPhi3 {
         let rope_freq_base = md_get(format!("{arch}.rope.freq_base").as_str())
             .and_then(|m| m.to_f32())
             .unwrap_or(10000f32);
-        let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
+        let tok_embeddings = vb.get_no_shape("token_embd.weight")?;
+        let vocab_size = tok_embeddings.shape().dims()[0];
         let tok_embeddings = tok_embeddings.dequantize(device)?;
-        let output_norm = rms_norm(ct.tensor(reader, "output_norm.weight", device)?, rms_eps)?;
-        let output = QLinear::new(ct, reader, "output", device)?;
+        let output_norm = rms_norm(vb.get_no_shape("output_norm.weight")?, rms_eps)?;
+        let output_tensor_name = if vb.contains_key("output.weight") {
+            "output.weight"
+        } else {
+            "token_embd.weight"
+        };
+        let output = VocabParallelLinear::load_from_gguf(
+            vb,
+            output_tensor_name,
+            vocab_size,
+            comm.clone(),
+            dtype,
+        )?;
 
         let original_max_position_embeddings =
             md_get(format!("{arch}.rope.scaling.original_context_length").as_str());
@@ -274,38 +319,59 @@ impl GGUFPhi3 {
         cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 
+        let n_head = head_count / world_size;
+        let n_kv_head = if head_count_kv >= world_size {
+            head_count_kv / world_size
+        } else {
+            head_count_kv
+        };
+        let local_i_size = i_size / world_size;
+
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {
             let prefix = format!("blk.{layer_idx}");
-            let ffn_up = QLinear::new(ct, reader, &format!("{prefix}.ffn_up"), device)?;
-            let ffn_down = QLinear::new(ct, reader, &format!("{prefix}.ffn_down"), device)?;
+            let prefix_vb = vb.pp(&prefix);
+            let ffn_up = QLinear::new_sharded(&prefix_vb, "ffn_up", device, 0, rank, world_size)?;
+            let ffn_down =
+                QLinear::new_sharded(&prefix_vb, "ffn_down", device, 1, rank, world_size)?;
             let mlp = Mlp {
                 ffn_up,
                 ffn_down,
-                i_size,
+                i_size: local_i_size,
+                #[cfg(feature = "nccl")]
+                all_reduce: if world_size > 1 {
+                    Some(AllReduce::new(comm.clone()))
+                } else {
+                    None
+                },
+                #[cfg(feature = "nccl")]
+                dtype,
             };
-            let attn_norm = rms_norm(
-                ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?,
-                rms_eps,
-            )?;
-            let ffn_norm = rms_norm(
-                ct.tensor(reader, &format!("{prefix}.ffn_norm.weight"), device)?,
-                rms_eps,
-            )?;
+            let attn_norm = rms_norm(prefix_vb.get_no_shape("attn_norm.weight")?, rms_eps)?;
+            let ffn_norm = rms_norm(prefix_vb.get_no_shape("ffn_norm.weight")?, rms_eps)?;
             layers.push(LayerWeights {
-                attn_qkv: QLinear::new(ct, reader, &format!("{prefix}.attn_qkv"), device)?,
-                attn_output: QLinear::new(ct, reader, &format!("{prefix}.attn_output"), device)?,
+                attn_qkv: QLinear::new_sharded(
+                    &prefix_vb, "attn_qkv", device, 0, rank, world_size,
+                )?,
+                attn_output: QLinear::new_sharded(
+                    &prefix_vb,
+                    "attn_output",
+                    device,
+                    1,
+                    rank,
+                    world_size,
+                )?,
                 attn_norm,
                 ffn_norm,
                 mlp,
-                n_head: head_count,
-                n_kv_head: head_count_kv,
+                n_head,
+                n_kv_head,
                 head_dim,
                 attn: PagedAttention::new(
-                    head_count,
+                    n_head,
                     head_dim,
                     1. / ((head_dim as f32).sqrt()),
-                    Some(head_count_kv),
+                    Some(n_kv_head),
                     None,
                     device.clone(),
                     None,
@@ -313,6 +379,12 @@ impl GGUFPhi3 {
                 )?,
                 rotary_emb: rotary_emb.clone(),
                 dtype,
+                #[cfg(feature = "nccl")]
+                all_reduce: if world_size > 1 {
+                    Some(AllReduce::new(comm.clone()))
+                } else {
+                    None
+                },
             });
             reporter.write().set_progress(layer_idx + 1);
         }

@@ -1,11 +1,15 @@
+use super::layers::quantized_var_builder::VarBuilder as QVarBuilder;
 use super::rotary_emb::ScalingRotaryEmbedding;
 use super::{attention::QuantizedAttention, Config, KvCacheDtype, MoEConfig, QwenMoEConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
+#[cfg(feature = "nccl")]
+use crate::openai::distributed::AllReduce;
+use crate::openai::distributed::{Comm, Rc, VocabParallelLinear};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::linear::Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::InputMetadata;
-use candle_core::quantized::{gguf_file, QMatMul};
+use candle_core::quantized::{QMatMul, QTensor};
 use candle_core::{DType, Device, Result, Tensor, D};
 use candle_nn::{Embedding, Module};
 use either::Either;
@@ -13,65 +17,122 @@ use parking_lot::RwLock;
 use std::iter::zip;
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
 struct Mlp {
     feed_forward_w1: QMatMul,
     feed_forward_w2: QMatMul,
     feed_forward_w3: QMatMul,
+    #[cfg(feature = "nccl")]
+    all_reduce: Option<AllReduce>,
+    #[cfg(feature = "nccl")]
+    dtype: DType,
 }
 
-impl Module for Mlp {
+impl Mlp {
+    #[allow(unused_mut)]
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let w1 = self.feed_forward_w1.forward(xs)?;
         let w3 = self.feed_forward_w3.forward(xs)?;
-        self.feed_forward_w2
-            .forward(&(candle_nn::ops::silu(&w1)? * w3)?)
+        let mut y = self
+            .feed_forward_w2
+            .forward(&(candle_nn::ops::silu(&w1)? * w3)?)?;
+        #[cfg(feature = "nccl")]
+        if let Some(all_reduce) = &self.all_reduce {
+            y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
+            y = y.to_dtype(DType::F32)?;
+        }
+        Ok(y)
     }
 }
 
 struct FusedMoe {
     gate: QMatMul,
-    gate_experts: QMatMul,
-    up_experts: QMatMul,
-    down_experts: QMatMul,
+    gate_experts: Arc<QTensor>,
+    up_experts: Arc<QTensor>,
+    down_experts: Arc<QTensor>,
     act: candle_nn::Activation,
     norm_topk_prob: bool,
+    routed_scaling_factor: Option<f64>,
     num_experts_per_tok: usize,
+    #[cfg(feature = "nccl")]
+    all_reduce: Option<AllReduce>,
+    dtype: DType,
+    #[cfg(not(feature = "nccl"))]
+    #[allow(dead_code)]
+    world_size: usize,
+    #[cfg(feature = "nccl")]
+    world_size: usize,
 }
 
 impl FusedMoe {
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+    #[allow(unused_mut, unused_variables)]
+    fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
         let (num_tokens, hidden_dim) = xs.dims2()?;
         let original_dtype = xs.dtype();
-        let xs = xs.to_dtype(DType::F32)?;
+        let xs = if xs.dtype() != DType::F32 {
+            xs.to_dtype(DType::F32)?
+        } else {
+            xs.to_owned()
+        };
+
         let router_logits = self.gate.forward(&xs)?;
-        let routing_weights = candle_nn::ops::softmax_last_dim(&router_logits)?;
 
-        //last dim size 128
-        let indices = routing_weights
-            .arg_sort_last_dim(false)?
-            .narrow(D::Minus1, 0, self.num_experts_per_tok)?
-            .contiguous()?;
-
-        let mut scores = routing_weights.gather(&indices, D::Minus1)?;
+        let (mut topk_weights, topk_ids) =
+            attention_rs::topk::topk_softmax(&router_logits, self.num_experts_per_tok)?;
 
         if self.norm_topk_prob {
-            scores = scores.broadcast_div(&scores.sum_keepdim(D::Minus1)?)?;
+            topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
+        }
+        if let Some(factor) = self.routed_scaling_factor {
+            topk_weights = (topk_weights * factor)?;
         }
 
+        let flat = topk_ids.flatten_all()?;
+        let (expert_ids, sorted_token_ids) = flat.sort_last_dim(true)?;
+
         let ys = {
-            let xs = xs.reshape((num_tokens, 1, hidden_dim))?;
-            let gate = self.gate_experts.indexed_moe_forward(&xs, &indices)?;
-            let up = self.up_experts.indexed_moe_forward(&xs, &indices)?;
-            let xs = self
-                .down_experts
-                .indexed_moe_forward(&(up * gate.apply(&self.act)?)?, &indices)?;
-            xs
+            let gate = attention_rs::moe::moe_gemm_gguf(
+                &xs,
+                &self.gate_experts,
+                &None,
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                is_prefill,
+                self.dtype,
+            )?;
+            let up = attention_rs::moe::moe_gemm_gguf(
+                &xs,
+                &self.up_experts,
+                &None,
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                is_prefill,
+                self.dtype,
+            )?;
+            let down_inputs = (up * gate.apply(&self.act)?)?;
+            attention_rs::moe::moe_gemm_gguf(
+                &down_inputs,
+                &self.down_experts,
+                &Some(topk_weights),
+                &sorted_token_ids,
+                &expert_ids,
+                self.num_experts_per_tok,
+                is_prefill,
+                self.dtype,
+            )?
         };
-        ys.broadcast_mul(&scores.unsqueeze(D::Minus1)?)?
-            .sum(D::Minus2)?
-            .reshape((num_tokens, hidden_dim))?
-            .to_dtype(original_dtype)
+        let mut ys = ys.reshape((num_tokens, (), hidden_dim))?.sum(D::Minus2)?;
+        if ys.dtype() != self.dtype {
+            ys = ys.to_dtype(self.dtype)?;
+        }
+        #[cfg(feature = "nccl")]
+        if self.world_size > 1 {
+            if let Some(all_reduce) = &self.all_reduce {
+                ys = all_reduce.apply(&ys)?;
+            }
+        }
+        ys.to_dtype(original_dtype)
     }
 }
 
@@ -81,10 +142,10 @@ enum MoeOrMlp {
 }
 
 impl MoeOrMlp {
-    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+    fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
         match self {
             Self::Mlp(m) => m.forward(xs),
-            Self::FusedMoe(m) => m.forward(xs),
+            Self::FusedMoe(m) => m.forward(xs, is_prefill),
         }
     }
 }
@@ -116,7 +177,7 @@ pub struct GGUFQWenMoE {
     tok_embeddings: Embedding,
     layers: Vec<LayerWeights>,
     norm: QRmsNorm,
-    output: QMatMul,
+    output: VocabParallelLinear,
     cfg: Config,
     dtype: DType,
     device: Device,
@@ -178,16 +239,20 @@ impl GGUFQWenMoE {
         }
     }
 
-    pub fn from_gguf<R: std::io::Seek + std::io::Read>(
-        ct: &gguf_file::Content,
-        reader: &mut R,
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_gguf(
+        vb: &QVarBuilder,
         device: &Device,
         dtype: DType,
         kv_cache_dtype: DType,
         yarn_scaling_factor: Option<f64>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
+        rank: usize,
+        world_size: usize,
+        #[allow(unused_variables)] comm: Rc<Comm>,
     ) -> Result<Self> {
-        let md_get = |s: &str| match ct.metadata.get(s) {
+        let metadata = vb.first_content_metadata();
+        let md_get = |s: &str| match metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
             Some(v) => Ok(v),
         };
@@ -242,19 +307,23 @@ impl GGUFQWenMoE {
             n_shared_experts: None,
         };
 
-        let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
+        let tok_embeddings = vb.get_no_shape("token_embd.weight")?;
+        let vocab_size = tok_embeddings.shape().dims()[0];
         let tok_embeddings = tok_embeddings.dequantize(device)?;
-        let norm = QRmsNorm::from_qtensor(
-            ct.tensor(reader, "output_norm.weight", device)?,
-            rms_norm_eps,
-        )?;
-        let output = match ct.tensor(reader, "output.weight", device) {
-            Ok(v) => QMatMul::from_qtensor(v)?,
-            _ => {
-                // use tie_word_embeddings
-                QMatMul::from_qtensor(ct.tensor(reader, "token_embd.weight", device)?)?
-            }
+        let norm =
+            QRmsNorm::from_arc_qtensor(vb.get_no_shape("output_norm.weight")?, rms_norm_eps)?;
+        let output_tensor_name = if vb.contains_key("output.weight") {
+            "output.weight"
+        } else {
+            "token_embd.weight"
         };
+        let output = VocabParallelLinear::load_from_gguf(
+            vb,
+            output_tensor_name,
+            vocab_size,
+            comm.clone(),
+            dtype,
+        )?;
 
         let original_max_position_embeddings =
             md_get(format!("{arch}.rope.scaling.original_context_length").as_str());
@@ -297,6 +366,7 @@ impl GGUFQWenMoE {
         let mut layers = Vec::with_capacity(block_count);
         for layer_idx in 0..block_count {
             let prefix = format!("blk.{layer_idx}");
+            let prefix_vb = vb.pp(&prefix);
             let mlp = if !moe_cfg
                 .mlp_only_layers
                 .as_ref()
@@ -305,70 +375,101 @@ impl GGUFQWenMoE {
                 && (moe_cfg.num_experts.unwrap_or(0) > 0
                     && (layer_idx + 1) % moe_cfg.decoder_sparse_step.unwrap_or(1) == 0)
             {
-                let gate = ct.tensor(reader, &format!("{prefix}.ffn_gate_inp.weight"), device)?;
+                let gate = prefix_vb.get_no_shape("ffn_gate_inp.weight")?;
                 let gate_experts =
-                    ct.tensor(reader, &format!("{prefix}.ffn_gate_exps.weight"), device)?;
+                    prefix_vb.get_sharded_no_shape("ffn_gate_exps.weight", 1, rank, world_size)?;
                 let up_experts =
-                    ct.tensor(reader, &format!("{prefix}.ffn_up_exps.weight"), device)?;
+                    prefix_vb.get_sharded_no_shape("ffn_up_exps.weight", 1, rank, world_size)?;
                 let down_experts =
-                    ct.tensor(reader, &format!("{prefix}.ffn_down_exps.weight"), device)?;
+                    prefix_vb.get_sharded_no_shape("ffn_down_exps.weight", 2, rank, world_size)?;
                 let moe = FusedMoe {
-                    gate: QMatMul::from_qtensor(gate)?,
-                    gate_experts: QMatMul::from_qtensor(gate_experts)?,
-                    up_experts: QMatMul::from_qtensor(up_experts)?,
-                    down_experts: QMatMul::from_qtensor(down_experts)?,
+                    gate: QMatMul::from_arc(gate)?,
+                    gate_experts,
+                    up_experts,
+                    down_experts,
                     act: candle_nn::Activation::Silu,
                     norm_topk_prob: moe_cfg.norm_topk_prob,
+                    routed_scaling_factor: moe_cfg.routed_scaling_factor,
                     num_experts_per_tok: moe_cfg.num_experts_per_tok,
+                    #[cfg(feature = "nccl")]
+                    all_reduce: if world_size > 1 {
+                        Some(AllReduce::new(comm.clone()))
+                    } else {
+                        None
+                    },
+                    dtype,
+                    world_size,
                 };
 
                 MoeOrMlp::FusedMoe(moe)
             } else {
                 let mlp = {
                     let feed_forward_w1 =
-                        ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
+                        prefix_vb.get_sharded_no_shape("ffn_gate.weight", 0, rank, world_size)?;
                     let feed_forward_w2 =
-                        ct.tensor(reader, &format!("{prefix}.ffn_down.weight"), device)?;
+                        prefix_vb.get_sharded_no_shape("ffn_down.weight", 1, rank, world_size)?;
                     let feed_forward_w3 =
-                        ct.tensor(reader, &format!("{prefix}.ffn_up.weight"), device)?;
+                        prefix_vb.get_sharded_no_shape("ffn_up.weight", 0, rank, world_size)?;
                     Mlp {
-                        feed_forward_w1: QMatMul::from_qtensor(feed_forward_w1)?,
-                        feed_forward_w2: QMatMul::from_qtensor(feed_forward_w2)?,
-                        feed_forward_w3: QMatMul::from_qtensor(feed_forward_w3)?,
+                        feed_forward_w1: QMatMul::from_arc(feed_forward_w1)?,
+                        feed_forward_w2: QMatMul::from_arc(feed_forward_w2)?,
+                        feed_forward_w3: QMatMul::from_arc(feed_forward_w3)?,
+                        #[cfg(feature = "nccl")]
+                        all_reduce: if world_size > 1 {
+                            Some(AllReduce::new(comm.clone()))
+                        } else {
+                            None
+                        },
+                        #[cfg(feature = "nccl")]
+                        dtype,
                     }
                 };
                 MoeOrMlp::Mlp(mlp)
             };
 
-            let attention_norm =
-                ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?;
-            let ffn_norm = ct.tensor(reader, &format!("{prefix}.ffn_norm.weight"), device)?;
+            let attention_norm = prefix_vb.get_no_shape("attn_norm.weight")?;
+            let ffn_norm = prefix_vb.get_no_shape("ffn_norm.weight")?;
 
-            //shared experts weights in Qwen2 MoE models
             let (shared_gate, shared_expert) =
                 if let Some(_) = moe_cfg.shared_expert_intermediate_size {
-                    let ws = ct
-                        .tensor(
-                            reader,
-                            &format!("{prefix}.ffn_gate_inp_shexp.weight"),
-                            device,
-                        )?
+                    let ws = prefix_vb
+                        .get_no_shape("ffn_gate_inp_shexp.weight")?
                         .dequantize(device)?
-                        .reshape((1, cfg.hidden_size))?; //weight must be 2d+
+                        .reshape((1, cfg.hidden_size))?;
 
                     let shared_gate = Linear::new(ws, None);
 
                     let mlp = {
-                        let feed_forward_w1 =
-                            ct.tensor(reader, &format!("{prefix}.ffn_gate_shexp.weight"), device)?;
-                        let feed_forward_w2 =
-                            ct.tensor(reader, &format!("{prefix}.ffn_down_shexp.weight"), device)?;
-                        let feed_forward_w3 =
-                            ct.tensor(reader, &format!("{prefix}.ffn_up_shexp.weight"), device)?;
+                        let feed_forward_w1 = prefix_vb.get_sharded_no_shape(
+                            "ffn_gate_shexp.weight",
+                            0,
+                            rank,
+                            world_size,
+                        )?;
+                        let feed_forward_w2 = prefix_vb.get_sharded_no_shape(
+                            "ffn_down_shexp.weight",
+                            1,
+                            rank,
+                            world_size,
+                        )?;
+                        let feed_forward_w3 = prefix_vb.get_sharded_no_shape(
+                            "ffn_up_shexp.weight",
+                            0,
+                            rank,
+                            world_size,
+                        )?;
                         Mlp {
-                            feed_forward_w1: QMatMul::from_qtensor(feed_forward_w1)?,
-                            feed_forward_w2: QMatMul::from_qtensor(feed_forward_w2)?,
-                            feed_forward_w3: QMatMul::from_qtensor(feed_forward_w3)?,
+                            feed_forward_w1: QMatMul::from_arc(feed_forward_w1)?,
+                            feed_forward_w2: QMatMul::from_arc(feed_forward_w2)?,
+                            feed_forward_w3: QMatMul::from_arc(feed_forward_w3)?,
+                            #[cfg(feature = "nccl")]
+                            all_reduce: if world_size > 1 {
+                                Some(AllReduce::new(comm.clone()))
+                            } else {
+                                None
+                            },
+                            #[cfg(feature = "nccl")]
+                            dtype,
                         }
                     };
 
@@ -379,21 +480,23 @@ impl GGUFQWenMoE {
 
             let self_attn = QuantizedAttention::new(
                 &cfg,
-                ct,
-                reader,
+                vb,
                 &prefix,
                 device,
                 dtype,
                 rotary_emb.clone(),
                 cfg.sliding_window,
+                rank,
+                world_size,
+                comm.clone(),
             )?;
             layers.push(LayerWeights {
                 self_attn,
-                attention_norm: QRmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
+                attention_norm: QRmsNorm::from_arc_qtensor(attention_norm, rms_norm_eps)?,
                 mlp,
                 shared_gate,
                 shared_expert,
-                ffn_norm: QRmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
+                ffn_norm: QRmsNorm::from_arc_qtensor(ffn_norm, rms_norm_eps)?,
             });
             reporter.write().set_progress(layer_idx + 1);
         }
@@ -483,7 +586,7 @@ impl GGUFQWenMoE {
                     }
                     _ => None,
                 };
-                let x = layer.mlp.forward(&x)?;
+                let x = layer.mlp.forward(&x, input_metadata.is_prefill)?;
                 let x = if let Some(shared_output) = shared_output {
                     (residual + (x + shared_output)?)?
                 } else {
@@ -517,7 +620,7 @@ impl GGUFQWenMoE {
                     }
                     _ => None,
                 };
-                let x = layer.mlp.forward(&x)?;
+                let x = layer.mlp.forward(&x, input_metadata.is_prefill)?;
                 let x = if let Some(shared_output) = shared_output {
                     (residual + (x + shared_output)?)?
                 } else {

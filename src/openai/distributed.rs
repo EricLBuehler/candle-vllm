@@ -1,11 +1,14 @@
 use crate::openai::models::linear::{linear_no_bias_x as linear, Linear, LinearX, LnFp8};
 #[cfg(feature = "nccl")]
 pub use candle_core::cuda_backend::cudarc::nccl::safe::{Comm, Id};
-use candle_core::{CpuStorage, Layout, Module, Result, Shape, Tensor};
+use candle_core::quantized::GgmlDType;
+use candle_core::quantized::QTensor;
+use candle_core::{CpuStorage, Device, Layout, Module, Result, Shape, Tensor};
 use candle_core::{CustomOp1, DType};
 use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 use candle_nn::{Embedding, LayerNorm, RmsNorm};
+use std::sync::Arc;
 #[cfg(not(feature = "nccl"))]
 pub struct Comm {}
 #[cfg(not(feature = "nccl"))]
@@ -30,6 +33,174 @@ impl Comm {
 pub struct Id {}
 
 pub use std::rc::Rc;
+
+fn can_quantize_to(dtype: GgmlDType) -> bool {
+    matches!(
+        dtype,
+        GgmlDType::Q2K
+            | GgmlDType::Q3K
+            | GgmlDType::Q4K
+            | GgmlDType::Q5K
+            | GgmlDType::Q6K
+            | GgmlDType::Q8_0
+    )
+}
+
+fn closest_quantizable_dtype(orig: GgmlDType) -> GgmlDType {
+    if can_quantize_to(orig) {
+        return orig;
+    }
+    let bpw = orig.type_size() as f64 * 8.0 / orig.block_size() as f64;
+    let candidates = [
+        (GgmlDType::Q2K, 2.625),
+        (GgmlDType::Q3K, 3.4375),
+        (GgmlDType::Q4K, 4.5),
+        (GgmlDType::Q5K, 5.5),
+        (GgmlDType::Q6K, 6.5625),
+        (GgmlDType::Q8_0, 8.5),
+    ];
+    candidates
+        .iter()
+        .min_by(|a, b| (a.1 - bpw).abs().partial_cmp(&(b.1 - bpw).abs()).unwrap())
+        .map(|c| c.0)
+        .unwrap_or(GgmlDType::Q4K)
+}
+
+pub fn gguf_shard_qtensor(
+    qt: Arc<QTensor>,
+    dim: usize,
+    rank: usize,
+    world_size: usize,
+    device: &Device,
+) -> Result<Arc<QTensor>> {
+    if world_size <= 1 {
+        return Ok(qt);
+    }
+    let orig_dtype = qt.dtype();
+    let t = qt.dequantize_f16(device)?;
+    let dim_size = t.dim(dim)?;
+    if dim_size % world_size != 0 {
+        candle_core::bail!(
+            "gguf_shard_qtensor dim {} size {} not divisible by world_size {}",
+            dim,
+            dim_size,
+            world_size
+        );
+    }
+    let chunk_size = dim_size / world_size;
+    let local = t.narrow(dim, rank * chunk_size, chunk_size)?.contiguous()?;
+    drop(t);
+    let target = closest_quantizable_dtype(orig_dtype);
+    let last_dim = local.dim(candle_core::D::Minus1)?;
+    let wdtype = if last_dim % target.block_size() != 0 {
+        GgmlDType::Q8_0
+    } else {
+        target
+    };
+    Ok(Arc::new(QTensor::quantize_owned(local, wdtype)?))
+}
+
+/// Shard MoE expert weight tensors with vllm.rs-aligned dtype selection.
+/// gate/up experts use `closest_quantizable_dtype(orig)`, down experts use a
+/// higher-precision dtype when block-aligned.  Block-aligned chunk padding is
+/// applied so the sharded intermediate dimension is always a multiple of the
+/// target block size.
+pub fn gguf_shard_moe_experts(
+    gate_qt: Arc<QTensor>,
+    up_qt: Arc<QTensor>,
+    down_qt: Arc<QTensor>,
+    rank: usize,
+    world_size: usize,
+    device: &Device,
+) -> Result<(Arc<QTensor>, Arc<QTensor>, Arc<QTensor>)> {
+    if world_size <= 1 {
+        return Ok((gate_qt, up_qt, down_qt));
+    }
+
+    let orig_gate_dtype = gate_qt.dtype();
+    let orig_down_dtype = down_qt.dtype();
+
+    let gate_f16 = gate_qt.dequantize_f16(device)?;
+    let up_f16 = up_qt.dequantize_f16(device)?;
+    let down_f16 = down_qt.dequantize_f16(device)?;
+
+    let moe_intermediate_size = gate_f16.dim(1)?;
+
+    let target_gate = closest_quantizable_dtype(orig_gate_dtype);
+    let ggml_dtype = if (moe_intermediate_size / world_size) % target_gate.block_size() == 0 {
+        target_gate
+    } else if (moe_intermediate_size / world_size) % GgmlDType::Q4K.block_size() == 0 {
+        GgmlDType::Q4K
+    } else {
+        GgmlDType::Q8_0
+    };
+
+    let target_down = closest_quantizable_dtype(orig_down_dtype);
+    let high_precision_dtype =
+        if (moe_intermediate_size / world_size) % target_down.block_size() == 0 {
+            target_down
+        } else if (moe_intermediate_size / world_size) % GgmlDType::Q6K.block_size() == 0 {
+            GgmlDType::Q6K
+        } else {
+            ggml_dtype
+        };
+
+    let block_size = ggml_dtype.block_size();
+    let moe_intermediate_chunk = if (moe_intermediate_size / world_size) % block_size != 0 {
+        ((moe_intermediate_size / world_size + block_size - 1) / block_size) * block_size
+    } else {
+        moe_intermediate_size / world_size
+    };
+
+    let cur_chunk_size =
+        if rank * moe_intermediate_chunk + moe_intermediate_chunk <= moe_intermediate_size {
+            moe_intermediate_chunk
+        } else {
+            moe_intermediate_size - rank * moe_intermediate_chunk
+        };
+
+    let (ggml_dtype, high_precision_dtype, cur_chunk_size) =
+        if cur_chunk_size == 0 || cur_chunk_size % block_size != 0 {
+            let fb = GgmlDType::Q8_0;
+            let fb_bs = fb.block_size();
+            let fb_chunk = moe_intermediate_size / world_size;
+            let fb_cur = if rank * fb_chunk + fb_chunk <= moe_intermediate_size {
+                fb_chunk
+            } else {
+                moe_intermediate_size - rank * fb_chunk
+            };
+            assert!(
+                fb_cur > 0 && fb_cur % fb_bs == 0,
+                "Unable to split moe_intermediate_size {} into {} ranks under block_size {}",
+                moe_intermediate_size,
+                world_size,
+                fb_bs
+            );
+            (fb, fb, fb_cur)
+        } else {
+            (ggml_dtype, high_precision_dtype, cur_chunk_size)
+        };
+
+    let gate_local = gate_f16
+        .narrow(1, rank * moe_intermediate_chunk, cur_chunk_size)?
+        .contiguous()?;
+    let up_local = up_f16
+        .narrow(1, rank * moe_intermediate_chunk, cur_chunk_size)?
+        .contiguous()?;
+    let down_local = down_f16
+        .narrow(2, rank * moe_intermediate_chunk, cur_chunk_size)?
+        .contiguous()?;
+
+    drop(gate_f16);
+    drop(up_f16);
+    drop(down_f16);
+
+    Ok((
+        Arc::new(QTensor::quantize(&gate_local, ggml_dtype)?),
+        Arc::new(QTensor::quantize(&up_local, ggml_dtype)?),
+        Arc::new(QTensor::quantize(&down_local, high_precision_dtype)?),
+    ))
+}
 
 pub struct ReplicatedLinear {
     linear: LinearX,
@@ -1311,6 +1482,64 @@ impl VocabParallelLinear {
             #[cfg(feature = "nccl")]
             all_gather,
             org_vocab_size,
+            dtype,
+        })
+    }
+
+    #[allow(unused_variables)]
+    pub fn load_from_gguf(
+        vb: &crate::openai::models::layers::quantized_var_builder::VarBuilder,
+        tensor_name: &str,
+        vocab_size: usize,
+        comm: Rc<Comm>,
+        dtype: DType,
+    ) -> Result<Self> {
+        use crate::openai::models::linear::QLinear;
+        let world_size = comm.world_size();
+        if world_size <= 1 {
+            let ws = vb.get_no_shape(tensor_name)?;
+            let qlinear = QLinear::from_arc_qtensor(ws, dtype);
+            return Ok(Self {
+                linear: LinearX::QLinear(qlinear),
+                #[cfg(feature = "nccl")]
+                all_gather: None,
+                org_vocab_size: vocab_size,
+                dtype,
+            });
+        }
+
+        let padded_vocab = pad_vocab_size(vocab_size, world_size);
+        let rank = comm.rank();
+        let local_vocab = padded_vocab / world_size;
+
+        let ws = vb.get_sharded_no_shape(tensor_name, 0, rank, world_size)?;
+        let actual_local = ws.shape().dims()[0];
+        let ws = if actual_local < local_vocab {
+            let dequant = ws.dequantize_f16(vb.device())?;
+            let hidden = dequant.dim(1)?;
+            let pad_rows = local_vocab - actual_local;
+            let padding = Tensor::zeros((pad_rows, hidden), DType::F16, vb.device())?;
+            let padded = Tensor::cat(&[&dequant, &padding], 0)?;
+            let wdtype = if hidden % ws.dtype().block_size() != 0 {
+                GgmlDType::Q8_0
+            } else {
+                ws.dtype()
+            };
+            Arc::new(QTensor::quantize_owned(padded, wdtype)?)
+        } else {
+            ws
+        };
+        let qlinear = QLinear::from_arc_qtensor(ws, dtype);
+        let linear = LinearX::QLinear(qlinear);
+
+        #[cfg(feature = "nccl")]
+        let all_gather = Some(AllGather::new(comm));
+
+        Ok(Self {
+            linear,
+            #[cfg(feature = "nccl")]
+            all_gather,
+            org_vocab_size: vocab_size,
             dtype,
         })
     }

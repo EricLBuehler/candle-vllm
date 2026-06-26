@@ -2,6 +2,7 @@ use anyhow::Result;
 use candle_core::quantized::gguf_file::{self, Value};
 use itertools::Itertools;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tokenizers::pre_tokenizers::{
     sequence::Sequence,
     split::{Split, SplitPattern},
@@ -647,4 +648,65 @@ pub fn get_gguf_name(path: &std::path::PathBuf) -> Result<Option<String>> {
         }
         _ => Ok(None),
     }
+}
+
+/// Discover all GGUF shard files from a single main GGUF file path.
+/// Handles the naming pattern `<prefix>-NNNNN-of-NNNNN.gguf`.
+/// If the file is not a split GGUF, returns just the single path.
+pub fn find_gguf_shards(main_file: &Path) -> Vec<PathBuf> {
+    let file_name = main_file.file_name().and_then(|f| f.to_str()).unwrap_or("");
+    let re = regex::Regex::new(r"^(.+)-(\d{5})-of-(\d{5})\.gguf$").unwrap();
+    let Some(caps) = re.captures(file_name) else {
+        return vec![main_file.to_path_buf()];
+    };
+    let prefix = &caps[1];
+    let total: usize = caps[3].parse().unwrap_or(1);
+    let dir = main_file.parent().unwrap_or(Path::new("."));
+
+    let mut shards: Vec<PathBuf> = (1..=total)
+        .map(|i| dir.join(format!("{}-{:05}-of-{:05}.gguf", prefix, i, total)))
+        .filter(|p| p.exists())
+        .collect();
+
+    if shards.len() != total {
+        tracing::warn!(
+            "Expected {} GGUF shards but found {}; using only the main file",
+            total,
+            shards.len()
+        );
+        return vec![main_file.to_path_buf()];
+    }
+
+    shards.sort();
+    tracing::info!("Found {} split GGUF shards for {}", shards.len(), prefix);
+    shards
+}
+
+/// Scan a directory for the main GGUF file (excludes mmproj auxiliary files).
+/// Returns the path to the best candidate, preferring the largest non-mmproj
+/// `.gguf` file (or the first split shard alphabetically).
+pub fn find_main_gguf_in_dir(dir: &Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut candidates: Vec<(PathBuf, u64)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext != "gguf" {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.contains("mmproj") {
+            continue;
+        }
+        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+        candidates.push((path, size));
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    Some(candidates[0].0.clone())
 }

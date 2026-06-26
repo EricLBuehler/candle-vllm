@@ -44,7 +44,7 @@ use crate::{
     },
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
-        sequence::{Sequence, SequenceGroup, _Sequence},
+        sequence::{_Sequence, Sequence, SequenceGroup},
         SchedulerConfig, SchedulerOutput,
     },
     InputMetadata,

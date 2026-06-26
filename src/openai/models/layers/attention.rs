@@ -1,16 +1,18 @@
+use super::quantized_var_builder::VarBuilder as QVarBuilder;
 use super::rotary_emb::ScalingRotaryEmbedding;
+#[cfg(feature = "nccl")]
+use crate::openai::distributed::AllReduce;
 use crate::openai::distributed::{
-    rms_norm_sharded, rms_norm_x, shard, Comm, MergedParallelColumnLinear,
+    rms_norm_sharded, rms_norm_x, shard, Comm, MergedParallelColumnLinear, Rc,
     TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::Config;
 use crate::{InputMetadata, PagedAttention};
-use candle_core::quantized::{gguf_file, QMatMul};
+use candle_core::quantized::QMatMul;
 use candle_core::{DType, Device, Module, Result, Tensor};
 use candle_nn::RmsNorm;
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 enum QkvProjection {
@@ -786,105 +788,119 @@ pub struct QuantizedAttention {
     attn: PagedAttention,
     rotary_emb: Arc<ScalingRotaryEmbedding>,
     dtype: DType,
+    #[cfg(feature = "nccl")]
+    all_reduce: Option<AllReduce>,
 }
 
 impl QuantizedAttention {
-    pub fn new<R: std::io::Seek + std::io::Read>(
+    pub fn new(
         config: &Config,
-        ct: &gguf_file::Content,
-        reader: &mut R,
+        vb: &QVarBuilder,
         prefix: &str,
         device: &Device,
         dtype: DType,
         rotary_emb: Arc<ScalingRotaryEmbedding>,
         sliding_window: Option<usize>,
+        rank: usize,
+        world_size: usize,
+        #[allow(unused_variables)] comm: Rc<Comm>,
     ) -> Result<Self> {
-        let attention_wq = ct.tensor(reader, &format!("{prefix}.attn_q.weight"), device)?;
-        let attention_wk = ct.tensor(reader, &format!("{prefix}.attn_k.weight"), device)?;
-        let attention_wv = ct.tensor(reader, &format!("{prefix}.attn_v.weight"), device)?;
+        let prefix_vb = vb.pp(prefix);
+        let attention_wq = prefix_vb.get_sharded_no_shape("attn_q.weight", 0, rank, world_size)?;
+        let attention_wk = prefix_vb.get_sharded_no_shape("attn_k.weight", 0, rank, world_size)?;
+        let attention_wv = prefix_vb.get_sharded_no_shape("attn_v.weight", 0, rank, world_size)?;
 
-        let attention_bq = ct.tensor(reader, &format!("{prefix}.attn_q.bias"), device);
-        let attention_bk = ct.tensor(reader, &format!("{prefix}.attn_k.bias"), device);
-        let attention_bv = ct.tensor(reader, &format!("{prefix}.attn_v.bias"), device);
+        let attention_bq = prefix_vb.get_no_shape("attn_q.bias");
+        let attention_bk = prefix_vb.get_no_shape("attn_k.bias");
+        let attention_bv = prefix_vb.get_no_shape("attn_v.bias");
 
-        let attention_bq = if attention_bq.is_ok() {
-            Some(
-                attention_bq
-                    .unwrap()
-                    .dequantize(device)?
-                    .to_dtype(DType::F32)?,
-            )
+        let attention_bq = if let Ok(bq) = attention_bq {
+            let b = bq.dequantize(device)?.to_dtype(DType::F32)?;
+            if world_size > 1 {
+                let chunk = b.dim(0)? / world_size;
+                Some(b.narrow(0, rank * chunk, chunk)?.contiguous()?)
+            } else {
+                Some(b)
+            }
         } else {
             None
         };
 
-        let attention_bk = if attention_bk.is_ok() {
-            Some(
-                attention_bk
-                    .unwrap()
-                    .dequantize(device)?
-                    .to_dtype(DType::F32)?,
-            )
+        let attention_bk = if let Ok(bk) = attention_bk {
+            let b = bk.dequantize(device)?.to_dtype(DType::F32)?;
+            if world_size > 1 {
+                let chunk = b.dim(0)? / world_size;
+                Some(b.narrow(0, rank * chunk, chunk)?.contiguous()?)
+            } else {
+                Some(b)
+            }
         } else {
             None
         };
 
-        let attention_bv = if attention_bv.is_ok() {
-            Some(
-                attention_bv
-                    .unwrap()
-                    .dequantize(device)?
-                    .to_dtype(DType::F32)?,
-            )
+        let attention_bv = if let Ok(bv) = attention_bv {
+            let b = bv.dequantize(device)?.to_dtype(DType::F32)?;
+            if world_size > 1 {
+                let chunk = b.dim(0)? / world_size;
+                Some(b.narrow(0, rank * chunk, chunk)?.contiguous()?)
+            } else {
+                Some(b)
+            }
         } else {
             None
         };
 
-        let attention_wo = ct.tensor(reader, &format!("{prefix}.attn_output.weight"), device)?;
+        let attention_wo =
+            prefix_vb.get_sharded_no_shape("attn_output.weight", 1, rank, world_size)?;
 
         let (q_norm, k_norm) = {
-            let q_norm = ct.tensor(reader, &format!("{prefix}.attn_q_norm.weight"), device);
-            let k_norm = ct.tensor(reader, &format!("{prefix}.attn_k_norm.weight"), device);
-            let (q_norm, k_norm) = match (q_norm, k_norm) {
+            let q_norm = prefix_vb.get_no_shape("attn_q_norm.weight");
+            let k_norm = prefix_vb.get_no_shape("attn_k_norm.weight");
+            match (q_norm, k_norm) {
                 (Ok(q_norm), Ok(k_norm)) => {
-                    let q_norm = QRmsNorm::from_qtensor(q_norm, config.rms_norm_eps)?;
-                    let k_norm = QRmsNorm::from_qtensor(k_norm, config.rms_norm_eps)?;
+                    let q_norm = QRmsNorm::from_arc_qtensor(q_norm, config.rms_norm_eps)?;
+                    let k_norm = QRmsNorm::from_arc_qtensor(k_norm, config.rms_norm_eps)?;
                     (Some(q_norm), Some(k_norm))
                 }
                 _ => (None, None),
-            };
-            (q_norm, k_norm)
+            }
         };
 
         let head_dim = config
             .head_dim
             .unwrap_or(config.hidden_size / config.num_attention_heads);
-        let n_head = config.num_attention_heads;
+        let n_head = config.num_attention_heads / world_size;
+        let n_kv_head_global = config
+            .num_key_value_heads
+            .unwrap_or(config.num_attention_heads);
+        let n_kv_head = if n_kv_head_global >= world_size {
+            n_kv_head_global / world_size
+        } else {
+            n_kv_head_global
+        };
         let expected_q_dim = n_head * head_dim;
         let q_out_dim = attention_wq.shape().dims()[0];
         let attn_output_gate = q_out_dim == expected_q_dim * 2;
 
         Ok(QuantizedAttention {
-            attention_wq: QMatMul::from_qtensor(attention_wq)?,
-            attention_wk: QMatMul::from_qtensor(attention_wk)?,
-            attention_wv: QMatMul::from_qtensor(attention_wv)?,
+            attention_wq: QMatMul::from_arc(attention_wq)?,
+            attention_wk: QMatMul::from_arc(attention_wk)?,
+            attention_wv: QMatMul::from_arc(attention_wv)?,
             attention_bq,
             attention_bk,
             attention_bv,
-            attention_wo: QMatMul::from_qtensor(attention_wo)?,
+            attention_wo: QMatMul::from_arc(attention_wo)?,
             q_norm,
             k_norm,
             n_head,
-            n_kv_head: config
-                .num_key_value_heads
-                .unwrap_or(config.num_attention_heads),
+            n_kv_head,
             head_dim,
             attn_output_gate,
             attn: PagedAttention::new(
-                config.num_attention_heads,
+                n_head,
                 head_dim,
                 1. / ((head_dim as f32).sqrt()),
-                config.num_key_value_heads,
+                Some(n_kv_head),
                 sliding_window,
                 device.clone(),
                 None,
@@ -892,9 +908,16 @@ impl QuantizedAttention {
             )?,
             rotary_emb: rotary_emb.clone(),
             dtype,
+            #[cfg(feature = "nccl")]
+            all_reduce: if world_size > 1 {
+                Some(AllReduce::new(comm))
+            } else {
+                None
+            },
         })
     }
 
+    #[allow(unused_mut)]
     pub fn forward(
         &self,
         x: &Tensor,
@@ -989,6 +1012,12 @@ impl QuantizedAttention {
             y
         };
 
-        self.attention_wo.forward(&y.to_dtype(DType::F32)?)
+        let mut y = self.attention_wo.forward(&y.to_dtype(DType::F32)?)?;
+        #[cfg(feature = "nccl")]
+        if let Some(all_reduce) = &self.all_reduce {
+            y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
+            y = y.to_dtype(DType::F32)?;
+        }
+        Ok(y)
     }
 }

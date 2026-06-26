@@ -57,11 +57,20 @@ cargo install --features metal --path .
 **Using HuggingFace Model ID:**
 ```bash
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+
+candle-vllm --m unsloth/Qwen3.5-122B-A10B-GGUF --f Q3_K_S --d 0,1 --ui-server
 ```
 
 **Using local model path:**
 ```bash
-candle-vllm --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --ui-server
+# Local safetensors directory
+candle-vllm --d 0,1 --m /home/Qwen3-30B-A3B-Instruct-2507/ --ui-server
+
+# Local GGUF file (single or split-shard)
+candle-vllm --d 0,1 --m /home/data/model-Q4_K_M.gguf --ui-server
+
+# Local directory containing GGUF files (auto-detected)
+candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 ```
 
 > **Tip:** Add `--ui-server` to launch the built-in ChatGPT-style Web UI. The UI server uses the API port minus one (e.g., API on `2000`, UI on `1999`).
@@ -179,16 +188,30 @@ candle-vllm --m nm-testing/Qwen3-30B-A3B-MXFP4A16 --ui-server
 <summary><b>GGUF models</b></summary>
 
 ```bash
-# Local path
+# Local GGUF file via --m (recommended)
+candle-vllm --m /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
+
+# Local GGUF file via --f (legacy)
 candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
 
-# From HuggingFace
+# Local directory containing GGUF (auto-detected, mmproj loaded on demand)
+candle-vllm --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
+
+# From HuggingFace (exact file)
 candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
 
+# From HuggingFace (subfolder — downloads all GGUF files in the remote path)
+candle-vllm --m unsloth/Qwen3.5-122B-A10B-GGUF --f Q3_K_S --d 0,1 --ui-server
+
+# Local multi-shard GGUF (split files auto-discovered from local path)
+candle-vllm --m /home/data/model-00001-of-00003.gguf --d 0,1 --ui-server
+
 # GGUF on Apple Silicon
-candle-vllm --f /home/qwq-32b-q4_k_m.gguf --ui-server
+candle-vllm --m /home/qwq-32b-q4_k_m.gguf --ui-server
 candle-vllm --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf --ui-server
 ```
+
+**Multi-shard GGUF:** Split GGUF files (e.g., `model-00001-of-00005.gguf`) are automatically discovered — both locally (from the same directory) and remotely (from the HuggingFace repo). When `--f` is a subfolder name (not ending in `.gguf`), all GGUF files in that remote subfolder are downloaded. Vision tower auxiliary files (`mmproj*.gguf`) are loaded on demand for multimodal models.
 
 </details>
 
@@ -342,9 +365,9 @@ MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,
 | `--h` | Bind address (default `0.0.0.0`). Supports `host`, `host:port`, `[ipv6]:port`, `tcp://host[:port]`, `file:///path`, `socket:///path`, `unix:///path` |
 | `--p` | TCP server port when `--h` does not include a port (default `2000`) |
 | `--d` | Device IDs (e.g. `--d 0,1`) |
-| `--m` | HuggingFace model ID |
-| `--w` | Local weight path (Safetensors folder) |
-| `--f` | Weight file (for GGUF) |
+| `--m` | Model source: HuggingFace model ID, local directory, or local `.gguf` file. Auto-detects GGUF vs safetensors in directories |
+| `--w` | Local weight directory (safetensors or GGUF). Prefer `--m <local_dir>` for new commands |
+| `--f` | GGUF file or subfolder: `--m repo --f file.gguf` (exact file), `--m repo --f subfolder` (all GGUFs in path), or local GGUF path |
 | `--dtype` | Data type (`bf16`, `f16`) |
 | `--isq` | In-situ quantization: `q4_0`, `q4_1`, `q5_0`, `q5_1`, `q8_0`, `q2k`, `q3k`, `q4k`, `q5k`, `q6k` |
 | `--kvcache-dtype` | KV cache quantization: `auto`, `fp8`, `turbo8`, `turbo4`, `turbo3` |

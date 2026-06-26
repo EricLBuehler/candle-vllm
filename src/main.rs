@@ -279,10 +279,6 @@ async fn main() -> Result<()> {
         "More than one shard was given, but NCCL is not enabled for parallel inference!"
     );
 
-    if gguf && num_shards > 1 {
-        panic!("Multiple device-ids detected: ggml/gguf model is not supported for multi-rank inference! \n\t*** Tips: use unquantized safetensors models (`--w`) with ISQ (e.g., `--isq q4k`) for multi-gpu inference!");
-    }
-
     if gguf && args.isq.is_some() {
         panic!("Quantized gguf/ggml model does not support isq option!");
     }
@@ -329,6 +325,7 @@ async fn main() -> Result<()> {
         num_shards = local_world_size * args.num_nodes;
     }
 
+    #[cfg(feature = "nccl")]
     let multi_node_config = if is_multi_node {
         Some(candle_vllm::openai::communicator::MultiNodeConfig {
             num_nodes: args.num_nodes,

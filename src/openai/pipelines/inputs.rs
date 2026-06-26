@@ -5,7 +5,7 @@ use candle_core::{Device, Result, Tensor};
 #[cfg(feature = "flashinfer")]
 use attention_rs::FlashInferMetadata;
 
-use super::{LLMEngine, PreparedInputs, Sequence, SequenceGroup, PREFILL_CHUNK_SIZE, _PAD_SLOT_ID};
+use super::{LLMEngine, PreparedInputs, Sequence, SequenceGroup, _PAD_SLOT_ID, PREFILL_CHUNK_SIZE};
 use crate::InputMetadata;
 
 impl LLMEngine {
@@ -356,6 +356,7 @@ impl LLMEngine {
                     params.out_dtype,
                     None,
                     Some(params.kv_dtype),
+                    false,
                 )?);
             }
 
@@ -396,6 +397,7 @@ impl LLMEngine {
             max_context_len,
             seqlens: Some(cu_seqlens_q_vec[1..].to_vec()),
             flashinfer_metadata,
+            is_mtp_verify: false,
         };
 
         Ok(PreparedInputs {
@@ -610,6 +612,7 @@ impl LLMEngine {
             max_context_len: max_context_len as usize,
             seqlens: None,
             flashinfer_metadata,
+            is_mtp_verify: false,
         };
 
         Ok(PreparedInputs {

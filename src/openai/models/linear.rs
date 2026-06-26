@@ -599,6 +599,22 @@ impl QLinear {
         }
     }
 
+    pub fn from_arc_qtensor(w: Arc<QTensor>, dtype: DType) -> Self {
+        Self {
+            inner: QMatMul::QTensor(w),
+            bias: None,
+            scales: None,
+            qzeros: None,
+            g_idx: None,
+            workspace: None,
+            group_size: 0,
+            bits: 0,
+            dtype,
+            is_awq: false,
+            transposed_weight: false,
+        }
+    }
+
     pub fn from_linear_x(
         linear: Linear,
         quant: String,
