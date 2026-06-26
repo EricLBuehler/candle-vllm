@@ -1,6 +1,7 @@
 use super::quantized_var_builder::VarBuilder;
 use candle_core::quantized::QTensor;
 use candle_core::{Module, Result, Tensor};
+use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct QRmsNorm {
     weight: Tensor,
@@ -14,6 +15,11 @@ impl QRmsNorm {
     }
 
     pub fn from_qtensor(weight: QTensor, eps: f64) -> Result<Self> {
+        let weight = weight.dequantize(&weight.device())?;
+        Ok(Self { weight, eps })
+    }
+
+    pub fn from_arc_qtensor(weight: Arc<QTensor>, eps: f64) -> Result<Self> {
         let weight = weight.dequantize(&weight.device())?;
         Ok(Self { weight, eps })
     }

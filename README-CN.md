@@ -57,11 +57,20 @@ cargo install --features metal --path .
 **使用 HuggingFace 模型 ID：**
 ```bash
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+
+candle-vllm --m unsloth/Qwen3.5-122B-A10B-GGUF --f Q3_K_S --d 0,1 --ui-server
 ```
 
 **使用本地模型路径：**
 ```bash
-candle-vllm --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/ --ui-server
+# 本地 Safetensors 目录
+candle-vllm --d 0,1 --m /home/Qwen3-30B-A3B-Instruct-2507/ --ui-server
+
+# 本地 GGUF 文件（单文件或分片）
+candle-vllm --d 0,1 --m /home/data/model-Q4_K_M.gguf --ui-server
+
+# 本地目录（自动检测 GGUF 文件）
+candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 ```
 
 > **提示：** 添加 `--ui-server` 可启动内置 ChatGPT 风格 Web UI。UI 服务端口为 API 端口减一（例如 API 为 `2000`，UI 为 `1999`）。
@@ -179,16 +188,30 @@ candle-vllm --m nm-testing/Qwen3-30B-A3B-MXFP4A16 --ui-server
 <summary><b>GGUF 模型</b></summary>
 
 ```bash
-# 本地路径
+# 本地 GGUF 文件（推荐使用 --m）
+candle-vllm --m /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
+
+# 本地 GGUF 文件（--f 传统方式）
 candle-vllm --f /home/data/Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
 
-# 从 HuggingFace 下载
+# 本地目录（自动检测 GGUF，按需加载 mmproj 视觉文件）
+candle-vllm --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
+
+# 从 HuggingFace 下载（精确文件）
 candle-vllm --m unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF --f Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf --ui-server
 
+# 从 HuggingFace 下载（子文件夹 — 下载远程路径下所有 GGUF 文件）
+candle-vllm --m unsloth/Qwen3.5-122B-A10B-GGUF --f Q3_K_S --d 0,1 --ui-server
+
+# 本地多分片 GGUF（从本地路径自动发现分片文件）
+candle-vllm --m /home/data/model-00001-of-00003.gguf --d 0,1 --ui-server
+
 # Apple Silicon 上的 GGUF
-candle-vllm --f /home/qwq-32b-q4_k_m.gguf --ui-server
+candle-vllm --m /home/qwq-32b-q4_k_m.gguf --ui-server
 candle-vllm --m Qwen/QwQ-32B-GGUF --f qwq-32b-q4_k_m.gguf --ui-server
 ```
+
+**多分片 GGUF：** 分片 GGUF 文件（如 `model-00001-of-00005.gguf`）支持自动发现 — 本地（从同一目录）和远程（从 HuggingFace 仓库）均可。当 `--f` 为子文件夹名（不以 `.gguf` 结尾）时，会下载该远程子文件夹中的所有 GGUF 文件。视觉塔辅助文件（`mmproj*.gguf`）在多模态模型中按需加载。
 
 </details>
 
@@ -342,9 +365,9 @@ MAP_NUMA_NODE=0,0,0,0 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,
 | `--h` | 绑定地址（默认 `0.0.0.0`），支持 `host`、`host:port`、`[ipv6]:port`、`tcp://host[:port]`、`file:///path`、`socket:///path`、`unix:///path` |
 | `--p` | 当 `--h` 未包含端口时使用的 TCP 服务端口（默认 `2000`） |
 | `--d` | 设备 ID（如 `--d 0,1`） |
-| `--m` | HuggingFace 模型 ID |
-| `--w` | 本地权重路径（Safetensors 文件夹） |
-| `--f` | 权重文件（GGUF 模型使用） |
+| `--m` | 模型来源：HuggingFace 模型 ID、本地目录或本地 `.gguf` 文件。目录中自动检测 GGUF 或 Safetensors |
+| `--w` | 本地权重目录（Safetensors 或 GGUF）。新命令建议使用 `--m <本地目录>` |
+| `--f` | GGUF 文件或子文件夹：`--m 仓库 --f 文件.gguf`（精确文件），`--m 仓库 --f 子文件夹`（下载路径下所有 GGUF），或本地 GGUF 路径 |
 | `--dtype` | 数据类型（`bf16`, `f16`） |
 | `--isq` | 原位量化：`q4_0`, `q4_1`, `q5_0`, `q5_1`, `q8_0`, `q2k`, `q3k`, `q4k`, `q5k`, `q6k` |
 | `--kvcache-dtype` | KV 缓存量化：`auto`, `fp8`, `turbo8`, `turbo4`, `turbo3` |

@@ -533,6 +533,7 @@ impl GatedDeltaNet {
                 &self.conv_weight,
                 self.conv_bias.as_ref(),
                 &mut conv_state,
+                None,
                 Some(cu_seqlens),
                 true, // SiLU activation
             )?;
@@ -593,6 +594,7 @@ impl GatedDeltaNet {
                     seq_slots,
                     &cu_seqlens,
                     self.scale as f32,
+                    None,
                 )?
             } else {
                 let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
@@ -606,6 +608,7 @@ impl GatedDeltaNet {
                     global_state,
                     seq_slots,
                     &cu_seqlens,
+                    None,
                 )?
             }
         } else {

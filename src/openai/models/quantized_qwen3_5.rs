@@ -1,17 +1,22 @@
+use super::layers::quantized_var_builder::VarBuilder as QVarBuilder;
 use super::rotary_emb::ScalingRotaryEmbedding;
 use super::{attention::QuantizedAttention, Config, KvCacheDtype, Qwen3HybridConfig};
 use crate::backend::progress::{ProgressLike, ProgressReporter};
+#[cfg(feature = "nccl")]
+use crate::openai::distributed::AllReduce;
+use crate::openai::distributed::{Comm, Rc, VocabParallelLinear};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::utils::{resolve_input_seqlens, resolve_mamba_seq_slots};
 use crate::InputMetadata;
 use attention_rs::gdn;
 use attention_rs::mamba_cache::MambaCache;
-use candle_core::quantized::{gguf_file, QMatMul};
+use candle_core::quantized::QMatMul;
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Embedding, Module};
 use either::Either;
 use parking_lot::{RwLock, RwLockWriteGuard};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Undo the GGUF tiled v-head layout along the leading dimension.
@@ -74,19 +79,30 @@ pub fn undo_tiled_v_heads_last_dim(
         .reshape(dims)
 }
 
-#[derive(Debug, Clone)]
 struct Mlp {
     feed_forward_w1: QMatMul,
     feed_forward_w2: QMatMul,
     feed_forward_w3: QMatMul,
+    #[cfg(feature = "nccl")]
+    all_reduce: Option<AllReduce>,
+    #[cfg(feature = "nccl")]
+    dtype: DType,
 }
 
-impl Module for Mlp {
+impl Mlp {
+    #[allow(unused_mut)]
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let w1 = self.feed_forward_w1.forward(xs)?;
         let w3 = self.feed_forward_w3.forward(xs)?;
-        self.feed_forward_w2
-            .forward(&(candle_nn::ops::silu(&w1)? * w3)?)
+        let mut y = self
+            .feed_forward_w2
+            .forward(&(candle_nn::ops::silu(&w1)? * w3)?)?;
+        #[cfg(feature = "nccl")]
+        if let Some(all_reduce) = &self.all_reduce {
+            y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
+            y = y.to_dtype(DType::F32)?;
+        }
+        Ok(y)
     }
 }
 
@@ -115,14 +131,15 @@ pub(crate) struct QuantizedGatedDeltaNet {
 }
 
 impl QuantizedGatedDeltaNet {
-    pub(crate) fn new<R: std::io::Seek + std::io::Read>(
-        ct: &gguf_file::Content,
-        reader: &mut R,
+    pub(crate) fn new(
+        vb: &QVarBuilder,
         prefix: &str,
         device: &Device,
         hybrid: &Qwen3HybridConfig,
         gdn_layer_idx: usize,
         rms_norm_eps: f64,
+        _rank: usize,
+        _world_size: usize,
     ) -> Result<Self> {
         let num_v_heads = hybrid.num_v_heads;
         let num_k_heads = hybrid.num_k_heads;
@@ -133,78 +150,109 @@ impl QuantizedGatedDeltaNet {
         let kv_group_size = num_v_heads / num_k_heads;
         let needs_untile = num_k_heads != num_v_heads;
 
+        let prefix_vb = vb.pp(prefix);
+
         let in_proj_qkv = if needs_untile {
-            let w = ct
-                .tensor(reader, &format!("{prefix}.attn_qkv.weight"), device)?
-                .dequantize(device)?;
+            let qt = prefix_vb.get_no_shape("attn_qkv.weight")?;
+            let orig_dtype = qt.dtype();
+            let w = qt.dequantize_f16(device)?;
+            drop(qt);
             let q = w.narrow(0, 0, key_dim)?;
             let k = w.narrow(0, key_dim, key_dim)?;
             let v_raw = w.narrow(0, key_dim * 2, value_dim)?;
             let v = undo_tiled_v_heads_first_dim(&v_raw, num_k_heads, num_v_heads, head_v_dim)?;
-            let restored = Tensor::cat(&[&q, &k, &v], 0)?;
-            QMatMul::Tensor(restored)
+            let restored = Tensor::cat(&[&q, &k, &v], 0)?.contiguous()?;
+            drop(w);
+            let last_dim = restored.dim(candle_core::D::Minus1)?;
+            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
+                candle_core::quantized::GgmlDType::Q8_0
+            } else {
+                orig_dtype
+            };
+            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
+                restored, wdtype,
+            )?))?
         } else {
-            QMatMul::from_qtensor(ct.tensor(
-                reader,
-                &format!("{prefix}.attn_qkv.weight"),
-                device,
-            )?)?
+            QMatMul::from_arc(prefix_vb.get_no_shape("attn_qkv.weight")?)?
         };
         let in_proj_z = if needs_untile {
-            let w = ct
-                .tensor(reader, &format!("{prefix}.attn_gate.weight"), device)?
-                .dequantize(device)?;
-            let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, head_v_dim)?;
-            QMatMul::Tensor(w)
+            let qt = prefix_vb.get_no_shape("attn_gate.weight")?;
+            let orig_dtype = qt.dtype();
+            let w = qt.dequantize_f16(device)?;
+            drop(qt);
+            let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, head_v_dim)?
+                .contiguous()?;
+            let last_dim = w.dim(candle_core::D::Minus1)?;
+            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
+                candle_core::quantized::GgmlDType::Q8_0
+            } else {
+                orig_dtype
+            };
+            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
+                w, wdtype,
+            )?))?
         } else {
-            QMatMul::from_qtensor(ct.tensor(
-                reader,
-                &format!("{prefix}.attn_gate.weight"),
-                device,
-            )?)?
+            QMatMul::from_arc(prefix_vb.get_no_shape("attn_gate.weight")?)?
         };
         let in_proj_b = if needs_untile {
-            let w = ct
-                .tensor(reader, &format!("{prefix}.ssm_beta.weight"), device)?
-                .dequantize(device)?;
-            let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, 1)?;
-            QMatMul::Tensor(w)
+            let qt = prefix_vb.get_no_shape("ssm_beta.weight")?;
+            let orig_dtype = qt.dtype();
+            let w = qt.dequantize_f16(device)?;
+            drop(qt);
+            let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, 1)?.contiguous()?;
+            let last_dim = w.dim(candle_core::D::Minus1)?;
+            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
+                candle_core::quantized::GgmlDType::Q8_0
+            } else {
+                orig_dtype
+            };
+            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
+                w, wdtype,
+            )?))?
         } else {
-            QMatMul::from_qtensor(ct.tensor(
-                reader,
-                &format!("{prefix}.ssm_beta.weight"),
-                device,
-            )?)?
+            QMatMul::from_arc(prefix_vb.get_no_shape("ssm_beta.weight")?)?
         };
         let in_proj_a = if needs_untile {
-            let w = ct
-                .tensor(reader, &format!("{prefix}.ssm_alpha.weight"), device)?
-                .dequantize(device)?;
-            let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, 1)?;
-            QMatMul::Tensor(w)
+            let qt = prefix_vb.get_no_shape("ssm_alpha.weight")?;
+            let orig_dtype = qt.dtype();
+            let w = qt.dequantize_f16(device)?;
+            drop(qt);
+            let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, 1)?.contiguous()?;
+            let last_dim = w.dim(candle_core::D::Minus1)?;
+            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
+                candle_core::quantized::GgmlDType::Q8_0
+            } else {
+                orig_dtype
+            };
+            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
+                w, wdtype,
+            )?))?
         } else {
-            QMatMul::from_qtensor(ct.tensor(
-                reader,
-                &format!("{prefix}.ssm_alpha.weight"),
-                device,
-            )?)?
+            QMatMul::from_arc(prefix_vb.get_no_shape("ssm_alpha.weight")?)?
         };
         let out_proj = if needs_untile {
-            let w = ct
-                .tensor(reader, &format!("{prefix}.ssm_out.weight"), device)?
-                .dequantize(device)?;
-            let v = undo_tiled_v_heads_last_dim(&w, num_k_heads, num_v_heads, head_v_dim)?;
-            QMatMul::Tensor(v)
+            let qt = prefix_vb.get_no_shape("ssm_out.weight")?;
+            let orig_dtype = qt.dtype();
+            let w = qt.dequantize_f16(device)?;
+            drop(qt);
+            let v = undo_tiled_v_heads_last_dim(&w, num_k_heads, num_v_heads, head_v_dim)?
+                .contiguous()?;
+            drop(w);
+            let last_dim = v.dim(candle_core::D::Minus1)?;
+            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
+                candle_core::quantized::GgmlDType::Q8_0
+            } else {
+                orig_dtype
+            };
+            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
+                v, wdtype,
+            )?))?
         } else {
-            QMatMul::from_qtensor(ct.tensor(
-                reader,
-                &format!("{prefix}.ssm_out.weight"),
-                device,
-            )?)?
+            QMatMul::from_arc(prefix_vb.get_no_shape("ssm_out.weight")?)?
         };
 
-        let conv_weight_raw = ct
-            .tensor(reader, &format!("{prefix}.ssm_conv1d.weight"), device)?
+        let conv_weight_raw = prefix_vb
+            .get_no_shape("ssm_conv1d.weight")?
             .dequantize(device)?;
         let conv_weight = if conv_weight_raw.dims().len() == 2 {
             conv_weight_raw.unsqueeze(1)?
@@ -220,8 +268,8 @@ impl QuantizedGatedDeltaNet {
         } else {
             conv_weight
         };
-        let conv_bias = ct
-            .tensor(reader, &format!("{prefix}.ssm_conv1d.bias"), device)
+        let conv_bias = prefix_vb
+            .get_no_shape("ssm_conv1d.bias")
             .ok()
             .map(|t| t.dequantize(device))
             .transpose()?;
@@ -240,9 +288,8 @@ impl QuantizedGatedDeltaNet {
             conv_bias
         };
 
-        // GGUF stores ssm_a as raw value; convert to A_log = (-a).log()
-        let a_raw = ct
-            .tensor(reader, &format!("{prefix}.ssm_a"), device)?
+        let a_raw = prefix_vb
+            .get_no_shape("ssm_a")?
             .dequantize(device)?
             .to_dtype(DType::F32)?;
         let a_log = a_raw.neg()?.log()?;
@@ -252,8 +299,8 @@ impl QuantizedGatedDeltaNet {
             a_log
         };
 
-        let dt_bias = ct
-            .tensor(reader, &format!("{prefix}.ssm_dt.bias"), device)?
+        let dt_bias = prefix_vb
+            .get_no_shape("ssm_dt.bias")?
             .dequantize(device)?
             .to_dtype(DType::F32)?;
         let dt_bias = if needs_untile {
@@ -262,12 +309,12 @@ impl QuantizedGatedDeltaNet {
             dt_bias
         };
 
-        let gdn_norm_weight = ct
-            .tensor(reader, &format!("{prefix}.ssm_norm.weight"), device)?
+        let gdn_norm_weight = prefix_vb
+            .get_no_shape("ssm_norm.weight")?
             .dequantize(device)?
             .to_dtype(DType::F32)?;
-        let gdn_norm_bias = ct
-            .tensor(reader, &format!("{prefix}.ssm_norm.bias"), device)
+        let gdn_norm_bias = prefix_vb
+            .get_no_shape("ssm_norm.bias")
             .ok()
             .map(|t| t.dequantize(device).and_then(|t| t.to_dtype(DType::F32)))
             .transpose()?;
@@ -355,6 +402,7 @@ impl QuantizedGatedDeltaNet {
                 &self.conv_weight,
                 self.conv_bias.as_ref(),
                 &mut conv_state,
+                None,
                 Some(cu_seqlens),
                 true,
             )?;
@@ -413,6 +461,7 @@ impl QuantizedGatedDeltaNet {
                     seq_slots,
                     cu_seqlens,
                     self.scale as f32,
+                    None,
                 )?
             } else {
                 let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
@@ -426,6 +475,7 @@ impl QuantizedGatedDeltaNet {
                     global_state,
                     seq_slots,
                     cu_seqlens,
+                    None,
                 )?
             }
         } else {
@@ -488,7 +538,7 @@ pub struct GGUFQWen3_5 {
     tok_embeddings: Embedding,
     layers: Vec<LayerWeights>,
     norm: QRmsNorm,
-    output: QMatMul,
+    output: VocabParallelLinear,
     mamba_cache: RwLock<MambaCache>,
     cfg: Config,
     dtype: DType,
@@ -496,11 +546,11 @@ pub struct GGUFQWen3_5 {
 }
 
 pub fn parse_gguf_hybrid_config(
-    ct: &gguf_file::Content,
+    metadata: &HashMap<String, candle_core::quantized::gguf_file::Value>,
     arch: &str,
     block_count: usize,
 ) -> Qwen3HybridConfig {
-    let md_get = |s: &str| ct.metadata.get(s);
+    let md_get = |s: &str| metadata.get(s);
 
     let layer_types: Vec<String> = if let Some(v) = md_get(&format!("{arch}.layer_types")) {
         if let Ok(arr) = v.to_vec() {
@@ -637,16 +687,20 @@ impl GGUFQWen3_5 {
         }
     }
 
-    pub fn from_gguf<R: std::io::Seek + std::io::Read>(
-        ct: &gguf_file::Content,
-        reader: &mut R,
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_gguf(
+        vb: &QVarBuilder,
         device: &Device,
         dtype: DType,
         kv_cache_dtype: DType,
         yarn_scaling_factor: Option<f64>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
+        rank: usize,
+        world_size: usize,
+        #[allow(unused_variables)] comm: Rc<Comm>,
     ) -> Result<Self> {
-        let md_get = |s: &str| match ct.metadata.get(s) {
+        let metadata = vb.first_content_metadata();
+        let md_get = |s: &str| match metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
             Some(v) => Ok(v),
         };
@@ -693,7 +747,7 @@ impl GGUFQWen3_5 {
             None
         };
 
-        let hybrid = parse_gguf_hybrid_config(ct, &arch, block_count);
+        let hybrid = parse_gguf_hybrid_config(&metadata, &arch, block_count);
 
         let extra_config_json = build_extra_config_json(&hybrid, &arch);
 
@@ -715,16 +769,23 @@ impl GGUFQWen3_5 {
         cfg.apply_runtime_rope_overrides(yarn_scaling_factor);
         let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, &cfg, device, true)?);
 
-        let tok_embeddings = ct.tensor(reader, "token_embd.weight", device)?;
+        let tok_embeddings = vb.get_no_shape("token_embd.weight")?;
+        let vocab_size = tok_embeddings.shape().dims()[0];
         let tok_embeddings = tok_embeddings.dequantize(device)?;
-        let norm = QRmsNorm::from_qtensor(
-            ct.tensor(reader, "output_norm.weight", device)?,
-            rms_norm_eps,
-        )?;
-        let output = match ct.tensor(reader, "output.weight", device) {
-            Ok(v) => QMatMul::from_qtensor(v)?,
-            _ => QMatMul::from_qtensor(ct.tensor(reader, "token_embd.weight", device)?)?,
+        let norm =
+            QRmsNorm::from_arc_qtensor(vb.get_no_shape("output_norm.weight")?, rms_norm_eps)?;
+        let output_tensor_name = if vb.contains_key("output.weight") {
+            "output.weight"
+        } else {
+            "token_embd.weight"
         };
+        let output = VocabParallelLinear::load_from_gguf(
+            vb,
+            output_tensor_name,
+            vocab_size,
+            comm.clone(),
+            dtype,
+        )?;
 
         let layer_types = &hybrid.layer_types;
         let mut layers = Vec::with_capacity(block_count);
@@ -740,55 +801,63 @@ impl GGUFQWen3_5 {
             let attn = if layer_type == "full_attention" {
                 AttnType::FullAttention(QuantizedAttention::new(
                     &cfg,
-                    ct,
-                    reader,
+                    vb,
                     &prefix,
                     device,
                     dtype,
                     rotary_emb.clone(),
                     cfg.sliding_window,
+                    rank,
+                    world_size,
+                    comm.clone(),
                 )?)
             } else {
                 let cur_gdn_idx = gdn_layer_idx;
                 gdn_layer_idx += 1;
                 AttnType::LinearAttention(QuantizedGatedDeltaNet::new(
-                    ct,
-                    reader,
+                    vb,
                     &prefix,
                     device,
                     &hybrid,
                     cur_gdn_idx,
                     rms_norm_eps,
+                    rank,
+                    world_size,
                 )?)
             };
 
             let mlp = {
+                let prefix_vb = vb.pp(&prefix);
                 let feed_forward_w1 =
-                    ct.tensor(reader, &format!("{prefix}.ffn_gate.weight"), device)?;
+                    prefix_vb.get_sharded_no_shape("ffn_gate.weight", 0, rank, world_size)?;
                 let feed_forward_w2 =
-                    ct.tensor(reader, &format!("{prefix}.ffn_down.weight"), device)?;
+                    prefix_vb.get_sharded_no_shape("ffn_down.weight", 1, rank, world_size)?;
                 let feed_forward_w3 =
-                    ct.tensor(reader, &format!("{prefix}.ffn_up.weight"), device)?;
+                    prefix_vb.get_sharded_no_shape("ffn_up.weight", 0, rank, world_size)?;
                 Mlp {
-                    feed_forward_w1: QMatMul::from_qtensor(feed_forward_w1)?,
-                    feed_forward_w2: QMatMul::from_qtensor(feed_forward_w2)?,
-                    feed_forward_w3: QMatMul::from_qtensor(feed_forward_w3)?,
+                    feed_forward_w1: QMatMul::from_arc(feed_forward_w1)?,
+                    feed_forward_w2: QMatMul::from_arc(feed_forward_w2)?,
+                    feed_forward_w3: QMatMul::from_arc(feed_forward_w3)?,
+                    #[cfg(feature = "nccl")]
+                    all_reduce: if world_size > 1 {
+                        Some(AllReduce::new(comm.clone()))
+                    } else {
+                        None
+                    },
+                    #[cfg(feature = "nccl")]
+                    dtype,
                 }
             };
 
-            let attention_norm =
-                ct.tensor(reader, &format!("{prefix}.attn_norm.weight"), device)?;
-            let ffn_norm = ct.tensor(
-                reader,
-                &format!("{prefix}.post_attention_norm.weight"),
-                device,
-            )?;
+            let prefix_vb = vb.pp(&prefix);
+            let attention_norm = prefix_vb.get_no_shape("attn_norm.weight")?;
+            let ffn_norm = prefix_vb.get_no_shape("post_attention_norm.weight")?;
 
             layers.push(LayerWeights {
                 attn,
-                attention_norm: QRmsNorm::from_qtensor(attention_norm, rms_norm_eps)?,
+                attention_norm: QRmsNorm::from_arc_qtensor(attention_norm, rms_norm_eps)?,
                 mlp,
-                ffn_norm: QRmsNorm::from_qtensor(ffn_norm, rms_norm_eps)?,
+                ffn_norm: QRmsNorm::from_arc_qtensor(ffn_norm, rms_norm_eps)?,
             });
             reporter.write().set_progress(layer_idx + 1);
         }

@@ -342,6 +342,7 @@ impl LLMEngine {
             max_context_len: payload.max_context_len,
             seqlens: payload.seqlens.clone(),
             flashinfer_metadata: None,
+            is_mtp_verify: false,
         };
 
         Ok(PreparedInputs {
@@ -519,6 +520,7 @@ impl LLMEngine {
                     params.out_dtype,
                     None,
                     Some(params.kv_dtype),
+                    false,
                 )?);
             }
         }

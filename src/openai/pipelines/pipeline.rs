@@ -4,6 +4,7 @@ use crate::backend::gguf;
 use crate::backend::graph::{CudaGraphFn, CudaGraphWrapper, GraphCapturer, ModelFn};
 use crate::backend::progress::{progress_worker, ProgressLike, ProgressReporter};
 use crate::openai::logits_processor::LogitsProcessor;
+use crate::openai::models::layers::quantized_var_builder::VarBuilder as QVarBuilder;
 use crate::openai::models::linear::set_linear_is_prefill;
 use crate::openai::models::TokenID;
 use crate::openai::multimodal::{get_image_config, ImageProcessConfig};
@@ -62,8 +63,7 @@ use hf_hub::{api::sync::ApiBuilder, Repo, RepoType};
 use parking_lot::RwLock;
 use rayon::prelude::*;
 use regex::Regex;
-use std::collections::HashMap;
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 pub use std::rc::Rc;
 use std::{path::PathBuf, sync::Arc};
@@ -322,6 +322,83 @@ impl DefaultLoader {
 }
 
 impl DefaultLoader {
+    fn has_gguf_extension(path: &Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("gguf"))
+            .unwrap_or(false)
+    }
+
+    fn find_main_gguf_in_dir(dir: &Path) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(dir).ok()?;
+        let mut candidates: Vec<(PathBuf, u64)> = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || !Self::has_gguf_extension(&path) {
+                continue;
+            }
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if Self::is_mmproj_filename(name) {
+                continue;
+            }
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            candidates.push((path, size));
+        }
+        if candidates.is_empty() {
+            return None;
+        }
+        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Some(candidates[0].0.clone())
+    }
+
+    fn local_gguf_model(main_file: &Path) -> Result<DefaultModelPaths> {
+        use crate::backend::gguf::find_gguf_shards;
+        if !main_file.exists() {
+            candle_core::bail!("GGUF file not found: {}", main_file.display());
+        }
+        let filenames = find_gguf_shards(main_file);
+        let auxiliary_filenames = Self::find_local_mmproj_file(&main_file)
+            .map(|p| {
+                info!(
+                    "Found auxiliary GGUF file for multimodal model: {}",
+                    p.display()
+                );
+                vec![p]
+            })
+            .unwrap_or_default();
+        Ok(DefaultModelPaths {
+            tokenizer_filename: PathBuf::new(),
+            tokenizer_config_filename: PathBuf::new(),
+            config_filename: PathBuf::new(),
+            filenames,
+            generation_config_filename: "".into(),
+            auxiliary_filenames,
+        })
+    }
+
+    fn local_safetensors_model(path: &str) -> Result<DefaultModelPaths> {
+        let path_owned = path.to_string();
+        Ok(DefaultModelPaths {
+            tokenizer_filename: Path::new(path).join("tokenizer.json"),
+            tokenizer_config_filename: Path::new(path).join("tokenizer_config.json"),
+            config_filename: Path::new(path).join("config.json"),
+            filenames: if Path::new(path)
+                .join("model.safetensors.index.json")
+                .exists()
+            {
+                crate::hub_load_local_safetensors(&path_owned, "model.safetensors.index.json")?
+            } else {
+                vec![Path::new(path).join("model.safetensors")]
+            },
+            generation_config_filename: if Path::new(path).join("generation_config.json").exists() {
+                Path::new(path).join("generation_config.json")
+            } else {
+                "".into()
+            },
+            auxiliary_filenames: vec![],
+        })
+    }
+
     pub fn prepare_model_weights(
         &self,
         hf_token: Option<String>,
@@ -332,104 +409,100 @@ impl DefaultLoader {
             &self.weight_path,
             &self.weight_file,
         ) {
-            //model in a folder (safetensor format, huggingface folder structure)
-            (None, Some(path), None) => (
-                DefaultModelPaths {
-                    tokenizer_filename: Path::new(path).join("tokenizer.json"),
-                    tokenizer_config_filename: Path::new(path).join("tokenizer_config.json"),
-                    config_filename: Path::new(path).join("config.json"),
-                    filenames: if Path::new(path)
-                        .join("model.safetensors.index.json")
-                        .exists()
-                    {
-                        crate::hub_load_local_safetensors(path, "model.safetensors.index.json")?
-                    } else {
-                        //a single weight file case
-                        let mut safetensors_files = Vec::<std::path::PathBuf>::new();
-                        safetensors_files.insert(0, Path::new(path).join("model.safetensors"));
-                        safetensors_files
-                    },
-                    generation_config_filename: if Path::new(path)
-                        .join("generation_config.json")
-                        .exists()
-                    {
-                        Path::new(path).join("generation_config.json")
-                    } else {
-                        "".into()
-                    },
-                    auxiliary_filenames: vec![],
-                },
-                false,
-            ),
-            //model in a quantized file (gguf/ggml format)
-            (None, path, Some(file)) => (
-                {
-                    let path = path.clone().unwrap_or_default();
-                    let main_file = Path::new(&path).join(file);
-                    if !main_file.exists() {
-                        panic!("Model file not found {file}");
-                    }
-                    let auxiliary_filenames = Self::find_local_mmproj_file(&main_file)
-                        .map(|p| {
-                            info!(
-                                "Found auxiliary GGUF file for multimodal model: {}",
-                                p.display()
-                            );
-                            vec![p]
-                        })
-                        .unwrap_or_default();
-                    DefaultModelPaths {
-                        tokenizer_filename: PathBuf::new(),
-                        tokenizer_config_filename: PathBuf::new(),
-                        config_filename: PathBuf::new(),
-                        filenames: vec![main_file],
-                        generation_config_filename: "".into(),
-                        auxiliary_filenames,
-                    }
-                },
-                true,
-            ),
-            (Some(_), None, Some(_)) => (self.download_gguf_model(None)?, true),
-            (Some(_), None, None) => {
-                //try download model anonymously
-                let loaded = self.download_model(None, hf_token.clone(), hf_token_path.clone());
-                if loaded.is_ok() {
-                    (loaded.unwrap(), false)
-                } else {
-                    //if it's failed, try using huggingface token
-                    info!("Try request model using cached huggingface token...");
-                    if hf_token.is_none() && hf_token_path.is_none() {
-                        //no token provided
-                        let token_path = format!(
-                            "{}/.cache/huggingface/token",
-                            dirs::home_dir().unwrap().display()
+            // --w <local_dir> (or --m normalized to weight_path)
+            (None, Some(path), None) => {
+                let trimmed = path.trim_end_matches(['/', '\\']);
+                let dir = Path::new(trimmed);
+                if dir.is_dir() {
+                    if let Some(main_gguf) = Self::find_main_gguf_in_dir(dir) {
+                        info!(
+                            "Auto-detected GGUF model in directory: {}",
+                            main_gguf.display()
                         );
-                        if !Path::new(&token_path).exists() {
-                            //also no token cache
-                            use std::io::Write;
-                            let mut input_token = String::new();
-                            warn!("Unable to request model, please provide your huggingface token to download model:\n");
-                            std::io::stdin()
-                                .read_line(&mut input_token)
-                                .expect("Failed to read token!");
-                            std::fs::create_dir_all(Path::new(&token_path).parent().unwrap())
-                                .unwrap();
-                            let mut output = std::fs::File::create(token_path).unwrap();
-                            write!(output, "{}", input_token.trim())
-                                .expect("Failed to save token!");
-                        }
+                        (Self::local_gguf_model(&main_gguf)?, true)
+                    } else {
+                        (Self::local_safetensors_model(trimmed)?, false)
                     }
-                    (
-                        self.download_model(None, hf_token.clone(), hf_token_path.clone())?,
-                        false,
-                    )
+                } else {
+                    (Self::local_safetensors_model(trimmed)?, false)
+                }
+            }
+            // --f <local_gguf> (with optional --w prefix)
+            (None, path, Some(file)) => {
+                let path = path.clone().unwrap_or_default();
+                let main_file = Path::new(&path).join(file);
+                (Self::local_gguf_model(&main_file)?, true)
+            }
+            // --m <model_id> --f <remote_gguf_file>
+            (Some(_), None, Some(_)) => (self.download_gguf_model(None)?, true),
+            // --m <model_id_or_path>
+            (Some(model), None, None) => {
+                let model_path = Path::new(model);
+                if model_path.exists() {
+                    if model_path.is_dir() {
+                        if let Some(main_gguf) = Self::find_main_gguf_in_dir(model_path) {
+                            info!(
+                                "Auto-detected GGUF model in directory: {}",
+                                main_gguf.display()
+                            );
+                            (Self::local_gguf_model(&main_gguf)?, true)
+                        } else {
+                            (
+                                Self::local_safetensors_model(
+                                    model_path.to_str().unwrap_or(model),
+                                )?,
+                                false,
+                            )
+                        }
+                    } else if model_path.is_file() && Self::has_gguf_extension(model_path) {
+                        (Self::local_gguf_model(model_path)?, true)
+                    } else {
+                        candle_core::bail!(
+                            "--m local file must be a .gguf file. Use --m <dir> for safetensors."
+                        );
+                    }
+                } else {
+                    let loaded = self.download_model(None, hf_token.clone(), hf_token_path.clone());
+                    if loaded.is_ok() {
+                        (loaded.unwrap(), false)
+                    } else {
+                        info!("Try request model using cached huggingface token...");
+                        if hf_token.is_none() && hf_token_path.is_none() {
+                            let token_path = format!(
+                                "{}/.cache/huggingface/token",
+                                dirs::home_dir().unwrap().display()
+                            );
+                            if !Path::new(&token_path).exists() {
+                                use std::io::Write;
+                                let mut input_token = String::new();
+                                warn!("Unable to request model, please provide your huggingface token to download model:\n");
+                                std::io::stdin()
+                                    .read_line(&mut input_token)
+                                    .expect("Failed to read token!");
+                                std::fs::create_dir_all(Path::new(&token_path).parent().unwrap())
+                                    .unwrap();
+                                let mut output = std::fs::File::create(token_path).unwrap();
+                                write!(output, "{}", input_token.trim())
+                                    .expect("Failed to save token!");
+                            }
+                        }
+                        (
+                            self.download_model(None, hf_token.clone(), hf_token_path.clone())?,
+                            false,
+                        )
+                    }
                 }
             }
             _ => {
-                candle_core::bail!("No model id or weight_path/weight_file provided!\n***Tips***: \n \t For local model weights, \
-                    `--w <path/to/folder>` for safetensors models or `--f <path/to/gguf/file>` for gguf models.\n \
-                    \t For remote safetensor models, `--m <model_id>` to download from HuggingFace hub. \
-                    \n \t For remote gguf models, `--m <model_id> --f <weight_file>` to download from HuggingFace hub.");
+                candle_core::bail!(
+                    "No model provided!\n\
+                    Usage:\n  \
+                    Local GGUF:        --m /path/to/model.gguf  OR  --f /path/to/model.gguf\n  \
+                    Local GGUF dir:    --m /path/to/gguf_dir/\n  \
+                    Local safetensors: --m /path/to/hf_dir/  OR  --w /path/to/hf_dir/\n  \
+                    Remote safetensors: --m org/model_name\n  \
+                    Remote GGUF:       --m org/repo-GGUF --f filename.gguf"
+                );
             }
         };
 
@@ -500,14 +573,42 @@ impl DefaultLoader {
         })
     }
 
+    fn discover_remote_gguf_shards(filename: &str, remote_files: &HashSet<String>) -> Vec<String> {
+        let re = Regex::new(r"^(.+)-(\d{5})-of-(\d{5})\.gguf$").unwrap();
+        let Some(caps) = re.captures(filename) else {
+            return vec![filename.to_string()];
+        };
+        let prefix = &caps[1];
+        let total: usize = caps[3].parse().unwrap_or(1);
+
+        let mut shards: Vec<String> = (1..=total)
+            .map(|i| format!("{}-{:05}-of-{:05}.gguf", prefix, i, total))
+            .filter(|name| remote_files.contains(name))
+            .collect();
+
+        if shards.len() != total {
+            warn!(
+                "Expected {} remote GGUF shards but found {}; using only {}",
+                total,
+                shards.len(),
+                filename
+            );
+            return vec![filename.to_string()];
+        }
+
+        shards.sort();
+        info!("Found {} remote GGUF shards for {}", shards.len(), prefix);
+        shards
+    }
+
     pub fn download_gguf_model(&self, revision: Option<String>) -> Result<DefaultModelPaths> {
         assert!(self.model_id.is_some(), "No model id provided!");
+        let mut filename = self.weight_file.clone().unwrap();
         info!(
             "Downloading GGUF file {} from repo {}",
-            self.weight_file.as_ref().unwrap(),
+            filename,
             self.model_id.as_ref().unwrap(),
         );
-        let filename = self.weight_file.clone().unwrap();
         let api = hf_hub::api::sync::Api::new().unwrap();
         let revision = revision.unwrap_or("main".to_string());
         let repo = api.repo(hf_hub::Repo::with_revision(
@@ -517,16 +618,57 @@ impl DefaultLoader {
         ));
 
         let repo_info = repo.info().map_err(candle_core::Error::wrap)?;
-        let mmproj_name = Self::pick_mmproj_filename(
-            repo_info.siblings.iter().map(|s| s.rfilename.as_str()),
-            Some(&filename),
-        );
+        let remote_files: HashSet<String> = repo_info
+            .siblings
+            .iter()
+            .map(|s| s.rfilename.clone())
+            .collect();
+
+        // If --f is a subfolder (no .gguf extension), discover GGUF files in it
+        if !filename.ends_with(".gguf") {
+            let subfolder = filename.trim_end_matches('/').to_string();
+            let prefix = format!("{}/", subfolder);
+            let mut gguf_files: Vec<String> = remote_files
+                .iter()
+                .filter(|f| {
+                    f.starts_with(&prefix)
+                        && f.ends_with(".gguf")
+                        && !Self::is_mmproj_filename(f.rsplit('/').next().unwrap_or(f))
+                })
+                .cloned()
+                .collect();
+            gguf_files.sort();
+            if gguf_files.is_empty() {
+                candle_core::bail!(
+                    "No GGUF files found in subfolder '{}' of repo {}. \
+                     Available files: {:?}",
+                    subfolder,
+                    self.model_id.as_ref().unwrap(),
+                    remote_files.iter().take(20).collect::<Vec<_>>()
+                );
+            }
+            info!(
+                "Subfolder '{}' contains {} GGUF file(s); using '{}' as primary",
+                subfolder,
+                gguf_files.len(),
+                gguf_files[0]
+            );
+            filename = gguf_files[0].clone();
+        }
+
+        let mmproj_name =
+            Self::pick_mmproj_filename(remote_files.iter().map(|s| s.as_str()), Some(&filename));
+
+        let shard_names = Self::discover_remote_gguf_shards(&filename, &remote_files);
 
         let mut filenames = vec![];
-        let downloaded = repo
-            .get(filename.as_str())
-            .map_err(candle_core::Error::wrap)?;
-        filenames.push(downloaded);
+        for shard_name in &shard_names {
+            info!("Downloading GGUF: {}", shard_name);
+            let downloaded = repo
+                .get(shard_name.as_str())
+                .map_err(candle_core::Error::wrap)?;
+            filenames.push(downloaded);
+        }
 
         let mut auxiliary_filenames = Vec::new();
         if let Some(mmproj_name) = mmproj_name {
@@ -626,20 +768,55 @@ impl DefaultLoader {
             };
             let handle =
                 progress_worker(Some(num_subprogress), nlayers, Arc::clone(&reporter)).await;
-            let mut file = std::fs::File::open(path.clone()).map_err(candle_core::Error::wrap)?;
-            let content = gguf_file::Content::read(&mut file)
-                .map_err(|e| e.with_path(path.clone()))
+            let gguf_shard_paths = paths.get_weight_filenames();
+            if gguf_shard_paths.len() > 1 {
+                info!(
+                    "Loading {} GGUF shard files for model",
+                    gguf_shard_paths.len()
+                );
+            }
+            let vb = QVarBuilder::from_gguf_files(&gguf_shard_paths, &device)
                 .map_err(candle_core::Error::wrap)?;
+            let gguf_rank = local_rank.unwrap_or(0);
+            let gguf_world_size = pipeline_num_shards;
+            #[cfg(feature = "nccl")]
+            let gguf_comm: crate::openai::distributed::Rc<
+                crate::openai::distributed::Comm,
+            > = {
+                use crate::openai::distributed::{Comm, Id, Rc};
+                let id = if let Some(id) = comm_id {
+                    id
+                } else {
+                    Id::new().unwrap()
+                };
+                let global_r = global_rank.unwrap_or(gguf_rank);
+                let global_ws = global_world_size.unwrap_or(gguf_world_size);
+                Rc::new(
+                    Comm::from_rank(
+                        device.as_cuda_device().unwrap().cuda_device(),
+                        global_r,
+                        global_ws,
+                        id,
+                    )
+                    .expect("Failed to create NCCL communicator for GGUF"),
+                )
+            };
+            #[cfg(not(feature = "nccl"))]
+            let gguf_comm =
+                crate::openai::distributed::Rc::new(crate::openai::distributed::Comm::default());
+
             let (model, config, sep_style) = match arch.as_str() {
                 "llama" => {
                     let model = GGUFLLaMa::from_gguf(
-                        &content,
-                        &mut file,
+                        &vb,
                         &device,
                         dtype,
                         kv_cache_dtype,
                         self.yarn_scaling_factor,
                         Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -651,13 +828,15 @@ impl DefaultLoader {
                 }
                 "llama3" => {
                     let model = GGUFLLaMa::from_gguf(
-                        &content,
-                        &mut file,
+                        &vb,
                         &device,
                         dtype,
                         kv_cache_dtype,
                         self.yarn_scaling_factor,
                         Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -669,13 +848,15 @@ impl DefaultLoader {
                 }
                 "phi3" => {
                     let model = GGUFPhi3::from_gguf(
-                        &content,
-                        &mut file,
+                        &vb,
                         &device,
                         dtype,
                         kv_cache_dtype,
                         self.yarn_scaling_factor,
                         Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -687,13 +868,15 @@ impl DefaultLoader {
                 }
                 "qwen2" | "qwen3" => {
                     let model = GGUFQWen::from_gguf(
-                        &content,
-                        &mut file,
+                        &vb,
                         &device,
                         dtype,
                         kv_cache_dtype,
                         self.yarn_scaling_factor,
                         Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -705,13 +888,15 @@ impl DefaultLoader {
                 }
                 "qwen2moe" | "qwen3moe" => {
                     let model = GGUFQWenMoE::from_gguf(
-                        &content,
-                        &mut file,
+                        &vb,
                         &device,
                         dtype,
                         kv_cache_dtype,
                         self.yarn_scaling_factor,
                         Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -723,13 +908,15 @@ impl DefaultLoader {
                 }
                 "qwen35" => {
                     let model = GGUFQWen3_5::from_gguf(
-                        &content,
-                        &mut file,
+                        &vb,
                         &device,
                         dtype,
                         kv_cache_dtype,
                         self.yarn_scaling_factor,
                         Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -773,13 +960,15 @@ impl DefaultLoader {
                 }
                 "qwen35moe" => {
                     let model = GGUFQWen3_5MoE::from_gguf(
-                        &content,
-                        &mut file,
+                        &vb,
                         &device,
                         dtype,
                         kv_cache_dtype,
                         self.yarn_scaling_factor,
                         Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -823,13 +1012,15 @@ impl DefaultLoader {
                 }
                 "glm4" => {
                     let model = GGUFGLM4::from_gguf(
-                        &content,
-                        &mut file,
+                        &vb,
                         &device,
                         dtype,
                         kv_cache_dtype,
                         self.yarn_scaling_factor,
                         Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -1458,9 +1649,13 @@ impl DefaultLoader {
                     (tokenizer, chat_template, bos, eos)
                 } else if gguf {
                     use crate::backend::gguf::{get_gguf_info, Content, GGUFInfo};
-                    let filename = paths.get_weight_filenames()[0].clone();
-                    let mut reader = std::fs::File::open(filename).unwrap();
-                    let mut readers = vec![&mut reader];
+                    let gguf_paths = paths.get_weight_filenames();
+                    let mut files: Vec<std::fs::File> = gguf_paths
+                        .iter()
+                        .map(|p| std::fs::File::open(p).unwrap())
+                        .collect();
+                    let mut readers: Vec<&mut std::fs::File> =
+                        files.iter_mut().collect();
                     let content = Content::from_readers(&mut readers).unwrap();
                     let GGUFInfo {
                         tokenizer,
