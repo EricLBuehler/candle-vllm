@@ -56,6 +56,7 @@ struct FusedMoe {
     norm_topk_prob: bool,
     routed_scaling_factor: Option<f64>,
     num_experts_per_tok: usize,
+    e_score_correction_bias: Option<Tensor>,
     #[cfg(feature = "nccl")]
     all_reduce: Option<AllReduce>,
     dtype: DType,
@@ -77,7 +78,11 @@ impl FusedMoe {
             xs.to_owned()
         };
 
-        let router_logits = self.gate.forward(&xs)?;
+        let mut router_logits = self.gate.forward(&xs)?;
+
+        if let Some(bias) = &self.e_score_correction_bias {
+            router_logits = router_logits.broadcast_add(&bias.to_dtype(DType::F32)?)?;
+        }
 
         let (mut topk_weights, topk_ids) =
             attention_rs::topk::topk_softmax(&router_logits, self.num_experts_per_tok)?;
@@ -137,6 +142,35 @@ impl FusedMoe {
         }
         ys.to_dtype(original_dtype)
     }
+}
+
+fn try_load_e_score_correction_bias(
+    vb: &QVarBuilder,
+    prefix: &str,
+    _num_experts: usize,
+    device: &Device,
+) -> Option<Tensor> {
+    let prefix_vb = vb.pp(prefix);
+    prefix_vb
+        .get_no_shape("ffn_gate_inp.e_score_correction_bias")
+        .ok()
+        .and_then(|qt| qt.dequantize(device).ok())
+        .or_else(|| {
+            prefix_vb
+                .get_no_shape("e_score_correction_bias")
+                .ok()
+                .and_then(|qt| qt.dequantize(device).ok())
+        })
+        .or_else(|| {
+            prefix_vb
+                .get_no_shape("exp_probs_b.bias")
+                .ok()
+                .and_then(|qt| qt.dequantize(device).ok())
+        })
+        .map(|t| {
+            let t = t.to_dtype(DType::F32).unwrap_or_else(|_| t.clone());
+            t.flatten_all().unwrap_or(t)
+        })
 }
 
 enum MoeOrMlp {
@@ -431,6 +465,12 @@ impl GGUFQWen3_5MoE {
                     prefix_vb.get_sharded_no_shape("ffn_up_exps.weight", 1, rank, world_size)?;
                 let down_experts =
                     prefix_vb.get_sharded_no_shape("ffn_down_exps.weight", 2, rank, world_size)?;
+                let bias = try_load_e_score_correction_bias(
+                    vb,
+                    &prefix,
+                    moe_cfg.num_experts.unwrap_or(0),
+                    device,
+                );
                 let moe = FusedMoe {
                     gate: QMatMul::from_arc(gate)?,
                     gate_experts,
@@ -440,6 +480,7 @@ impl GGUFQWen3_5MoE {
                     norm_topk_prob: moe_cfg.norm_topk_prob,
                     routed_scaling_factor: moe_cfg.routed_scaling_factor,
                     num_experts_per_tok: moe_cfg.num_experts_per_tok,
+                    e_score_correction_bias: bias,
                     #[cfg(feature = "nccl")]
                     all_reduce: if world_size > 1 {
                         Some(AllReduce::new(comm.clone()))

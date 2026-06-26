@@ -21,7 +21,6 @@ use axum::{
     extract::{Json, State},
     response::Sse,
 };
-use flume;
 use std::env;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -366,7 +365,11 @@ pub async fn chat_completions(
 
     let prefilled_reasoning_end = detect_prefilled_reasoning_end_marker(&prompt);
 
-    let (response_tx, rx) = flume::unbounded();
+    let sse_buffer_size: usize = env::var("XINFER_SSE_BUFFER_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1024);
+    let (response_tx, rx) = tokio::sync::mpsc::channel(sse_buffer_size);
     tracing::info!("{:?}", sampling_params);
 
     let data_clone = data.clone();
@@ -614,7 +617,11 @@ pub async fn create_embeddings(
         Err(e) => return ChatResponder::ValidationError(e),
     };
 
-    let (response_tx, rx) = flume::unbounded();
+    let sse_buffer_size2: usize = env::var("XINFER_SSE_BUFFER_SIZE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1024);
+    let (response_tx, mut rx) = tokio::sync::mpsc::channel(sse_buffer_size2);
 
     let request_id_clone = request_id.clone();
 
@@ -645,10 +652,10 @@ pub async fn create_embeddings(
 
     // Wait for response from channel
     // Embedding is strictly one response.
-    match rx.recv_async().await {
-        Ok(ChatResponse::Embedding(resp)) => ChatResponder::Embedding(resp),
-        Ok(ChatResponse::ModelError(e)) => ChatResponder::ModelError(APIError::new_str(&e)),
-        Ok(_) => ChatResponder::InternalError(APIError::new(format!("Unexpected response type"))),
-        Err(_) => ChatResponder::InternalError(APIError::new("Channel closed".to_string())),
+    match rx.recv().await {
+        Some(ChatResponse::Embedding(resp)) => ChatResponder::Embedding(resp),
+        Some(ChatResponse::ModelError(e)) => ChatResponder::ModelError(APIError::new_str(&e)),
+        Some(_) => ChatResponder::InternalError(APIError::new(format!("Unexpected response type"))),
+        None => ChatResponder::InternalError(APIError::new("Channel closed".to_string())),
     }
 }

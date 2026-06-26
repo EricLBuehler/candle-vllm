@@ -84,19 +84,43 @@ pub struct MaxModelLen(
     #[serde(with = "either::serde_untagged")] pub Either<Option<usize>, Option<f64>>,
 );
 
-#[derive(Clone, Debug, serde::Deserialize)]
-#[allow(unused)]
-pub struct TokenContent {
-    content: Option<String>,
-    lstrip: Option<bool>,
-    normalized: Option<bool>,
-    rstrip: Option<bool>,
-    single_word: Option<bool>,
+fn deserialize_token_field<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    struct TokenVisitor;
+    impl<'de> de::Visitor<'de> for TokenVisitor {
+        type Value = Option<String>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("a string, an AddedToken object with 'content', or null")
+        }
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_owned()))
+        }
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            Ok(Some(v))
+        }
+        fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            let mut content: Option<String> = None;
+            while let Some(key) = map.next_key::<String>()? {
+                if key == "content" {
+                    content = map.next_value()?;
+                } else {
+                    let _ = map.next_value::<de::IgnoredAny>()?;
+                }
+            }
+            Ok(content)
+        }
+    }
+    deserializer.deserialize_any(TokenVisitor)
 }
-#[derive(Deserialize, Debug, Clone)]
-pub struct BosEosToken(
-    #[serde(with = "either::serde_untagged")] pub Either<Option<String>, Option<TokenContent>>,
-);
 
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct TokenizerConfig {
@@ -104,8 +128,10 @@ pub struct TokenizerConfig {
     pub add_bos_token: Option<bool>,
     pub add_eos_token: Option<bool>,
     pub chat_template: Option<String>,
-    pub bos_token: Option<BosEosToken>,
-    pub eos_token: Option<BosEosToken>,
+    #[serde(default, deserialize_with = "deserialize_token_field")]
+    pub bos_token: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_token_field")]
+    pub eos_token: Option<String>,
 }
 
 pub struct OpenAIServerData {

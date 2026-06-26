@@ -297,7 +297,6 @@ where
     fn replay(&self, bs: usize) -> Result<()> {
         if let Some(&next_bs) = self.captured_bs.iter().find(|&&x| x >= bs) {
             if let Some(graph) = self.captured_graphs.get(&next_bs) {
-                self.sync_stream()?;
                 graph.replay()?;
                 self.sync_stream()
             } else {

@@ -205,6 +205,9 @@ impl DaemonManager {
     pub fn new_multi_node(config: &MultiNodeConfig) -> (Self, Id) {
         let (id, tcp_worker_streams, tcp_master_stream) = if config.is_master() {
             let id = Id::new().unwrap();
+            #[cfg(target_arch = "aarch64")]
+            let raw_id: &[u8; 128] = id.internal();
+            #[cfg(not(target_arch = "aarch64"))]
             let raw_id: &[i8; 128] = id.internal();
             let raw_bytes: &[u8] =
                 unsafe { std::slice::from_raw_parts(raw_id.as_ptr() as *const u8, 128) };
