@@ -6,6 +6,7 @@ use crate::backend::progress::{ProgressLike, ProgressReporter};
 #[cfg(feature = "nccl")]
 use crate::openai::distributed::AllReduce;
 use crate::openai::distributed::{Comm, Rc, VocabParallelLinear};
+use crate::openai::models::layers::moe::sort_expert_assignments;
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::linear::Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
@@ -94,8 +95,7 @@ impl FusedMoe {
             topk_weights = (topk_weights * factor)?;
         }
 
-        let flat = topk_ids.flatten_all()?;
-        let (expert_ids, sorted_token_ids) = flat.sort_last_dim(true)?;
+        let (expert_ids, sorted_token_ids) = sort_expert_assignments(&topk_ids, is_prefill)?;
 
         let ys = {
             let gate = attention_rs::moe::moe_gemm_gguf(

@@ -33,7 +33,10 @@ fn gated_activation(gate_up: &Tensor, half_dim: usize, act: &Activation) -> Resu
     }
 }
 
-fn sort_expert_assignments(topk_ids: &Tensor, is_prefill: bool) -> Result<(Tensor, Tensor)> {
+pub(crate) fn sort_expert_assignments(
+    topk_ids: &Tensor,
+    is_prefill: bool,
+) -> Result<(Tensor, Tensor)> {
     let flat = topk_ids.flatten_all()?;
     if is_prefill {
         flat.sort(true)
