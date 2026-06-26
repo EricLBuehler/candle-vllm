@@ -365,7 +365,7 @@ pub async fn chat_completions(
 
     let prefilled_reasoning_end = detect_prefilled_reasoning_end_marker(&prompt);
 
-    let sse_buffer_size: usize = env::var("XINFER_SSE_BUFFER_SIZE")
+    let sse_buffer_size: usize = env::var("CANDLE_VLLM_SSE_BUFFER_SIZE")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1024);
@@ -617,7 +617,7 @@ pub async fn create_embeddings(
         Err(e) => return ChatResponder::ValidationError(e),
     };
 
-    let sse_buffer_size2: usize = env::var("XINFER_SSE_BUFFER_SIZE")
+    let sse_buffer_size2: usize = env::var("CANDLE_VLLM_SSE_BUFFER_SIZE")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(1024);
