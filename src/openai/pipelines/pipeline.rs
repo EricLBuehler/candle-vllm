@@ -10,7 +10,7 @@ use crate::openai::models::TokenID;
 use crate::openai::multimodal::{get_image_config, ImageProcessConfig};
 use crate::openai::requests::StopTokens;
 use crate::openai::sampling_params::{GenerationConfig, Logprobs, TopLogprob};
-use crate::openai::{BosEosToken, TokenizerConfig};
+use crate::openai::TokenizerConfig;
 use crate::scheduler::sequence::{Sequence, SequenceGroup};
 use crate::tools::stream_parser::{ToolConfig, ToolModelType};
 #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
@@ -1598,26 +1598,11 @@ impl DefaultLoader {
                             std::fs::read_to_string(tokenizer_cfg_file).ok();
                         let cfg_tokenizer: TokenizerConfig =
                             serde_json::from_str(tokenizer_cfg.unwrap().as_str()).unwrap();
-                        let bos = if cfg_tokenizer.bos_token.is_some() {
-                            match cfg_tokenizer.bos_token.unwrap() {
-                                BosEosToken(Either::Left(Some(id))) => Some(id),
-                                BosEosToken(Either::Right(Some(content))) => content.content.clone(),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        };
-                        let eos = if cfg_tokenizer.eos_token.is_some() {
-                            match cfg_tokenizer.eos_token.unwrap() {
-                                BosEosToken(Either::Left(Some(id))) => Some(id),
-                                BosEosToken(Either::Right(Some(content))) => content.content.clone(),
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        };
-
-                        (cfg_tokenizer.chat_template, bos, eos)
+                        (
+                            cfg_tokenizer.chat_template,
+                            cfg_tokenizer.bos_token,
+                            cfg_tokenizer.eos_token,
+                        )
                     } else {
                         (None, None, None)
                     };

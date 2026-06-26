@@ -9,8 +9,8 @@ use crate::openai::sampling_params::{Logprobs, SamplingParams};
 use crate::openai::streaming::ChatResponse;
 use crate::tools::stream_parser::StreamToolParser;
 use crate::tools::{Tool, ToolCall};
-use flume::Sender;
 use std::time::SystemTime;
+use tokio::sync::mpsc::Sender;
 #[derive(Clone, PartialEq)]
 pub enum SequenceStatus {
     FinishedIgnored,

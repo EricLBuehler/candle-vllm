@@ -834,7 +834,7 @@ impl Engine {
 
         let request_id = format!("embd-{}", uuid::Uuid::new_v4());
 
-        let (tx, rx) = flume::unbounded();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
 
         {
             let mut e = self.engine.write();
@@ -866,31 +866,31 @@ impl Engine {
             request_id
         );
 
-        match rx.recv_async().await {
-            Ok(ChatResponse::Embedding(resp)) => {
+        match rx.recv().await {
+            Some(ChatResponse::Embedding(resp)) => {
                 info!(
                     "[embed_async] Request {} completed successfully",
                     request_id
                 );
                 Ok(resp)
             }
-            Ok(ChatResponse::ModelError(e)) => {
+            Some(ChatResponse::ModelError(e)) => {
                 warn!(
                     "[embed_async] Request {} failed with model error: {}",
                     request_id, e
                 );
                 Err(candle_core::Error::msg(e.to_string()))
             }
-            Ok(_) => {
+            Some(_) => {
                 warn!(
                     "[embed_async] Request {} received unexpected response type",
                     request_id
                 );
                 Err(candle_core::Error::msg("Unexpected response type"))
             }
-            Err(e) => {
-                warn!("[embed_async] Request {} channel error: {}", request_id, e);
-                Err(candle_core::Error::msg(e.to_string()))
+            None => {
+                warn!("[embed_async] Request {} channel closed", request_id);
+                Err(candle_core::Error::msg("Channel closed"))
             }
         }
     }

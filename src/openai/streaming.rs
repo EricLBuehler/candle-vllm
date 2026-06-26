@@ -1,13 +1,13 @@
 use super::responses::{ChatCompletionChunk, EmbeddingResponse};
 use crate::openai::logger::ChatCompletionLogger;
 use axum::response::sse::Event;
-use flume::Receiver;
 use futures::Stream;
 use std::{
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
 };
+use tokio::sync::mpsc;
 
 #[derive(PartialEq)]
 pub enum StreamingStatus {
@@ -26,7 +26,7 @@ pub enum ChatResponse {
 }
 
 pub struct Streamer {
-    pub rx: Receiver<ChatResponse>,
+    pub rx: mpsc::Receiver<ChatResponse>,
     pub status: StreamingStatus,
     pub logger: Option<Arc<ChatCompletionLogger>>,
 }
@@ -34,12 +34,12 @@ pub struct Streamer {
 impl Stream for Streamer {
     type Item = Result<Event, axum::Error>;
 
-    fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.status == StreamingStatus::Stopped {
             return Poll::Ready(None);
         }
-        match self.rx.try_recv() {
-            Ok(resp) => match resp {
+        match self.rx.poll_recv(cx) {
+            Poll::Ready(Some(resp)) => match resp {
                 ChatResponse::InternalError(e) => {
                     if let Some(logger) = &self.logger {
                         logger.log_error(&e);
@@ -95,15 +95,13 @@ impl Stream for Streamer {
                     Poll::Ready(Some(Ok(Event::default().data("[DONE]"))))
                 }
             },
-            Err(e) => {
-                if self.status == StreamingStatus::Started && e == flume::TryRecvError::Disconnected
-                {
+            Poll::Ready(None) => {
+                if self.status == StreamingStatus::Started {
                     self.status = StreamingStatus::Interrupted;
-                    Poll::Ready(None)
-                } else {
-                    Poll::Pending
                 }
+                Poll::Ready(None)
             }
+            Poll::Pending => Poll::Pending,
         }
     }
 }

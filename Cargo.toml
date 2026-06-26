@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.8.4"
+version = "0.8.5"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -16,7 +16,6 @@ path = "src/main.rs"
 axum = { version = "0.8.9", features = ["tokio"] }
 utoipa = { version = "4.2", features = ["axum_extras"] }
 tower-http = { version = "0.6.6", features = ["cors"]}
-flume = "0.10.14"
 #actix-web = "4.8.0"
 anyhow = "1.0.75"
 rand = "0.9.0"

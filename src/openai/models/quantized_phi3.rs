@@ -22,6 +22,7 @@ struct QLinear {
 }
 
 impl QLinear {
+    #[allow(dead_code)]
     fn new(vb: &QVarBuilder, name: &str) -> Result<Self> {
         let w = vb.get_no_shape(&format!("{name}.weight"))?;
         let inner = candle_core::quantized::QMatMul::from_arc(w)?;

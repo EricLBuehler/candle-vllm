@@ -51,7 +51,6 @@ use crate::{
 };
 use candle_core::{Result, Tensor};
 use either::Either;
-use flume::Sender;
 use parking_lot::RwLock;
 #[cfg(feature = "nccl")]
 use rayon::iter::IntoParallelRefIterator;
@@ -64,6 +63,7 @@ use std::{
     iter::zip,
     sync::Arc,
 };
+use tokio::sync::mpsc::Sender;
 use tokio::sync::Notify;
 #[allow(unused_imports)]
 use tracing::{debug, info, warn};
@@ -257,7 +257,7 @@ impl LLMEngine {
             .iter()
             .filter_map(|group| {
                 let sender = group.sender.as_ref()?;
-                if sender.is_disconnected() {
+                if sender.is_closed() {
                     Some(Self::primary_sequence(group).deref().get_id())
                 } else {
                     None
@@ -973,7 +973,7 @@ impl LLMEngine {
                 .senders
                 .get(&task.request_id)
                 .and_then(|sender| sender.as_ref())
-                .is_some_and(|sender| sender.is_disconnected());
+                .is_some_and(|sender| sender.is_closed());
             if disconnected {
                 warn!(
                     "Dropping disconnected streaming request {} before scheduling",
@@ -1390,7 +1390,7 @@ impl LLMEngine {
         if !scheduler_outputs.ignored_seq_groups.is_empty() {
             for group in scheduler_outputs.ignored_seq_groups.iter() {
                 if let Some(sender) = &group.sender {
-                    let _ = sender.send(ChatResponse::ModelError(
+                    let _ = sender.try_send(ChatResponse::ModelError(
                         candle_core::Error::msg("Ignored sequence group: allocation impossible")
                             .to_string(),
                     ));
@@ -1441,8 +1441,8 @@ impl LLMEngine {
 
         for group in &scheduled {
             if let Some(sender) = &group.sender {
-                let _ = sender.send(ChatResponse::ModelError(message.clone()));
-                let _ = sender.send(ChatResponse::Done);
+                let _ = sender.try_send(ChatResponse::ModelError(message.clone()));
+                let _ = sender.try_send(ChatResponse::Done);
             }
         }
 
@@ -1640,7 +1640,7 @@ impl LLMEngine {
                         total_tokens: prompt_len,
                     },
                 };
-                let _ = sender.send(ChatResponse::Embedding(response));
+                let _ = sender.try_send(ChatResponse::Embedding(response));
             } else {
                 tracing::error!("No sender for embedding group!");
             }
@@ -2117,10 +2117,10 @@ impl LLMEngine {
                                     Some(usage),
                                     pipeline,
                                 );
-                                let _ = sender.send(ChatResponse::Chunk(usage_chunk));
+                                let _ = sender.try_send(ChatResponse::Chunk(usage_chunk));
                             }
                         }
-                        let _ = sender.send(ChatResponse::Done);
+                        let _ = sender.try_send(ChatResponse::Done);
                     } else {
                         aborted_sequences.push(seq.deref().get_id());
                     }

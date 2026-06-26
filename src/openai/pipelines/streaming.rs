@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use flume::Sender;
+use tokio::sync::mpsc::Sender;
 
 use super::{
     BufferedFinalizeResult, ChatCompletionChunk, ChatCompletionUsageResponse, Choice, ChoiceData,
@@ -119,7 +119,7 @@ impl LLMEngine {
             None,
             pipeline,
         );
-        sender.send(ChatResponse::Chunk(chunk)).is_ok()
+        sender.try_send(ChatResponse::Chunk(chunk)).is_ok()
     }
 
     pub fn collect_stream_emission_for_token(
@@ -649,7 +649,7 @@ impl LLMEngine {
                 pipeline,
             );
             tracing::info!("Sending tool call delta chunk: {:?}", tool_chunk);
-            if sender.send(ChatResponse::Chunk(tool_chunk)).is_err() {
+            if sender.try_send(ChatResponse::Chunk(tool_chunk)).is_err() {
                 warn!(
                     "Send stream response error! (sequence id {})",
                     seq.deref().get_id()
@@ -670,7 +670,7 @@ impl LLMEngine {
                 pipeline,
             );
             tracing::info!("Sending tool call finish chunk: {:?}", finish_chunk);
-            if sender.send(ChatResponse::Chunk(finish_chunk)).is_err() {
+            if sender.try_send(ChatResponse::Chunk(finish_chunk)).is_err() {
                 warn!(
                     "Send stream response error! (sequence id {})",
                     seq.deref().get_id()
@@ -690,7 +690,7 @@ impl LLMEngine {
                 pipeline,
             );
 
-            let ret = sender.send(ChatResponse::Chunk(chunk));
+            let ret = sender.try_send(ChatResponse::Chunk(chunk));
             if ret.is_err() {
                 warn!(
                     "Send stream response error! (sequence id {})",
