@@ -22,6 +22,7 @@ jobs:
   # ---------------------------------------------------------------------------
   validate:
     name: validate-version
+    if: github.repository == 'EricLBuehler/candle-vllm'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}

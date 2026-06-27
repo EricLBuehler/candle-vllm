@@ -148,7 +148,9 @@ impl LLMEngine {
 
                 let seqlen_q = num_tokens;
                 let use_cached_kv = num_cached_tokens > 0
-                    && ((cfg!(feature = "flashattn") || cfg!(feature = "flashinfer"))
+                    && ((cfg!(feature = "flash")
+                        || cfg!(feature = "flashattn")
+                        || cfg!(feature = "flashinfer"))
                         || self.scheduler.prefix_cache_enabled());
                 let seqlen_k = if use_cached_kv {
                     num_cached_tokens + num_tokens
