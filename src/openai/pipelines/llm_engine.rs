@@ -15,7 +15,7 @@ const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 8;
 const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 4;
 
 #[cfg(feature = "nccl")]
-use crate::openai::communicator::DaemonManager;
+use crate::openai::communicator::{DaemonManager, MessageType};
 use crate::openai::pipelines::TokenOrFinishReason;
 use crate::openai::streaming::ChatResponse;
 use crate::openai::TaskData;
@@ -151,7 +151,9 @@ impl LLMEngine {
                 } else if pipeline.has_mamba_slot_for_sequence(seq_id) {
                     cached_tokens
                 } else if let Some(plan) = restore_by_seq.get(&seq_id) {
-                    if pipeline.has_mamba_prefix_state(plan.hash)? {
+                    if pipeline.has_mamba_prefix_state(plan.hash)?
+                        && self.broadcast_mamba_prefix_has(plan.hash)
+                    {
                         cached_tokens
                     } else {
                         let mut supported = 0;
@@ -162,7 +164,9 @@ impl LLMEngine {
                             .into_iter()
                             .rev()
                         {
-                            if pipeline.has_mamba_prefix_state(hash)? {
+                            if pipeline.has_mamba_prefix_state(hash)?
+                                && self.broadcast_mamba_prefix_has(hash)
+                            {
                                 supported = candidate_tokens;
                                 break;
                             }
@@ -230,9 +234,11 @@ impl LLMEngine {
         if !prefix_cache_enabled || mamba_slot_capacity == 0 {
             return 0;
         }
-        // Keep a larger snapshot pool than active slots so prompt/chunk-prefill
-        // boundaries survive decode-time snapshot churn when prefix cache is hot.
-        mamba_slot_capacity.saturating_mul(2)
+        // Keep a substantially larger snapshot pool than active slots so
+        // prompt/chunk-prefill boundaries survive decode-time snapshot churn
+        // when prefix cache is hot. Tool-calling workloads with many short-lived
+        // multi-turn sequences need extra headroom (4x instead of 2x).
+        mamba_slot_capacity.saturating_mul(4)
     }
 
     fn ordered_group_sequences(group: &Arc<SequenceGroup>) -> Vec<Arc<Sequence>> {
@@ -325,7 +331,9 @@ impl LLMEngine {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in captures {
                 match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, true) {
-                    Ok(true) => captured.push(capture),
+                    Ok(true) => {
+                        captured.push(capture);
+                    }
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
@@ -338,6 +346,7 @@ impl LLMEngine {
                 }
             }
         }
+        captured.retain(|c| self.broadcast_mamba_prefix_capture(c.seq_id, c.hash, true));
         self.scheduler.record_mamba_prefix_captures(captured);
         Ok(())
     }
@@ -357,7 +366,9 @@ impl LLMEngine {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in captures {
                 match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, false) {
-                    Ok(true) => captured.push(capture),
+                    Ok(true) => {
+                        captured.push(capture);
+                    }
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
@@ -370,6 +381,7 @@ impl LLMEngine {
                 }
             }
         }
+        captured.retain(|c| self.broadcast_mamba_prefix_capture(c.seq_id, c.hash, false));
         self.scheduler.record_mamba_prefix_captures(captured);
         Ok(())
     }
@@ -420,7 +432,7 @@ impl LLMEngine {
                 let (pipeline, _) = self.get_pipeline(rank).unwrap();
                 pipeline.has_mamba_prefix_state(restore.hash)?
             };
-            if !has_snapshot {
+            if !has_snapshot || !self.broadcast_mamba_prefix_has(restore.hash) {
                 self.scheduler.handle_missing_mamba_snapshot(&restore);
                 continue;
             }
@@ -430,12 +442,21 @@ impl LLMEngine {
                 pipeline.restore_mamba_prefix_state(restore.seq_id, restore.hash)?
             };
             if restored {
-                self.scheduler.mark_mamba_restored(restore.seq_id);
-                tracing::info!(
-                    "Restored mamba prefix state on rank {} for seq {}",
-                    rank,
-                    restore.seq_id,
-                );
+                let daemon_restored =
+                    self.broadcast_mamba_prefix_restore(restore.seq_id, restore.hash);
+                if daemon_restored {
+                    self.scheduler.mark_mamba_restored(restore.seq_id);
+                    tracing::info!(
+                        "Restored mamba prefix state on all ranks for seq {}",
+                        restore.seq_id,
+                    );
+                } else {
+                    tracing::warn!(
+                        "Mamba prefix restore failed on daemon ranks for seq {}",
+                        restore.seq_id,
+                    );
+                    self.scheduler.handle_failed_mamba_restore(&restore);
+                }
             } else {
                 self.scheduler.handle_failed_mamba_restore(&restore);
             }
@@ -454,7 +475,9 @@ impl LLMEngine {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for capture in sync.captures {
                 match pipeline.capture_mamba_prefix_state(capture.seq_id, capture.hash, true) {
-                    Ok(true) => captured.push(capture),
+                    Ok(true) => {
+                        captured.push(capture);
+                    }
                     Ok(false) => {}
                     Err(e) => {
                         tracing::warn!(
@@ -467,6 +490,7 @@ impl LLMEngine {
                 }
             }
         }
+        captured.retain(|c| self.broadcast_mamba_prefix_capture(c.seq_id, c.hash, true));
         self.scheduler.record_mamba_prefix_captures(captured);
         {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
@@ -1385,7 +1409,138 @@ impl LLMEngine {
         Self::count_text_tokens(pipeline, &reasoning_text)
     }
 
+    #[cfg(feature = "nccl")]
+    fn broadcast_mamba_prefix_capture(&self, seq_id: usize, hash: u64, preserve: bool) -> bool {
+        if !self.multi_process {
+            return true;
+        }
+        let mut dm = self.daemon_manager.write();
+        let dm = match dm.as_mut() {
+            Some(d) => d,
+            None => return true,
+        };
+        if dm
+            .send_message(&MessageType::MambaPrefixCapture {
+                seq_id,
+                hash,
+                preserve,
+            })
+            .is_err()
+        {
+            return false;
+        }
+        match dm.receive_from_daemons() {
+            Ok(responses) => responses
+                .iter()
+                .all(|r| matches!(r, MessageType::MambaPrefixCaptureResponse(true))),
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(not(feature = "nccl"))]
+    fn broadcast_mamba_prefix_capture(&self, _seq_id: usize, _hash: u64, _preserve: bool) -> bool {
+        true
+    }
+
+    #[cfg(feature = "nccl")]
+    fn broadcast_mamba_prefix_has(&self, hash: u64) -> bool {
+        if !self.multi_process {
+            return true;
+        }
+        let mut dm = self.daemon_manager.write();
+        let dm = match dm.as_mut() {
+            Some(d) => d,
+            None => return true,
+        };
+        if dm.send_message(&MessageType::MambaPrefixHas(hash)).is_err() {
+            return false;
+        }
+        match dm.receive_from_daemons() {
+            Ok(responses) => responses
+                .iter()
+                .all(|r| matches!(r, MessageType::MambaPrefixHasResponse(true))),
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(not(feature = "nccl"))]
+    fn broadcast_mamba_prefix_has(&self, _hash: u64) -> bool {
+        true
+    }
+
+    #[cfg(feature = "nccl")]
+    fn broadcast_mamba_prefix_restore(&self, seq_id: usize, hash: u64) -> bool {
+        if !self.multi_process {
+            return true;
+        }
+        let mut dm = self.daemon_manager.write();
+        let dm = match dm.as_mut() {
+            Some(d) => d,
+            None => return true,
+        };
+        if dm
+            .send_message(&MessageType::MambaPrefixRestore { seq_id, hash })
+            .is_err()
+        {
+            return false;
+        }
+        match dm.receive_from_daemons() {
+            Ok(responses) => responses
+                .iter()
+                .all(|r| matches!(r, MessageType::MambaPrefixRestoreResponse(true))),
+            Err(_) => false,
+        }
+    }
+
+    #[cfg(not(feature = "nccl"))]
+    fn broadcast_mamba_prefix_restore(&self, _seq_id: usize, _hash: u64) -> bool {
+        true
+    }
+
+    fn validate_mamba_prefix_hashes_before_schedule(&mut self, rank: usize) {
+        if !self
+            .scheduler
+            .block_engine
+            .requires_mamba_prefix_snapshots()
+        {
+            return;
+        }
+        if !self.scheduler.has_waiting_sequences() {
+            return;
+        }
+        let hashes: Vec<u64> = self
+            .scheduler
+            .block_engine
+            .valid_mamba_prefix_hashes()
+            .iter()
+            .copied()
+            .collect();
+        if hashes.is_empty() {
+            return;
+        }
+        let mut stale = Vec::new();
+        if let Some((ref pipeline, _)) = self.get_pipeline(rank) {
+            for hash in &hashes {
+                match pipeline.has_mamba_prefix_state(*hash) {
+                    Ok(false) => stale.push(*hash),
+                    Err(_) => stale.push(*hash),
+                    Ok(true) => {
+                        if !self.broadcast_mamba_prefix_has(*hash) {
+                            stale.push(*hash);
+                        }
+                    }
+                }
+            }
+        }
+        if !stale.is_empty() {
+            self.scheduler
+                .block_engine
+                .invalidate_mamba_prefix_hashes(&stale);
+        }
+    }
+
     fn schedule_current_batch(&mut self, rank: usize) -> Result<()> {
+        self.validate_mamba_prefix_hashes_before_schedule(rank);
         let scheduler_outputs = self.scheduler.schedule();
         if !scheduler_outputs.ignored_seq_groups.is_empty() {
             for group in scheduler_outputs.ignored_seq_groups.iter() {

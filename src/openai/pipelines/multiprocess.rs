@@ -587,6 +587,48 @@ impl LLMEngine {
         }
     }
 
+    fn daemon_capture_mamba_prefix(
+        engine: &Arc<RwLock<Self>>,
+        seq_id: usize,
+        hash: u64,
+        preserve: bool,
+    ) -> bool {
+        let guard = engine.read();
+        let (pipeline, _) = match guard.get_pipeline(0) {
+            Some(p) => p,
+            None => return false,
+        };
+        pipeline
+            .capture_mamba_prefix_state(seq_id, hash, preserve)
+            .unwrap_or(false)
+    }
+
+    fn daemon_has_mamba_prefix(engine: &Arc<RwLock<Self>>, hash: u64) -> bool {
+        let guard = engine.read();
+        let (pipeline, _) = match guard.get_pipeline(0) {
+            Some(p) => p,
+            None => return false,
+        };
+        pipeline.has_mamba_prefix_state(hash).unwrap_or(false)
+    }
+
+    fn daemon_restore_mamba_prefix(engine: &Arc<RwLock<Self>>, seq_id: usize, hash: u64) -> bool {
+        let guard = engine.read();
+        let (pipeline, _) = match guard.get_pipeline(0) {
+            Some(p) => p,
+            None => return false,
+        };
+        if pipeline
+            .ensure_mamba_slots_for_sequences(&[seq_id])
+            .is_err()
+        {
+            return false;
+        }
+        pipeline
+            .restore_mamba_prefix_state(seq_id, hash)
+            .unwrap_or(false)
+    }
+
     fn execute_scheduled_batch_multiprocess(
         engine: &Arc<RwLock<Self>>,
         scheduled: &VecDeque<Arc<SequenceGroup>>,
@@ -740,6 +782,37 @@ impl LLMEngine {
                 }
                 Ok(MessageType::FinishSequences(seq_ids)) => {
                     Self::daemon_finish_sequences(&engine, &seq_ids);
+                }
+                Ok(MessageType::MambaPrefixCapture {
+                    seq_id,
+                    hash,
+                    preserve,
+                }) => {
+                    let result = Self::daemon_capture_mamba_prefix(&engine, seq_id, hash, preserve);
+                    let e = engine.read();
+                    let mut dm = e.daemon_manager.write();
+                    let _ = dm
+                        .as_mut()
+                        .unwrap()
+                        .send_to_main(&MessageType::MambaPrefixCaptureResponse(result));
+                }
+                Ok(MessageType::MambaPrefixHas(hash)) => {
+                    let result = Self::daemon_has_mamba_prefix(&engine, hash);
+                    let e = engine.read();
+                    let mut dm = e.daemon_manager.write();
+                    let _ = dm
+                        .as_mut()
+                        .unwrap()
+                        .send_to_main(&MessageType::MambaPrefixHasResponse(result));
+                }
+                Ok(MessageType::MambaPrefixRestore { seq_id, hash }) => {
+                    let result = Self::daemon_restore_mamba_prefix(&engine, seq_id, hash);
+                    let e = engine.read();
+                    let mut dm = e.daemon_manager.write();
+                    let _ = dm
+                        .as_mut()
+                        .unwrap()
+                        .send_to_main(&MessageType::MambaPrefixRestoreResponse(result));
                 }
                 Ok(MessageType::Shutdown) => {
                     tracing::warn!("Daemon: shutdown received, exiting");

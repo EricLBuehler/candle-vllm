@@ -289,6 +289,10 @@ impl Scheduler {
         !self.running.is_empty() || !self.waiting.is_empty()
     }
 
+    pub fn has_waiting_sequences(&self) -> bool {
+        !self.waiting.is_empty()
+    }
+
     pub fn free_finished_sequence_groups(&mut self) -> Vec<usize> {
         self.free_finished_sequence_groups_with(|_, _, _| {})
     }
@@ -372,9 +376,9 @@ impl Scheduler {
         let used_percent = (num_blocks - free_blocks) as f32 * 100f32 / num_blocks as f32;
         tracing::info!(
             "GPU KvCache used {:.02}% ({:.02}/{:.02}GB, available {} KvCache tokens)",
+            used_percent,
             used_percent / 100f32 * kvcache_mem_size,
             kvcache_mem_size,
-            used_percent,
             free_blocks * self.block_engine.get_block_size(),
         );
     }

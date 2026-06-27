@@ -794,6 +794,16 @@ impl BlockEngine {
         }
     }
 
+    pub fn invalidate_mamba_prefix_hashes(&mut self, hashes: &[u64]) {
+        for &hash in hashes {
+            self.invalidate_mamba_prefix_hash(hash);
+        }
+    }
+
+    pub fn valid_mamba_prefix_hashes(&self) -> &HashSet<u64> {
+        &self.valid_mamba_prefix_hashes
+    }
+
     fn handle_mamba_prefix_evicted_blocks(&mut self, evicted_block_ids: &[usize]) {
         if evicted_block_ids.is_empty() {
             return;

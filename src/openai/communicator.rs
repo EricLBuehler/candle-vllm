@@ -78,6 +78,19 @@ pub struct ForwardPayload {
 pub enum MessageType {
     RunForward(ForwardPayload),
     FinishSequences(Vec<usize>),
+    MambaPrefixCapture {
+        seq_id: usize,
+        hash: u64,
+        preserve: bool,
+    },
+    MambaPrefixCaptureResponse(bool),
+    MambaPrefixHas(u64),
+    MambaPrefixHasResponse(bool),
+    MambaPrefixRestore {
+        seq_id: usize,
+        hash: u64,
+    },
+    MambaPrefixRestoreResponse(bool),
     Shutdown,
     HeartBeat,
     Progress((usize, usize)),
