@@ -41,31 +41,41 @@ jobs:
           fi
 
   # ---------------------------------------------------------------------------
-  # CUDA legacy builds: SM70/SM75 on GitHub free runners (no flashinfer/cutlass)
-  # These older archs work on 2-vCPU runners with limited parallelism.
+  # CUDA x64 builds: SM70/75/80/89 on GitHub free runners.
+  # SM80/89 use flashinfer/cutlass, so keep build parallelism low.
   # ---------------------------------------------------------------------------
-  cuda-legacy:
+  cuda-x64:
     name: cuda-${{ matrix.sm_name }}
     runs-on: ubuntu-latest
     needs: validate
     if: needs.validate.outputs.changed == 'true'
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         include:
           - sm: "70"
             sm_name: sm70
-            cuda_version: "12.9.0"
+            cuda_version: "12.6.3"
             features: "cuda,nccl"
           - sm: "75"
             sm_name: sm75
-            cuda_version: "12.9.0"
+            cuda_version: "12.6.3"
             features: "cuda,nccl"
+          - sm: "80"
+            sm_name: sm80
+            cuda_version: "12.6.3"
+            features: "cuda,nccl,flashinfer,cutlass"
+          - sm: "89"
+            sm_name: sm89
+            cuda_version: "12.6.3"
+            features: "cuda,nccl,flashinfer,cutlass"
     container:
       image: docker.io/nvidia/cuda:${{ matrix.cuda_version }}-cudnn-devel-ubuntu22.04
     env:
       CUDA_COMPUTE_CAP: ${{ matrix.sm }}
       DEBIAN_FRONTEND: noninteractive
+      CARGO_BUILD_JOBS: "2"
       CUDAFORGE_THREADS: "2"
       RAYON_NUM_THREADS: "2"
     steps:
@@ -134,7 +144,7 @@ jobs:
             dist/*.deb
 
   # ---------------------------------------------------------------------------
-  # CUDA builds: SM80+ on GitHub free runners with limited parallelism
+  # CUDA 13 builds: SM90+ on GitHub free runners with limited parallelism
   # max-parallel: 1 to avoid OOM on shared runners.
   # ---------------------------------------------------------------------------
   cuda:
@@ -147,14 +157,6 @@ jobs:
       max-parallel: 1
       matrix:
         include:
-          - sm: "80"
-            sm_name: sm80
-            cuda_version: "13.0.0"
-            features: "cuda,nccl,flashinfer,cutlass"
-          - sm: "89"
-            sm_name: sm89
-            cuda_version: "13.0.0"
-            features: "cuda,nccl,flashinfer,cutlass"
           - sm: "90"
             sm_name: sm90
             cuda_version: "13.0.0"
@@ -172,6 +174,7 @@ jobs:
     env:
       CUDA_COMPUTE_CAP: ${{ matrix.sm }}
       DEBIAN_FRONTEND: noninteractive
+      CARGO_BUILD_JOBS: "2"
       CUDAFORGE_THREADS: "2"
       RAYON_NUM_THREADS: "2"
     steps:
@@ -275,7 +278,7 @@ jobs:
   checksums:
     name: checksums
     runs-on: ubuntu-latest
-    needs: [validate, cuda-legacy, cuda, metal]
+    needs: [validate, cuda-x64, cuda, metal]
     if: needs.validate.outputs.changed == 'true'
     steps:
       - uses: actions/download-artifact@v4
@@ -307,7 +310,7 @@ jobs:
             dist/SHA256SUMS
 
   # ---------------------------------------------------------------------------
-  # Publish download page + install script to GitHub Pages
+  # Publish documentation site + install script to GitHub Pages
   # ---------------------------------------------------------------------------
   publish-pages:
     name: publish-pages
@@ -327,22 +330,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: pages
+          sparse-checkout: paged
 
       - name: Build site
         env:
           VERSION: ${{ needs.validate.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
-          mkdir -p site
           OWNER="$(echo "${REPO}" | cut -d/ -f1)"
-          PAGES_HOST="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]').github.io"
+          OWNER_LC="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
+          PAGES_HOST="${OWNER_LC}.github.io"
 
-          sed -e "s|var CANDLE_VLLM_VER='[^']*';|var CANDLE_VLLM_VER='${VERSION}';|" \
-              -e "s|__PAGES_HOST__|${PAGES_HOST}|g" \
-              -e "s|__REPO__|${REPO}|g" \
-              pages/index.html > site/index.html
+          # Copy the full documentation site
+          cp -a paged site
 
+          # Patch downloads.html with version/repo placeholders
+          sed -i \
+            -e "s|var CANDLE_VLLM_VER='__VERSION__';|var CANDLE_VLLM_VER='${VERSION}';|" \
+            -e "s|__REPO__|${REPO}|g" \
+            site/downloads.html
+
+          # Generate install.sh at site root (preserves existing URL)
           cat > site/install.sh << 'SCRIPT'
           #!/usr/bin/env bash
           set -euo pipefail
@@ -376,8 +384,67 @@ jobs:
             esac
           }
 
+          cuda_build_for_platform() {
+            case "$1" in
+              sm70|sm75|sm80|sm89) echo "12.6" ;;
+              sm90|sm100|sm120|sm121) echo "13.0" ;;
+              metal)               echo "none" ;;
+              *)                   echo "12.6" ;;
+            esac
+          }
+
+          min_driver_for_cuda() {
+            case "$1" in
+              13.*) echo "580.65.06" ;;
+              12.*) echo "525.60.13" ;;
+              *)    echo "525.60.13" ;;
+            esac
+          }
+
+          version_ge() {
+            [ "$1" = "$2" ] && return 0
+            [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
+          }
+
+          detect_driver_version() {
+            if ! command -v nvidia-smi &>/dev/null; then
+              return 1
+            fi
+            nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null \
+              | head -1 | tr -d '[:space:]'
+          }
+
+          check_driver_compat() {
+            local platform="$1"
+            local cuda_build min_driver driver
+            cuda_build="$(cuda_build_for_platform "$platform")"
+            if [ "$cuda_build" = "none" ]; then
+              return 0
+            fi
+            if [ "${CANDLE_VLLM_SKIP_DRIVER_CHECK:-}" = "1" ]; then
+              echo "Skipping NVIDIA driver compatibility check because CANDLE_VLLM_SKIP_DRIVER_CHECK=1."
+              return 0
+            fi
+            min_driver="$(min_driver_for_cuda "$cuda_build")"
+            driver="$(detect_driver_version || true)"
+            if [ -z "$driver" ]; then
+              echo "ERROR: Could not detect NVIDIA driver with nvidia-smi." >&2
+              echo "  ${platform} package is built with CUDA ${cuda_build} and requires driver >= ${min_driver}." >&2
+              echo "  Set CANDLE_VLLM_SKIP_DRIVER_CHECK=1 only if you know the target runtime driver is compatible." >&2
+              exit 1
+            fi
+            if ! version_ge "$driver" "$min_driver"; then
+              echo "ERROR: NVIDIA driver ${driver} is too old for ${platform} package." >&2
+              echo "  ${platform} package is built with CUDA ${cuda_build} and requires driver >= ${min_driver}." >&2
+              echo "  Upgrade the NVIDIA driver or install a package built for an older CUDA family." >&2
+              exit 1
+            fi
+            echo "NVIDIA driver ${driver} is compatible with ${platform} CUDA ${cuda_build} package."
+          }
+
           PLATFORM="${CANDLE_VLLM_PLATFORM:-$(detect_platform)}"
           echo "Detected platform: ${PLATFORM}"
+          check_driver_compat "$PLATFORM"
           echo ""
 
           need_sudo() {
@@ -496,7 +563,6 @@ jobs:
           fi
           SCRIPT
 
-          OWNER_LC="$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
           sed -i "s|__VERSION__|${VERSION}|g" site/install.sh
           sed -i "s|__REPO__|${REPO}|g" site/install.sh
           sed -i "s|__OWNER__|${OWNER_LC}|g" site/install.sh

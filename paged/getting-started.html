@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>快速开始 — Candle-vLLM</title>
+  <link rel="icon" href="assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/main.css?v=2">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="index.html" class="logo">
+      <img src="assets/images/logo.svg" alt="Candle-vLLM">
+      <span>Candle-vLLM</span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html" data-zh="首页" data-en="Home">首页</a>
+      <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+      <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+      <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+      <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      <a href="downloads.html" data-zh="下载" data-en="Downloads">下载</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="lang-toggle" aria-label="Switch language">EN</button>
+      <div class="theme-dropdown">
+        <select class="theme-select" aria-label="Select theme">
+          <option value="light">☀️ Light</option>
+          <option value="dark">🌙 Dark</option>
+          <option value="enflame">🔥 Enflame</option>
+        </select>
+      </div>
+      <a href="https://github.com/EricLBuehler/candle-vllm" class="btn btn-sm btn-page" target="_blank">GitHub</a>
+      <button class="mobile-toggle" aria-label="Menu"><span></span><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+<div class="scroll-progress"></div>
+
+<div class="search-overlay">
+  <div class="search-box">
+    <div class="search-input-wrapper">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="text" class="search-input" placeholder="Search documentation... (Ctrl+K)">
+    </div>
+    <div class="search-results"><div class="search-hint">Type to search documentation...</div></div>
+  </div>
+</div>
+
+<div class="page-header">
+  <div class="container">
+    <h1 data-zh="快速开始" data-en="Getting Started">快速开始</h1>
+    <p data-zh="从零开始，在几分钟内运行你的第一个本地 LLM。" data-en="Go from zero to running your first local LLM in minutes.">从零开始，在几分钟内运行你的第一个本地 LLM。</p>
+  </div>
+</div>
+
+<section class="section">
+  <div class="container">
+    <div class="doc-layout">
+      <nav class="doc-sidebar">
+        <div class="doc-sidebar-group">
+          <h4 data-zh="准备工作" data-en="Prerequisites">准备工作</h4>
+          <a href="#prerequisites" data-zh="系统要求" data-en="System Requirements">系统要求</a>
+          <a href="#hardware" data-zh="硬件要求" data-en="Hardware Requirements">硬件要求</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="安装" data-en="Installation">安装</h4>
+          <a href="#install-script" data-zh="一键安装" data-en="One-Line Install">一键安装</a>
+          <a href="#build-source" data-zh="源码编译" data-en="Build from Source">源码编译</a>
+          <a href="#docker" data-zh="Docker 部署" data-en="Docker">Docker 部署</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="首次运行" data-en="First Run">首次运行</h4>
+          <a href="#first-run" data-zh="启动模型" data-en="Launch a Model">启动模型</a>
+          <a href="#test-api" data-zh="测试 API" data-en="Test the API">测试 API</a>
+          <a href="#web-ui" data-zh="Web UI" data-en="Web UI">Web UI</a>
+        </div>
+      </nav>
+      <div class="doc-content">
+
+        <h2 id="prerequisites" data-zh="系统要求" data-en="System Requirements">系统要求</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th data-zh="组件" data-en="Component">组件</th>
+                <th data-zh="要求" data-en="Requirement">要求</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td data-zh="操作系统" data-en="OS">操作系统</td><td data-zh="Linux (CUDA) 或 macOS (Metal)" data-en="Linux (CUDA) or macOS (Metal)">Linux (CUDA) 或 macOS (Metal)</td></tr>
+              <tr><td data-zh="Rust 工具链" data-en="Rust Toolchain">Rust 工具链</td><td data-zh="Rust 1.75+（仅源码编译需要）" data-en="Rust 1.75+ (source build only)">Rust 1.75+（仅源码编译需要）</td></tr>
+              <tr><td>CUDA</td><td data-zh="11.x、12.x 或 13.0（Linux GPU）" data-en="11.x, 12.x, or 13.0 (Linux GPU)">11.x、12.x 或 13.0（Linux GPU）</td></tr>
+              <tr><td>Python</td><td data-zh="3.8+（仅量化转换脚本需要）" data-en="3.8+ (conversion scripts only)">3.8+（仅量化转换脚本需要）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="hardware" data-zh="硬件要求" data-en="Hardware Requirements">硬件要求</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th data-zh="平台" data-en="Platform">平台</th>
+                <th data-zh="最低 GPU" data-en="Minimum GPU">最低 GPU</th>
+                <th data-zh="推荐特性" data-en="Recommended Features">推荐特性</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>CUDA (Linux)</td>
+                <td data-zh="SM70+ (V100) 8GB+" data-en="SM70+ (V100) 8GB+">SM70+ (V100) 8GB+</td>
+                <td data-zh="SM90 (H100) 用于 FP8/CUTLASS" data-en="SM90 (H100) for FP8/CUTLASS">SM90 (H100) 用于 FP8/CUTLASS</td>
+              </tr>
+              <tr>
+                <td>Metal (macOS)</td>
+                <td data-zh="Apple Silicon M1+，8GB+" data-en="Apple Silicon M1+, 8GB+">Apple Silicon M1+，8GB+</td>
+                <td data-zh="M4 Pro/Max 推荐" data-en="M4 Pro/Max recommended">M4 Pro/Max 推荐</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="install-script" data-zh="一键安装" data-en="One-Line Install">一键安装</h2>
+        <p data-zh="最快的方式——自动检测平台并安装预编译二进制或 DEB 包：" data-en="The fastest way — auto-detects platform and installs a pre-built binary or DEB package:">最快的方式——自动检测平台并安装预编译二进制或 DEB 包：</p>
+        <pre><code><span class="token-comment">$</span> <span class="token-keyword">curl</span> <span class="token-flag">-sSL</span> <span class="token-string">https://ericlbuehler.github.io/candle-vllm/install.sh</span> | <span class="token-keyword">bash</span></code><button class="copy-btn" data-copy-text="curl -sSL https://ericlbuehler.github.io/candle-vllm/install.sh | bash">Copy</button></pre>
+
+        <h2 id="build-source" data-zh="源码编译" data-en="Build from Source">源码编译</h2>
+
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="tab-cuda" data-zh="CUDA (Linux)" data-en="CUDA (Linux)">CUDA (Linux)</button>
+          <button class="tab-btn" data-tab="tab-metal" data-zh="Metal (macOS)" data-en="Metal (macOS)">Metal (macOS)</button>
+        </div>
+
+        <div class="tab-content active" id="tab-cuda">
+          <pre><code><span class="token-comment"># 克隆仓库</span>
+<span class="token-keyword">git</span> clone git@github.com:EricLBuehler/candle-vllm.git
+<span class="token-keyword">cd</span> candle-vllm
+
+<span class="token-comment"># 编译（CUDA 11+/12+/13.0）</span>
+<span class="token-comment"># 对于 SM70/SM75，移除 flashinfer,cutlass 特性</span>
+<span class="token-keyword">cargo</span> install <span class="token-flag">--features</span> <span class="token-string">cuda,nccl,flashinfer,cutlass</span> <span class="token-flag">--path</span> .</code><button class="copy-btn" data-copy-text="git clone git@github.com:EricLBuehler/candle-vllm.git
+cd candle-vllm
+cargo install --features cuda,nccl,flashinfer,cutlass --path .">Copy</button></pre>
+        </div>
+
+        <div class="tab-content" id="tab-metal">
+          <pre><code><span class="token-comment"># 克隆仓库</span>
+<span class="token-keyword">git</span> clone git@github.com:EricLBuehler/candle-vllm.git
+<span class="token-keyword">cd</span> candle-vllm
+
+<span class="token-comment"># 编译（Metal / Apple Silicon）</span>
+<span class="token-keyword">cargo</span> install <span class="token-flag">--features</span> <span class="token-string">metal</span> <span class="token-flag">--path</span> .</code><button class="copy-btn" data-copy-text="git clone git@github.com:EricLBuehler/candle-vllm.git
+cd candle-vllm
+cargo install --features metal --path .">Copy</button></pre>
+        </div>
+
+        <div class="callout-info">
+          <div class="callout-title" data-zh="💡 提示" data-en="💡 Tip">💡 提示</div>
+          <p data-zh="SM70/SM75 GPU（V100、T4）请移除 flashinfer 和 cutlass 特性。SM80+（A100）支持全部特性。SM90+（H100）额外支持 CUTLASS FP8 算子。" data-en="SM70/SM75 GPUs (V100, T4) — remove flashinfer and cutlass features. SM80+ (A100) supports all features. SM90+ (H100) adds CUTLASS FP8 ops.">SM70/SM75 GPU（V100、T4）请移除 flashinfer 和 cutlass 特性。SM80+（A100）支持全部特性。SM90+（H100）额外支持 CUTLASS FP8 算子。</p>
+        </div>
+
+        <h2 id="docker" data-zh="Docker 部署" data-en="Docker">Docker 部署</h2>
+        <pre><code><span class="token-comment"># 默认编译（自动检测 SM 版本）</span>
+<span class="token-keyword">./build_docker.sh</span> <span class="token-string">"cuda,nccl,flashinfer,cutlass"</span>
+
+<span class="token-comment"># 指定 SM 版本和 CUDA 版本</span>
+<span class="token-keyword">./build_docker.sh</span> <span class="token-string">"cuda,nccl,flashinfer,cutlass"</span> <span class="token-value">sm_90</span> <span class="token-value">13.0.0</span></code><button class="copy-btn" data-copy-text='./build_docker.sh "cuda,nccl,flashinfer,cutlass"'>Copy</button></pre>
+
+        <h2 id="first-run" data-zh="启动模型" data-en="Launch a Model">启动模型</h2>
+        <p data-zh="安装完成后，使用 HuggingFace 模型 ID 或本地路径即可启动推理服务：" data-en="After installation, launch the inference server using a HuggingFace model ID or local path:">安装完成后，使用 HuggingFace 模型 ID 或本地路径即可启动推理服务：</p>
+
+        <ol class="steps">
+          <li class="step-item">
+            <h3 data-zh="使用 HuggingFace 模型" data-en="Using a HuggingFace Model">使用 HuggingFace 模型</h3>
+            <pre><code><span class="token-comment"># FP8 模型 + Web UI</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span> <span class="token-flag">--ui-server</span>
+
+<span class="token-comment"># GGUF 量化模型</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">unsloth/Qwen3.5-122B-A10B-GGUF</span> <span class="token-flag">--f</span> <span class="token-string">Q3_K_S</span> <span class="token-flag">--d</span> <span class="token-value">0,1</span> <span class="token-flag">--ui-server</span></code><button class="copy-btn" data-copy-text="candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server">Copy</button></pre>
+          </li>
+          <li class="step-item">
+            <h3 data-zh="使用本地模型" data-en="Using a Local Model">使用本地模型</h3>
+            <pre><code><span class="token-comment"># 本地 Safetensors 目录</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--d</span> <span class="token-value">0,1</span> <span class="token-flag">--m</span> <span class="token-string">/home/Qwen3-30B-A3B-Instruct-2507/</span> <span class="token-flag">--ui-server</span>
+
+<span class="token-comment"># 本地 GGUF 文件</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">/home/data/model-Q4_K_M.gguf</span> <span class="token-flag">--ui-server</span></code><button class="copy-btn" data-copy-text="candle-vllm --d 0,1 --m /home/Qwen3-30B-A3B-Instruct-2507/ --ui-server">Copy</button></pre>
+          </li>
+        </ol>
+
+        <h2 id="test-api" data-zh="测试 API" data-en="Test the API">测试 API</h2>
+        <p data-zh="服务启动后，默认监听 http://localhost:2000，使用标准 OpenAI 格式调用：" data-en="Once the server is running (default: http://localhost:2000), test with the standard OpenAI format:">服务启动后，默认监听 http://localhost:2000，使用标准 OpenAI 格式调用：</p>
+        <pre><code><span class="token-keyword">curl</span> <span class="token-string">http://localhost:2000/v1/chat/completions</span> \
+  <span class="token-flag">-H</span> <span class="token-string">"Content-Type: application/json"</span> \
+  <span class="token-flag">-d</span> <span class="token-string">'{
+  "model": "qwen",
+  "messages": [{"role": "user", "content": "Hello!"}],
+  "max_tokens": 128,
+  "stream": true
+}'</span></code><button class="copy-btn" data-copy-text='curl http://localhost:2000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d &apos;{"model": "qwen", "messages": [{"role": "user", "content": "Hello!"}], "max_tokens": 128, "stream": true}&apos;'>Copy</button></pre>
+
+        <h2 id="web-ui" data-zh="Web UI" data-en="Web UI">Web UI</h2>
+        <p data-zh="添加 --ui-server 标志即可启动内置 ChatGPT 风格 Web UI。UI 端口 = API 端口 - 1（例如 API 在 2000，UI 在 1999）。" data-en="Add the --ui-server flag to launch the built-in ChatGPT-style Web UI. UI port = API port - 1 (e.g., API on 2000, UI on 1999).">添加 <code>--ui-server</code> 标志即可启动内置 ChatGPT 风格 Web UI。UI 端口 = API 端口 - 1（例如 API 在 2000，UI 在 1999）。</p>
+        <div class="callout-success">
+          <div class="callout-title" data-zh="✅ 完成" data-en="✅ Done">✅ 完成</div>
+          <p data-zh="恭喜！你已成功运行了 Candle-vLLM。接下来查看使用指南了解更多高级配置。" data-en="Congratulations! You've successfully launched Candle-vLLM. Check the User Guide for advanced configuration.">恭喜！你已成功运行了 Candle-vLLM。接下来查看<a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>了解更多高级配置。</p>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="index.html" class="logo"><img src="assets/images/logo.svg" alt="Candle-vLLM"><span>Candle-vLLM</span></a>
+        <p data-zh="基于 Rust 的高性能 LLM 推理引擎。" data-en="High-performance LLM inference engine in Rust.">基于 Rust 的高性能 LLM 推理引擎。</p>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="文档" data-en="Docs">文档</h4>
+        <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+        <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+        <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+        <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="资源" data-en="Resources">资源</h4>
+        <a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" data-zh="GitHub 仓库" data-en="GitHub Repo">GitHub 仓库</a>
+        <a href="https://arxiv.org/abs/2309.06180" target="_blank" data-zh="vLLM 论文" data-en="vLLM Paper">vLLM 论文</a>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="社区" data-en="Community">社区</h4>
+        <a href="https://github.com/EricLBuehler/candle-vllm/issues" target="_blank" data-zh="报告问题" data-en="Report Issue">报告问题</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span data-zh="MIT 许可证 © 2023 Eric Buehler" data-en="MIT License © 2023 Eric Buehler">MIT 许可证 © 2023 Eric Buehler</span>
+      <span data-zh="由 Candle ML 框架驱动" data-en="Powered by Candle ML Framework">由 Candle ML 框架驱动</span>
+      <span class="webdoc-credit"><span data-zh="由" data-en="Generated by">Generated by</span> <a href="https://github.com/guoqingbao/webdoc/" target="_blank" rel="noopener">webdoc skill</a><span data-zh=" 生成" data-en=""></span></span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/js/main.js?v=2"></script>
+</body>
+</html>

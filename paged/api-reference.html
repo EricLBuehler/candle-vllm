@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API 参考 — Candle-vLLM</title>
+  <link rel="icon" href="assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/main.css?v=2">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="index.html" class="logo"><img src="assets/images/logo.svg" alt="Candle-vLLM"><span>Candle-vLLM</span></a>
+    <nav class="nav-links">
+      <a href="index.html" data-zh="首页" data-en="Home">首页</a>
+      <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+      <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+      <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+      <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      <a href="downloads.html" data-zh="下载" data-en="Downloads">下载</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="lang-toggle" aria-label="Switch language">EN</button>
+      <div class="theme-dropdown">
+        <select class="theme-select" aria-label="Select theme"><option value="light">☀️ Light</option><option value="dark">🌙 Dark</option><option value="enflame">🔥 Enflame</option></select>
+      </div>
+      <a href="https://github.com/EricLBuehler/candle-vllm" class="btn btn-sm btn-page" target="_blank">GitHub</a>
+      <button class="mobile-toggle" aria-label="Menu"><span></span><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+<div class="scroll-progress"></div>
+
+<div class="search-overlay"><div class="search-box"><div class="search-input-wrapper"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" class="search-input" placeholder="Search documentation... (Ctrl+K)"></div><div class="search-results"><div class="search-hint">Type to search documentation...</div></div></div></div>
+
+<div class="page-header">
+  <div class="container">
+    <h1 data-zh="API 参考" data-en="API Reference">API 参考</h1>
+    <p data-zh="完整的 CLI 参数、REST API 端点和环境变量参考。" data-en="Complete CLI flags, REST API endpoints, and environment variables reference.">完整的 CLI 参数、REST API 端点和环境变量参考。</p>
+  </div>
+</div>
+
+<section class="section">
+  <div class="container">
+    <div class="doc-layout">
+      <nav class="doc-sidebar">
+        <div class="doc-sidebar-group">
+          <h4 data-zh="CLI" data-en="CLI">CLI</h4>
+          <a href="#cli-flags" data-zh="命令行参数" data-en="CLI Flags">命令行参数</a>
+          <a href="#binding" data-zh="绑定示例" data-en="Binding Examples">绑定示例</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="REST API" data-en="REST API">REST API</h4>
+          <a href="#models-api" data-zh="模型列表" data-en="List Models">模型列表</a>
+          <a href="#chat-api" data-zh="聊天补全" data-en="Chat Completions">聊天补全</a>
+          <a href="#embeddings-api" data-zh="嵌入" data-en="Embeddings">嵌入</a>
+          <a href="#tool-calling" data-zh="工具调用" data-en="Tool Calling">工具调用</a>
+          <a href="#streaming" data-zh="流式输出" data-en="Streaming">流式输出</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="配置" data-en="Configuration">配置</h4>
+          <a href="#env-vars" data-zh="环境变量" data-en="Environment Variables">环境变量</a>
+          <a href="#cargo-features" data-zh="编译特性" data-en="Cargo Features">编译特性</a>
+        </div>
+      </nav>
+
+      <div class="doc-content">
+
+        <h2 id="cli-flags" data-zh="命令行参数" data-en="CLI Flags">命令行参数</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr>
+              <th data-zh="参数" data-en="Flag">参数</th>
+              <th data-zh="描述" data-en="Description">描述</th>
+              <th data-zh="默认值" data-en="Default">默认值</th>
+            </tr></thead>
+            <tbody>
+              <tr><td><code>--h</code></td><td data-zh="绑定地址。支持 host、host:port、[ipv6]:port、tcp://、unix://、socket://、file:// 格式" data-en="Bind address. Supports host, host:port, [ipv6]:port, tcp://, unix://, socket://, file:// formats">绑定地址。支持多种格式</td><td><code>0.0.0.0</code></td></tr>
+              <tr><td><code>--p</code></td><td data-zh="TCP 服务端口（当 --h 不含端口时使用）" data-en="TCP port (when --h doesn't include port)">TCP 服务端口</td><td><code>2000</code></td></tr>
+              <tr><td><code>--d</code></td><td data-zh="GPU 设备 ID（如 --d 0,1）" data-en="GPU device IDs (e.g. --d 0,1)">GPU 设备 ID</td><td>—</td></tr>
+              <tr><td><code>--m</code></td><td data-zh="模型来源：HuggingFace ID、本地目录或本地 GGUF 文件" data-en="Model source: HuggingFace ID, local directory, or local .gguf file">模型来源</td><td>—</td></tr>
+              <tr><td><code>--w</code></td><td data-zh="本地权重目录（safetensors 或 GGUF）" data-en="Local weight directory (safetensors or GGUF)">本地权重目录</td><td>—</td></tr>
+              <tr><td><code>--f</code></td><td data-zh="GGUF 文件名或子目录名" data-en="GGUF filename or subfolder">GGUF 文件/子目录</td><td>—</td></tr>
+              <tr><td><code>--dtype</code></td><td data-zh="数据类型" data-en="Data type">数据类型</td><td><code>bf16</code></td></tr>
+              <tr><td><code>--isq</code></td><td data-zh="在线量化：q4_0, q4_1, q5_0, q5_1, q8_0, q2k-q6k" data-en="In-situ quantization: q4_0, q4_1, q5_0, q5_1, q8_0, q2k-q6k">在线量化</td><td>—</td></tr>
+              <tr><td><code>--kvcache-dtype</code></td><td data-zh="KV 缓存类型：auto, fp8, turbo8, turbo4, turbo3" data-en="KV cache type: auto, fp8, turbo8, turbo4, turbo3">KV 缓存类型</td><td><code>auto</code></td></tr>
+              <tr><td><code>--kv-fraction</code></td><td data-zh="GPU 剩余显存中 KV 缓存占比" data-en="KV cache fraction of remaining GPU memory">KV 缓存显存占比</td><td><code>0.6</code></td></tr>
+              <tr><td><code>--mem</code></td><td data-zh="固定 KV 缓存预算（MB）" data-en="Fixed KV cache budget in MB">固定 KV 缓存预算</td><td>—</td></tr>
+              <tr><td><code>--prefill-chunk-size</code></td><td data-zh="预填充块大小（0 禁用）" data-en="Prefill chunk size (0 to disable)">预填充块大小</td><td><code>8192</code></td></tr>
+              <tr><td><code>--max-gen-tokens</code></td><td data-zh="每次响应最大输出 Token 数" data-en="Max output tokens per response">最大输出 Token</td><td data-zh="max_seq_len / 5" data-en="max_seq_len / 5">max_seq_len / 5</td></tr>
+              <tr><td><code>--frequency-penalty</code></td><td data-zh="频率惩罚（-2.0 到 2.0）" data-en="Frequency penalty (-2.0 to 2.0)">频率惩罚</td><td><code>0.0</code></td></tr>
+              <tr><td><code>--presence-penalty</code></td><td data-zh="存在惩罚（-2.0 到 2.0）" data-en="Presence penalty (-2.0 to 2.0)">存在惩罚</td><td><code>0.0</code></td></tr>
+              <tr><td><code>--yarn-scaling-factor</code></td><td data-zh="YaRN RoPE 上下文扩展因子" data-en="YaRN RoPE context extension factor">YaRN 扩展因子</td><td>—</td></tr>
+              <tr><td><code>--enforce-parser</code></td><td data-zh="强制工具解析后端：qwen_coder, qwen, json, mistral" data-en="Force tool parser: qwen_coder, qwen, json, mistral">强制解析后端</td><td>—</td></tr>
+              <tr><td><code>--ui-server</code></td><td data-zh="启动内置 ChatGPT 风格 Web UI" data-en="Launch built-in ChatGPT-style Web UI">启动 Web UI</td><td>—</td></tr>
+              <tr><td><code>--multithread</code></td><td data-zh="使用多线程模式（调试）" data-en="Use multi-threaded mode (debug)">多线程模式</td><td>—</td></tr>
+              <tr><td><code>--num-nodes</code></td><td data-zh="集群总节点数" data-en="Total nodes in cluster">集群节点数</td><td>—</td></tr>
+              <tr><td><code>--node-rank</code></td><td data-zh="当前节点 rank（0 = master）" data-en="This node's rank (0 = master)">节点 rank</td><td>—</td></tr>
+              <tr><td><code>--master-addr</code></td><td data-zh="Master 节点 IP" data-en="Master node IP address">Master IP</td><td>—</td></tr>
+              <tr><td><code>--master-port</code></td><td data-zh="NCCL ID 交换端口" data-en="NCCL ID exchange port">NCCL 端口</td><td><code>29500</code></td></tr>
+              <tr><td><code>--disable-prefix-cache</code></td><td data-zh="禁用前缀缓存" data-en="Disable prefix caching">禁用前缀缓存</td><td>—</td></tr>
+              <tr><td><code>--prefix-cache-max-tokens</code></td><td data-zh="限制前缀缓存大小" data-en="Cap prefix cache size">限制前缀缓存</td><td>—</td></tr>
+              <tr><td><code>--disable-cuda-graph</code></td><td data-zh="禁用 CUDA Graph 捕获" data-en="Disable CUDA Graph capture">禁用 CUDA Graph</td><td>—</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="binding" data-zh="绑定示例" data-en="Binding Examples">绑定示例</h2>
+        <pre><code><span class="token-comment"># TCP（指定端口）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--h</span> <span class="token-value">127.0.0.1</span> <span class="token-flag">--p</span> <span class="token-value">8000</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span>
+
+<span class="token-comment"># TCP（地址含端口）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--h</span> <span class="token-value">127.0.0.1:8000</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span>
+
+<span class="token-comment"># IPv6</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--h</span> <span class="token-string">'[::1]:8000'</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span>
+
+<span class="token-comment"># Unix Socket</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--h</span> <span class="token-string">unix:///tmp/candle-vllm.sock</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span></code><button class="copy-btn" data-copy-text="candle-vllm --h 127.0.0.1 --p 8000 --m Qwen/Qwen3.6-27B-FP8">Copy</button></pre>
+
+        <h2 id="models-api" data-zh="GET /v1/models — 模型列表" data-en="GET /v1/models — List Models">GET /v1/models — 模型列表</h2>
+        <p data-zh="列出当前加载的模型及其能力和最大序列长度。" data-en="Lists the currently loaded model with its modalities and max sequence length.">列出当前加载的模型及其能力和最大序列长度。</p>
+        <pre><code><span class="token-keyword">curl</span> <span class="token-string">http://localhost:2000/v1/models</span></code><button class="copy-btn" data-copy-text="curl http://localhost:2000/v1/models">Copy</button></pre>
+
+        <h2 id="chat-api" data-zh="POST /v1/chat/completions — 聊天补全" data-en="POST /v1/chat/completions — Chat Completions">POST /v1/chat/completions — 聊天补全</h2>
+        <p data-zh="完全兼容 OpenAI Chat Completion API 格式，支持流式输出、工具调用和多模态输入。" data-en="Fully compatible with OpenAI Chat Completion API format. Supports streaming, tool calling, and multimodal input.">完全兼容 OpenAI Chat Completion API 格式，支持流式输出、工具调用和多模态输入。</p>
+
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="tab-chat-basic" data-zh="基础对话" data-en="Basic Chat">基础对话</button>
+          <button class="tab-btn" data-tab="tab-chat-stream" data-zh="流式输出" data-en="Streaming">流式输出</button>
+          <button class="tab-btn" data-tab="tab-chat-python" data-zh="Python 客户端" data-en="Python Client">Python 客户端</button>
+        </div>
+
+        <div class="tab-content active" id="tab-chat-basic">
+          <pre><code><span class="token-keyword">curl</span> <span class="token-string">http://localhost:2000/v1/chat/completions</span> \
+  <span class="token-flag">-H</span> <span class="token-string">"Content-Type: application/json"</span> \
+  <span class="token-flag">-d</span> <span class="token-string">'{
+  "model": "qwen",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Explain PagedAttention."}
+  ],
+  "max_tokens": 256,
+  "temperature": 0.7
+}'</span></code><button class="copy-btn" data-copy-text='curl http://localhost:2000/v1/chat/completions -H "Content-Type: application/json" -d &apos;{"model":"qwen","messages":[{"role":"system","content":"You are a helpful assistant."},{"role":"user","content":"Explain PagedAttention."}],"max_tokens":256,"temperature":0.7}&apos;'>Copy</button></pre>
+        </div>
+
+        <div class="tab-content" id="tab-chat-stream">
+          <pre><code><span class="token-keyword">curl</span> <span class="token-string">http://localhost:2000/v1/chat/completions</span> \
+  <span class="token-flag">-H</span> <span class="token-string">"Content-Type: application/json"</span> \
+  <span class="token-flag">-d</span> <span class="token-string">'{
+  "model": "qwen",
+  "messages": [{"role": "user", "content": "Hello!"}],
+  "stream": true
+}'</span></code><button class="copy-btn" data-copy-text='curl http://localhost:2000/v1/chat/completions -H "Content-Type: application/json" -d &apos;{"model":"qwen","messages":[{"role":"user","content":"Hello!"}],"stream":true}&apos;'>Copy</button></pre>
+        </div>
+
+        <div class="tab-content" id="tab-chat-python">
+          <pre><code><span class="token-keyword">from</span> <span class="token-type">openai</span> <span class="token-keyword">import</span> <span class="token-type">OpenAI</span>
+
+client = <span class="token-type">OpenAI</span>(
+    base_url=<span class="token-string">"http://localhost:2000/v1"</span>,
+    api_key=<span class="token-string">"not-needed"</span>
+)
+
+response = client.chat.completions.create(
+    model=<span class="token-string">"qwen"</span>,
+    messages=[{<span class="token-string">"role"</span>: <span class="token-string">"user"</span>, <span class="token-string">"content"</span>: <span class="token-string">"Hello!"</span>}],
+    stream=<span class="token-keyword">True</span>
+)
+
+<span class="token-keyword">for</span> chunk <span class="token-keyword">in</span> response:
+    <span class="token-keyword">print</span>(chunk.choices[<span class="token-number">0</span>].delta.content, end=<span class="token-string">""</span>)</code><button class="copy-btn" data-copy-text='from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:2000/v1",
+    api_key="not-needed"
+)
+
+response = client.chat.completions.create(
+    model="qwen",
+    messages=[{"role": "user", "content": "Hello!"}],
+    stream=True
+)
+
+for chunk in response:
+    print(chunk.choices[0].delta.content, end="")'>Copy</button></pre>
+        </div>
+
+        <h2 id="embeddings-api" data-zh="POST /v1/embeddings — 嵌入" data-en="POST /v1/embeddings — Embeddings">POST /v1/embeddings — 嵌入</h2>
+        <pre><code><span class="token-keyword">curl</span> <span class="token-string">http://localhost:2000/v1/embeddings</span> \
+  <span class="token-flag">-H</span> <span class="token-string">"Content-Type: application/json"</span> \
+  <span class="token-flag">-d</span> <span class="token-string">'{
+  "model": "qwen",
+  "input": "Candle-vLLM is a Rust inference engine",
+  "embedding_type": "mean"
+}'</span></code><button class="copy-btn" data-copy-text='curl http://localhost:2000/v1/embeddings -H "Content-Type: application/json" -d &apos;{"model":"qwen","input":"Candle-vLLM is a Rust inference engine","embedding_type":"mean"}&apos;'>Copy</button></pre>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th data-zh="字段" data-en="Field">字段</th><th data-zh="描述" data-en="Description">描述</th></tr></thead>
+            <tbody>
+              <tr><td><code>embedding_type</code></td><td data-zh="池化模式：mean（默认）或 last" data-en="Pooling mode: mean (default) or last">池化模式：mean（默认）或 last</td></tr>
+              <tr><td><code>encoding_format</code></td><td data-zh="返回格式：float 或 base64" data-en="Return format: float or base64">返回格式：float 或 base64</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="tool-calling" data-zh="工具调用" data-en="Tool Calling">工具调用</h2>
+        <p data-zh="支持 OpenAI 格式的工具调用，通过 tools 字段定义工具，模型会在需要时自动生成工具调用请求：" data-en="Supports OpenAI-format tool calling. Define tools via the tools field, and the model will automatically generate tool call requests when needed:">支持 OpenAI 格式的工具调用，通过 <code>tools</code> 字段定义工具：</p>
+        <pre><code><span class="token-keyword">curl</span> <span class="token-string">http://localhost:2000/v1/chat/completions</span> \
+  <span class="token-flag">-H</span> <span class="token-string">"Content-Type: application/json"</span> \
+  <span class="token-flag">-d</span> <span class="token-string">'{
+  "model": "qwen",
+  "messages": [{"role": "user", "content": "What is the weather in Tokyo?"}],
+  "tools": [{
+    "type": "function",
+    "function": {
+      "name": "get_weather",
+      "description": "Get weather for a city",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "city": {"type": "string", "description": "City name"}
+        },
+        "required": ["city"]
+      }
+    }
+  }]
+}'</span></code><button class="copy-btn" data-copy-text='curl http://localhost:2000/v1/chat/completions -H "Content-Type: application/json" -d &apos;{"model":"qwen","messages":[{"role":"user","content":"What is the weather in Tokyo?"}],"tools":[{"type":"function","function":{"name":"get_weather","description":"Get weather for a city","parameters":{"type":"object","properties":{"city":{"type":"string","description":"City name"}},"required":["city"]}}}]}&apos;'>Copy</button></pre>
+
+        <h2 id="streaming" data-zh="流式输出" data-en="Streaming">流式输出</h2>
+        <p data-zh="设置 stream: true 即可启用 Server-Sent Events (SSE) 流式输出。每个事件包含增量 Token。响应中包含 usage 信息，含 cached_tokens 字段反映前缀缓存命中。" data-en="Set stream: true to enable Server-Sent Events (SSE) streaming. Each event contains incremental tokens. The response includes usage info with cached_tokens reflecting prefix cache hits.">设置 <code>stream: true</code> 即可启用 Server-Sent Events (SSE) 流式输出。响应中包含 <code>usage</code> 信息，含 <code>cached_tokens</code> 字段反映前缀缓存命中。</p>
+
+        <h2 id="env-vars" data-zh="环境变量" data-en="Environment Variables">环境变量</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th data-zh="变量" data-en="Variable">变量</th><th data-zh="描述" data-en="Description">描述</th></tr></thead>
+            <tbody>
+              <tr><td><code>CANDLE_VLLM_STREAM_AS_REASONING_CONTENT</code></td><td data-zh="设为 1 时，将推理内容以 reasoning_content 字段输出" data-en="When set to 1, emit reasoning as reasoning_content field">将推理内容以 reasoning_content 字段输出</td></tr>
+              <tr><td><code>CANDLE_VLLM_MAMBA_SNAPSHOT_STRIDE_BLOCKS</code></td><td data-zh="Hybrid Mamba 前缀快照步长（以块为单位）" data-en="Hybrid Mamba prefix snapshot stride in blocks">Hybrid Mamba 快照步长</td></tr>
+              <tr><td><code>MAP_NUMA_NODE</code></td><td data-zh="NUMA GPU 映射（配合 numactl 使用）" data-en="NUMA GPU mapping (use with numactl)">NUMA GPU 映射</td></tr>
+              <tr><td><code>NCCL_P2P_DISABLE</code></td><td data-zh="设为 1 禁用 NCCL P2P（多线程模式排障）" data-en="Set to 1 to disable NCCL P2P (multi-thread troubleshooting)">禁用 NCCL P2P</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="cargo-features" data-zh="编译特性" data-en="Cargo Features">编译特性</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th data-zh="特性" data-en="Feature">特性</th><th data-zh="描述" data-en="Description">描述</th></tr></thead>
+            <tbody>
+              <tr><td><code>cuda</code></td><td data-zh="NVIDIA GPU 支持" data-en="NVIDIA GPU support">NVIDIA GPU 支持</td></tr>
+              <tr><td><code>metal</code></td><td data-zh="Apple Silicon 支持" data-en="Apple Silicon support">Apple Silicon 支持</td></tr>
+              <tr><td><code>nccl</code></td><td data-zh="多 GPU / 多节点张量并行" data-en="Multi-GPU / multi-node tensor parallelism">多 GPU 张量并行</td></tr>
+              <tr><td><code>flash</code></td><td data-zh="Flash Attention 内核" data-en="Flash Attention kernels">Flash Attention 内核</td></tr>
+              <tr><td><code>flashattn</code></td><td data-zh="FlashAttention 后端" data-en="FlashAttention backend">FlashAttention 后端</td></tr>
+              <tr><td><code>flashinfer</code></td><td data-zh="FlashInfer 后端" data-en="FlashInfer backend">FlashInfer 后端</td></tr>
+              <tr><td><code>cutlass</code></td><td data-zh="CUTLASS FP8 / 块级量化算子（SM90+）" data-en="CUTLASS FP8 / block-wise ops (SM90+)">CUTLASS FP8 算子</td></tr>
+              <tr><td><code>graph</code></td><td data-zh="CUDA Graph 捕获（自动启用 flash）" data-en="CUDA Graph capture (enables flash)">CUDA Graph 捕获</td></tr>
+              <tr><td><code>mkl</code></td><td data-zh="Intel MKL CPU BLAS" data-en="Intel MKL CPU BLAS">Intel MKL</td></tr>
+              <tr><td><code>accelerate</code></td><td data-zh="Apple Accelerate CPU BLAS" data-en="Apple Accelerate CPU BLAS">Accelerate BLAS</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="index.html" class="logo"><img src="assets/images/logo.svg" alt="Candle-vLLM"><span>Candle-vLLM</span></a>
+        <p data-zh="基于 Rust 的高性能 LLM 推理引擎。" data-en="High-performance LLM inference engine in Rust.">基于 Rust 的高性能 LLM 推理引擎。</p>
+      </div>
+      <div class="footer-col"><h4 data-zh="文档" data-en="Docs">文档</h4><a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a><a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a><a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a><a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a></div>
+      <div class="footer-col"><h4 data-zh="资源" data-en="Resources">资源</h4><a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" data-zh="GitHub 仓库" data-en="GitHub Repo">GitHub 仓库</a><a href="https://arxiv.org/abs/2309.06180" target="_blank" data-zh="vLLM 论文" data-en="vLLM Paper">vLLM 论文</a></div>
+      <div class="footer-col"><h4 data-zh="社区" data-en="Community">社区</h4><a href="https://github.com/EricLBuehler/candle-vllm/issues" target="_blank" data-zh="报告问题" data-en="Report Issue">报告问题</a></div>
+    </div>
+    <div class="footer-bottom">
+      <span data-zh="MIT 许可证 © 2023 Eric Buehler" data-en="MIT License © 2023 Eric Buehler">MIT 许可证 © 2023 Eric Buehler</span>
+      <span data-zh="由 Candle ML 框架驱动" data-en="Powered by Candle ML Framework">由 Candle ML 框架驱动</span>
+      <span class="webdoc-credit"><span data-zh="由" data-en="Generated by">Generated by</span> <a href="https://github.com/guoqingbao/webdoc/" target="_blank" rel="noopener">webdoc skill</a><span data-zh=" 生成" data-en=""></span></span>
+    </div>
+  </div>
+</footer>
+<script src="assets/js/main.js?v=2"></script>
+</body>
+</html>

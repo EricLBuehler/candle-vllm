@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>下载 — Candle-vLLM</title>
+  <meta name="description" content="Download pre-built candle-vllm packages by GPU architecture. DEB packages and tarballs for CUDA and Metal.">
+  <link rel="icon" href="assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/main.css?v=2">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="index.html" class="logo">
+      <img src="assets/images/logo.svg" alt="Candle-vLLM">
+      <span>Candle-vLLM</span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html" data-zh="首页" data-en="Home">首页</a>
+      <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+      <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+      <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+      <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      <a href="downloads.html" data-zh="下载" data-en="Downloads">下载</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="lang-toggle" aria-label="Switch language">EN</button>
+      <div class="theme-dropdown">
+        <select class="theme-select" aria-label="Select theme">
+          <option value="light">☀️ Light</option>
+          <option value="dark">🌙 Dark</option>
+          <option value="enflame">🔥 Enflame</option>
+        </select>
+      </div>
+      <a href="https://github.com/EricLBuehler/candle-vllm" class="btn btn-sm btn-page" target="_blank">GitHub</a>
+      <button class="mobile-toggle" aria-label="Menu"><span></span><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+<div class="scroll-progress"></div>
+
+<div class="search-overlay">
+  <div class="search-box">
+    <div class="search-input-wrapper">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="text" class="search-input" placeholder="Search documentation... (Ctrl+K)">
+    </div>
+    <div class="search-results"><div class="search-hint">Type to search documentation...</div></div>
+  </div>
+</div>
+
+<div class="page-header">
+  <div class="container">
+    <h1 data-zh="下载" data-en="Downloads">下载</h1>
+    <p data-zh="下载适用于你 GPU 架构的预编译 candle-vllm 二进制包。" data-en="Download pre-built candle-vllm packages for your GPU architecture.">下载适用于你 GPU 架构的预编译 candle-vllm 二进制包。</p>
+  </div>
+</div>
+
+<section class="section">
+  <div class="container">
+    <div class="doc-layout">
+      <nav class="doc-sidebar">
+        <div class="doc-sidebar-group">
+          <h4 data-zh="安装" data-en="Install">安装</h4>
+          <a href="#one-line-install" data-zh="一键安装" data-en="One-Line Install">一键安装</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="预编译包" data-en="Packages">预编译包</h4>
+          <a href="#packages" data-zh="按 GPU 下载" data-en="Download by GPU">按 GPU 下载</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="其他方式" data-en="Other Methods">其他方式</h4>
+          <a href="#source" data-zh="源码编译" data-en="Build from Source">源码编译</a>
+          <a href="#docker" data-zh="Docker" data-en="Docker">Docker</a>
+        </div>
+      </nav>
+
+      <div class="doc-content">
+
+        <h2 id="one-line-install" data-zh="一键安装" data-en="One-Line Install">一键安装</h2>
+        <p data-zh="最快的安装方式——自动检测你的 GPU 平台并安装预编译包：" data-en="The fastest way to install — auto-detects your GPU platform and installs a pre-built package:">最快的安装方式——自动检测你的 GPU 平台并安装预编译包：</p>
+        <pre><code><span class="token-comment">$</span> <span class="token-keyword">curl</span> <span class="token-flag">-sSL</span> <span class="token-string">https://ericlbuehler.github.io/candle-vllm/install.sh</span> | <span class="token-keyword">bash</span></code><button class="copy-btn" data-copy-text="curl -sSL https://ericlbuehler.github.io/candle-vllm/install.sh | bash">Copy</button></pre>
+        <div class="callout-info">
+          <div class="callout-title" data-zh="💡 提示" data-en="💡 Tip">💡 提示</div>
+          <p data-zh="安装脚本会自动检测你的 GPU（通过 nvidia-smi）。你也可以手动指定平台：CANDLE_VLLM_PLATFORM=sm90 curl -sSL ... | bash" data-en="The install script auto-detects your GPU (via nvidia-smi). You can also set the platform manually: CANDLE_VLLM_PLATFORM=sm90 curl -sSL ... | bash">安装脚本会自动检测你的 GPU（通过 nvidia-smi）。你也可以手动指定平台：<code>CANDLE_VLLM_PLATFORM=sm90 curl -sSL ... | bash</code></p>
+        </div>
+
+        <h2 id="packages" data-zh="预编译包" data-en="Pre-built Packages">预编译包</h2>
+
+        <div class="tabs" id="dl-tabs">
+          <button class="tab-btn active" data-tab="tab-dl-deb" onclick="renderDownloadCards('deb',this)" data-zh="DEB 包" data-en="DEB Package">DEB 包</button>
+          <button class="tab-btn" data-tab="tab-dl-tar" onclick="renderDownloadCards('tar',this)" data-zh="Tarball" data-en="Tarball">Tarball</button>
+        </div>
+        <div class="download-grid" id="download-cards"></div>
+
+        <h2 id="source" data-zh="源码编译" data-en="Build from Source">源码编译</h2>
+        <p data-zh="如果你希望从源码编译，请参考" data-en="To build from source, see the"><a href="getting-started.html#build-source" data-zh="快速开始指南" data-en="Getting Started guide">快速开始指南</a>。</p>
+
+        <h2 id="docker" data-zh="Docker" data-en="Docker">Docker</h2>
+        <p data-zh="使用 Docker 镜像是另一种便捷的部署方式：" data-en="Using Docker images is another convenient deployment method:">使用 Docker 镜像是另一种便捷的部署方式：</p>
+        <pre><code><span class="token-keyword">./build_docker.sh</span> <span class="token-string">"cuda,nccl,flashinfer,cutlass"</span></code><button class="copy-btn" data-copy-text='./build_docker.sh "cuda,nccl,flashinfer,cutlass"'>Copy</button></pre>
+        <p data-zh="详情参见" data-en="See"><a href="getting-started.html#docker" data-zh="Docker 部署文档" data-en="Docker documentation">Docker 部署文档</a>。</p>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="index.html" class="logo"><img src="assets/images/logo.svg" alt="Candle-vLLM"><span>Candle-vLLM</span></a>
+        <p data-zh="基于 Rust 的高性能 LLM 推理引擎，支持 OpenAI 兼容 API。" data-en="High-performance LLM inference engine built in Rust with OpenAI-compatible API.">基于 Rust 的高性能 LLM 推理引擎，支持 OpenAI 兼容 API。</p>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="文档" data-en="Docs">文档</h4>
+        <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+        <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+        <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+        <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="资源" data-en="Resources">资源</h4>
+        <a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" data-zh="GitHub 仓库" data-en="GitHub Repo">GitHub 仓库</a>
+        <a href="https://github.com/EricLBuehler/candle-vllm/releases" target="_blank" data-zh="所有版本" data-en="All Releases">所有版本</a>
+        <a href="https://arxiv.org/abs/2309.06180" target="_blank" data-zh="vLLM 论文" data-en="vLLM Paper">vLLM 论文</a>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="社区" data-en="Community">社区</h4>
+        <a href="https://github.com/EricLBuehler/candle-vllm/issues" target="_blank" data-zh="报告问题" data-en="Report Issue">报告问题</a>
+        <a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" data-zh="贡献代码" data-en="Contribute">贡献代码</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span data-zh="MIT 许可证 © 2023 Eric Buehler" data-en="MIT License © 2023 Eric Buehler">MIT 许可证 © 2023 Eric Buehler</span>
+      <span data-zh="由 Candle ML 框架驱动" data-en="Powered by Candle ML Framework">由 Candle ML 框架驱动</span>
+      <span class="webdoc-credit"><span data-zh="由" data-en="Generated by">Generated by</span> <a href="https://github.com/guoqingbao/webdoc/" target="_blank" rel="noopener">webdoc skill</a><span data-zh=" 生成" data-en=""></span></span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/js/main.js?v=2"></script>
+<script>
+(function(){
+'use strict';
+var CANDLE_VLLM_VER='__VERSION__';
+var DL='https://github.com/__REPO__/releases/download/v'+CANDLE_VLLM_VER+'/';
+var archs=[
+  {sm:'sm70',name:'SM70',gpu:'V100',cuda:'CUDA 12',arch:'x64'},
+  {sm:'sm75',name:'SM75',gpu:'T4 / Turing',cuda:'CUDA 12',arch:'x64'},
+  {sm:'sm80',name:'SM80',gpu:'A100 / A10',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm89',name:'SM89',gpu:'RTX 4090 / L40',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm90',name:'SM90',gpu:'H800 / H200',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm100',name:'SM100',gpu:'B100 / B200',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm120',name:'SM120',gpu:'RTX 5090 / RTX PRO 6000',cuda:'CUDA 13',arch:'x64'},
+  {sm:'sm121',name:'SM121',gpu:'DGX Spark / GB10',cuda:'CUDA 13',arch:'arm64'}
+];
+var metalA={sm:'metal',name:'Metal',gpu:'macOS Apple Silicon',cuda:''};
+
+window.renderDownloadCards=function(type,btn){
+  if(btn){
+    var tabs=document.getElementById('dl-tabs');
+    tabs.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active')});
+    btn.classList.add('active');
+  }
+  var el=document.getElementById('download-cards');
+  el.innerHTML='';
+  var items=archs.slice();
+  items.push(metalA);
+  items.forEach(function(a){
+    var fname,cpuArch=a.arch||'x64';
+    if(a.sm==='metal'){
+      fname='candle-vllm-'+CANDLE_VLLM_VER+'-darwin-arm64-metal.tar.gz';
+    }else if(type==='deb'){
+      fname='candle-vllm-linux-'+cpuArch+'-'+a.sm+'.deb';
+    }else{
+      fname='candle-vllm-'+CANDLE_VLLM_VER+'-linux-'+cpuArch+'-'+a.sm+'.tar.gz';
+    }
+    var c=document.createElement('a');
+    c.href=DL+fname;c.target='_blank';c.className='download-card';
+    var archLabel=cpuArch==='arm64'?' (ARM64)':'';
+    c.innerHTML='<div class="download-card-header"><h3>'+a.name+' — '+a.gpu+'</h3>'
+      +(a.cuda?'<span class="download-card-badge">'+a.cuda+archLabel+'</span>':'<span class="download-card-badge">Apple Silicon</span>')
+      +'</div>'
+      +'<span class="download-card-file">'+fname+'</span>'
+      +'<span class="download-card-action" data-zh="下载 →" data-en="Download →">下载 →</span>';
+    el.appendChild(c);
+  });
+  if(typeof setLang==='function'){
+    var lang=typeof getLang==='function'?getLang():'zh';
+    el.querySelectorAll('[data-zh][data-en]').forEach(function(x){
+      x.textContent=x.getAttribute('data-'+lang);
+    });
+  }
+};
+renderDownloadCards('deb',null);
+})();
+</script>
+</body>
+</html>

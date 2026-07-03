@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>使用指南 — Candle-vLLM</title>
+  <link rel="icon" href="assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/main.css?v=2">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="index.html" class="logo"><img src="assets/images/logo.svg" alt="Candle-vLLM"><span>Candle-vLLM</span></a>
+    <nav class="nav-links">
+      <a href="index.html" data-zh="首页" data-en="Home">首页</a>
+      <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+      <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+      <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+      <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      <a href="downloads.html" data-zh="下载" data-en="Downloads">下载</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="lang-toggle" aria-label="Switch language">EN</button>
+      <div class="theme-dropdown">
+        <select class="theme-select" aria-label="Select theme"><option value="light">☀️ Light</option><option value="dark">🌙 Dark</option><option value="enflame">🔥 Enflame</option></select>
+      </div>
+      <a href="https://github.com/EricLBuehler/candle-vllm" class="btn btn-sm btn-page" target="_blank">GitHub</a>
+      <button class="mobile-toggle" aria-label="Menu"><span></span><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+<div class="scroll-progress"></div>
+
+<div class="search-overlay"><div class="search-box"><div class="search-input-wrapper"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" class="search-input" placeholder="Search documentation... (Ctrl+K)"></div><div class="search-results"><div class="search-hint">Type to search documentation...</div></div></div></div>
+
+<div class="page-header">
+  <div class="container">
+    <h1 data-zh="使用指南" data-en="User Guide">使用指南</h1>
+    <p data-zh="深入了解模型加载、量化、KV 缓存压缩、多 GPU 推理等高级功能。" data-en="Deep dive into model loading, quantization, KV cache compression, multi-GPU inference, and more.">深入了解模型加载、量化、KV 缓存压缩、多 GPU 推理等高级功能。</p>
+  </div>
+</div>
+
+<section class="section">
+  <div class="container">
+    <div class="doc-layout">
+      <nav class="doc-sidebar">
+        <div class="doc-sidebar-group">
+          <h4 data-zh="模型加载" data-en="Model Loading">模型加载</h4>
+          <a href="#model-formats" data-zh="支持格式" data-en="Supported Formats">支持格式</a>
+          <a href="#fp8-fp4" data-zh="FP8/FP4 模型" data-en="FP8/FP4 Models">FP8/FP4 模型</a>
+          <a href="#gguf" data-zh="GGUF 模型" data-en="GGUF Models">GGUF 模型</a>
+          <a href="#isq" data-zh="ISQ 量化" data-en="ISQ Quantization">ISQ 量化</a>
+          <a href="#gptq-marlin" data-zh="GPTQ/Marlin" data-en="GPTQ/Marlin">GPTQ/Marlin</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="KV 缓存" data-en="KV Cache">KV 缓存</h4>
+          <a href="#kv-cache" data-zh="KV 缓存管理" data-en="KV Cache Management">KV 缓存管理</a>
+          <a href="#turboquant" data-zh="TurboQuant 压缩" data-en="TurboQuant Compression">TurboQuant 压缩</a>
+          <a href="#prefix-cache" data-zh="前缀缓存" data-en="Prefix Caching">前缀缓存</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="分布式推理" data-en="Distributed">分布式推理</h4>
+          <a href="#multi-gpu" data-zh="多 GPU 推理" data-en="Multi-GPU Inference">多 GPU 推理</a>
+          <a href="#multi-node" data-zh="多节点推理" data-en="Multi-Node Inference">多节点推理</a>
+          <a href="#numa" data-zh="NUMA 绑定" data-en="NUMA Binding">NUMA 绑定</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="高级功能" data-en="Advanced">高级功能</h4>
+          <a href="#mcp-tools" data-zh="MCP 与工具调用" data-en="MCP & Tool Calling">MCP 与工具调用</a>
+          <a href="#multimodal" data-zh="多模态模型" data-en="Multimodal Models">多模态模型</a>
+          <a href="#embedding" data-zh="嵌入模型" data-en="Embedding Models">嵌入模型</a>
+        </div>
+      </nav>
+
+      <div class="doc-content">
+
+        <h2 id="model-formats" data-zh="支持的模型格式" data-en="Supported Model Formats">支持的模型格式</h2>
+        <p data-zh="Candle-vLLM 支持多种模型权重格式，通过 --m 参数自动检测：" data-en="Candle-vLLM supports multiple weight formats, auto-detected via the --m parameter:">Candle-vLLM 支持多种模型权重格式，通过 <code>--m</code> 参数自动检测：</p>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th data-zh="格式" data-en="Format">格式</th><th data-zh="描述" data-en="Description">描述</th><th data-zh="用法" data-en="Usage">用法</th></tr></thead>
+            <tbody>
+              <tr><td>Safetensors (BF16/FP16)</td><td data-zh="HuggingFace 标准格式" data-en="Standard HuggingFace format">HuggingFace 标准格式</td><td><code>--m repo_id</code></td></tr>
+              <tr><td>FP8 (Block-wise)</td><td data-zh="SM90+ 块级量化" data-en="SM90+ block-wise quantization">SM90+ 块级量化</td><td><code>--m repo_id-FP8</code></td></tr>
+              <tr><td>MXFP4 / NVFP4</td><td data-zh="4-bit 浮点量化" data-en="4-bit float quantization">4-bit 浮点量化</td><td><code>--m repo_id-NVFP4</code></td></tr>
+              <tr><td>GGUF / GGML</td><td data-zh="量化格式 (Q2K-Q8_0)" data-en="Quantized format (Q2K-Q8_0)">量化格式 (Q2K-Q8_0)</td><td><code>--m file.gguf</code></td></tr>
+              <tr><td>GPTQ / AWQ / Marlin</td><td data-zh="4-bit 权重量化" data-en="4-bit weight quantization">4-bit 权重量化</td><td><code>--m gptq-repo</code></td></tr>
+              <tr><td>ISQ</td><td data-zh="在线量化 (In-situ)" data-en="In-situ quantization">在线量化 (In-situ)</td><td><code>--isq q4k</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="fp8-fp4" data-zh="FP8/FP4 模型" data-en="FP8/FP4 Models">FP8/FP4 模型</h2>
+        <pre><code><span class="token-comment"># FP8 模型（需要 SM90+ 及 cutlass 特性）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span> <span class="token-flag">--ui-server</span>
+
+<span class="token-comment"># macOS/Metal 上的 FP8 模型</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3-4B-Instruct-2507-FP8</span> <span class="token-flag">--ui-server</span>
+
+<span class="token-comment"># NVFP4 模型</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">GadflyII/GLM-4.7-Flash-NVFP4</span> <span class="token-flag">--ui-server</span>
+
+<span class="token-comment"># MXFP4 模型</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">nm-testing/Qwen3-30B-A3B-MXFP4A16</span> <span class="token-flag">--ui-server</span></code><button class="copy-btn" data-copy-text="candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server">Copy</button></pre>
+
+        <h2 id="gguf" data-zh="GGUF 模型" data-en="GGUF Models">GGUF 模型</h2>
+        <p data-zh="GGUF 模型支持本地文件、本地目录和 HuggingFace 下载三种方式：" data-en="GGUF models can be loaded from local files, local directories, or downloaded from HuggingFace:">GGUF 模型支持本地文件、本地目录和 HuggingFace 下载三种方式：</p>
+        <pre><code><span class="token-comment"># 本地 GGUF 文件（推荐用 --m）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">/home/data/model-Q4_K_M.gguf</span> <span class="token-flag">--ui-server</span>
+
+<span class="token-comment"># 本地目录（自动检测 GGUF 文件）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">/home/data/Qwen3.5-35B-A3B-GGUF/</span> <span class="token-flag">--ui-server</span>
+
+<span class="token-comment"># HuggingFace 下载（指定文件名）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF</span> \
+  <span class="token-flag">--f</span> <span class="token-string">Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf</span> <span class="token-flag">--ui-server</span>
+
+<span class="token-comment"># HuggingFace 下载（子目录中所有 GGUF 文件）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">unsloth/Qwen3.5-122B-A10B-GGUF</span> \
+  <span class="token-flag">--f</span> <span class="token-string">Q3_K_S</span> <span class="token-flag">--d</span> <span class="token-value">0,1</span> <span class="token-flag">--ui-server</span></code><button class="copy-btn" data-copy-text="candle-vllm --m /home/data/model-Q4_K_M.gguf --ui-server">Copy</button></pre>
+        <div class="callout-info">
+          <div class="callout-title" data-zh="💡 多分片 GGUF" data-en="💡 Multi-shard GGUF">💡 多分片 GGUF</div>
+          <p data-zh="拆分的 GGUF 文件（如 model-00001-of-00005.gguf）会自动发现——本地和远程均支持。视觉模型的辅助文件（mmproj*.gguf）按需加载。" data-en="Split GGUF files (e.g., model-00001-of-00005.gguf) are auto-discovered — both locally and remotely. Vision model auxiliary files (mmproj*.gguf) are loaded on demand.">拆分的 GGUF 文件（如 model-00001-of-00005.gguf）会自动发现——本地和远程均支持。视觉模型的辅助文件（mmproj*.gguf）按需加载。</p>
+        </div>
+
+        <h2 id="isq" data-zh="ISQ 在线量化" data-en="ISQ (In-Situ Quantization)">ISQ 在线量化</h2>
+        <p data-zh="对未量化的模型进行即时量化，添加 --isq 参数即可：" data-en="Quantize unquantized models on-the-fly by adding the --isq parameter:">对未量化的模型进行即时量化，添加 <code>--isq</code> 参数即可：</p>
+        <pre><code><span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B</span> <span class="token-flag">--isq</span> <span class="token-value">q4k</span></code><button class="copy-btn" data-copy-text="candle-vllm --m Qwen/Qwen3.6-27B --isq q4k">Copy</button></pre>
+        <p data-zh="可选量化级别：" data-en="Available quantization levels:">可选量化级别：</p>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th data-zh="级别" data-en="Level">级别</th><th data-zh="精度" data-en="Precision">精度</th></tr></thead>
+            <tbody>
+              <tr><td><code>q4_0</code>, <code>q4_1</code></td><td data-zh="4-bit 基础量化" data-en="4-bit basic quantization">4-bit 基础量化</td></tr>
+              <tr><td><code>q5_0</code>, <code>q5_1</code></td><td data-zh="5-bit 量化" data-en="5-bit quantization">5-bit 量化</td></tr>
+              <tr><td><code>q8_0</code></td><td data-zh="8-bit 量化" data-en="8-bit quantization">8-bit 量化</td></tr>
+              <tr><td><code>q2k</code> – <code>q6k</code></td><td data-zh="K-quant 量化族" data-en="K-quant quantization family">K-quant 量化族</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="gptq-marlin" data-zh="GPTQ / AWQ / Marlin" data-en="GPTQ / AWQ / Marlin">GPTQ / AWQ / Marlin</h2>
+        <pre><code><span class="token-comment"># Marlin 兼容 GPTQ 模型（4-bit, 128-group, desc_act=False）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">thesven/Llama-3-8B-GPTQ-4bit</span>
+
+<span class="token-comment"># 将未压缩模型转换为 Marlin 格式</span>
+<span class="token-keyword">python3</span> <span class="token-string">examples/convert_marlin.py</span> \
+  <span class="token-flag">--src</span> <span class="token-string">/home/DeepSeek-R1-Distill-Qwen-14B/</span> \
+  <span class="token-flag">--dst</span> <span class="token-string">/home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g</span>
+
+<span class="token-comment"># 将 AWQ 转换为 Marlin 格式</span>
+<span class="token-keyword">python3</span> <span class="token-string">examples/convert_awq_marlin.py</span> \
+  <span class="token-flag">--src</span> <span class="token-string">/home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/</span> \
+  <span class="token-flag">--dst</span> <span class="token-string">/home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/</span> \
+  <span class="token-flag">--bits</span> <span class="token-value">4</span> <span class="token-flag">--method</span> <span class="token-value">awq</span> <span class="token-flag">--group</span> <span class="token-value">128</span> <span class="token-flag">--nk</span> <span class="token-value">False</span></code><button class="copy-btn" data-copy-text="candle-vllm --m thesven/Llama-3-8B-GPTQ-4bit">Copy</button></pre>
+
+        <h2 id="kv-cache" data-zh="KV 缓存管理" data-en="KV Cache Management">KV 缓存管理</h2>
+        <p data-zh="Candle-vLLM 使用 PagedAttention 进行分块 KV 缓存管理。关键参数：" data-en="Candle-vLLM uses PagedAttention for block-level KV cache management. Key parameters:">Candle-vLLM 使用 PagedAttention 进行分块 KV 缓存管理。关键参数：</p>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th data-zh="参数" data-en="Flag">参数</th><th data-zh="描述" data-en="Description">描述</th></tr></thead>
+            <tbody>
+              <tr><td><code>--kvcache-dtype</code></td><td data-zh="KV 缓存类型：auto, fp8, turbo8, turbo4, turbo3" data-en="KV cache type: auto, fp8, turbo8, turbo4, turbo3">KV 缓存类型：auto, fp8, turbo8, turbo4, turbo3</td></tr>
+              <tr><td><code>--kv-fraction</code></td><td data-zh="GPU 剩余显存中用于 KV 缓存的比例（默认 0.6）" data-en="Fraction of remaining GPU memory for KV cache (default 0.6)">GPU 剩余显存中用于 KV 缓存的比例（默认 0.6）</td></tr>
+              <tr><td><code>--mem</code></td><td data-zh="固定 KV 缓存预算（MB）" data-en="Fixed KV cache budget in MB">固定 KV 缓存预算（MB）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="turboquant" data-zh="TurboQuant KV 缓存压缩" data-en="TurboQuant KV Cache Compression">TurboQuant KV 缓存压缩</h2>
+        <p data-zh="基于 Walsh-Hadamard 变换的 KV 缓存压缩，在几乎不损失质量的前提下大幅延长上下文长度：" data-en="Walsh-Hadamard transform based KV cache compression for significantly longer context with minimal quality loss:">基于 Walsh-Hadamard 变换的 KV 缓存压缩，在几乎不损失质量的前提下大幅延长上下文长度：</p>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr>
+              <th data-zh="模式" data-en="Mode">模式</th>
+              <th data-zh="描述" data-en="Description">描述</th>
+              <th data-zh="压缩比" data-en="Compression">压缩比</th>
+              <th data-zh="推荐场景" data-en="Use Case">推荐场景</th>
+            </tr></thead>
+            <tbody>
+              <tr>
+                <td><code>turbo8</code></td>
+                <td data-zh="FP8 K + 4-bit V" data-en="FP8 K + 4-bit V">FP8 K + 4-bit V</td>
+                <td>~2.6×</td>
+                <td data-zh="质量与压缩的最佳平衡" data-en="Best quality-compression trade-off">质量与压缩的最佳平衡</td>
+              </tr>
+              <tr>
+                <td><code>turbo4</code></td>
+                <td data-zh="4-bit K + 4-bit V" data-en="4-bit K + 4-bit V">4-bit K + 4-bit V</td>
+                <td>~3.7×</td>
+                <td data-zh="质量与内存的均衡选择" data-en="Balanced quality and memory">质量与内存的均衡选择</td>
+              </tr>
+              <tr>
+                <td><code>turbo3</code></td>
+                <td data-zh="3-bit K + 4-bit V" data-en="3-bit K + 4-bit V">3-bit K + 4-bit V</td>
+                <td>~4.7×</td>
+                <td data-zh="最大内存节省" data-en="Maximum memory savings">最大内存节省</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre><code><span class="token-comment"># Turbo4 (4-bit KV 缓存, ~3.7x 压缩)</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--w</span> <span class="token-string">/data/Qwen3.5-27B-FP8/</span> <span class="token-flag">--kvcache-dtype</span> <span class="token-value">turbo4</span>
+
+<span class="token-comment"># FP8 KV 缓存</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--w</span> <span class="token-string">/data/Qwen3.5-35B-A3B-FP8/</span> <span class="token-flag">--kvcache-dtype</span> <span class="token-value">fp8</span></code><button class="copy-btn" data-copy-text="candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo4">Copy</button></pre>
+        <div class="callout-warning">
+          <div class="callout-title" data-zh="⚠️ 注意" data-en="⚠️ Note">⚠️ 注意</div>
+          <p data-zh="TurboQuant 使用原生 flash attention 内核（自动禁用 flashinfer）。支持 CUDA（SM70+）和 Metal（Apple Silicon）。MLA 模型（DeepSeek、GLM4）会自动回退到标准 KV 缓存。" data-en="TurboQuant uses native flash attention kernels (flashinfer auto-disabled). Supported on CUDA (SM70+) and Metal (Apple Silicon). MLA models (DeepSeek, GLM4) auto-fallback to standard KV cache.">TurboQuant 使用原生 flash attention 内核（自动禁用 flashinfer）。支持 CUDA（SM70+）和 Metal（Apple Silicon）。MLA 模型（DeepSeek、GLM4）会自动回退到标准 KV 缓存。</p>
+        </div>
+
+        <h2 id="prefix-cache" data-zh="前缀缓存" data-en="Prefix Caching">前缀缓存</h2>
+        <p data-zh="前缀缓存默认启用，将已完成请求的 KV 块复用于新请求的公共前缀，显著加速多轮对话和共享系统提示场景。" data-en="Prefix caching is enabled by default. It reuses KV blocks from completed requests for common prefixes in new requests, significantly speeding up multi-turn conversations and shared system prompts.">前缀缓存默认启用，将已完成请求的 KV 块复用于新请求的公共前缀，显著加速多轮对话和共享系统提示场景。</p>
+        <pre><code><span class="token-comment"># 禁用前缀缓存</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span> <span class="token-flag">--disable-prefix-cache</span>
+
+<span class="token-comment"># 限制前缀缓存大小</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span> <span class="token-flag">--prefix-cache-max-tokens</span> <span class="token-value">8192</span></code><button class="copy-btn" data-copy-text="candle-vllm --m Qwen/Qwen3.6-27B-FP8 --disable-prefix-cache">Copy</button></pre>
+
+        <h2 id="multi-gpu" data-zh="多 GPU 推理" data-en="Multi-GPU Inference">多 GPU 推理</h2>
+
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="tab-multiproc" data-zh="多进程模式（推荐）" data-en="Multi-Process (Recommended)">多进程模式（推荐）</button>
+          <button class="tab-btn" data-tab="tab-multithread" data-zh="多线程模式（调试）" data-en="Multi-Thread (Debug)">多线程模式（调试）</button>
+        </div>
+        <div class="tab-content active" id="tab-multiproc">
+          <pre><code><span class="token-comment"># QwQ-32B BF16 双卡</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--d</span> <span class="token-value">0,1</span> <span class="token-flag">--w</span> <span class="token-string">/home/QwQ-32B/</span>
+
+<span class="token-comment"># 多卡 GGUF</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--d</span> <span class="token-value">0,1</span> <span class="token-flag">--m</span> <span class="token-string">unsloth/Qwen3.5-122B-A10B-GGUF</span> <span class="token-flag">--f</span> <span class="token-string">Q3_K_S</span></code><button class="copy-btn" data-copy-text="candle-vllm --d 0,1 --w /home/QwQ-32B/">Copy</button></pre>
+          <div class="callout-info">
+            <div class="callout-title" data-zh="💡 提示" data-en="💡 Tip">💡 提示</div>
+            <p data-zh="GPU 数量（--d）必须为 2 的幂次（2、4、8）。" data-en="Number of GPUs (--d) must be a power of 2 (2, 4, 8).">GPU 数量（<code>--d</code>）必须为 2 的幂次（2、4、8）。</p>
+          </div>
+        </div>
+        <div class="tab-content" id="tab-multithread">
+          <pre><code><span class="token-comment"># 多线程模式（调试用途）</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--multithread</span> <span class="token-flag">--d</span> <span class="token-value">0,1</span> <span class="token-flag">--w</span> <span class="token-string">/home/QwQ-32B/</span>
+
+<span class="token-comment"># 如遇非法内存访问，禁用 P2P</span>
+<span class="token-keyword">export</span> <span class="token-string">NCCL_P2P_DISABLE=1</span></code><button class="copy-btn" data-copy-text="candle-vllm --multithread --d 0,1 --w /home/QwQ-32B/">Copy</button></pre>
+        </div>
+
+        <h2 id="multi-node" data-zh="多节点推理" data-en="Multi-Node Inference">多节点推理</h2>
+        <p data-zh="通过 TCP 协调 NCCL 通信，无需 MPI，即可跨多台机器分布式推理：" data-en="Distribute inference across machines via TCP-based NCCL coordination — no MPI required:">通过 TCP 协调 NCCL 通信，无需 MPI，即可跨多台机器分布式推理：</p>
+        <pre><code><span class="token-comment"># Master 节点 (192.168.1.100)</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--d</span> <span class="token-value">0,1,2,3,4,5,6,7</span> <span class="token-flag">--w</span> <span class="token-string">/data/DeepSeek-R1-AWQ-Marlin/</span> \
+  <span class="token-flag">--num-nodes</span> <span class="token-value">2</span> <span class="token-flag">--node-rank</span> <span class="token-value">0</span> \
+  <span class="token-flag">--master-addr</span> <span class="token-value">192.168.1.100</span> <span class="token-flag">--master-port</span> <span class="token-value">29500</span>
+
+<span class="token-comment"># Worker 节点 (192.168.1.101)</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--d</span> <span class="token-value">0,1,2,3,4,5,6,7</span> <span class="token-flag">--w</span> <span class="token-string">/data/DeepSeek-R1-AWQ-Marlin/</span> \
+  <span class="token-flag">--num-nodes</span> <span class="token-value">2</span> <span class="token-flag">--node-rank</span> <span class="token-value">1</span> \
+  <span class="token-flag">--master-addr</span> <span class="token-value">192.168.1.100</span> <span class="token-flag">--master-port</span> <span class="token-value">29500</span></code><button class="copy-btn" data-copy-text="candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/DeepSeek-R1-AWQ-Marlin/ --num-nodes 2 --node-rank 0 --master-addr 192.168.1.100 --master-port 29500">Copy</button></pre>
+
+        <h2 id="numa" data-zh="NUMA 绑定" data-en="NUMA Binding">NUMA 绑定</h2>
+        <pre><code><span class="token-keyword">sudo</span> <span class="token-keyword">apt-get</span> install numactl
+
+<span class="token-comment"># 8 GPU, 2 NUMA 节点</span>
+<span class="token-keyword">MAP_NUMA_NODE</span>=<span class="token-value">0,0,0,0,1,1,1,1</span> \
+  <span class="token-keyword">numactl</span> <span class="token-flag">--cpunodebind=0</span> <span class="token-flag">--membind=0</span> \
+  <span class="token-keyword">candle-vllm</span> <span class="token-flag">--d</span> <span class="token-value">0,1,2,3,4,5,6,7</span> <span class="token-flag">--w</span> <span class="token-string">/data/model/</span></code><button class="copy-btn" data-copy-text='MAP_NUMA_NODE=0,0,0,0,1,1,1,1 numactl --cpunodebind=0 --membind=0 candle-vllm --d 0,1,2,3,4,5,6,7 --w /data/model/'>Copy</button></pre>
+
+        <h2 id="mcp-tools" data-zh="MCP 与工具调用" data-en="MCP & Tool Calling">MCP 与工具调用</h2>
+        <p data-zh="Candle-vLLM 内置 Model Context Protocol (MCP) 支持，可以通过配置文件或命令行添加 MCP 工具服务器，实现 OpenAI 兼容的工具调用格式。" data-en="Candle-vLLM has built-in Model Context Protocol (MCP) support. MCP tool servers can be configured via config file or CLI for OpenAI-compatible tool calling.">Candle-vLLM 内置 Model Context Protocol (MCP) 支持，可以通过配置文件或命令行添加 MCP 工具服务器，实现 OpenAI 兼容的工具调用格式。</p>
+        <p data-zh="支持多种解析后端：" data-en="Supports multiple parser backends:">支持多种解析后端：<code>qwen_coder</code>、<code>qwen</code>、<code>json</code>、<code>mistral</code></p>
+        <pre><code><span class="token-comment"># 强制指定工具解析后端</span>
+<span class="token-keyword">candle-vllm</span> <span class="token-flag">--m</span> <span class="token-string">Qwen/Qwen3.6-27B-FP8</span> <span class="token-flag">--enforce-parser</span> <span class="token-value">qwen</span></code><button class="copy-btn" data-copy-text="candle-vllm --m Qwen/Qwen3.6-27B-FP8 --enforce-parser qwen">Copy</button></pre>
+
+        <h2 id="multimodal" data-zh="多模态模型" data-en="Multimodal Models">多模态模型</h2>
+        <p data-zh="支持视觉语言模型，通过标准 OpenAI 图片格式发送图片 URL 或 Base64：" data-en="Supports vision-language models with standard OpenAI image format (URL or Base64):">支持视觉语言模型，通过标准 OpenAI 图片格式发送图片 URL 或 Base64：</p>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th data-zh="模型" data-en="Model">模型</th><th data-zh="类型" data-en="Type">类型</th></tr></thead>
+            <tbody>
+              <tr><td>Qwen3-VL</td><td data-zh="视觉语言" data-en="Vision-Language">视觉语言</td></tr>
+              <tr><td>Gemma 3 VL</td><td data-zh="视觉语言" data-en="Vision-Language">视觉语言</td></tr>
+              <tr><td>Mistral 3 VL</td><td data-zh="视觉语言" data-en="Vision-Language">视觉语言</td></tr>
+              <tr><td>LLaMA 4</td><td data-zh="多模态" data-en="Multimodal">多模态</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="embedding" data-zh="嵌入模型" data-en="Embedding Models">嵌入模型</h2>
+        <p data-zh="通过 /v1/embeddings 端点提供文本嵌入服务，支持 mean 和 last pooling 两种模式。" data-en="Text embeddings via /v1/embeddings endpoint, supporting both mean and last pooling modes.">通过 <code>/v1/embeddings</code> 端点提供文本嵌入服务，支持 mean 和 last pooling 两种模式。</p>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="index.html" class="logo"><img src="assets/images/logo.svg" alt="Candle-vLLM"><span>Candle-vLLM</span></a>
+        <p data-zh="基于 Rust 的高性能 LLM 推理引擎。" data-en="High-performance LLM inference engine in Rust.">基于 Rust 的高性能 LLM 推理引擎。</p>
+      </div>
+      <div class="footer-col"><h4 data-zh="文档" data-en="Docs">文档</h4><a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a><a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a><a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a><a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a></div>
+      <div class="footer-col"><h4 data-zh="资源" data-en="Resources">资源</h4><a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" data-zh="GitHub 仓库" data-en="GitHub Repo">GitHub 仓库</a><a href="https://arxiv.org/abs/2309.06180" target="_blank" data-zh="vLLM 论文" data-en="vLLM Paper">vLLM 论文</a></div>
+      <div class="footer-col"><h4 data-zh="社区" data-en="Community">社区</h4><a href="https://github.com/EricLBuehler/candle-vllm/issues" target="_blank" data-zh="报告问题" data-en="Report Issue">报告问题</a></div>
+    </div>
+    <div class="footer-bottom">
+      <span data-zh="MIT 许可证 © 2023 Eric Buehler" data-en="MIT License © 2023 Eric Buehler">MIT 许可证 © 2023 Eric Buehler</span>
+      <span data-zh="由 Candle ML 框架驱动" data-en="Powered by Candle ML Framework">由 Candle ML 框架驱动</span>
+      <span class="webdoc-credit"><span data-zh="由" data-en="Generated by">Generated by</span> <a href="https://github.com/guoqingbao/webdoc/" target="_blank" rel="noopener">webdoc skill</a><span data-zh=" 生成" data-en=""></span></span>
+    </div>
+  </div>
+</footer>
+<script src="assets/js/main.js?v=2"></script>
+</body>
+</html>

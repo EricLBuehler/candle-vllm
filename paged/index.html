@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Candle-vLLM — High-Performance LLM Inference in Rust</title>
+  <meta name="description" content="Efficient, easy-to-use platform for inference and serving local LLMs with an OpenAI compatible API server, built in Rust.">
+  <link rel="icon" href="assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/main.css?v=2">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="index.html" class="logo">
+      <img src="assets/images/logo.svg" alt="Candle-vLLM">
+      <span>Candle-vLLM</span>
+    </a>
+    <nav class="nav-links">
+      <a href="index.html" data-zh="首页" data-en="Home">首页</a>
+      <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+      <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+      <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+      <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      <a href="downloads.html" data-zh="下载" data-en="Downloads">下载</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="lang-toggle" aria-label="Switch language">EN</button>
+      <div class="theme-dropdown">
+        <select class="theme-select" aria-label="Select theme">
+          <option value="light">☀️ Light</option>
+          <option value="dark">🌙 Dark</option>
+          <option value="enflame">🔥 Enflame</option>
+        </select>
+      </div>
+      <a href="https://github.com/EricLBuehler/candle-vllm" class="btn btn-sm btn-page" target="_blank">GitHub</a>
+      <button class="mobile-toggle" aria-label="Menu"><span></span><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+<div class="scroll-progress"></div>
+
+<!-- Search Overlay -->
+<div class="search-overlay">
+  <div class="search-box">
+    <div class="search-input-wrapper">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="text" class="search-input" placeholder="Search documentation... (Ctrl+K)">
+    </div>
+    <div class="search-results"><div class="search-hint">Type to search documentation...</div></div>
+  </div>
+</div>
+
+<!-- Hero Section -->
+<section class="hero">
+  <div class="hero-bg"></div>
+  <canvas id="particles"></canvas>
+  <div class="container">
+    <div class="hero-grid">
+      <div>
+        <div class="hero-badge">
+          <span data-zh="🔥 v0.8.6 — 高性能 Rust 推理引擎" data-en="🔥 v0.8.6 — High-Performance Rust Inference Engine">🔥 v0.8.6 — 高性能 Rust 推理引擎</span>
+        </div>
+        <h1>
+          <span data-zh="本地 LLM 推理" data-en="Local LLM Inference">本地 LLM 推理</span><br>
+          <span class="gradient-text" data-zh="极致性能 · 极简部署" data-en="Blazing Fast · Easy Deploy">极致性能 · 极简部署</span>
+        </h1>
+        <p data-zh="基于 Rust 构建的高效推理平台，支持 Flash Attention、连续批处理、PagedAttention、CUDA Graph，提供 OpenAI 兼容 API 和内置 Web UI。" data-en="Efficient inference platform built in Rust with Flash Attention, continuous batching, PagedAttention, CUDA Graphs, OpenAI-compatible API, and built-in ChatGPT-style Web UI.">基于 Rust 构建的高效推理平台，支持 Flash Attention、连续批处理、PagedAttention、CUDA Graph，提供 OpenAI 兼容 API 和内置 Web UI。</p>
+        <div class="hero-buttons">
+          <a href="getting-started.html" class="btn btn-primary" data-zh="快速开始" data-en="Get Started">快速开始</a>
+          <a href="api-reference.html" class="btn btn-outline" data-zh="API 文档" data-en="API Docs">API 文档</a>
+          <button class="btn btn-page" data-search-trigger data-zh="🔍 搜索 (Ctrl+K)" data-en="🔍 Search (Ctrl+K)">🔍 搜索 (Ctrl+K)</button>
+        </div>
+        <div class="stats-row">
+          <div class="stat-card reveal">
+            <div class="stat-number" data-counter data-target="18" data-suffix="+">0</div>
+            <div class="stat-label" data-zh="支持模型族" data-en="Model Families">支持模型族</div>
+          </div>
+          <div class="stat-card reveal">
+            <div class="stat-number" data-counter data-target="251" data-suffix=" tks/s">0</div>
+            <div class="stat-label" data-zh="峰值解码速度" data-en="Peak Decode Speed">峰值解码速度</div>
+          </div>
+          <div class="stat-card reveal">
+            <div class="stat-number" data-counter data-target="4" data-suffix=".7×">0</div>
+            <div class="stat-label" data-zh="KV 缓存压缩" data-en="KV Cache Compression">KV 缓存压缩</div>
+          </div>
+        </div>
+      </div>
+      <div class="hero-code reveal">
+        <div class="hero-code-header">
+          <div class="hero-code-dot"></div>
+          <div class="hero-code-dot"></div>
+          <div class="hero-code-dot"></div>
+        </div>
+        <div id="hero-typing-code">
+          <pre><code></code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features Section -->
+<section class="section">
+  <div class="container">
+    <div class="section-header reveal">
+      <span class="overline" data-zh="核心特性" data-en="Core Features">核心特性</span>
+      <h2 data-zh="为生产环境打造" data-en="Built for Production">为生产环境打造</h2>
+      <p data-zh="从单张 GPU 到多节点集群，从 FP16 到 2-bit 量化，Candle-vLLM 覆盖全场景推理需求。" data-en="From a single GPU to multi-node clusters, from FP16 to 2-bit quantization, Candle-vLLM covers all inference scenarios.">从单张 GPU 到多节点集群，从 FP16 到 2-bit 量化，Candle-vLLM 覆盖全场景推理需求。</p>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card reveal">
+        <span class="feature-icon">⚡</span>
+        <h3 data-zh="极致性能" data-en="High Performance">极致性能</h3>
+        <p data-zh="原生 Flash Attention、FlashInfer 后端、CUDA Graph 捕获，解码速度最高达 251 tks/s。" data-en="Native Flash Attention, FlashInfer backend, CUDA Graph capture — decode speeds up to 251 tks/s.">原生 Flash Attention、FlashInfer 后端、CUDA Graph 捕获，解码速度最高达 251 tks/s。</p>
+      </div>
+      <div class="feature-card reveal">
+        <span class="feature-icon">🗜️</span>
+        <h3 data-zh="TurboQuant KV 压缩" data-en="TurboQuant KV Compression">TurboQuant KV 压缩</h3>
+        <p data-zh="基于 Walsh-Hadamard 变换的 KV 缓存压缩（2-4 bit），最高 4.7× 压缩比，几乎无质量损失。" data-en="Walsh-Hadamard KV cache compression (2-4 bit) with up to 4.7× compression and minimal quality loss.">基于 Walsh-Hadamard 变换的 KV 缓存压缩（2-4 bit），最高 4.7× 压缩比，几乎无质量损失。</p>
+      </div>
+      <div class="feature-card reveal">
+        <span class="feature-icon">🌍</span>
+        <h3 data-zh="跨平台" data-en="Cross-Platform">跨平台</h3>
+        <p data-zh="同一代码库支持 CUDA（Linux）和 Metal（macOS），相同 API，开箱即用。" data-en="Single codebase for CUDA (Linux) and Metal (macOS). Same API, works out of the box.">同一代码库支持 CUDA（Linux）和 Metal（macOS），相同 API，开箱即用。</p>
+      </div>
+      <div class="feature-card reveal">
+        <span class="feature-icon">🏭</span>
+        <h3 data-zh="生产就绪" data-en="Production Ready">生产就绪</h3>
+        <p data-zh="OpenAI 兼容 API、内置 ChatGPT 风格 Web UI、MCP 工具调用、流式输出。" data-en="OpenAI-compatible API, built-in ChatGPT-style Web UI, MCP tool calling, streaming output.">OpenAI 兼容 API、内置 ChatGPT 风格 Web UI、MCP 工具调用、流式输出。</p>
+      </div>
+      <div class="feature-card reveal">
+        <span class="feature-icon">📦</span>
+        <h3 data-zh="轻松部署" data-en="Easy Deploy">轻松部署</h3>
+        <p data-zh="一行安装脚本、Docker 镜像、或从源码构建。支持 DEB 包和预编译二进制。" data-en="One-line install, Docker images, or build from source. DEB packages and pre-built binaries.">一行安装脚本、Docker 镜像、或从源码构建。支持 DEB 包和预编译二进制。</p>
+      </div>
+      <div class="feature-card reveal">
+        <span class="feature-icon">🔧</span>
+        <h3 data-zh="高度可扩展" data-en="Extensible">高度可扩展</h3>
+        <p data-zh="基于 Trait 的架构设计，快速实现新模型管线。支持 Safetensors、GGUF、GPTQ/Marlin、FP8/FP4。" data-en="Trait-based architecture for rapid new model pipelines. Supports Safetensors, GGUF, GPTQ/Marlin, FP8/FP4.">基于 Trait 的架构设计，快速实现新模型管线。支持 Safetensors、GGUF、GPTQ/Marlin、FP8/FP4。</p>
+      </div>
+      <div class="feature-card reveal">
+        <span class="feature-icon">🖥️</span>
+        <h3 data-zh="多 GPU 与多节点" data-en="Multi-GPU & Multi-Node">多 GPU 与多节点</h3>
+        <p data-zh="多进程/多线程张量并行，基于 TCP 的多节点推理，无需 MPI。" data-en="Multi-process and multi-threaded tensor parallelism, TCP-based multi-node inference — no MPI required.">多进程/多线程张量并行，基于 TCP 的多节点推理，无需 MPI。</p>
+      </div>
+      <div class="feature-card reveal">
+        <span class="feature-icon">🧠</span>
+        <h3 data-zh="连续批处理" data-en="Continuous Batching">连续批处理</h3>
+        <p data-zh="vLLM 风格的调度器，支持分块预填充、前缀缓存、抢占式调度和 KV 块管理。" data-en="vLLM-style scheduler with chunked prefill, prefix caching, preemptive scheduling, and KV block management.">vLLM 风格的调度器，支持分块预填充、前缀缓存、抢占式调度和 KV 块管理。</p>
+      </div>
+      <div class="feature-card reveal">
+        <span class="feature-icon">🔌</span>
+        <h3 data-zh="MCP 与工具调用" data-en="MCP & Tool Calling">MCP 与工具调用</h3>
+        <p data-zh="内置 Model Context Protocol 支持，兼容 OpenAI 工具调用格式，多种模型解析后端。" data-en="Built-in Model Context Protocol support, compatible with OpenAI tool calling format, multiple parser backends.">内置 Model Context Protocol 支持，兼容 OpenAI 工具调用格式，多种模型解析后端。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Supported Models Section -->
+<section class="section" style="background: var(--surface-alt);">
+  <div class="container">
+    <div class="section-header reveal">
+      <span class="overline" data-zh="模型支持" data-en="Model Support">模型支持</span>
+      <h2 data-zh="广泛的模型覆盖" data-en="Broad Model Coverage">广泛的模型覆盖</h2>
+      <p data-zh="支持主流 LLM 模型族，包括 Safetensors、GGUF、GPTQ/Marlin、FP8/FP4 多种格式。" data-en="Supports mainstream LLM families across Safetensors, GGUF, GPTQ/Marlin, FP8/FP4 formats.">支持主流 LLM 模型族，包括 Safetensors、GGUF、GPTQ/Marlin、FP8/FP4 多种格式。</p>
+    </div>
+    <div class="model-families reveal">
+      <div class="model-family"><span class="model-family-icon">🦙</span><span class="model-family-name">LLaMA</span></div>
+      <div class="model-family"><span class="model-family-icon">🌬️</span><span class="model-family-name">Mistral</span></div>
+      <div class="model-family"><span class="model-family-icon">🔮</span><span class="model-family-name">Qwen</span></div>
+      <div class="model-family"><span class="model-family-icon">💎</span><span class="model-family-name">Gemma</span></div>
+      <div class="model-family"><span class="model-family-icon">🔬</span><span class="model-family-name">Phi</span></div>
+      <div class="model-family"><span class="model-family-icon">🏔️</span><span class="model-family-name">DeepSeek</span></div>
+      <div class="model-family"><span class="model-family-icon">📊</span><span class="model-family-name">Yi</span></div>
+      <div class="model-family"><span class="model-family-icon">⚖️</span><span class="model-family-name">StableLM</span></div>
+      <div class="model-family"><span class="model-family-icon">🧊</span><span class="model-family-name">GLM-4</span></div>
+      <div class="model-family"><span class="model-family-icon">🦙</span><span class="model-family-name">LLaMA 4</span></div>
+      <div class="model-family"><span class="model-family-icon">💎</span><span class="model-family-name">Gemma 4</span></div>
+      <div class="model-family"><span class="model-family-icon">🌀</span><span class="model-family-name">MiniMax</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- Performance Section -->
+<section class="section">
+  <div class="container">
+    <div class="section-header reveal">
+      <span class="overline" data-zh="性能指标" data-en="Performance">性能指标</span>
+      <h2 data-zh="实测解码速度" data-en="Benchmark Decode Speed">实测解码速度</h2>
+      <p data-zh="单请求解码速度（输入 4K，输出 1K，Hopper 80G GPU）" data-en="Single-request decode speed (input 4K, output 1K, Hopper 80G GPU)">单请求解码速度（输入 4K，输出 1K，Hopper 80G GPU）</p>
+    </div>
+    <div class="table-wrapper reveal">
+      <table>
+        <thead>
+          <tr>
+            <th data-zh="模型" data-en="Model">模型</th>
+            <th data-zh="BF16 速度" data-en="BF16 Speed">BF16 速度</th>
+            <th data-zh="量化速度" data-en="Quantized Speed">量化速度</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>LLaMA 8B</strong></td><td>119 tks/s</td><td>163 tks/s (Q4K), 171 tks/s (Marlin)</td></tr>
+          <tr><td><strong>Mistral 7B</strong></td><td>122 tks/s</td><td>181 tks/s (Q4K), 190 tks/s (Marlin)</td></tr>
+          <tr><td><strong>Phi3/Phi4 3.8B</strong></td><td>153 tks/s</td><td>196 tks/s (Q4K)</td></tr>
+          <tr><td><strong>Qwen2/3 Dense 8B</strong></td><td>127 tks/s</td><td>154 tks/s (Q4K)</td></tr>
+          <tr><td><strong>Qwen3 MoE 30B</strong></td><td>102 tks/s</td><td>124 tks/s (Q4K)</td></tr>
+          <tr><td><strong>Qwen3.5/3.6 Dense 27B</strong></td><td>36 tks/s</td><td>~49 tks/s (Q4K/FP8)</td></tr>
+          <tr><td><strong>Qwen3.5/3.6 MoE 35B</strong></td><td>90 tks/s</td><td>105 tks/s (Q4K)</td></tr>
+          <tr><td><strong>Yi 6B</strong></td><td>168 tks/s</td><td>199 tks/s (Q4K)</td></tr>
+          <tr><td><strong>StableLM 3B</strong></td><td>251 tks/s</td><td>—</td></tr>
+          <tr><td><strong>Gemma 2/3 9B</strong></td><td>103 tks/s</td><td>130 tks/s (Marlin)</td></tr>
+          <tr><td><strong>GLM4 9B</strong></td><td>96 tks/s</td><td>139 tks/s (Q4K)</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- Community Section -->
+<section class="section" style="background: var(--surface-alt);">
+  <div class="container">
+    <div class="section-header reveal">
+      <span class="overline" data-zh="社区资源" data-en="Community">社区资源</span>
+      <h2 data-zh="加入社区" data-en="Join the Community">加入社区</h2>
+    </div>
+    <div class="community-grid">
+      <a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" class="community-card reveal">
+        <span class="community-icon">📦</span>
+        <h3 data-zh="GitHub 仓库" data-en="GitHub Repo">GitHub 仓库</h3>
+        <p data-zh="查看源码、提交 Issue、贡献代码" data-en="Browse source, file issues, contribute">查看源码、提交 Issue、贡献代码</p>
+      </a>
+      <a href="https://github.com/EricLBuehler/candle-vllm/issues" target="_blank" class="community-card reveal">
+        <span class="community-icon">💬</span>
+        <h3 data-zh="问题反馈" data-en="Issue Tracker">问题反馈</h3>
+        <p data-zh="报告 Bug 或请求新功能" data-en="Report bugs or request features">报告 Bug 或请求新功能</p>
+      </a>
+      <a href="api-reference.html" class="community-card reveal">
+        <span class="community-icon">📖</span>
+        <h3 data-zh="API 文档" data-en="API Documentation">API 文档</h3>
+        <p data-zh="完整的 CLI 参数和 REST API 参考" data-en="Complete CLI flags and REST API reference">完整的 CLI 参数和 REST API 参考</p>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="index.html" class="logo">
+          <img src="assets/images/logo.svg" alt="Candle-vLLM">
+          <span>Candle-vLLM</span>
+        </a>
+        <p data-zh="基于 Rust 的高性能 LLM 推理引擎，支持 OpenAI 兼容 API。" data-en="High-performance LLM inference engine built in Rust with OpenAI-compatible API.">基于 Rust 的高性能 LLM 推理引擎，支持 OpenAI 兼容 API。</p>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="文档" data-en="Docs">文档</h4>
+        <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+        <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+        <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+        <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="资源" data-en="Resources">资源</h4>
+        <a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" data-zh="GitHub 仓库" data-en="GitHub Repo">GitHub 仓库</a>
+        <a href="https://arxiv.org/abs/2309.06180" target="_blank" data-zh="vLLM 论文" data-en="vLLM Paper">vLLM 论文</a>
+        <a href="https://github.com/EricLBuehler/candle-vllm/issues" target="_blank" data-zh="问题反馈" data-en="Issue Tracker">问题反馈</a>
+      </div>
+      <div class="footer-col">
+        <h4 data-zh="社区" data-en="Community">社区</h4>
+        <a href="https://github.com/EricLBuehler/candle-vllm/issues" target="_blank" data-zh="报告问题" data-en="Report Issue">报告问题</a>
+        <a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" data-zh="贡献代码" data-en="Contribute">贡献代码</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span data-zh="MIT 许可证 © 2023 Eric Buehler" data-en="MIT License © 2023 Eric Buehler">MIT 许可证 © 2023 Eric Buehler</span>
+      <span data-zh="由 Candle ML 框架驱动" data-en="Powered by Candle ML Framework">由 Candle ML 框架驱动</span>
+      <span class="webdoc-credit"><span data-zh="由" data-en="Generated by">Generated by</span> <a href="https://github.com/guoqingbao/webdoc/" target="_blank" rel="noopener">webdoc skill</a><span data-zh=" 生成" data-en=""></span></span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/js/main.js?v=2"></script>
+</body>
+</html>

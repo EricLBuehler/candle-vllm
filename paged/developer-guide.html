@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>开发指南 — Candle-vLLM</title>
+  <link rel="icon" href="assets/images/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/main.css?v=2">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="index.html" class="logo"><img src="assets/images/logo.svg" alt="Candle-vLLM"><span>Candle-vLLM</span></a>
+    <nav class="nav-links">
+      <a href="index.html" data-zh="首页" data-en="Home">首页</a>
+      <a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a>
+      <a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a>
+      <a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a>
+      <a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a>
+      <a href="downloads.html" data-zh="下载" data-en="Downloads">下载</a>
+    </nav>
+    <div class="nav-actions">
+      <button class="lang-toggle" aria-label="Switch language">EN</button>
+      <div class="theme-dropdown">
+        <select class="theme-select" aria-label="Select theme"><option value="light">☀️ Light</option><option value="dark">🌙 Dark</option><option value="enflame">🔥 Enflame</option></select>
+      </div>
+      <a href="https://github.com/EricLBuehler/candle-vllm" class="btn btn-sm btn-page" target="_blank">GitHub</a>
+      <button class="mobile-toggle" aria-label="Menu"><span></span><span></span><span></span></button>
+    </div>
+  </div>
+</header>
+<div class="scroll-progress"></div>
+
+<div class="search-overlay"><div class="search-box"><div class="search-input-wrapper"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg><input type="text" class="search-input" placeholder="Search documentation... (Ctrl+K)"></div><div class="search-results"><div class="search-hint">Type to search documentation...</div></div></div></div>
+
+<div class="page-header">
+  <div class="container">
+    <h1 data-zh="开发指南" data-en="Developer Guide">开发指南</h1>
+    <p data-zh="了解 Candle-vLLM 的内部架构、如何贡献代码和扩展新模型。" data-en="Learn the internals of Candle-vLLM, how to contribute, and how to extend new models.">了解 Candle-vLLM 的内部架构、如何贡献代码和扩展新模型。</p>
+  </div>
+</div>
+
+<section class="section">
+  <div class="container">
+    <div class="doc-layout">
+      <nav class="doc-sidebar">
+        <div class="doc-sidebar-group">
+          <h4 data-zh="架构" data-en="Architecture">架构</h4>
+          <a href="#overview" data-zh="系统概览" data-en="System Overview">系统概览</a>
+          <a href="#arch-diagram" data-zh="架构图" data-en="Architecture Diagram">架构图</a>
+          <a href="#request-flow" data-zh="请求流程" data-en="Request Flow">请求流程</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="核心组件" data-en="Core Components">核心组件</h4>
+          <a href="#llm-engine" data-zh="LLM Engine" data-en="LLM Engine">LLM Engine</a>
+          <a href="#scheduler" data-zh="调度器" data-en="Scheduler">调度器</a>
+          <a href="#pipeline" data-zh="模型管线" data-en="Model Pipeline">模型管线</a>
+          <a href="#block-engine" data-zh="块引擎" data-en="Block Engine">块引擎</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="贡献" data-en="Contributing">贡献</h4>
+          <a href="#project-layout" data-zh="项目结构" data-en="Project Layout">项目结构</a>
+          <a href="#adding-model" data-zh="添加新模型" data-en="Adding a Model">添加新模型</a>
+          <a href="#build-test" data-zh="构建与测试" data-en="Build & Test">构建与测试</a>
+        </div>
+        <div class="doc-sidebar-group">
+          <h4 data-zh="Rust 库" data-en="Rust Crate">Rust 库</h4>
+          <a href="#rust-api" data-zh="Rust API 使用" data-en="Rust API Usage">Rust API 使用</a>
+        </div>
+      </nav>
+
+      <div class="doc-content">
+
+        <h2 id="overview" data-zh="系统概览" data-en="System Overview">系统概览</h2>
+        <p data-zh="Candle-vLLM 是受 Python vLLM 启发、使用 Rust 重新实现的高性能 LLM 推理引擎。基于 Candle ML 框架，采用 Trait 驱动的模型管线架构，实现了从 HTTP 请求到 GPU 推理的完整流水线。" data-en="Candle-vLLM is a high-performance LLM inference engine inspired by Python vLLM, reimplemented in Rust. Built on the Candle ML framework with a trait-driven pipeline architecture, it implements the complete flow from HTTP requests to GPU inference.">Candle-vLLM 是受 Python vLLM 启发、使用 Rust 重新实现的高性能 LLM 推理引擎。基于 Candle ML 框架，采用 Trait 驱动的模型管线架构，实现了从 HTTP 请求到 GPU 推理的完整流水线。</p>
+        <p data-zh="核心设计理念：" data-en="Core design principles:">核心设计理念：</p>
+        <ul>
+          <li data-zh="vLLM 风格的 PagedAttention 管理 KV 缓存" data-en="vLLM-style PagedAttention for KV cache management">vLLM 风格的 PagedAttention 管理 KV 缓存</li>
+          <li data-zh="连续批处理最大化 GPU 利用率" data-en="Continuous batching to maximize GPU utilization">连续批处理最大化 GPU 利用率</li>
+          <li data-zh="Trait 驱动的可扩展模型管线" data-en="Trait-driven extensible model pipelines">Trait 驱动的可扩展模型管线</li>
+          <li data-zh="CUDA 和 Metal 统一后端" data-en="Unified CUDA and Metal backends">CUDA 和 Metal 统一后端</li>
+        </ul>
+
+        <h2 id="arch-diagram" data-zh="架构图" data-en="Architecture Diagram">架构图</h2>
+        <div class="diagram-container reveal">
+          <div class="arch-diagram">
+            <div class="arch-layer layer-api" data-zh="HTTP API 层（Axum）— /v1/chat/completions, /v1/models, /v1/embeddings" data-en="HTTP API Layer (Axum) — /v1/chat/completions, /v1/models, /v1/embeddings">HTTP API 层（Axum）— /v1/chat/completions, /v1/models, /v1/embeddings</div>
+            <div class="arch-arrow">↓</div>
+            <div class="arch-layer layer-engine" data-zh="LLM Engine — 请求接收、批次编排、流式输出" data-en="LLM Engine — Request intake, batch orchestration, streaming output">LLM Engine — 请求接收、批次编排、流式输出</div>
+            <div class="arch-arrow">↓</div>
+            <div class="arch-layer layer-scheduler" data-zh="Scheduler — 连续批处理、分块预填充、抢占调度、前缀缓存" data-en="Scheduler — Continuous batching, chunked prefill, preemption, prefix cache">Scheduler — 连续批处理、分块预填充、抢占调度、前缀缓存</div>
+            <div class="arch-arrow">↓</div>
+            <div class="arch-layer layer-backend" data-zh="DefaultPipeline — 模型前向传播、Logits 处理、Token 采样、工具解析" data-en="DefaultPipeline — Model forward, logits processing, token sampling, tool parsing">DefaultPipeline — 模型前向传播、Logits 处理、Token 采样、工具解析</div>
+            <div class="arch-arrow">↓</div>
+            <div class="arch-layer layer-hardware" data-zh="硬件层 — CUDA / Metal / NCCL / FlashAttention / FlashInfer / CUDA Graph" data-en="Hardware Layer — CUDA / Metal / NCCL / FlashAttention / FlashInfer / CUDA Graph">硬件层 — CUDA / Metal / NCCL / FlashAttention / FlashInfer / CUDA Graph</div>
+          </div>
+        </div>
+
+        <h2 id="request-flow" data-zh="请求处理流程" data-en="Request Flow">请求处理流程</h2>
+        <ol class="steps">
+          <li class="step-item">
+            <h3 data-zh="请求接收" data-en="Request Intake">请求接收</h3>
+            <p data-zh="Axum HTTP handler 接收 OpenAI 格式的请求，解析消息、工具定义和采样参数，创建推理任务提交到 LLMEngine。" data-en="Axum HTTP handler receives OpenAI-format requests, parses messages, tool definitions, and sampling parameters, then submits an inference task to LLMEngine.">Axum HTTP handler 接收 OpenAI 格式的请求，解析消息、工具定义和采样参数，创建推理任务提交到 LLMEngine。</p>
+          </li>
+          <li class="step-item">
+            <h3 data-zh="调度编排" data-en="Scheduling">调度编排</h3>
+            <p data-zh="Scheduler 从等待/运行/换出队列中选择序列批次，分配/回收物理 KV 块。支持分块预填充（默认 8K）将长提示分批处理。" data-en="Scheduler selects sequence batches from waiting/running/swapped-out queues and allocates/reclaims physical KV blocks. Chunked prefill (default 8K) splits long prompts across steps.">Scheduler 从等待/运行/换出队列中选择序列批次，分配/回收物理 KV 块。支持分块预填充（默认 8K）将长提示分批处理。</p>
+          </li>
+          <li class="step-item">
+            <h3 data-zh="模型前向传播" data-en="Model Forward">模型前向传播</h3>
+            <p data-zh="DefaultPipeline 准备批输入张量，调用模型的 forward() 方法。注意力层使用 PagedAttention 查表访问 KV 块，可选 CUDA Graph 加速。" data-en="DefaultPipeline prepares batched input tensors and calls the model's forward(). Attention layers use PagedAttention block-table lookups, optionally accelerated by CUDA Graphs.">DefaultPipeline 准备批输入张量，调用模型的 forward() 方法。注意力层使用 PagedAttention 查表访问 KV 块，可选 CUDA Graph 加速。</p>
+          </li>
+          <li class="step-item">
+            <h3 data-zh="采样与输出" data-en="Sampling & Output">采样与输出</h3>
+            <p data-zh="从 Logits 采样下一个 Token，通过工具解析器检测工具调用，通过 SSE 流式返回给客户端。" data-en="Samples next token from logits, detects tool calls via parser, and streams results back to the client via SSE.">从 Logits 采样下一个 Token，通过工具解析器检测工具调用，通过 SSE 流式返回给客户端。</p>
+          </li>
+        </ol>
+
+        <h2 id="llm-engine" data-zh="LLM Engine" data-en="LLM Engine">LLM Engine</h2>
+        <p data-zh="LLMEngine 是系统的中枢，位于 src/openai/pipelines/llm_engine.rs。主要职责：" data-en="LLMEngine is the system's core loop, located in src/openai/pipelines/llm_engine.rs. Main responsibilities:">LLMEngine 是系统的中枢，位于 <code>src/openai/pipelines/llm_engine.rs</code>。主要职责：</p>
+        <ul>
+          <li data-zh="接收异步推理任务" data-en="Accept async inference tasks">接收异步推理任务</li>
+          <li data-zh="调用 Scheduler 决定批次" data-en="Call Scheduler to decide batch composition">调用 Scheduler 决定批次</li>
+          <li data-zh="准备批输入张量并执行模型前向传播" data-en="Prepare batched tensors and run model forward">准备批输入张量并执行模型前向传播</li>
+          <li data-zh="采样 Token 并流式返回结果" data-en="Sample tokens and stream results">采样 Token 并流式返回结果</li>
+        </ul>
+
+        <h2 id="scheduler" data-zh="调度器" data-en="Scheduler">调度器</h2>
+        <p data-zh="调度器实现了 vLLM 风格的连续批处理策略（src/scheduler/）：" data-en="The scheduler implements vLLM-style continuous batching (src/scheduler/):">调度器实现了 vLLM 风格的连续批处理策略（<code>src/scheduler/</code>）：</p>
+        <ul>
+          <li data-zh="三级队列：等待队列、运行队列、换出队列" data-en="Three-level queues: waiting, running, swapped-out">三级队列：等待队列、运行队列、换出队列</li>
+          <li data-zh="FCFS 抢占策略：单序列 → 重计算；多序列 → 换出到 CPU" data-en="FCFS preemption: single-sequence → recompute; multi-sequence → swap to CPU">FCFS 抢占策略：单序列 → 重计算；多序列 → 换出到 CPU</li>
+          <li data-zh="前缀缓存：复用已完成序列的 KV 块" data-en="Prefix cache: reuse KV blocks from completed sequences">前缀缓存：复用已完成序列的 KV 块</li>
+          <li data-zh="分块预填充：将长提示分为 8K 块交替处理" data-en="Chunked prefill: process long prompts in 8K chunks interleaved with decodes">分块预填充：将长提示分为 8K 块交替处理</li>
+        </ul>
+
+        <h2 id="pipeline" data-zh="模型管线" data-en="Model Pipeline">模型管线</h2>
+        <p data-zh="DefaultPipeline（src/openai/pipelines/pipeline.rs）负责模型加载和前向传播。通过 HuggingFace config.json 的 architectures 字段（Safetensors）或 GGUF 元数据（general.architecture）自动匹配模型实现。" data-en="DefaultPipeline (src/openai/pipelines/pipeline.rs) handles model loading and forward pass. It auto-matches model implementations via HuggingFace config.json architectures field (Safetensors) or GGUF metadata (general.architecture).">DefaultPipeline（<code>src/openai/pipelines/pipeline.rs</code>）负责模型加载和前向传播。通过 HuggingFace <code>config.json</code> 的 <code>architectures</code> 字段（Safetensors）或 GGUF 元数据（<code>general.architecture</code>）自动匹配模型实现。</p>
+
+        <h2 id="block-engine" data-zh="块引擎" data-en="Block Engine">块引擎</h2>
+        <p data-zh="BlockEngine（src/scheduler/block_engine.rs）管理逻辑 Token 块到物理 GPU/CPU 块的映射。支持引用计数和写时复制（COW），实现前缀缓存中的共享块。" data-en="BlockEngine (src/scheduler/block_engine.rs) manages logical token block to physical GPU/CPU block mapping. Supports reference counting and copy-on-write (COW) for shared blocks in prefix caching.">BlockEngine（<code>src/scheduler/block_engine.rs</code>）管理逻辑 Token 块到物理 GPU/CPU 块的映射。支持引用计数和写时复制（COW），实现前缀缓存中的共享块。</p>
+
+        <h2 id="project-layout" data-zh="项目结构" data-en="Project Layout">项目结构</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead><tr><th data-zh="目录" data-en="Directory">目录</th><th data-zh="用途" data-en="Purpose">用途</th></tr></thead>
+            <tbody>
+              <tr><td><code>src/main.rs</code></td><td data-zh="CLI 入口、参数解析、HTTP 服务启动" data-en="CLI entry, arg parsing, HTTP server startup">CLI 入口、参数解析、HTTP 服务启动</td></tr>
+              <tr><td><code>src/lib.rs</code></td><td data-zh="库根：导出 PagedAttention、设备/KV 缓存帮助函数" data-en="Library root: exports PagedAttention, device/KV helpers">库根：导出 PagedAttention、设备/KV 缓存帮助函数</td></tr>
+              <tr><td><code>src/api.rs</code></td><td data-zh="公共 Rust API：EngineBuilder、编程式推理" data-en="Public Rust API: EngineBuilder, programmatic inference">公共 Rust API：EngineBuilder、编程式推理</td></tr>
+              <tr><td><code>src/backend/</code></td><td data-zh="底层后端：GGUF 加载、GPTQ/Marlin、CUDA Graph、自定义算子" data-en="Low-level backends: GGUF, GPTQ/Marlin, CUDA Graph, custom ops">底层后端：GGUF 加载、GPTQ/Marlin、CUDA Graph、自定义算子</td></tr>
+              <tr><td><code>src/openai/</code></td><td data-zh="OpenAI 兼容层：HTTP 处理、请求/响应类型、采样、流式输出" data-en="OpenAI serving layer: HTTP handlers, types, sampling, streaming">OpenAI 兼容层：HTTP 处理、请求/响应类型、采样、流式输出</td></tr>
+              <tr><td><code>src/openai/models/</code></td><td data-zh="模型实现：各模型族的 Safetensors 和 GGUF 版本" data-en="Model implementations: Safetensors and GGUF per family">模型实现：各模型族的 Safetensors 和 GGUF 版本</td></tr>
+              <tr><td><code>src/openai/models/layers/</code></td><td data-zh="共享层：Attention、MoE、MLA、DeltaNet、RoPE 等" data-en="Shared layers: Attention, MoE, MLA, DeltaNet, RoPE, etc.">共享层：Attention、MoE、MLA、DeltaNet、RoPE 等</td></tr>
+              <tr><td><code>src/scheduler/</code></td><td data-zh="调度器：连续批处理、块分配、抢占、前缀缓存" data-en="Scheduler: batching, block allocation, preemption, prefix cache">调度器：连续批处理、块分配、抢占、前缀缓存</td></tr>
+              <tr><td><code>src/mcp/</code></td><td data-zh="MCP：stdio/HTTP 传输、客户端管理、工具发现" data-en="MCP: stdio/HTTP transport, client management, tool discovery">MCP：stdio/HTTP 传输、客户端管理、工具发现</td></tr>
+              <tr><td><code>src/tools/</code></td><td data-zh="工具解析：模型特定的流式解析器" data-en="Tool parsing: model-specific stream parsers">工具解析：模型特定的流式解析器</td></tr>
+              <tr><td><code>examples/</code></td><td data-zh="示例脚本和转换工具" data-en="Example scripts and conversion utilities">示例脚本和转换工具</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="adding-model" data-zh="添加新模型" data-en="Adding a New Model">添加新模型</h2>
+        <ol class="steps">
+          <li class="step-item">
+            <h3 data-zh="创建模型文件" data-en="Create Model File">创建模型文件</h3>
+            <p data-zh="在 src/openai/models/ 下创建新的 .rs 文件，实现模型结构体和 forward() 方法。使用共享层（attention.rs、mlp.rs 等）构建。" data-en="Create a new .rs file under src/openai/models/. Implement the model struct and forward() method using shared layers (attention.rs, mlp.rs, etc.).">在 <code>src/openai/models/</code> 下创建新的 .rs 文件，实现模型结构体和 <code>forward()</code> 方法。使用共享层（<code>attention.rs</code>、<code>mlp.rs</code> 等）构建。</p>
+          </li>
+          <li class="step-item">
+            <h3 data-zh="注册模型" data-en="Register the Model">注册模型</h3>
+            <p data-zh="在 pipeline.rs 中添加 architectures 匹配分支，将 HuggingFace 架构字符串映射到你的模型实现。" data-en="Add an architectures match branch in pipeline.rs to map the HuggingFace architecture string to your model implementation.">在 <code>pipeline.rs</code> 中添加 <code>architectures</code> 匹配分支，将 HuggingFace 架构字符串映射到你的模型实现。</p>
+          </li>
+          <li class="step-item">
+            <h3 data-zh="添加对话模板" data-en="Add Chat Template">添加对话模板</h3>
+            <p data-zh="在 src/openai/conversation/ 中添加模型族对应的对话模板/分隔符样式。" data-en="Add the model family's chat template/separator style in src/openai/conversation/.">在 <code>src/openai/conversation/</code> 中添加模型族对应的对话模板/分隔符样式。</p>
+          </li>
+          <li class="step-item">
+            <h3 data-zh="测试" data-en="Test">测试</h3>
+            <p data-zh="使用 cargo check 验证编译，然后用 HuggingFace 模型进行端到端测试。" data-en="Verify compilation with cargo check, then perform end-to-end testing with a HuggingFace model.">使用 <code>cargo check</code> 验证编译，然后用 HuggingFace 模型进行端到端测试。</p>
+          </li>
+        </ol>
+
+        <h2 id="build-test" data-zh="构建与测试" data-en="Build & Test">构建与测试</h2>
+        <pre><code><span class="token-comment"># 快速编译检查</span>
+<span class="token-keyword">cargo</span> check
+
+<span class="token-comment"># 完整编译（release）</span>
+<span class="token-keyword">cargo</span> build <span class="token-flag">--release</span>
+
+<span class="token-comment"># 运行测试</span>
+<span class="token-keyword">cargo</span> test
+
+<span class="token-comment"># 代码格式化</span>
+<span class="token-keyword">cargo</span> fmt
+
+<span class="token-comment"># Lint 检查</span>
+<span class="token-keyword">cargo</span> clippy <span class="token-flag">--</span> <span class="token-flag">-D</span> <span class="token-value">warnings</span></code><button class="copy-btn" data-copy-text="cargo check
+cargo build --release
+cargo test
+cargo fmt
+cargo clippy -- -D warnings">Copy</button></pre>
+
+        <h2 id="rust-api" data-zh="Rust API 使用" data-en="Rust API Usage">Rust API 使用</h2>
+        <p data-zh="Candle-vLLM 也可以作为 Rust 库使用，通过 EngineBuilder 进行编程式推理：" data-en="Candle-vLLM can also be used as a Rust library for programmatic inference via EngineBuilder:">Candle-vLLM 也可以作为 Rust 库使用，通过 <code>EngineBuilder</code> 进行编程式推理：</p>
+        <pre><code><span class="token-keyword">use</span> <span class="token-type">candle_vllm</span>::{<span class="token-type">EngineBuilder</span>, <span class="token-type">ModelRepo</span>};
+
+<span class="token-keyword">let</span> engine = <span class="token-type">EngineBuilder</span>::<span class="token-keyword">new</span>(<span class="token-type">ModelRepo</span>::<span class="token-keyword">from_hf</span>(<span class="token-string">"Qwen/Qwen3-8B"</span>))
+    .<span class="token-keyword">with_devices</span>(<span class="token-keyword">vec!</span>[<span class="token-number">0</span>])
+    .<span class="token-keyword">build</span>()
+    .<span class="token-keyword">await</span>?;
+
+<span class="token-keyword">let</span> response = engine
+    .<span class="token-keyword">chat</span>(<span class="token-keyword">vec!</span>[<span class="token-string">"Hello, what is Rust?"</span>])
+    .<span class="token-keyword">await</span>?;</code><button class="copy-btn" data-copy-text='use candle_vllm::{EngineBuilder, ModelRepo};
+
+let engine = EngineBuilder::new(ModelRepo::from_hf("Qwen/Qwen3-8B"))
+    .with_devices(vec![0])
+    .build()
+    .await?;
+
+let response = engine
+    .chat(vec!["Hello, what is Rust?"])
+    .await?;'>Copy</button></pre>
+
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a href="index.html" class="logo"><img src="assets/images/logo.svg" alt="Candle-vLLM"><span>Candle-vLLM</span></a>
+        <p data-zh="基于 Rust 的高性能 LLM 推理引擎。" data-en="High-performance LLM inference engine in Rust.">基于 Rust 的高性能 LLM 推理引擎。</p>
+      </div>
+      <div class="footer-col"><h4 data-zh="文档" data-en="Docs">文档</h4><a href="getting-started.html" data-zh="快速开始" data-en="Getting Started">快速开始</a><a href="user-guide.html" data-zh="使用指南" data-en="User Guide">使用指南</a><a href="developer-guide.html" data-zh="开发指南" data-en="Developer Guide">开发指南</a><a href="api-reference.html" data-zh="API 参考" data-en="API Reference">API 参考</a></div>
+      <div class="footer-col"><h4 data-zh="资源" data-en="Resources">资源</h4><a href="https://github.com/EricLBuehler/candle-vllm" target="_blank" data-zh="GitHub 仓库" data-en="GitHub Repo">GitHub 仓库</a><a href="https://arxiv.org/abs/2309.06180" target="_blank" data-zh="vLLM 论文" data-en="vLLM Paper">vLLM 论文</a></div>
+      <div class="footer-col"><h4 data-zh="社区" data-en="Community">社区</h4><a href="https://github.com/EricLBuehler/candle-vllm/issues" target="_blank" data-zh="报告问题" data-en="Report Issue">报告问题</a></div>
+    </div>
+    <div class="footer-bottom">
+      <span data-zh="MIT 许可证 © 2023 Eric Buehler" data-en="MIT License © 2023 Eric Buehler">MIT 许可证 © 2023 Eric Buehler</span>
+      <span data-zh="由 Candle ML 框架驱动" data-en="Powered by Candle ML Framework">由 Candle ML 框架驱动</span>
+      <span class="webdoc-credit"><span data-zh="由" data-en="Generated by">Generated by</span> <a href="https://github.com/guoqingbao/webdoc/" target="_blank" rel="noopener">webdoc skill</a><span data-zh=" 生成" data-en=""></span></span>
+    </div>
+  </div>
+</footer>
+<script src="assets/js/main.js?v=2"></script>
+</body>
+</html>
