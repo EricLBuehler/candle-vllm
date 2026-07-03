@@ -15,4 +15,5 @@ AGENTS.md
 .xbot/
 XBOT.md
 .cursor/
-paged/
+presentation/
+test_data/

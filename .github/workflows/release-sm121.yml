@@ -55,6 +55,7 @@ jobs:
     env:
       CUDA_COMPUTE_CAP: "121"
       DEBIAN_FRONTEND: noninteractive
+      CARGO_BUILD_JOBS: "2"
       CUDAFORGE_THREADS: "2"
       RAYON_NUM_THREADS: "2"
     steps:
