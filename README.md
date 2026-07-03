@@ -59,12 +59,14 @@ cargo install --features metal --path .
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
 
 candle-vllm --m unsloth/Qwen3.5-122B-A10B-GGUF --f Q3_K_S --d 0,1 --ui-server
+
+candle-vllm --m zai-org/GLM-5.2-FP8 --d 0,1,2,3,4,5,6,7 --ui-server
 ```
 
 **Using local model path:**
 ```bash
 # Local safetensors directory
-candle-vllm --d 0,1 --m /home/Qwen3-30B-A3B-Instruct-2507/ --ui-server
+candle-vllm --d 0,1,2,3,4,5,6,7 --m /home/data/GLM-5.2-FP8/ --ui-server
 
 # Local GGUF file (single or split-shard)
 candle-vllm --d 0,1 --m /home/data/model-Q4_K_M.gguf --ui-server
@@ -94,13 +96,14 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 | 9 | **Yi** | 168 tks/s (6B) | 199 tks/s (6B, Q4K) |
 | 10 | **StableLM** | 251 tks/s (3B) | - |
 | 11 | **Gemma-2/Gemma-3** | 103 tks/s (9B) | 130 tks/s (9B, **Marlin**) |
-| 12 | **DeepSeek V2/V3/R1** | TBD | ~20 tks **(AWQ 671B, tp=8, offloading)** |
+| 12 | **DeepSeek V2/V3/V3.2/R1** | TBD | ~20 tks **(AWQ 671B, tp=8, offloading)** |
 | 13 | **QwQ-32B** | 51 tks/s **(32B, tp=2)** | 70 tks/s **(32B, Q4K)** |
 | 14 | **GLM4** | 96 tks/s **(9B)** | 139 tks/s **(9B, Q4K)** |
 | 15 | **GLM4.7 Flash** | TBD | 82 tks/s **(31B, Software NVFP4)** |
 | 16 | **LLama4** | TBD | 47 tks/s **(107B, Software NVFP4)** |
 | 17 | **Gemma4** | (26B) 83 tks/s | 82 tks/s **(26B, Software NVFP4)** |
 | 18 | **MiniMax-M2.5/M2.7** | TBD | 72 tks/s **(229B, Software NVFP4, TP=2)** |
+| 19 | **GLM-5.2** | TBD | Supported **(FP8, tp=8)** |
 
 <details>
 <summary><b>Demo Video — GPU & Apple Silicon</b></summary>
@@ -136,6 +139,7 @@ Chat demo on **Apple Silicon** (M4, 16GB unified memory, Q2K, QWen3-8B)
 - Support Flashinfer Backend
 - Support manual YaRN RoPE scaling override via `--yarn-scaling-factor`
 - Support MXFP4/NVFP4 models
+- Support DeepSeek V3.2 and GLM-5.2 FP8 models
 
 ---
 
@@ -148,6 +152,9 @@ Chat demo on **Apple Silicon** (M4, 16GB unified memory, Q2K, QWen3-8B)
 ```bash
 # FP8 model + Web UI
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+
+# GLM-5.2 FP8 model
+candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
 
 # Unquantized Safetensors (multi-GPU)
 candle-vllm --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
@@ -171,6 +178,9 @@ candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server
 ```bash
 # FP8 Model (block-wise quant, build with cutlass feature)
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+
+# GLM-5.2 FP8 Model
+candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
 
 # FP8 on MacOS/Metal (Dense)
 candle-vllm --m Qwen/Qwen3-4B-Instruct-2507-FP8 --ui-server
@@ -275,7 +285,7 @@ candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo3
 candle-vllm --w /data/Qwen3.5-35B-A3B-FP8/ --kvcache-dtype fp8
 ```
 
-> **Note**: TurboQuant uses native flash attention kernels (flashinfer is automatically disabled). Supported on both CUDA (SM70+) and Metal (Apple Silicon) platforms. MLA models (DeepSeek, GLM4) auto-fallback to standard KV cache as TurboQuant is incompatible with their compressed KV layout.
+> **Note**: TurboQuant uses native flash attention kernels (flashinfer is automatically disabled). Supported on both CUDA (SM70+) and Metal (Apple Silicon) platforms. MLA models (DeepSeek, GLM4/GLM-5.2) auto-fallback to standard KV cache as TurboQuant is incompatible with their compressed KV layout.
 
 ---
 
@@ -430,6 +440,7 @@ candle-vllm --h unix:///tmp/candle-vllm.sock --m Qwen/Qwen3.6-27B-FP8
 * [x] TurboQuant KV Cache (2–4 bit compression)
 * [x] FP8 Models (block-wise, SM90+)
 * [x] MXFP4/NVFP4 Model Support
+* [x] DeepSeek V3.2 and GLM-5.2 FP8 Model Support
 * [x] MCP Integration & Tool Calling
 * [x] Built-in ChatGPT-style Web UI
 
