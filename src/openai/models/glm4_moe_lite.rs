@@ -121,10 +121,19 @@ impl GLM4MoeLiteDecoderLayer {
             _ => candle::bail!("GLM4 MoE Lite requires moe_config: QwenMoE"),
         };
 
-        let self_attn =
-            MlaAttention::new(vb.pp("self_attn"), comm.clone(), mla_cfg, config, dtype)?;
+        let self_attn = MlaAttention::new(
+            vb.pp("self_attn"),
+            comm.clone(),
+            mla_cfg,
+            config,
+            dtype,
+            layer_idx,
+        )?;
 
-        let mlp = if layer_idx >= moe_cfg.first_k_dense_replace.unwrap_or(0) {
+        let is_moe_layer = layer_idx >= moe_cfg.first_k_dense_replace.unwrap_or(0)
+            && moe_cfg.num_experts.is_some();
+
+        let mlp = if is_moe_layer {
             if let Some(ref quant_config) = config.quantization_config {
                 if quant_config.quant_method == "fp8" {
                     MoeOrMlp::FusedMoeFp8(FusedMoeFp8::new(
@@ -187,7 +196,6 @@ impl GLM4MoeLiteDecoderLayer {
             )?)
         };
 
-        let is_moe_layer = layer_idx >= moe_cfg.first_k_dense_replace.unwrap_or(0);
         let shared_expert = if is_moe_layer {
             if let Some(intermediate_size) = moe_cfg.shared_expert_intermediate_size {
                 if intermediate_size > 0 {
@@ -414,7 +422,14 @@ impl GLM4MoeLiteForCausalLM {
 
     pub fn embed_forward(&self, xs: &Tensor) -> Result<Tensor> {
         let xs = self.embed_tokens.forward(xs)?;
-        if self.config.isq_quant.is_some() && xs.dtype() != DType::F32 {
+        let needs_f32 = if self.config.isq_quant.is_some() {
+            true
+        } else if let Some(qcfg) = &self.config.quantization_config {
+            !matches!(qcfg.quant_method.as_str(), "nvfp4" | "mxfp4" | "fp8")
+        } else {
+            false
+        };
+        if needs_f32 && xs.dtype() != DType::F32 {
             xs.to_dtype(DType::F32)
         } else {
             Ok(xs)

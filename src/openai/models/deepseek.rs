@@ -125,8 +125,14 @@ impl DeepSeekDecoderLayer {
             _ => candle::bail!("DeepSeek requires moe_config: QwenMoE"),
         };
 
-        let self_attn =
-            MlaAttention::new(vb.pp("self_attn"), comm.clone(), mla_cfg, config, dtype)?;
+        let self_attn = MlaAttention::new(
+            vb.pp("self_attn"),
+            comm.clone(),
+            mla_cfg,
+            config,
+            dtype,
+            layer_idx,
+        )?;
 
         let is_moe_layer = layer_idx >= moe_cfg.first_k_dense_replace.unwrap_or(0)
             && moe_cfg.num_experts.is_some();
@@ -280,6 +286,7 @@ impl DeepSeekDecoderLayer {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct DeepSeekConfig {
+    pub architectures: Option<Vec<String>>,
     pub vocab_size: usize,
     pub hidden_size: usize,
     pub intermediate_size: usize,
@@ -341,7 +348,17 @@ impl DeepSeek {
             .num_key_value_heads
             .unwrap_or(ds_cfg.num_attention_heads);
 
-        let rope_theta = ds_cfg.rope_theta.unwrap_or(10000.0);
+        let rope_theta = ds_cfg.rope_theta.unwrap_or_else(|| {
+            // GlmMoeDsa stores rope_theta inside rope_parameters
+            if let Ok(root) = serde_json::from_slice::<serde_json::Value>(&f) {
+                if let Some(rp) = root.get("rope_parameters") {
+                    if let Some(theta) = rp.get("rope_theta").and_then(|v| v.as_f64()) {
+                        return theta;
+                    }
+                }
+            }
+            10000.0
+        });
 
         let rope_scaling = ds_cfg.rope_scaling.as_ref().and_then(|v| {
             serde_json::from_value::<
@@ -378,8 +395,13 @@ impl DeepSeek {
             qcfg.normalize_compressed_tensors();
         }
 
+        let architectures = ds_cfg
+            .architectures
+            .clone()
+            .unwrap_or_else(|| vec!["DeepseekV3ForCausalLM".to_string()]);
+
         let mut config = Config {
-            architectures: Some(vec!["DeepseekV3ForCausalLM".to_string()]),
+            architectures: Some(architectures),
             hidden_size: ds_cfg.hidden_size,
             head_dim: Some(ds_cfg.hidden_size / ds_cfg.num_attention_heads),
             intermediate_size: ds_cfg.intermediate_size,

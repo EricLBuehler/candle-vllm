@@ -35,6 +35,7 @@ use crate::{
             mistral3_vl::Mistral3ForConditionalGeneration,
             phi2::Phi2,
             phi4::Phi4ForCausalLM as Phi4,
+            quantized_deepseek::GGUFDeepSeek,
             quantized_glm4::GGUFGLM4,
             quantized_llama::GGUFLLaMa,
             quantized_phi3::GGUFPhi3,
@@ -96,6 +97,7 @@ pub enum LLMModel {
     GLM4(Arc<GLM4>),
     GLM4MoeLite(Arc<GLM4MoeLiteForCausalLM>),
     DeepSeek(Arc<DeepSeek>),
+    GLM5(Arc<DeepSeek>),
     LlamaGGUF(Arc<GGUFLLaMa>),
     Phi3GGUF(Arc<GGUFPhi3>),
     QWenGGUF(Arc<GGUFQWen>),
@@ -103,6 +105,8 @@ pub enum LLMModel {
     QWen3_5GGUF(Arc<GGUFQWen3_5>),
     QWen3_5GGUFMoE(Arc<GGUFQWen3_5MoE>),
     GLM4GGUF(Arc<GGUFGLM4>),
+    GLM5GGUF(Arc<GGUFDeepSeek>),
+    DeepSeekGGUF(Arc<GGUFDeepSeek>),
 }
 
 fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
@@ -125,8 +129,12 @@ fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
         LLMModel::Mistral(_) | LLMModel::Mistral3VL(_) => ToolModelType::Mistral,
         LLMModel::Yi(_) => ToolModelType::Yi,
         LLMModel::StableLM(_) => ToolModelType::StableLM,
-        LLMModel::GLM4(_) | LLMModel::GLM4MoeLite(_) | LLMModel::GLM4GGUF(_) => ToolModelType::GLM4,
-        LLMModel::DeepSeek(_) => ToolModelType::DeepSeek,
+        LLMModel::GLM4(_)
+        | LLMModel::GLM4MoeLite(_)
+        | LLMModel::GLM4GGUF(_)
+        | LLMModel::GLM5(_)
+        | LLMModel::GLM5GGUF(_) => ToolModelType::GLM4,
+        LLMModel::DeepSeek(_) | LLMModel::DeepSeekGGUF(_) => ToolModelType::DeepSeek,
         LLMModel::Phi2(_) | LLMModel::Phi3GGUF(_) => ToolModelType::Phi,
         LLMModel::Phi4(_) => ToolModelType::Phi4,
     }
@@ -759,6 +767,8 @@ impl DefaultLoader {
                         | "qwen35"
                         | "qwen35moe"
                         | "glm4"
+                        | "glm-dsa"
+                        | "deepseek2"
                 ) {
                     panic!("Model arch {} not supported!", arch);
                 } else {
@@ -1030,6 +1040,46 @@ impl DefaultLoader {
                         SeparatorStyle::GLM,
                     )
                 }
+                "glm-dsa" => {
+                    let model = GGUFDeepSeek::from_gguf(
+                        &vb,
+                        &device,
+                        dtype,
+                        kv_cache_dtype,
+                        self.yarn_scaling_factor,
+                        Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
+                    )
+                    .map_err(candle_core::Error::wrap)?;
+                    let cfg = model.get_config().clone();
+                    (
+                        LLMModel::GLM5GGUF(Arc::new(model)),
+                        cfg,
+                        SeparatorStyle::GLM,
+                    )
+                }
+                "deepseek2" => {
+                    let model = GGUFDeepSeek::from_gguf(
+                        &vb,
+                        &device,
+                        dtype,
+                        kv_cache_dtype,
+                        self.yarn_scaling_factor,
+                        Arc::clone(&reporter),
+                        gguf_rank,
+                        gguf_world_size,
+                        gguf_comm.clone(),
+                    )
+                    .map_err(candle_core::Error::wrap)?;
+                    let cfg = model.get_config().clone();
+                    (
+                        LLMModel::DeepSeekGGUF(Arc::new(model)),
+                        cfg,
+                        SeparatorStyle::AddColonSingle,
+                    )
+                }
                 _ => panic!("Model not supported!"),
             };
             handle.join().unwrap();
@@ -1077,9 +1127,10 @@ impl DefaultLoader {
                 "Glm4MoeLiteForCausalLM" => {
                     GLM4MoeLiteForCausalLM::load_config(&cfile, isq.clone())?
                 }
-                "DeepseekV2ForCausalLM" | "DeepseekV3ForCausalLM" | "DeepseekV32ForCausalLM" => {
-                    DeepSeek::load_config(&cfile, isq.clone())?
-                }
+                "DeepseekV2ForCausalLM"
+                | "DeepseekV3ForCausalLM"
+                | "DeepseekV32ForCausalLM"
+                | "GlmMoeDsaForCausalLM" => DeepSeek::load_config(&cfile, isq.clone())?,
                 "MiniMaxM2ForCausalLM" => MiniMaxForCausalLM::load_config(&cfile, isq.clone())?,
                 _ => panic!("Model not supported!"),
             };
@@ -1088,6 +1139,7 @@ impl DefaultLoader {
                 "DeepseekV2ForCausalLM"
                     | "DeepseekV3ForCausalLM"
                     | "DeepseekV32ForCausalLM"
+                    | "GlmMoeDsaForCausalLM"
                     | "Glm4MoeLiteForCausalLM"
                     | "Llama4ForConditionalGeneration"
                     | "MiniMaxM2ForCausalLM"
@@ -1466,7 +1518,7 @@ impl DefaultLoader {
                                     comm,
                                     &config,
                                     dtype,
-                                    false,
+                                    true,
                                     &device,
                                     Arc::clone(&reporter),
                                 )
@@ -1489,6 +1541,20 @@ impl DefaultLoader {
                                 .unwrap(),
                             )),
                             SeparatorStyle::Llama3,
+                        ),
+                        "GlmMoeDsaForCausalLM" => (
+                            LLMModel::GLM5(Arc::new(
+                                DeepSeek::load(
+                                    vb,
+                                    &config,
+                                    dtype,
+                                    &device,
+                                    comm,
+                                    Arc::clone(&reporter),
+                                )
+                                .unwrap(),
+                            )),
+                            SeparatorStyle::Llama,
                         ),
                         "MiniMaxM2ForCausalLM" => (
                             LLMModel::MiniMax(Arc::new(
@@ -1845,6 +1911,7 @@ impl DefaultPipeline {
             GLM4,
             GLM4MoeLite,
             DeepSeek,
+            GLM5,
             LlamaGGUF,
             Phi3GGUF,
             QWenGGUF,
@@ -1852,6 +1919,8 @@ impl DefaultPipeline {
             QWen3_5GGUF,
             QWen3_5GGUFMoE,
             GLM4GGUF,
+            GLM5GGUF,
+            DeepSeekGGUF,
         );
         #[cfg(all(feature = "cuda", feature = "graph", feature = "flashinfer"))]
         let skip_flashinfer = config.kvcache_dtype.is_turboquant()
@@ -2140,6 +2209,9 @@ impl DefaultPipeline {
             LLMModel::DeepSeek(deepseek) => {
                 deepseek.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::GLM5(m) => {
+                m.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::Phi3GGUF(phi3) => {
                 phi3.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
@@ -2160,6 +2232,9 @@ impl DefaultPipeline {
             }
             LLMModel::GLM4GGUF(glm4) => {
                 glm4.forward(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::GLM5GGUF(m) | LLMModel::DeepSeekGGUF(m) => {
+                m.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
         }
     }
@@ -2243,7 +2318,13 @@ impl DefaultPipeline {
             LLMModel::GLM4GGUF(glm4) => {
                 glm4.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+            LLMModel::GLM5GGUF(m) | LLMModel::DeepSeekGGUF(m) => {
+                m.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::GLM4MoeLite(m) => {
+                m.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::GLM5(m) => {
                 m.forward_embedding(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Yi(yi) => {
@@ -2502,6 +2583,7 @@ impl DefaultPipeline {
             LLMModel::GLM4(glm4) => glm4.get_config().clone(),
             LLMModel::GLM4MoeLite(m) => m.get_config().clone(),
             LLMModel::DeepSeek(deepseek) => deepseek.get_config().clone(),
+            LLMModel::GLM5(m) => m.get_config().clone(),
             LLMModel::Phi3GGUF(phi3) => phi3.get_config().clone(),
             LLMModel::LlamaGGUF(llama) => llama.get_config().clone(),
             LLMModel::QWenGGUF(qwen) => qwen.get_config().clone(),
@@ -2509,6 +2591,7 @@ impl DefaultPipeline {
             LLMModel::QWen3_5GGUF(qwen) => qwen.get_config().clone(),
             LLMModel::QWen3_5GGUFMoE(qwen) => qwen.get_config().clone(),
             LLMModel::GLM4GGUF(glm4) => glm4.get_config().clone(),
+            LLMModel::GLM5GGUF(m) | LLMModel::DeepSeekGGUF(m) => m.get_config().clone(),
         }
     }
 
@@ -2652,6 +2735,8 @@ impl DefaultPipeline {
             LLMModel::GLM4MoeLite(_) => Ok(()),
             #[cfg(not(feature = "flashinfer"))]
             LLMModel::DeepSeek(_) => Ok(()),
+            #[cfg(not(feature = "flashinfer"))]
+            LLMModel::GLM5(_) => Ok(()),
             _ => {
                 self.capturer.capture(&self.device, kv_caches)?;
                 match &self.model {
