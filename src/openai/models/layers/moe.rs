@@ -1,4 +1,3 @@
-use crate::backend::custom_ops::moe::TopKLastDimOp;
 use crate::candle::quantized::QTensor;
 use crate::openai::distributed::{shard, AllReduce, Comm, VarBuilder};
 use crate::openai::models::linear::{linear_no_bias, linear_no_bias_x, Linear, LinearX};
@@ -54,6 +53,15 @@ fn presorted_expert_assignments(
     }
     let (expert_ids, sorted_token_ids) = sort_expert_assignments(topk_ids, true)?;
     Ok(Some((sorted_token_ids, expert_ids)))
+}
+
+fn select_topk_indices(scores: &Tensor, topk: usize, is_prefill: bool) -> Result<Tensor> {
+    let sorted_idx = if is_prefill {
+        scores.contiguous()?.arg_sort(false)?
+    } else {
+        scores.arg_sort_last_dim(false)?
+    };
+    sorted_idx.narrow(D::Minus1, 0, topk)?.contiguous()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -801,11 +809,11 @@ impl FusedMoeISQ {
             )?
         };
         let mut ys = ys.reshape((num_tokens, (), hidden_dim))?.sum(D::Minus2)?;
-        if ys.dtype() != self.dtype {
-            ys = ys.to_dtype(self.dtype)?;
-        }
         if self.world_size > 1 {
             ys = self.all_reduce.apply(&ys)?;
+        }
+        if ys.dtype() != self.dtype {
+            ys = ys.to_dtype(self.dtype)?;
         }
         Ok(ys)
     }
@@ -1847,7 +1855,10 @@ pub struct FusedMoeNvfp4 {
     all_reduce: AllReduce,
     world_size: usize,
     dtype: DType,
+    gate_dtype: DType,
     use_sigmoid_scoring: bool,
+    n_group: usize,
+    topk_group: usize,
     apply_router_weight_on_input: bool,
     e_score_correction_bias: Option<Tensor>,
 }
@@ -1921,6 +1932,17 @@ impl FusedMoeNvfp4 {
         }
     }
 
+    fn use_sigmoid_routing(moe_cfg: &QwenMoEConfig) -> bool {
+        moe_cfg
+            .topk_method
+            .as_deref()
+            .is_some_and(|method| method == "noaux_tc")
+            || moe_cfg
+                .scoring_func
+                .as_deref()
+                .is_some_and(|scoring| scoring == "sigmoid")
+    }
+
     pub fn new(cfg: &Config, vb: VarBuilder, comm: Rc<Comm>, dtype: DType) -> Result<Self> {
         let moe_cfg = qwen_moe_cfg(cfg)?;
         let num_experts = moe_cfg.num_experts.unwrap_or(0);
@@ -1928,6 +1950,11 @@ impl FusedMoeNvfp4 {
             candle::bail!("num_experts must be > 0")
         }
 
+        let gate_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
         let quant_method = cfg
             .quantization_config
             .as_ref()
@@ -1939,7 +1966,7 @@ impl FusedMoeNvfp4 {
             Shard::default(),
             &quant_method,
             &cfg.quantization_config,
-            dtype,
+            gate_dtype,
             None,
         )?;
 
@@ -2125,7 +2152,10 @@ impl FusedMoeNvfp4 {
             all_reduce: AllReduce::new(comm.clone()),
             world_size: comm.world_size(),
             dtype,
-            use_sigmoid_scoring: false,
+            gate_dtype,
+            use_sigmoid_scoring: Self::use_sigmoid_routing(&moe_cfg),
+            n_group: moe_cfg.n_group.unwrap_or(1),
+            topk_group: moe_cfg.topk_group.unwrap_or(1),
             apply_router_weight_on_input: false,
             e_score_correction_bias,
         })
@@ -2144,6 +2174,11 @@ impl FusedMoeNvfp4 {
             candle::bail!("num_experts must be > 0")
         }
 
+        let gate_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
         let gate = linear_no_bias_x(
             cfg.hidden_size,
             num_experts,
@@ -2151,7 +2186,7 @@ impl FusedMoeNvfp4 {
             Shard::default(),
             &None,
             &None,
-            dtype,
+            gate_dtype,
             None,
         )?;
 
@@ -2316,7 +2351,10 @@ impl FusedMoeNvfp4 {
             all_reduce: AllReduce::new(comm.clone()),
             world_size: comm.world_size(),
             dtype,
-            use_sigmoid_scoring: false,
+            gate_dtype,
+            use_sigmoid_scoring: Self::use_sigmoid_routing(&moe_cfg),
+            n_group: moe_cfg.n_group.unwrap_or(1),
+            topk_group: moe_cfg.topk_group.unwrap_or(1),
             apply_router_weight_on_input: false,
             e_score_correction_bias: None,
         })
@@ -2331,7 +2369,12 @@ impl FusedMoeNvfp4 {
     }
 
     pub fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
-        let router_logits = self.gate.forward(xs)?;
+        let gate_input = if xs.dtype() != self.gate_dtype {
+            Cow::Owned(xs.to_dtype(self.gate_dtype)?)
+        } else {
+            Cow::Borrowed(xs)
+        };
+        let router_logits = self.gate.forward(&gate_input)?;
 
         let (mut topk_weights, topk_ids): (Tensor, Tensor) = if self.use_sigmoid_scoring {
             let scores = candle_nn::ops::sigmoid(&router_logits.to_dtype(DType::F32)?)?;
@@ -2340,9 +2383,54 @@ impl FusedMoeNvfp4 {
             } else {
                 scores.clone()
             };
-            let topk = scores_for_choice.topk(self.num_experts_per_tok)?;
-            let topk_weights = scores.gather(&topk.indices, D::Minus1)?;
-            (topk_weights, topk.indices.to_dtype(DType::U32)?)
+
+            let topk_indices = if self.n_group > 1 {
+                let num_tokens = scores_for_choice.dim(0)?;
+                let num_experts = scores_for_choice.dim(1)?;
+                if num_experts % self.n_group != 0 {
+                    candle::bail!(
+                        "MoE routing requires num_experts ({num_experts}) divisible by n_group ({})",
+                        self.n_group
+                    );
+                }
+                if self.topk_group > self.n_group {
+                    candle::bail!(
+                        "MoE routing requires topk_group ({}) <= n_group ({})",
+                        self.topk_group,
+                        self.n_group
+                    );
+                }
+                let experts_per_group = num_experts / self.n_group;
+                if experts_per_group * self.topk_group < self.num_experts_per_tok {
+                    candle::bail!(
+                        "MoE routing selected-group capacity ({}) is smaller than num_experts_per_tok ({})",
+                        experts_per_group * self.topk_group,
+                        self.num_experts_per_tok
+                    );
+                }
+                let grouped =
+                    scores_for_choice.reshape((num_tokens, self.n_group, experts_per_group))?;
+                let top2_idx = select_topk_indices(&grouped, experts_per_group.min(2), is_prefill)?;
+                let top2_vals = grouped.gather(&top2_idx, D::Minus1)?;
+                let group_scores = top2_vals.sum(D::Minus1)?;
+                let group_idx = select_topk_indices(&group_scores, self.topk_group, is_prefill)?;
+                let group_mask = group_scores.zeros_like()?.scatter_add(
+                    &group_idx,
+                    &group_idx.ones_like()?.to_dtype(DType::F32)?,
+                    1,
+                )?;
+                let score_mask = group_mask
+                    .unsqueeze(D::Minus1)?
+                    .broadcast_as((num_tokens, self.n_group, experts_per_group))?
+                    .reshape((num_tokens, num_experts))?;
+                let masked = scores_for_choice.broadcast_mul(&score_mask)?;
+                select_topk_indices(&masked, self.num_experts_per_tok, is_prefill)?
+            } else {
+                select_topk_indices(&scores_for_choice, self.num_experts_per_tok, is_prefill)?
+            };
+
+            let topk_weights = scores.gather(&topk_indices, D::Minus1)?;
+            (topk_weights, topk_indices.to_dtype(DType::U32)?)
         } else {
             let mut logits = router_logits.to_dtype(DType::F32)?;
             if let Some(bias) = &self.e_score_correction_bias {

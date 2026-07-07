@@ -113,11 +113,7 @@ impl LLMEngine {
                     let chunk_size = engine
                         .prefill_chunk_size
                         .unwrap_or(super::PREFILL_CHUNK_SIZE);
-                    let num_tokens = if chunk_size > 0 {
-                        std::cmp::min(chunk_size, seq_len - num_cached_tokens)
-                    } else {
-                        seq_len - num_cached_tokens
-                    };
+                    let num_tokens = seq.deref().prefill_chunk_tokens(chunk_size);
                     context_lens_vec.push((num_cached_tokens + num_tokens) as u32);
                     input_ids.extend(
                         prompt_ids[num_cached_tokens..num_cached_tokens + num_tokens].to_vec(),

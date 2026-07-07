@@ -414,8 +414,8 @@ impl Scheduler {
             let seq = group.get_seqs().values().nth(0).unwrap();
             let prompt_len = seq.deref().get_prompt_len();
             let num_cached_tokens = seq.deref().get_num_cached_tokens();
-            let remaining = prompt_len.saturating_sub(num_cached_tokens);
-            if remaining <= chunk_size {
+            let chunk_tokens = seq.deref().prefill_chunk_tokens(chunk_size);
+            if chunk_tokens == 0 || num_cached_tokens + chunk_tokens >= prompt_len {
                 if num_cached_tokens > 0 {
                     chunk_finished_info.push((seq.deref().get_id(), prompt_len));
                 }
@@ -426,7 +426,10 @@ impl Scheduler {
                 let group = group.clone();
                 let seq = group.get_seqs().values().nth(0).unwrap();
                 seq.deref_mut()
-                    .set_num_cached_tokens(num_cached_tokens + chunk_size); //current prefilled CHUNK_SIZE
+                    .set_num_cached_tokens(num_cached_tokens + chunk_tokens);
+                if seq.deref().active_mamba_prefix_warmup_target().is_none() {
+                    seq.deref_mut().clear_mamba_prefix_warmup();
+                }
                 group.set_status(SequenceStatus::Pending);
                 chunked_info.push((
                     seq.deref().get_id(),

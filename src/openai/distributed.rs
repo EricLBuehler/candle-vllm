@@ -694,16 +694,14 @@ impl TensorParallelRowLinear {
         let mut xs = self.linear.forward(x)?;
         #[cfg(feature = "nccl")]
         if let Some(all_reduce) = &self.all_reduce {
-            if xs.dtype() != self.dtype {
-                //only bf16/fp16 supported in all reduce
-                let xs_reduce = xs.to_dtype(self.dtype)?.apply_op1_no_bwd(all_reduce)?;
-                xs = xs_reduce.to_dtype(xs.dtype())?
-            } else {
-                xs = xs.apply_op1_no_bwd(all_reduce)?;
-            }
+            xs = xs.apply_op1_no_bwd(all_reduce)?;
         }
         if let Some(bias) = &self.bias {
-            xs = xs.broadcast_add(bias)?;
+            if bias.dtype() == xs.dtype() {
+                xs = xs.broadcast_add(bias)?;
+            } else {
+                xs = xs.broadcast_add(&bias.to_dtype(xs.dtype())?)?;
+            }
         }
         Ok(xs)
     }
@@ -1550,12 +1548,7 @@ impl VocabParallelLinear {
 
         #[cfg(feature = "nccl")]
         if let Some(all_gather) = &self.all_gather {
-            let gathered = if logits.dtype() != self.dtype {
-                let g = all_gather.apply(&logits.to_dtype(self.dtype)?)?;
-                g.to_dtype(logits.dtype())?
-            } else {
-                all_gather.apply(&logits)?
-            };
+            let gathered = all_gather.apply(&logits)?;
 
             let ws = all_gather.world_size;
             let local_vocab = logits.dim(logits.dims().len() - 1)?;
