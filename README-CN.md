@@ -59,12 +59,14 @@ cargo install --features metal --path .
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
 
 candle-vllm --m unsloth/Qwen3.5-122B-A10B-GGUF --f Q3_K_S --d 0,1 --ui-server
+
+candle-vllm --m zai-org/GLM-5.2-FP8 --d 0,1,2,3,4,5,6,7 --ui-server
 ```
 
 **使用本地模型路径：**
 ```bash
 # 本地 Safetensors 目录
-candle-vllm --d 0,1 --m /home/Qwen3-30B-A3B-Instruct-2507/ --ui-server
+candle-vllm --d 0,1,2,3,4,5,6,7 --m /home/data/GLM-5.2-FP8/ --ui-server
 
 # 本地 GGUF 文件（单文件或分片）
 candle-vllm --d 0,1 --m /home/data/model-Q4_K_M.gguf --ui-server
@@ -94,13 +96,14 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 | 9 | **Yi** | 168 tks/s (6B) | 199 tks/s (6B, Q4K) |
 | 10 | **StableLM** | 251 tks/s (3B) | - |
 | 11 | **Gemma-2/Gemma-3** | 103 tks/s (9B) | 130 tks/s (9B, **Marlin**) |
-| 12 | **DeepSeek V2/V3/R1** | TBD | ~20 tks **(AWQ 671B, tp=8, offloading)** |
+| 12 | **DeepSeek V2/V3/V3.2/R1** | TBD | ~20 tks **(AWQ 671B, tp=8, offloading)** |
 | 13 | **QwQ-32B** | 51 tks/s **(32B, tp=2)** | 70 tks/s **(32B, Q4K)** |
 | 14 | **GLM4** | 96 tks/s **(9B)** | 139 tks/s **(9B, Q4K)** |
 | 15 | **GLM4.7 Flash** | TBD | 82 tks/s **(31B, Software NVFP4)** |
 | 16 | **LLama4** | TBD | 47 tks/s **(107B, Software NVFP4)** |
 | 17 | **Gemma4** | (26B) 83 tks/s | 82 tks/s **(26B, Software NVFP4)** |
 | 18 | **MiniMax-M2.5/M2.7** | TBD | 72 tks/s **(229B, Software NVFP4, TP=2)** |
+| 19 | **GLM-5.2** | TBD | 支持 **(FP8, tp=8)** |
 
 <details>
 <summary><b>演示视频 — GPU 与 Apple Silicon</b></summary>
@@ -136,6 +139,7 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 - 支持 Flashinfer 后端
 - 支持通过命令行参数 `--yarn-scaling-factor` 手动设置 YaRN RoPE 缩放因子
 - 支持 MXFP4/NVFP4 模型
+- 支持 DeepSeek V3.2 和 GLM-5.2 FP8 模型
 
 ---
 
@@ -148,6 +152,9 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 ```bash
 # FP8 模型 + Web UI
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+
+# GLM-5.2 FP8 模型
+candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
 
 # 未量化 Safetensors（多 GPU）
 candle-vllm --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
@@ -171,6 +178,9 @@ candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server
 ```bash
 # FP8 模型（block-wise 量化，需启用 cutlass 特性）
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+
+# GLM-5.2 FP8 模型
+candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
 
 # MacOS/Metal 上的 FP8（Dense）
 candle-vllm --m Qwen/Qwen3-4B-Instruct-2507-FP8 --ui-server
@@ -275,7 +285,7 @@ candle-vllm --w /data/Qwen3.5-27B-FP8/ --kvcache-dtype turbo3
 candle-vllm --w /data/Qwen3.5-35B-A3B-FP8/ --kvcache-dtype fp8
 ```
 
-> **注意**：TurboQuant 使用原生 Flash 注意力内核（flashinfer 自动禁用）。支持 CUDA（SM70+）和 Metal（Apple Silicon）两种平台。MLA 模型（DeepSeek、GLM4）因 KV 压缩布局不兼容会自动回退到标准 KV 缓存。
+> **注意**：TurboQuant 使用原生 Flash 注意力内核（flashinfer 自动禁用）。支持 CUDA（SM70+）和 Metal（Apple Silicon）两种平台。MLA 模型（DeepSeek、GLM4/GLM-5.2）因 KV 压缩布局不兼容会自动回退到标准 KV 缓存。
 
 ---
 
@@ -430,6 +440,7 @@ candle-vllm --h unix:///tmp/candle-vllm.sock --m Qwen/Qwen3.6-27B-FP8
 * [x] TurboQuant KV Cache（2–4 位压缩）
 * [x] FP8 模型（Block-wise，SM90+）
 * [x] MXFP4/NVFP4 模型支持
+* [x] DeepSeek V3.2 和 GLM-5.2 FP8 模型支持
 * [x] MCP 集成与工具调用
 * [x] 内置 ChatGPT 风格 Web UI
 

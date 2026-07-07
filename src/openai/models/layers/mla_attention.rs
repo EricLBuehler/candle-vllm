@@ -1,4 +1,5 @@
 use crate::openai::distributed::{shard, Comm, ReplicatedLinear};
+use crate::openai::models::layers::indexer::{DsaIndexer, IndexerConfig};
 use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::layers::rotary_emb::ScalingRotaryEmbedding;
 use crate::openai::models::Config;
@@ -19,6 +20,10 @@ pub struct MlaConfig {
     pub v_head_dim: usize,
     pub rms_norm_eps: f64,
     pub attention_bias: bool,
+    pub index_head_dim: Option<usize>,
+    pub index_n_heads: Option<usize>,
+    pub index_topk: Option<usize>,
+    pub index_skip_topk_offset: Option<usize>,
 }
 
 impl MlaConfig {
@@ -54,6 +59,22 @@ impl MlaConfig {
                 .unwrap_or(128) as usize,
             rms_norm_eps: config.rms_norm_eps,
             attention_bias: config.attention_bias.unwrap_or(false),
+            index_head_dim: extra
+                .get("index_head_dim")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            index_n_heads: extra
+                .get("index_n_heads")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            index_topk: extra
+                .get("index_topk")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
+            index_skip_topk_offset: extra
+                .get("index_skip_topk_offset")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize),
         }
     }
 }
@@ -66,7 +87,8 @@ pub struct MlaAttention {
     q_proj: Option<ReplicatedLinear>,
     kv_a_proj_with_mqa: ReplicatedLinear,
     kv_a_layernorm: NormX,
-    kv_b_proj: ReplicatedLinear,
+    #[allow(dead_code)]
+    kv_b_proj: Option<ReplicatedLinear>,
     o_proj: ReplicatedLinear,
     w_uk: Tensor,
     w_uv_t: Tensor,
@@ -81,6 +103,7 @@ pub struct MlaAttention {
     rope_theta: f32,
     promote_qk_to_f32: bool,
     dtype: DType,
+    indexer: Option<DsaIndexer>,
 }
 
 impl MlaAttention {
@@ -90,6 +113,7 @@ impl MlaAttention {
         mla_cfg: &MlaConfig,
         config: &Config,
         dtype: DType,
+        layer_idx: usize,
     ) -> Result<Self> {
         let hidden_size = mla_cfg.hidden_size;
         let num_heads = mla_cfg.num_attention_heads;
@@ -160,14 +184,14 @@ impl MlaAttention {
             false,
         )?;
 
-        let kv_b_proj = ReplicatedLinear::load_b(
+        let kv_b_proj = Some(ReplicatedLinear::load_b(
             kv_lora_rank,
             num_heads * (qk_nope_head_dim + v_head_dim),
             false,
             vb.pp("kv_b_proj"),
             &config.isq_quant,
             &config.quantization_config,
-        )?;
+        )?);
 
         let o_proj = ReplicatedLinear::load_no_bias(
             num_heads * v_head_dim,
@@ -177,6 +201,7 @@ impl MlaAttention {
             &config.quantization_config,
         )?;
 
+        // Pre-compute absorbed MLA weights from kv_b_proj
         let kv_b_weight = vb.pp("kv_b_proj").get_with_hints_dtype(
             (num_heads * (qk_nope_head_dim + v_head_dim), kv_lora_rank),
             "weight",
@@ -223,6 +248,35 @@ impl MlaAttention {
             }
         }
 
+        // Build DSA indexer if config specifies it and this layer is past the skip offset
+        let indexer = if let (Some(index_head_dim), Some(index_n_heads), Some(index_topk)) = (
+            mla_cfg.index_head_dim,
+            mla_cfg.index_n_heads,
+            mla_cfg.index_topk,
+        ) {
+            let skip_offset = mla_cfg.index_skip_topk_offset.unwrap_or(0);
+            if layer_idx >= skip_offset {
+                if let Some(q_lora_rank) = mla_cfg.q_lora_rank {
+                    let idx_cfg = IndexerConfig {
+                        index_head_dim,
+                        index_n_heads,
+                        index_topk,
+                        index_skip_topk_offset: skip_offset,
+                        qk_rope_head_dim,
+                        q_lora_rank,
+                        hidden_size,
+                    };
+                    Some(DsaIndexer::new(vb.pp("indexer"), config, idx_cfg, dtype)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             q_a_proj,
             q_a_layernorm,
@@ -245,6 +299,7 @@ impl MlaAttention {
             rope_theta: config.rope_theta as f32,
             promote_qk_to_f32: is_qvar_builder || config.higher_precision_required(),
             dtype,
+            indexer,
         })
     }
 
@@ -276,14 +331,16 @@ impl MlaAttention {
     ) -> Result<Tensor> {
         let (seq_len, _) = xs.dims2()?;
 
-        let q = if let (Some(q_a), Some(q_a_ln), Some(q_b)) =
+        // Produce Q and optionally retain q_resid for DSA indexer
+        let (q, q_resid) = if let (Some(q_a), Some(q_a_ln), Some(q_b)) =
             (&self.q_a_proj, &self.q_a_layernorm, &self.q_b_proj)
         {
             let q_a_out = q_a.forward(xs)?;
             let q_a_normed = q_a_ln.forward(&q_a_out)?;
-            q_b.forward(&q_a_normed)?
+            let q = q_b.forward(&q_a_normed)?;
+            (q, Some(q_a_normed))
         } else {
-            self.q_proj.as_ref().unwrap().forward(xs)?
+            (self.q_proj.as_ref().unwrap().forward(xs)?, None)
         };
 
         let q = q.reshape((seq_len, self.num_heads, self.q_head_dim))?;
@@ -340,6 +397,43 @@ impl MlaAttention {
                 let q_pe = q_pe.to_dtype(self.dtype)?;
 
                 let page_size = ckv_cache.dim(1)?;
+
+                // DSA sparse prefill with FlashInfer path
+                if input_metadata.is_prefill {
+                    if let (Some(indexer), Some(q_res)) = (&self.indexer, &q_resid) {
+                        if let Some(block_tables) = &input_metadata.block_tables {
+                            if let Some(context_lens) = &input_metadata.context_lens {
+                                if let Some(topk_idxs) =
+                                    indexer.forward(xs, q_res, rotary_emb, positions)?
+                                {
+                                    let ckv_cache_3d = ckv_cache.squeeze(2)?;
+                                    let kpe_cache_3d = kpe_cache.squeeze(2)?;
+
+                                    let cu_seqlens_q =
+                                        input_metadata.cu_seqlens_q.as_ref().ok_or_else(|| {
+                                            candle_core::Error::msg(
+                                                "MLA sparse prefill requires cu_seqlens_q",
+                                            )
+                                        })?;
+
+                                    let attn_out = attention_rs::mla::mla_sparse_paged_prefill(
+                                        &q_nope_absorbed,
+                                        &q_pe,
+                                        &ckv_cache_3d,
+                                        &kpe_cache_3d,
+                                        block_tables,
+                                        context_lens,
+                                        cu_seqlens_q,
+                                        &topk_idxs,
+                                        self.sm_scale,
+                                    )?;
+
+                                    return self.project_mla_output(&attn_out, seq_len, xs.dtype());
+                                }
+                            }
+                        }
+                    }
+                }
 
                 let attn_out = if input_metadata.is_prefill {
                     let plan_info = fm.mla_prefill_plan_info.as_ref().ok_or_else(|| {
@@ -410,122 +504,57 @@ impl MlaAttention {
             if let (Some(block_tables), Some(context_lens)) =
                 (&input_metadata.block_tables, &input_metadata.context_lens)
             {
-                let block_tables_i32 = block_tables.to_dtype(DType::I64)?.to_dtype(DType::U32)?;
-                let context_lens_i32 = context_lens.to_dtype(DType::I64)?.to_dtype(DType::U32)?;
-
                 if input_metadata.is_prefill {
                     let cu_seqlens_q = input_metadata.cu_seqlens_q.as_ref().ok_or_else(|| {
                         candle_core::Error::msg("MLA fused prefill requires cu_seqlens_q")
                     })?;
-                    let cu_seqlens_i32 = cu_seqlens_q.to_dtype(DType::I64)?.to_dtype(DType::U32)?;
+
+                    // DSA sparse prefill with native CUDA path
+                    if let (Some(indexer), Some(q_res)) = (&self.indexer, &q_resid) {
+                        if let Some(topk_idxs) =
+                            indexer.forward(xs, q_res, rotary_emb, positions)?
+                        {
+                            let attn_out = attention_rs::mla::mla_sparse_paged_prefill(
+                                &q_absorbed,
+                                &q_pe,
+                                &ckv_cache_3d,
+                                &kpe_cache_3d,
+                                block_tables,
+                                context_lens,
+                                cu_seqlens_q,
+                                &topk_idxs,
+                                self.sm_scale,
+                            )?;
+                            return self.project_mla_output(&attn_out, seq_len, xs.dtype());
+                        }
+                    }
 
                     let attn_out = attention_rs::mla::mla_paged_prefill(
                         &q_absorbed,
                         &q_pe,
                         &ckv_cache_3d,
                         &kpe_cache_3d,
-                        &block_tables_i32,
-                        &context_lens_i32,
-                        &cu_seqlens_i32,
+                        block_tables,
+                        context_lens,
+                        cu_seqlens_q,
                         self.sm_scale,
                     )?;
                     return self.project_mla_output(&attn_out, seq_len, xs.dtype());
                 }
 
+                // DSA is prefill-only: dense MLA decode is faster at all practical context lengths.
                 let attn_out = attention_rs::mla::mla_paged_decode(
                     &q_absorbed,
                     &q_pe,
                     &ckv_cache_3d,
                     &kpe_cache_3d,
-                    &block_tables_i32,
-                    &context_lens_i32,
+                    block_tables,
+                    context_lens,
                     self.sm_scale,
                 )?;
                 return self.project_mla_output(&attn_out, seq_len, xs.dtype());
             }
-
-            if input_metadata.is_prefill {
-                let attn_out =
-                    self.mla_sdp_prefill(&q_absorbed, &q_pe, &ckv, &k_pe, input_metadata)?;
-                let y = attn_out.to_dtype(xs.dtype())?;
-                return self.o_proj.forward(&y);
-            }
         }
         candle_core::bail!("MLA attention requires CUDA platform!")
-    }
-
-    #[cfg(feature = "cuda")]
-    fn mla_sdp_prefill(
-        &self,
-        q_absorbed: &Tensor,
-        q_pe: &Tensor,
-        ckv: &Tensor,
-        k_pe: &Tensor,
-        input_metadata: &InputMetadata,
-    ) -> Result<Tensor> {
-        let cu_seqlens = input_metadata
-            .cu_seqlens_q
-            .as_ref()
-            .ok_or_else(|| candle_core::Error::msg("MLA prefill requires cu_seqlens_q"))?
-            .to_vec1::<u32>()?;
-        let num_seqs = cu_seqlens.len() - 1;
-
-        let mut results = Vec::with_capacity(num_seqs);
-        for s in 0..num_seqs {
-            let start = cu_seqlens[s] as usize;
-            let end = cu_seqlens[s + 1] as usize;
-            let slen = end - start;
-
-            let q_abs_s = q_absorbed.narrow(0, start, slen)?.contiguous()?;
-            let q_pe_s = q_pe.narrow(0, start, slen)?.contiguous()?;
-            let ckv_s = ckv.narrow(0, start, slen)?.contiguous()?;
-            let k_pe_s = k_pe.narrow(0, start, slen)?.contiguous()?;
-
-            let q_abs_t = q_abs_s.transpose(0, 1)?.contiguous()?;
-            let ckv_kt = ckv_s
-                .t()?
-                .unsqueeze(0)?
-                .broadcast_as((self.num_heads, self.kv_lora_rank, slen))?
-                .contiguous()?;
-            let nope_scores = q_abs_t.matmul(&ckv_kt)?;
-
-            let q_pe_t = q_pe_s.transpose(0, 1)?.contiguous()?;
-            let k_pe_kt = k_pe_s
-                .t()?
-                .unsqueeze(0)?
-                .broadcast_as((self.num_heads, self.qk_rope_head_dim, slen))?
-                .contiguous()?;
-            let pe_scores = q_pe_t.matmul(&k_pe_kt)?;
-
-            let scores = ((nope_scores + pe_scores)? * f64::from(self.sm_scale))?;
-
-            let dev = scores.device().clone();
-            let scores_dtype = scores.dtype();
-            let mut mask_data = vec![0.0f32; slen * slen];
-            for qi in 0..slen {
-                for ki in (qi + 1)..slen {
-                    mask_data[qi * slen + ki] = f32::NEG_INFINITY;
-                }
-            }
-            let causal_mask =
-                Tensor::from_vec(mask_data, (1, slen, slen), &dev)?.to_dtype(scores_dtype)?;
-            let scores = scores.broadcast_add(&causal_mask)?;
-
-            let attn_weights = candle_nn::ops::softmax_last_dim(&scores.to_dtype(DType::F32)?)?
-                .to_dtype(self.dtype)?;
-
-            let ckv_v = ckv_s
-                .unsqueeze(0)?
-                .broadcast_as((self.num_heads, slen, self.kv_lora_rank))?
-                .contiguous()?;
-            let attn_out = attn_weights.matmul(&ckv_v)?;
-
-            let y = attn_out.matmul(&self.w_uv_t)?;
-            let y = y.transpose(0, 1)?.contiguous()?;
-            let y = y.reshape((slen, self.num_heads * self.v_head_dim))?;
-            results.push(y);
-        }
-
-        Tensor::cat(&results, 0)
     }
 }

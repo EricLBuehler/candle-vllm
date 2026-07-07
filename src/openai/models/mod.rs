@@ -15,6 +15,7 @@ pub mod mistral;
 pub mod mistral3_vl;
 pub mod phi2;
 pub mod phi4;
+pub mod quantized_deepseek;
 pub mod quantized_glm4;
 pub mod quantized_llama;
 pub mod quantized_phi3;

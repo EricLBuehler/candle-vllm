@@ -614,6 +614,10 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                         kv_caches,
                         &input_metadata,
                     )?;
+                    #[cfg(feature = "cuda")]
+                    if !should_capture {
+                        device.synchronize()?;
+                    }
                 } else {
                     let out = self.model.forward(
                         &input_ids_bs,
@@ -626,8 +630,9 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
                 if should_capture {
                     self.model.end_capture(!phase.is_warmup())?;
                 }
-                // device.synchronize()?;
             }
+            #[cfg(feature = "cuda")]
+            device.synchronize()?;
         }
         let _ = self.model.report_graph_pool_usage();
         tracing::warn!("Captured batches {:?}", outputs.keys());
