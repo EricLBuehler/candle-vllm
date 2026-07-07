@@ -59,6 +59,7 @@ class RequestResult:
     cached_tokens: int = 0
     reasoning_tokens: int = 0
     finish_reason: Optional[str] = None
+    started_at_s: Optional[float] = None
     first_chunk_s: Optional[float] = None
     last_chunk_s: Optional[float] = None
     chunk_count: int = 0
@@ -72,6 +73,16 @@ class RequestResult:
     @property
     def total_tokens_per_s(self) -> float:
         return safe_div(self.total_tokens, self.latency_s)
+
+    @property
+    def prefill_s(self) -> float:
+        if self.prompt_time_ms:
+            return self.prompt_time_ms / 1000.0
+        return self.ttft_s or 0.0
+
+    @property
+    def input_tokens_per_prefill_s(self) -> float:
+        return safe_div(self.prompt_tokens, self.prefill_s)
 
 
 @dataclass
@@ -308,6 +319,7 @@ async def run_one_request(
             output_len_target=output_len,
             success=False,
             latency_s=0.0,
+            started_at_s=started,
         )
         usage = None
 
@@ -439,6 +451,7 @@ def summarize(case: BenchmarkCase) -> Dict[str, float]:
     ttfts = [r.ttft_s for r in ok if r.ttft_s is not None]
     prompt_times = [r.prompt_time_ms / 1000.0 for r in ok if r.prompt_time_ms]
     completion_times = [r.completion_time_ms / 1000.0 for r in ok if r.completion_time_ms]
+    prefill_times = [r.prefill_s for r in ok if r.prefill_s]
     prompt_tokens = sum(r.prompt_tokens for r in ok)
     completion_tokens = sum(r.completion_tokens for r in ok)
     total_tokens = sum(r.total_tokens for r in ok)
@@ -446,7 +459,21 @@ def summarize(case: BenchmarkCase) -> Dict[str, float]:
     completion_time_s = sum(completion_times)
     model_parallelism = case.effective_concurrency
     has_usage_timing = bool(prompt_time_s or completion_time_s)
-    model_input_time_s = safe_div(prompt_time_s, model_parallelism) if prompt_time_s else case.duration_s
+    prefill_done_times = [
+        (r.started_at_s or 0.0) + r.prefill_s
+        for r in ok
+        if r.started_at_s is not None and r.prefill_s
+    ]
+    prefill_start_times = [
+        r.started_at_s for r in ok if r.started_at_s is not None and r.prefill_s
+    ]
+    prefill_window_s = (
+        max(prefill_done_times) - min(prefill_start_times)
+        if prefill_done_times and prefill_start_times
+        else safe_div(prompt_time_s, model_parallelism) if prompt_time_s else 0.0
+    )
+    prefill_sum_s = sum(prefill_times)
+    model_input_time_s = prefill_window_s
     model_output_time_s = safe_div(completion_time_s, model_parallelism) if completion_time_s else case.duration_s
     model_total_time_s = (
         model_input_time_s + model_output_time_s if has_usage_timing else case.duration_s
@@ -456,10 +483,9 @@ def summarize(case: BenchmarkCase) -> Dict[str, float]:
         if completion_time_s
         else statistics.mean([r.output_tokens_per_s for r in ok]) if ok else 0.0
     )
+    request_input_throughputs = [r.input_tokens_per_prefill_s for r in ok if r.prefill_s]
     avg_request_input_model_throughput = (
-        safe_div(prompt_tokens, prompt_time_s)
-        if prompt_time_s
-        else statistics.mean([safe_div(r.prompt_tokens, r.latency_s) for r in ok]) if ok else 0.0
+        statistics.mean(request_input_throughputs) if request_input_throughputs else 0.0
     )
     avg_request_total_model_throughput = (
         safe_div(total_tokens, prompt_time_s + completion_time_s)
@@ -473,6 +499,7 @@ def summarize(case: BenchmarkCase) -> Dict[str, float]:
         "duration_s": case.duration_s,
         "request_throughput": safe_div(len(ok), case.duration_s),
         "input_throughput": safe_div(prompt_tokens, model_input_time_s),
+        "input_throughput_avg_request": safe_div(prompt_tokens, prefill_sum_s),
         "output_throughput": safe_div(completion_tokens, model_output_time_s),
         "total_throughput": safe_div(total_tokens, model_total_time_s),
         "avg_request_input_throughput": avg_request_input_model_throughput,
@@ -500,6 +527,9 @@ def summarize(case: BenchmarkCase) -> Dict[str, float]:
         "ttft_p50_ms": percentile(ttfts, 50) * 1000.0,
         "ttft_p95_ms": percentile(ttfts, 95) * 1000.0,
         "ttft_p99_ms": percentile(ttfts, 99) * 1000.0,
+        "prefill_window_ms": prefill_window_s * 1000.0,
+        "prefill_avg_ms": statistics.mean(prefill_times) * 1000.0 if prefill_times else 0.0,
+        "prefill_p95_ms": percentile(prefill_times, 95) * 1000.0,
         "server_prefill_avg_ms": statistics.mean(prompt_times) * 1000.0 if prompt_times else 0.0,
         "server_prefill_p95_ms": percentile(prompt_times, 95) * 1000.0,
         "server_decode_avg_ms": statistics.mean(completion_times) * 1000.0 if completion_times else 0.0,
@@ -531,10 +561,11 @@ def render_case_summary(console: Console, case: BenchmarkCase) -> None:
         (highlighted("Total input tokens"), highlighted(str(stats['prompt_tokens'])), highlighted("Total output tokens"), highlighted(str(stats['completion_tokens']))),
         ("Max input tokens", f"{int(stats['max_input_tokens'])}", "Max output tokens", f"{int(stats['max_output_tokens'])}"),
         ("Avg input tokens", fmt_float(stats["avg_input_tokens"]), "Avg output tokens", fmt_float(stats["avg_output_tokens"])),
-        (highlighted("Input throughput (tok/s)"), highlighted(fmt_float(stats["input_throughput"])), highlighted("Output throughput (tok/s)"), highlighted(fmt_float(stats["output_throughput"]))),
-        (highlighted("Avg input tok/s per request"), highlighted(fmt_float(stats["avg_request_input_throughput"])), highlighted("Avg output tok/s per request"), highlighted(fmt_float(stats["avg_request_output_model_throughput"]))),
+        (highlighted("Prefill input throughput (tok/s)"), highlighted(fmt_float(stats["input_throughput"])), highlighted("Output throughput (tok/s)"), highlighted(fmt_float(stats["output_throughput"]))),
+        (highlighted("Avg prefill tok/s per request"), highlighted(fmt_float(stats["avg_request_input_throughput"])), highlighted("Avg output tok/s per request"), highlighted(fmt_float(stats["avg_request_output_model_throughput"]))),
         ("TTFT avg (ms)", fmt_float(stats["ttft_avg_ms"]), "TTFT p95 (ms)", fmt_float(stats["ttft_p95_ms"])),
-        ("Prefill avg (ms)", fmt_float(stats["server_prefill_avg_ms"]), "TPOT decode (ms/token)", fmt_float(stats["tpot_avg_ms"])),
+        ("Prefill window (ms)", fmt_float(stats["prefill_window_ms"]), "Prefill avg (ms)", fmt_float(stats["prefill_avg_ms"])),
+        ("Prefill p95 (ms)", fmt_float(stats["prefill_p95_ms"]), "TPOT decode (ms/token)", fmt_float(stats["tpot_avg_ms"])),
         ("Reasoning tokens", f"{int(stats['reasoning_tokens'])}", "Total tokens", f"{int(stats['total_tokens'])}"),
     ]
     for row in rows:
@@ -564,7 +595,7 @@ def render_comparison(console: Console, cases: Sequence[BenchmarkCase]) -> None:
     throughput.add_column("Output", justify="right")
     throughput.add_column("OK", justify="right")
     throughput.add_column("Req/s", justify="right")
-    throughput.add_column("Input tok/s", justify="right")
+    throughput.add_column("Prefill tok/s", justify="right")
     throughput.add_column("Output tok/s", justify="right")
     throughput.add_column("Total tok/s", justify="right")
     throughput.add_column("Avg req out tok/s", justify="right")
@@ -605,6 +636,35 @@ def render_comparison(console: Console, cases: Sequence[BenchmarkCase]) -> None:
         )
     console.print(throughput)
     console.print(latency)
+
+
+def render_request_metrics(console: Console, case: BenchmarkCase, limit: int) -> None:
+    if limit <= 0:
+        return
+
+    ok = sorted(case.successful, key=lambda result: result.request_id)[:limit]
+    if not ok:
+        return
+
+    table = Table(title="Per-request prefill metrics", box=box.SIMPLE, header_style="bold cyan")
+    table.add_column("Request", justify="right")
+    table.add_column("Input tokens", justify="right")
+    table.add_column("Prefill ms", justify="right")
+    table.add_column("Input tok/s", justify="right")
+    table.add_column("TTFT ms", justify="right")
+    table.add_column("Timing")
+
+    for result in ok:
+        timing_source = "server" if result.prompt_time_ms else "ttft"
+        table.add_row(
+            str(result.request_id),
+            str(result.prompt_tokens),
+            fmt_float(result.prefill_s * 1000.0),
+            fmt_float(result.input_tokens_per_prefill_s),
+            fmt_ms(result.ttft_s or 0.0),
+            timing_source,
+        )
+    console.print(table)
 
 
 def render_samples(console: Console, cases: Sequence[BenchmarkCase], sample_count: int, chars: int) -> None:
@@ -658,6 +718,7 @@ async def main(args: argparse.Namespace) -> None:
             case = await run_case(console, client, args, input_len, output_len)
             cases.append(case)
             render_case_summary(console, case)
+            render_request_metrics(console, case, args.print_request_metrics)
 
     render_comparison(console, cases)
     render_samples(console, cases, args.print_samples, args.sample_chars)
@@ -691,6 +752,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", default=600.0, type=float, help="Per-request timeout in seconds.")
     parser.add_argument("--max-retries", default=2, type=int, help="HTTP retries per request for transient endpoint failures.")
     parser.add_argument("--seed", default=0, type=int)
+    parser.add_argument("--print-request-metrics", default=0, type=int, help="Print per-request prefill metrics for the first N successful requests in each case.")
     parser.add_argument("--print-samples", default=0, type=int, help="Print N sample outputs per case.")
     parser.add_argument("--sample-chars", default=1200, type=int, help="Maximum characters per sample output.")
     return parser
