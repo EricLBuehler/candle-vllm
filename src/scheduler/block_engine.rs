@@ -305,7 +305,7 @@ impl BlockEngine {
                 last_hash,
             } = prefix_cache.match_prefix_with_seed(&tokens, seed, seed_block);
             let full_blocks = tokens.len() / block_size;
-            let matched_blocks = if matched_blocks == full_blocks
+            let raw_matched_blocks = if matched_blocks == full_blocks
                 && tokens.len() % block_size == 0
                 && matched_blocks > 0
             {
@@ -317,12 +317,23 @@ impl BlockEngine {
                 self.require_mamba_prefix_snapshots,
                 &self.valid_mamba_prefix_hashes,
                 prefix_cache,
-                matched_blocks,
+                raw_matched_blocks,
                 last_hash,
             );
             let cached_tokens = matched_blocks * block_size;
-            let prefill_end =
-                Self::prefill_chunk_end(tokens.len(), cached_tokens, prefill_chunk_size);
+            let warmup_target = Self::mamba_warmup_target(
+                self.require_mamba_prefix_snapshots,
+                raw_matched_blocks,
+                matched_blocks,
+                block_size,
+                tokens.len(),
+            );
+            let prefill_end = Self::prefill_chunk_end_with_warmup(
+                tokens.len(),
+                cached_tokens,
+                prefill_chunk_size,
+                warmup_target,
+            );
             let required_blocks = prefill_end.div_ceil(block_size);
             required_blocks.saturating_sub(matched_blocks)
         } else {
@@ -394,12 +405,41 @@ impl BlockEngine {
     }
 
     fn prefill_chunk_end(prompt_len: usize, cached_tokens: usize, chunk_size: usize) -> usize {
+        Self::prefill_chunk_end_with_warmup(prompt_len, cached_tokens, chunk_size, None)
+    }
+
+    fn prefill_chunk_end_with_warmup(
+        prompt_len: usize,
+        cached_tokens: usize,
+        chunk_size: usize,
+        warmup_target: Option<usize>,
+    ) -> usize {
         let cached_tokens = cached_tokens.min(prompt_len);
         if chunk_size == 0 {
             prompt_len
+        } else if let Some(target_tokens) = warmup_target {
+            if target_tokens > cached_tokens && target_tokens < prompt_len {
+                cached_tokens + (target_tokens - cached_tokens).min(chunk_size)
+            } else {
+                cached_tokens + prompt_len.saturating_sub(cached_tokens).min(chunk_size)
+            }
         } else {
             cached_tokens + prompt_len.saturating_sub(cached_tokens).min(chunk_size)
         }
+    }
+
+    fn mamba_warmup_target(
+        require_mamba_prefix_snapshots: bool,
+        raw_matched_blocks: usize,
+        matched_blocks: usize,
+        block_size: usize,
+        prompt_len: usize,
+    ) -> Option<usize> {
+        if !require_mamba_prefix_snapshots || matched_blocks != 0 || raw_matched_blocks == 0 {
+            return None;
+        }
+        let raw_cached_tokens = raw_matched_blocks * block_size;
+        (raw_cached_tokens < prompt_len).then_some(raw_cached_tokens)
     }
 
     fn prefill_blocks_to_allocate_without_prefix(
@@ -512,11 +552,8 @@ impl BlockEngine {
         prefill_chunk_size: usize,
     ) -> usize {
         let seq = sequence.deref();
-        let prefill_end = Self::prefill_chunk_end(
-            seq.get_prompt_len(),
-            seq.get_num_cached_tokens(),
-            prefill_chunk_size,
-        );
+        let prefill_end =
+            seq.get_num_cached_tokens() + seq.prefill_chunk_tokens(prefill_chunk_size);
         let required_blocks = prefill_end.div_ceil(self.block_size);
         let table_len = self
             .block_tables
@@ -907,6 +944,7 @@ impl BlockEngine {
         self.block_tables.insert(seq_id, new_table);
         sequence.deref_mut().set_num_cached_tokens(0);
         sequence.deref_mut().set_mamba_prefix_hash(None);
+        sequence.deref_mut().clear_mamba_prefix_warmup();
         true
     }
 
@@ -981,6 +1019,7 @@ impl BlockEngine {
         sequence
             .deref_mut()
             .set_mamba_prefix_hash(Some(target_hash));
+        sequence.deref_mut().clear_mamba_prefix_warmup();
         true
     }
 
@@ -1182,6 +1221,13 @@ impl BlockEngine {
                     raw_matched_blocks,
                     last_hash,
                 );
+                let warmup_target = Self::mamba_warmup_target(
+                    self.require_mamba_prefix_snapshots,
+                    raw_matched_blocks,
+                    matched_blocks,
+                    block_size,
+                    tokens.len(),
+                );
                 if raw_matched_blocks > 0 && matched_blocks == 0 {
                     tracing::info!(
                         "Prefix cache mamba-state miss seq {} (raw {} blocks matched, but no compatible mamba snapshot)",
@@ -1205,6 +1251,16 @@ impl BlockEngine {
                 } else {
                     seq.deref_mut().set_mamba_prefix_hash(None);
                 }
+                seq.deref_mut()
+                    .set_mamba_prefix_warmup_tokens(warmup_target);
+                if let Some(target_tokens) = warmup_target {
+                    tracing::info!(
+                        "Seq {}: scheduling mamba prefix warmup snapshot at {} cached tokens (raw {} blocks, no compatible mamba snapshot)",
+                        seq.deref().deref().get_id(),
+                        target_tokens,
+                        raw_matched_blocks
+                    );
+                }
 
                 cached_tokens = matched_blocks * block_size;
                 if matched_blocks > 0 {
@@ -1227,9 +1283,8 @@ impl BlockEngine {
                 }
             }
             seq.deref_mut().set_num_cached_tokens(cached_tokens);
-            let prompt_len = seq.deref().deref().get_prompt_len();
             let prefill_end =
-                Self::prefill_chunk_end(prompt_len, cached_tokens, prefill_chunk_size);
+                seq.deref().deref().prefill_chunk_tokens(prefill_chunk_size) + cached_tokens;
             let required_blocks = if prefill_chunk_size == 0 {
                 seq.deref().deref().get_logical_token_blocks()
             } else {
@@ -1246,9 +1301,19 @@ impl BlockEngine {
             if idx > 0 {
                 let hash = (*seqs[0]).deref().get_mamba_prefix_hash();
                 seq.deref_mut().set_mamba_prefix_hash(hash);
+                let warmup_target = (*seqs[0]).deref().active_mamba_prefix_warmup_target();
+                seq.deref_mut()
+                    .set_mamba_prefix_warmup_tokens(warmup_target);
                 for block in &table {
                     block.deref_mut().refcount += 1;
                 }
+            } else if seq
+                .deref()
+                .deref()
+                .active_mamba_prefix_warmup_target()
+                .is_none()
+            {
+                seq.deref_mut().clear_mamba_prefix_warmup();
             }
             self.block_tables
                 .insert(seq.deref().deref().get_id(), table);

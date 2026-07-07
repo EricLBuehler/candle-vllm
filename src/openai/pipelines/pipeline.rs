@@ -1518,7 +1518,7 @@ impl DefaultLoader {
                                     comm,
                                     &config,
                                     dtype,
-                                    true,
+                                    false,
                                     &device,
                                     Arc::clone(&reporter),
                                 )

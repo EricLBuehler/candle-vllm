@@ -57,6 +57,10 @@ fn llama4_moe_config(text_cfg: &TextConfig) -> QwenMoEConfig {
         first_k_dense_replace: None,
         n_shared_experts: None,
         routed_scaling_factor: None,
+        n_group: None,
+        topk_group: None,
+        scoring_func: None,
+        topk_method: None,
     }
 }
 

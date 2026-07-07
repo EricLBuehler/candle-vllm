@@ -1314,7 +1314,19 @@ pub fn linear_x(
                     weight_probe.dtype(),
                     DType::BF16 | DType::F16 | DType::F32 | DType::F64
                 ) {
-                    let ln = linear(in_dim, out_dim, vb, shard)?;
+                    let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
+                    let ws = if ws.dtype() != dtype {
+                        ws.to_dtype(dtype)?
+                    } else {
+                        ws
+                    };
+                    let bs = vb.get((out_dim,), "bias")?;
+                    let bs = if bs.dtype() != dtype {
+                        bs.to_dtype(dtype)?
+                    } else {
+                        bs
+                    };
+                    let ln = Linear::new(ws, Some(bs));
                     return Ok(LinearX::Linear(ln));
                 }
             }
@@ -1350,7 +1362,19 @@ pub fn linear_x(
             &quant_config_local,
         )))
     } else {
-        let ln = linear(in_dim, out_dim, vb, shard)?;
+        let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
+        let ws = if ws.dtype() != dtype {
+            ws.to_dtype(dtype)?
+        } else {
+            ws
+        };
+        let bs = vb.get((out_dim,), "bias")?;
+        let bs = if bs.dtype() != dtype {
+            bs.to_dtype(dtype)?
+        } else {
+            bs
+        };
+        let ln = Linear::new(ws, Some(bs));
         Ok(LinearX::Linear(ln))
     }
 }
@@ -1407,6 +1431,11 @@ pub fn linear_no_bias_x(
                         )?
                     } else {
                         vb.get_with_hints((out_dim, in_dim), "weight", shards)?
+                    };
+                    let ws = if ws.dtype() != dtype {
+                        ws.to_dtype(dtype)?
+                    } else {
+                        ws
                     };
                     return Ok(LinearX::Linear(Linear::new(ws, None)));
                 }
@@ -1497,6 +1526,11 @@ pub fn linear_no_bias_x(
             )?
         } else {
             vb.get_with_hints((out_dim, in_dim), "weight", shards)?
+        };
+        let ws = if ws.dtype() != dtype {
+            ws.to_dtype(dtype)?
+        } else {
+            ws
         };
 
         let ln = Linear::new(ws, None);

@@ -382,6 +382,10 @@ impl DeepSeek {
             routed_scaling_factor: ds_cfg.routed_scaling_factor,
             first_k_dense_replace: ds_cfg.first_k_dense_replace,
             n_shared_experts,
+            n_group: ds_cfg.n_group,
+            topk_group: ds_cfg.topk_group,
+            scoring_func: None,
+            topk_method: None,
         };
 
         let isq_quant = if ds_cfg.quantization_config.is_some() {

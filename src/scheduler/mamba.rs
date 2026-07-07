@@ -62,7 +62,8 @@ impl Scheduler {
                 // Capture every chunk-prefill boundary so future requests can restore
                 // mamba state at the nearest shared prefix length, not just the final
                 // prompt boundary.
-                let processed_tokens = (num_cached_tokens + chunk_size).min(prompt_len);
+                let processed_tokens =
+                    num_cached_tokens + seq.deref().prefill_chunk_tokens(chunk_size);
                 if processed_tokens <= num_cached_tokens {
                     continue;
                 }

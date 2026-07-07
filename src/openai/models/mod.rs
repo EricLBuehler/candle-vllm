@@ -438,6 +438,14 @@ pub struct QwenMoEConfig {
     pub first_k_dense_replace: Option<usize>,
     #[serde(default)]
     pub n_shared_experts: Option<usize>,
+    #[serde(default)]
+    pub n_group: Option<usize>,
+    #[serde(default)]
+    pub topk_group: Option<usize>,
+    #[serde(default)]
+    pub scoring_func: Option<String>,
+    #[serde(default)]
+    pub topk_method: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

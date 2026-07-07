@@ -816,6 +816,10 @@ impl GGUFDeepSeek {
             routed_scaling_factor: expert_weights_scale,
             first_k_dense_replace: first_k_dense,
             n_shared_experts: Some(1),
+            n_group: None,
+            topk_group: None,
+            scoring_func: None,
+            topk_method: None,
         };
 
         // Build MLA/DSA extra config JSON from GGUF metadata
