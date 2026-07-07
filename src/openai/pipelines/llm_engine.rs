@@ -285,6 +285,7 @@ impl LLMEngine {
         if aborted_seq_ids.is_empty() {
             return (0..scheduled.len()).map(|idx| idx as u32).collect();
         }
+        self.release_sequence_states(&aborted_seq_ids);
 
         let aborted_set = aborted_seq_ids.iter().copied().collect::<HashSet<_>>();
         let mut kept_indices = Vec::with_capacity(scheduled.len());
@@ -496,6 +497,28 @@ impl LLMEngine {
             let pipeline = self.get_mut_pipeline(rank).unwrap().0.as_mut();
             for seq_id in sync.released_ids {
                 pipeline.release_sequence_state(seq_id);
+            }
+        }
+    }
+
+    fn release_sequence_states(&self, seq_ids: &[usize]) {
+        if seq_ids.is_empty() {
+            return;
+        }
+
+        for (pipeline, _) in self.pipelines.values() {
+            for &seq_id in seq_ids {
+                pipeline.release_sequence_state(seq_id);
+            }
+        }
+
+        #[cfg(feature = "nccl")]
+        {
+            if self.multi_process {
+                let mut dm = self.daemon_manager.write();
+                if let Some(dm) = dm.as_mut() {
+                    let _ = dm.send_message(&MessageType::FinishSequences(seq_ids.to_vec()));
+                }
             }
         }
     }
@@ -1602,6 +1625,7 @@ impl LLMEngine {
         }
 
         let aborted = self.scheduler.abort_sequences(&seq_ids);
+        self.release_sequence_states(&aborted);
         warn!(
             "Aborted {} scheduled sequence(s) after generation failure: {:?}",
             aborted.len(),
