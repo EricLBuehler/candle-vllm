@@ -88,6 +88,9 @@ mkl = ["dep:intel-mkl-src", "candle-core/mkl", "candle-nn/mkl"]
 nccl = ["candle-core/nccl"]
 graph = ["flash", "attention-rs/graph", "candle-core/graph"]
 
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }
+
 [package.metadata.deb]
 maintainer = "guoqingbao"
 copyright = "2024, guoqingbao"

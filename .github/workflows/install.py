@@ -1,8 +1,7 @@
 import subprocess
 
 subprocess.run(["sudo", "apt", "update", "-y"])
-subprocess.run(["sudo", "apt", "install", "libssl-dev", "-y"])
-subprocess.run(["sudo", "apt", "install", "pkg-config", "-y"])
+subprocess.run(["sudo", "apt", "install", "perl", "make", "-y"])
 
 try:
     import torch

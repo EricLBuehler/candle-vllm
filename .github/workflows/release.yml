@@ -106,9 +106,9 @@ jobs:
           apt-get install -y --no-install-recommends --allow-change-held-packages \
             libnccl-dev libnccl2 \
             curl git ca-certificates \
-            libssl-dev pkg-config \
             clang libclang-dev \
-            patchelf dpkg-dev
+            patchelf dpkg-dev \
+            perl make
           rm -rf /var/lib/apt/lists/*
           git --version
 
@@ -193,9 +193,9 @@ jobs:
           apt-get install -y --no-install-recommends --allow-change-held-packages \
             libnccl-dev libnccl2 \
             curl git ca-certificates \
-            libssl-dev pkg-config \
             clang libclang-dev \
-            patchelf dpkg-dev
+            patchelf dpkg-dev \
+            perl make
           rm -rf /var/lib/apt/lists/*
 
       - name: Install Rust
