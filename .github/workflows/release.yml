@@ -1,6 +1,7 @@
 name: release
 
 on:
+  workflow_dispatch:
   push:
     branches: [master]
     paths:
@@ -31,13 +32,18 @@ jobs:
         run: |
           cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
           before_sha="${{ github.event.before }}"
-          if [ -n "$before_sha" ] && [ "$before_sha" != "0000000000000000000000000000000000000000" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            prev_version=""
+          elif [ -n "$before_sha" ] && [ "$before_sha" != "0000000000000000000000000000000000000000" ]; then
             prev_version="$(git show "${before_sha}:Cargo.toml" 2>/dev/null | sed -n 's/^version = "\(.*\)"/\1/p' | head -n 1)" || prev_version=""
           else
             prev_version=""
           fi
           echo "version=${cargo_version}" >> "$GITHUB_OUTPUT"
-          if [ "$cargo_version" != "$prev_version" ] && [ -n "$prev_version" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual release requested for ${cargo_version}."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          elif [ "$cargo_version" != "$prev_version" ] && [ -n "$prev_version" ]; then
             echo "Version changed: ${prev_version} -> ${cargo_version}"
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
