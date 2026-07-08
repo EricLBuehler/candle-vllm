@@ -121,21 +121,8 @@ jobs:
           . "$HOME/.cargo/env"
           cargo build --release --features "${{ matrix.features }}"
 
-      - name: Bundle CUDA runtime with binary
-        run: |
-          CUDA_LIB="$(find /usr/local/cuda -follow -name 'libcudart.so.*.*' -not -name '*.a' 2>/dev/null | head -1)"
-          if [ -z "$CUDA_LIB" ]; then CUDA_LIB="$(ldconfig -p | grep 'libcudart.so\.' | awk '{print $NF}' | head -1)"; fi
-          mkdir -p target/release/lib
-          if [ -n "$CUDA_LIB" ]; then
-            cp "$CUDA_LIB" target/release/lib/
-            CUDA_SONAME="$(objdump -p "$CUDA_LIB" 2>/dev/null | awk '/SONAME/{print $2}')"
-            if [ -n "$CUDA_SONAME" ]; then
-              ln -sf "$(basename "$CUDA_LIB")" "target/release/lib/$CUDA_SONAME"
-              ln -sf "$CUDA_SONAME" target/release/lib/libcudart.so
-            fi
-          fi
-          patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/candle-vllm' target/release/candle-vllm
-          ls -la target/release/lib/
+      - name: Bundle runtime libraries with binary
+        run: bash .github/scripts/bundle-binary-libs.sh target/release/candle-vllm target/release/lib
 
       - name: Package deb
         run: |
@@ -220,21 +207,8 @@ jobs:
           . "$HOME/.cargo/env"
           cargo build --release --features "${{ matrix.features }}"
 
-      - name: Bundle CUDA runtime with binary
-        run: |
-          CUDA_LIB="$(find /usr/local/cuda -follow -name 'libcudart.so.*.*' -not -name '*.a' 2>/dev/null | head -1)"
-          if [ -z "$CUDA_LIB" ]; then CUDA_LIB="$(ldconfig -p | grep 'libcudart.so\.' | awk '{print $NF}' | head -1)"; fi
-          mkdir -p target/release/lib
-          if [ -n "$CUDA_LIB" ]; then
-            cp "$CUDA_LIB" target/release/lib/
-            CUDA_SONAME="$(objdump -p "$CUDA_LIB" 2>/dev/null | awk '/SONAME/{print $2}')"
-            if [ -n "$CUDA_SONAME" ]; then
-              ln -sf "$(basename "$CUDA_LIB")" "target/release/lib/$CUDA_SONAME"
-              ln -sf "$CUDA_SONAME" target/release/lib/libcudart.so
-            fi
-          fi
-          patchelf --set-rpath '$ORIGIN/lib:/usr/local/lib/candle-vllm' target/release/candle-vllm
-          ls -la target/release/lib/
+      - name: Bundle runtime libraries with binary
+        run: bash .github/scripts/bundle-binary-libs.sh target/release/candle-vllm target/release/lib
 
       - name: Package deb
         run: |
