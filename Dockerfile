@@ -21,10 +21,10 @@ RUN set -eux; \
     ca-certificates \
     curl \
     git \
-    libssl-dev \
-    pkg-config \
     clang \
     libclang-dev \
+    make \
+    perl \
     ; \
   rm -rf /var/lib/apt/lists/*
 
