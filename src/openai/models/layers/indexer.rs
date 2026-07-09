@@ -1,8 +1,11 @@
 use crate::openai::distributed::ReplicatedLinear;
 use crate::openai::models::layers::others::{layer_norm, NormX};
+#[allow(unused)]
 use crate::openai::models::layers::rotary_emb::ScalingRotaryEmbedding;
 use crate::openai::models::Config;
+#[allow(unused)]
 use candle_core::{DType, Result, Tensor, D};
+#[allow(unused)]
 use std::sync::Arc;
 
 use crate::openai::distributed::VarBuilder;
@@ -22,6 +25,7 @@ pub struct IndexerConfig {
 /// Selects the top-k most relevant tokens for each query position,
 /// producing sparse indices used to mask the main MLA attention during prefill.
 /// All operations are GPU-only — no CPU↔GPU sync.
+#[allow(unused)]
 pub struct DsaIndexer {
     wq_b: ReplicatedLinear,
     wk: ReplicatedLinear,

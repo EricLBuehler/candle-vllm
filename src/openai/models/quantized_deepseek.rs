@@ -23,7 +23,7 @@ use std::iter::zip;
 use std::sync::Arc;
 
 // ── GGUF MLA Attention ──────────────────────────────────────────────────────
-
+#[allow(unused)]
 struct QuantizedMlaAttention {
     q_a_proj: Option<QMatMul>,
     q_a_layernorm: Option<QRmsNorm>,

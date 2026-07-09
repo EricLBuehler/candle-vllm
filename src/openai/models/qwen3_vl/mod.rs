@@ -57,8 +57,9 @@ impl Qwen3VLForConditionalGeneration {
             serde_json::from_str(cfg.extra_config_json.as_ref().unwrap())
                 .map_err(candle_core::Error::wrap)?;
         mm_cfg.text_config = cfg.clone();
-        if mm_cfg.quantization_config.is_some() {
-            mm_cfg.text_config.quantization_config = mm_cfg.quantization_config.clone();
+        if let Some(mut qcfg) = mm_cfg.quantization_config.clone() {
+            qcfg.normalize_compressed_tensors();
+            mm_cfg.text_config.quantization_config = Some(qcfg);
         }
 
         let vision_model =
