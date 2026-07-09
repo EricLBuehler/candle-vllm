@@ -1334,7 +1334,7 @@ mod tests {
     use super::{BlockEngine, PrefixCacheConfig};
     use crate::openai::requests::{EmbeddingType, EncodingFormat};
     use crate::openai::sampling_params::{EarlyStoppingCondition, Logprobs, SamplingParams};
-    use crate::scheduler::sequence::{_Sequence, Sequence, SequenceGroup};
+    use crate::scheduler::sequence::{Sequence, SequenceGroup, _Sequence};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::SystemTime;

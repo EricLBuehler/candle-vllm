@@ -5,7 +5,7 @@ use candle_core::{Device, Result, Tensor};
 #[cfg(feature = "flashinfer")]
 use attention_rs::FlashInferMetadata;
 
-use super::{LLMEngine, PreparedInputs, Sequence, SequenceGroup, _PAD_SLOT_ID, PREFILL_CHUNK_SIZE};
+use super::{LLMEngine, PreparedInputs, Sequence, SequenceGroup, PREFILL_CHUNK_SIZE, _PAD_SLOT_ID};
 use crate::InputMetadata;
 
 impl LLMEngine {
@@ -146,6 +146,7 @@ impl LLMEngine {
                 let use_cached_kv = num_cached_tokens > 0
                     && ((cfg!(feature = "flash")
                         || cfg!(feature = "flashattn")
+                        || cfg!(feature = "metal")
                         || cfg!(feature = "flashinfer"))
                         || self.scheduler.prefix_cache_enabled());
                 let seqlen_k = if use_cached_kv {

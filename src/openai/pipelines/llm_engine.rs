@@ -44,7 +44,7 @@ use crate::{
     },
     scheduler::{
         cache_engine::{CacheConfig, CacheEngine},
-        sequence::{_Sequence, Sequence, SequenceGroup},
+        sequence::{Sequence, SequenceGroup, _Sequence},
         SchedulerConfig, SchedulerOutput,
     },
     InputMetadata,
@@ -671,6 +671,7 @@ impl LLMEngine {
         Ok(())
     }
 
+    #[allow(unused)]
     pub fn new(
         mut pipelines: HashMap<usize, (Box<DefaultPipeline>, CacheEngine)>,
         scheduler_config: SchedulerConfig,

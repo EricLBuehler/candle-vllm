@@ -1667,6 +1667,23 @@ pub struct LnNvfp4 {
 }
 
 impl LnNvfp4 {
+    fn load_scale_tensor(
+        vb: &VarBuilder,
+        out_dim: usize,
+        scale_dim: usize,
+        name: &str,
+        shard: Shard,
+    ) -> Result<Tensor> {
+        if matches!(vb.device(), Device::Metal(_)) {
+            if let Ok(scale) =
+                vb.get_with_hints_dtype((out_dim, scale_dim), name, shard, DType::F8E4M3)
+            {
+                return Ok(scale);
+            }
+        }
+        vb.get_with_hints_dtype((out_dim, scale_dim), name, shard, DType::U8)
+    }
+
     pub fn load(
         in_dim: usize,
         out_dim: usize,
@@ -1684,9 +1701,9 @@ impl LnNvfp4 {
 
         let scale_dim = in_dim / 16;
         let scales = if vb.contains_tensor("weight_scale") {
-            vb.get_with_hints_dtype((out_dim, scale_dim), "weight_scale", shard, DType::U8)?
+            Self::load_scale_tensor(&vb, out_dim, scale_dim, "weight_scale", shard)?
         } else {
-            vb.get_with_hints_dtype((out_dim, scale_dim), "scales", shard, DType::U8)?
+            Self::load_scale_tensor(&vb, out_dim, scale_dim, "scales", shard)?
         };
 
         let no_shard = Shard::default();

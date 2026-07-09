@@ -103,6 +103,7 @@ impl GatedDeltaNet {
         } else {
             (None, None)
         };
+        let mut load_errors = Vec::new();
 
         let projection_size_qkvz = key_dim_global * 2 + value_dim_global * 2;
         let projection_size_ba = num_v_heads_global * 2;
@@ -131,11 +132,21 @@ impl GatedDeltaNet {
             &qc_ba,
         );
 
-        if let (Ok(in_proj_qkvz), Ok(in_proj_ba)) = (fused_qkvz, fused_ba) {
-            return Ok(GdnProjection::FusedQkvzBa {
-                in_proj_qkvz,
-                in_proj_ba,
-            });
+        match (fused_qkvz, fused_ba) {
+            (Ok(in_proj_qkvz), Ok(in_proj_ba)) => {
+                return Ok(GdnProjection::FusedQkvzBa {
+                    in_proj_qkvz,
+                    in_proj_ba,
+                });
+            }
+            (qkvz, ba) => {
+                if let Err(err) = qkvz {
+                    load_errors.push(format!("in_proj_qkvz: {err}"));
+                }
+                if let Err(err) = ba {
+                    load_errors.push(format!("in_proj_ba: {err}"));
+                }
+            }
         };
 
         let vb_z = vb.pp("in_proj_z");
@@ -174,65 +185,83 @@ impl GatedDeltaNet {
             &qc_a,
         );
 
-        if let (Ok(in_proj_z), Ok(in_proj_b), Ok(in_proj_a)) = (split_z, split_b, split_a) {
-            if comm.world_size() > 1 {
-                let vb_qkv = vb.pp("in_proj_qkv");
-                let qc_qkv = Self::resolve_quant_for_weight(&vb_qkv, &quantization_config);
-                let split_qkv_merged = MergedParallelColumnLinear::load_merged_chunks(
-                    hidden_size,
-                    key_dim_global * 2 + value_dim_global,
-                    0,
-                    vec![key_dim_global, key_dim_global, value_dim_global],
-                    vb_qkv,
-                    comm.clone(),
-                    &qc_qkv,
-                    &None,
-                    dtype,
-                );
+        match (split_z, split_b, split_a) {
+            (Ok(in_proj_z), Ok(in_proj_b), Ok(in_proj_a)) => {
+                if comm.world_size() > 1 {
+                    let vb_qkv = vb.pp("in_proj_qkv");
+                    let qc_qkv = Self::resolve_quant_for_weight(&vb_qkv, &quantization_config);
+                    let split_qkv_merged = MergedParallelColumnLinear::load_merged_chunks(
+                        hidden_size,
+                        key_dim_global * 2 + value_dim_global,
+                        0,
+                        vec![key_dim_global, key_dim_global, value_dim_global],
+                        vb_qkv,
+                        comm.clone(),
+                        &qc_qkv,
+                        &None,
+                        dtype,
+                    );
 
-                match split_qkv_merged {
-                    Ok(in_proj_qkv) => {
-                        return Ok(GdnProjection::SplitQkvZaMerged {
-                            in_proj_qkv,
-                            in_proj_z,
-                            in_proj_b,
-                            in_proj_a,
-                        });
-                    }
-                    Err(err) => {
-                        if is_quantized {
-                            candle_core::bail!(
+                    match split_qkv_merged {
+                        Ok(in_proj_qkv) => {
+                            return Ok(GdnProjection::SplitQkvZaMerged {
+                                in_proj_qkv,
+                                in_proj_z,
+                                in_proj_b,
+                                in_proj_a,
+                            });
+                        }
+                        Err(err) => {
+                            if is_quantized {
+                                candle_core::bail!(
                                 "Unable to load TP-safe quantized Qwen3.5 split in_proj_qkv: {}",
                                 err
                             );
+                            }
                         }
                     }
                 }
+
+                let vb_qkv = vb.pp("in_proj_qkv");
+                let qc_qkv = Self::resolve_quant_for_weight(&vb_qkv, &quantization_config);
+                let split_qkv_legacy = TensorParallelColumnLinear::load_with_hints(
+                    hidden_size,
+                    key_dim_global * 2 + value_dim_global,
+                    false,
+                    vb_qkv,
+                    comm.clone(),
+                    &None,
+                    &qc_qkv,
+                );
+
+                if let Ok(in_proj_qkv) = split_qkv_legacy {
+                    return Ok(GdnProjection::SplitQkvZaLegacy {
+                        in_proj_qkv,
+                        in_proj_z,
+                        in_proj_b,
+                        in_proj_a,
+                    });
+                } else if let Err(err) = split_qkv_legacy {
+                    load_errors.push(format!("in_proj_qkv: {err}"));
+                }
             }
-
-            let vb_qkv = vb.pp("in_proj_qkv");
-            let qc_qkv = Self::resolve_quant_for_weight(&vb_qkv, &quantization_config);
-            let split_qkv_legacy = TensorParallelColumnLinear::load_with_hints(
-                hidden_size,
-                key_dim_global * 2 + value_dim_global,
-                false,
-                vb_qkv,
-                comm.clone(),
-                &None,
-                &qc_qkv,
-            );
-
-            if let Ok(in_proj_qkv) = split_qkv_legacy {
-                return Ok(GdnProjection::SplitQkvZaLegacy {
-                    in_proj_qkv,
-                    in_proj_z,
-                    in_proj_b,
-                    in_proj_a,
-                });
+            (z, b, a) => {
+                if let Err(err) = z {
+                    load_errors.push(format!("in_proj_z: {err}"));
+                }
+                if let Err(err) = b {
+                    load_errors.push(format!("in_proj_b: {err}"));
+                }
+                if let Err(err) = a {
+                    load_errors.push(format!("in_proj_a: {err}"));
+                }
             }
         }
 
-        candle_core::bail!("Unable to load Qwen3.5/Qwen3Next linear attention projection weights",)
+        candle_core::bail!(
+            "Unable to load Qwen3.5/Qwen3Next linear attention projection weights: {}",
+            load_errors.join("; ")
+        )
     }
 
     fn fix_qwen3next_projection_order(
