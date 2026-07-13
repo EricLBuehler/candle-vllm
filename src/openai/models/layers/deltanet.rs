@@ -64,12 +64,13 @@ impl GatedDeltaNet {
             "fp8" => vb.contains_tensor("weight_scale") || vb.contains_tensor("weight_scale_inv"),
             "mxfp4" => vb.contains_tensor("weight_packed") || vb.contains_tensor("blocks"),
             "nvfp4" => {
+                let has_mlx = vb.contains_tensor("weight") && vb.contains_tensor("scales");
                 let has_packed =
                     vb.contains_tensor("weight_packed") || vb.contains_tensor("blocks");
                 let has_scale = vb.contains_tensor("weight_scale") || vb.contains_tensor("scales");
                 let has_modelopt =
                     vb.contains_tensor("weight_scale_2") || vb.contains_tensor("input_scale");
-                (has_packed && has_scale) || (has_modelopt && has_scale)
+                has_mlx || (has_packed && has_scale) || (has_modelopt && has_scale)
             }
             _ => true,
         }
@@ -444,7 +445,12 @@ impl GatedDeltaNet {
         )?;
 
         // Conv1D weights are stored global; slice rank-local q/k/v channel blocks.
-        let conv_weight = vb.get((conv_dim_global, 1, conv_kernel_size), "conv1d.weight")?;
+        let conv_weight = match vb.get((conv_dim_global, 1, conv_kernel_size), "conv1d.weight") {
+            Ok(weight) => weight,
+            Err(_) => vb
+                .get((conv_dim_global, conv_kernel_size, 1), "conv1d.weight")?
+                .permute((0, 2, 1))?,
+        };
         let q_start = rank * key_dim;
         let k_start = key_dim_global + rank * key_dim;
         let v_start = key_dim_global * 2 + rank * value_dim;
@@ -612,19 +618,49 @@ impl GatedDeltaNet {
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
+            let try_flashinfer = self.num_k_heads != self.num_v_heads
+                && !input_metadata.is_mtp_verify
+                && crate::openai::utils::sm90_lower_precision_gdn_prefill();
+            let flashinfer_result = if try_flashinfer {
+                #[cfg(all(feature = "cuda", feature = "flashinfer"))]
+                {
+                    let g_exp = g.exp()?;
+                    gdn::gated_delta_rule_prefill_flashinfer_gqa(
+                        &q,
+                        &k,
+                        &v,
+                        &g_exp,
+                        &beta,
+                        global_state,
+                        seq_slots,
+                        &cu_seqlens,
+                        self.scale as f32,
+                    )?
+                }
+                #[cfg(not(all(feature = "cuda", feature = "flashinfer")))]
+                {
+                    None
+                }
+            } else {
+                None
+            };
             if self.num_k_heads != self.num_v_heads {
-                gdn::gated_delta_rule_recurrence_varlen_gqa(
-                    &q,
-                    &k,
-                    &v,
-                    &g,
-                    &beta,
-                    global_state,
-                    seq_slots,
-                    &cu_seqlens,
-                    self.scale as f32,
-                    None,
-                )?
+                if let Some(output) = flashinfer_result {
+                    output
+                } else {
+                    gdn::gated_delta_rule_recurrence_varlen_gqa(
+                        &q,
+                        &k,
+                        &v,
+                        &g,
+                        &beta,
+                        global_state,
+                        seq_slots,
+                        &cu_seqlens,
+                        self.scale as f32,
+                        None,
+                    )?
+                }
             } else {
                 let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
                 let q_scaled = (&q * self.scale)?;

@@ -202,6 +202,10 @@ impl DecoderLayer {
         layer_type: &str,
         gdn_layer_idx: usize,
     ) -> Result<Self> {
+        let use_norm_offset = cfg
+            .quantization_config
+            .as_ref()
+            .map_or(true, |q| !q.is_mlx_nvfp4);
         let attn = if layer_type == "full_attention" {
             AttnType::FullAttention(Attention::new(
                 rotary_emb,
@@ -277,14 +281,14 @@ impl DecoderLayer {
             cfg.rms_norm_eps,
             vb.pp("input_layernorm"),
             DType::F32,
-            true,
+            use_norm_offset,
         )?;
         let post_attention_layernorm = rms_norm(
             cfg.hidden_size,
             cfg.rms_norm_eps,
             vb.pp("post_attention_layernorm"),
             DType::F32,
-            true,
+            use_norm_offset,
         )?;
 
         let (shared_gate, shared_expert) =
@@ -460,23 +464,40 @@ impl Qwen3_5MoE {
             cfg.rms_norm_eps,
             vb_m.pp("norm"),
             DType::F32,
-            true,
+            cfg.quantization_config
+                .as_ref()
+                .map_or(true, |q| !q.is_mlx_nvfp4),
         )?;
-        let lm_head = VocabParallelLinear::load_no_bias(
-            cfg.hidden_size,
-            cfg.vocab_size,
-            if tie_word_embeddings {
-                vb_m.pp("embed_tokens")
-            } else if vb_m.contains_tensor("lm_head.weight") {
-                vb_m.pp("lm_head")
-            } else {
-                vb.pp("lm_head")
-            },
-            comm.clone(),
-            &None,
-            &None,
-            dtype,
-        )?;
+        let is_mlx_nvfp4_tied = tie_word_embeddings
+            && cfg
+                .quantization_config
+                .as_ref()
+                .is_some_and(|q| q.is_mlx_nvfp4);
+        let lm_head = if is_mlx_nvfp4_tied {
+            VocabParallelLinear::from_weight_bias(
+                embed_tokens.embeddings().clone(),
+                None,
+                comm.clone(),
+                cfg.vocab_size,
+                dtype,
+            )?
+        } else {
+            VocabParallelLinear::load_no_bias(
+                cfg.hidden_size,
+                cfg.vocab_size,
+                if tie_word_embeddings {
+                    vb_m.pp("embed_tokens")
+                } else if vb_m.contains_tensor("lm_head.weight") {
+                    vb_m.pp("lm_head")
+                } else {
+                    vb.pp("lm_head")
+                },
+                comm.clone(),
+                &None,
+                &None,
+                dtype,
+            )?
+        };
 
         let world_size = comm.world_size();
         if hybrid.num_v_heads % world_size != 0 || hybrid.num_k_heads % world_size != 0 {

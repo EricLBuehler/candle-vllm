@@ -1864,6 +1864,18 @@ pub struct FusedMoeNvfp4 {
 }
 
 impl FusedMoeNvfp4 {
+    fn load_mlx_weight(
+        vb: &candle_nn::var_builder::ShardedVarBuilder,
+        out_dim: usize,
+        in_dim: usize,
+        shard: Shard,
+    ) -> Result<(Tensor, Tensor)> {
+        let weight = vb.get_with_hints_dtype((out_dim, in_dim / 8), "weight", shard, DType::U32)?;
+        let blocks = attention_rs::nvfp4_linear::mlx_repack_u32_to_u8(&weight)?;
+        let scales = vb.get_with_hints_dtype((out_dim, in_dim / 16), "scales", shard, DType::U8)?;
+        Ok((blocks, scales))
+    }
+
     fn tensor_name_packed(vb: &candle_nn::var_builder::ShardedVarBuilder) -> &'static str {
         if vb.contains_tensor("weight_packed") {
             "weight_packed"
@@ -1971,6 +1983,10 @@ impl FusedMoeNvfp4 {
         )?;
 
         let experts_vb = vb.pp("experts");
+        let is_mlx_nvfp4 = cfg
+            .quantization_config
+            .as_ref()
+            .is_some_and(|q| q.is_mlx_nvfp4);
 
         let mut gate_blocks_vec = Vec::new();
         let mut gate_scales_vec = Vec::new();
@@ -1994,59 +2010,98 @@ impl FusedMoeNvfp4 {
             let scale_name = Self::tensor_name_scale(&gate_proj_vb);
             let sh0 = shard(0, comm.rank(), comm.world_size());
 
-            gate_blocks_vec.push(gate_proj_vb.get_with_hints_dtype(
-                (moe_cfg.moe_intermediate_size, cfg.hidden_size / 2),
-                packed_name,
-                sh0,
-                DType::U8,
-            )?);
-            gate_scales_vec.push(gate_proj_vb.get_with_hints_dtype(
-                (moe_cfg.moe_intermediate_size, cfg.hidden_size / 16),
-                scale_name,
-                sh0,
-                DType::U8,
-            )?);
-            gate_gscales_vec.push(Self::load_global_scale(&gate_proj_vb));
-            gate_iscales_vec.push(Self::load_input_scale(&gate_proj_vb));
+            if is_mlx_nvfp4 {
+                let (blocks, scales) = Self::load_mlx_weight(
+                    &gate_proj_vb,
+                    moe_cfg.moe_intermediate_size,
+                    cfg.hidden_size,
+                    sh0,
+                )?;
+                gate_blocks_vec.push(blocks);
+                gate_scales_vec.push(scales);
+                gate_gscales_vec.push(1.0);
+                gate_iscales_vec.push(1.0);
+            } else {
+                gate_blocks_vec.push(gate_proj_vb.get_with_hints_dtype(
+                    (moe_cfg.moe_intermediate_size, cfg.hidden_size / 2),
+                    packed_name,
+                    sh0,
+                    DType::U8,
+                )?);
+                gate_scales_vec.push(gate_proj_vb.get_with_hints_dtype(
+                    (moe_cfg.moe_intermediate_size, cfg.hidden_size / 16),
+                    scale_name,
+                    sh0,
+                    DType::U8,
+                )?);
+                gate_gscales_vec.push(Self::load_global_scale(&gate_proj_vb));
+                gate_iscales_vec.push(Self::load_input_scale(&gate_proj_vb));
+            }
 
             let up_proj_vb = expert_vb.pp(un);
             let packed_name = Self::tensor_name_packed(&up_proj_vb);
             let scale_name = Self::tensor_name_scale(&up_proj_vb);
 
-            up_blocks_vec.push(up_proj_vb.get_with_hints_dtype(
-                (moe_cfg.moe_intermediate_size, cfg.hidden_size / 2),
-                packed_name,
-                sh0,
-                DType::U8,
-            )?);
-            up_scales_vec.push(up_proj_vb.get_with_hints_dtype(
-                (moe_cfg.moe_intermediate_size, cfg.hidden_size / 16),
-                scale_name,
-                sh0,
-                DType::U8,
-            )?);
-            up_gscales_vec.push(Self::load_global_scale(&up_proj_vb));
-            up_iscales_vec.push(Self::load_input_scale(&up_proj_vb));
+            if is_mlx_nvfp4 {
+                let (blocks, scales) = Self::load_mlx_weight(
+                    &up_proj_vb,
+                    moe_cfg.moe_intermediate_size,
+                    cfg.hidden_size,
+                    sh0,
+                )?;
+                up_blocks_vec.push(blocks);
+                up_scales_vec.push(scales);
+                up_gscales_vec.push(1.0);
+                up_iscales_vec.push(1.0);
+            } else {
+                up_blocks_vec.push(up_proj_vb.get_with_hints_dtype(
+                    (moe_cfg.moe_intermediate_size, cfg.hidden_size / 2),
+                    packed_name,
+                    sh0,
+                    DType::U8,
+                )?);
+                up_scales_vec.push(up_proj_vb.get_with_hints_dtype(
+                    (moe_cfg.moe_intermediate_size, cfg.hidden_size / 16),
+                    scale_name,
+                    sh0,
+                    DType::U8,
+                )?);
+                up_gscales_vec.push(Self::load_global_scale(&up_proj_vb));
+                up_iscales_vec.push(Self::load_input_scale(&up_proj_vb));
+            }
 
             let down_proj_vb = expert_vb.pp(dn);
             let packed_name = Self::tensor_name_packed(&down_proj_vb);
             let scale_name = Self::tensor_name_scale(&down_proj_vb);
             let sh1 = shard(1, comm.rank(), comm.world_size());
 
-            down_blocks_vec.push(down_proj_vb.get_with_hints_dtype(
-                (cfg.hidden_size, moe_cfg.moe_intermediate_size / 2),
-                packed_name,
-                sh1,
-                DType::U8,
-            )?);
-            down_scales_vec.push(down_proj_vb.get_with_hints_dtype(
-                (cfg.hidden_size, moe_cfg.moe_intermediate_size / 16),
-                scale_name,
-                sh1,
-                DType::U8,
-            )?);
-            down_gscales_vec.push(Self::load_global_scale(&down_proj_vb));
-            down_iscales_vec.push(Self::load_input_scale(&down_proj_vb));
+            if is_mlx_nvfp4 {
+                let (blocks, scales) = Self::load_mlx_weight(
+                    &down_proj_vb,
+                    cfg.hidden_size,
+                    moe_cfg.moe_intermediate_size,
+                    sh1,
+                )?;
+                down_blocks_vec.push(blocks);
+                down_scales_vec.push(scales);
+                down_gscales_vec.push(1.0);
+                down_iscales_vec.push(1.0);
+            } else {
+                down_blocks_vec.push(down_proj_vb.get_with_hints_dtype(
+                    (cfg.hidden_size, moe_cfg.moe_intermediate_size / 2),
+                    packed_name,
+                    sh1,
+                    DType::U8,
+                )?);
+                down_scales_vec.push(down_proj_vb.get_with_hints_dtype(
+                    (cfg.hidden_size, moe_cfg.moe_intermediate_size / 16),
+                    scale_name,
+                    sh1,
+                    DType::U8,
+                )?);
+                down_gscales_vec.push(Self::load_global_scale(&down_proj_vb));
+                down_iscales_vec.push(Self::load_input_scale(&down_proj_vb));
+            }
         }
 
         let gate_blocks = Tensor::stack(&gate_blocks_vec, 0)?;

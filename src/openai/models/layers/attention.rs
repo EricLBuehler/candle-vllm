@@ -407,8 +407,13 @@ impl Attention {
                 | "Qwen3NextForCausalLM"
                 | "Qwen3NextForConditionalGeneration"
         );
-        // Qwen3.5/Qwen3-Next and Gemma q/k norms use Gemma-style +1 weight semantics.
-        let qk_norm_add_one = is_gemma || is_qwen35_or_next;
+        // MLX NVFP4 checkpoints contain the already-materialized norm weights;
+        // applying the Gemma/Qwen +1 convention a second time is incorrect.
+        let is_mlx_nvfp4 = cfg
+            .quantization_config
+            .as_ref()
+            .is_some_and(|q| q.is_mlx_nvfp4);
+        let qk_norm_add_one = is_gemma || (is_qwen35_or_next && !is_mlx_nvfp4);
         let attention_bias = if is_qwen35_or_next {
             cfg.use_qkv_bias.or(cfg.attention_bias).unwrap_or(false)
         } else {
