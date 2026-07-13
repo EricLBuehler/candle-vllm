@@ -1294,6 +1294,17 @@ fn should_bypass_quant_for_module(vb: &VarBuilder, quant_config: &Option<QuantCo
     cfg.should_skip_module(&prefix)
 }
 
+fn has_fp4_scale_tensors(vb: &VarBuilder, is_mlx: bool) -> bool {
+    if is_mlx {
+        vb.contains_tensor("weight") && vb.contains_tensor("scales")
+    } else {
+        (vb.contains_tensor("weight_packed")
+            || vb.contains_tensor("weight")
+            || vb.contains_tensor("blocks"))
+            && (vb.contains_tensor("weight_scale") || vb.contains_tensor("scales"))
+    }
+}
+
 pub fn linear_x(
     in_dim: usize,
     out_dim: usize,
@@ -1342,12 +1353,47 @@ pub fn linear_x(
         }
 
         if cfg.quant_method == "mxfp4" {
+            if !has_fp4_scale_tensors(&vb, false) {
+                let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
+                let ws = if ws.dtype() != dtype {
+                    ws.to_dtype(dtype)?
+                } else {
+                    ws
+                };
+                let bs = vb.get((out_dim,), "bias")?;
+                let bs = if bs.dtype() != dtype {
+                    bs.to_dtype(dtype)?
+                } else {
+                    bs
+                };
+                return Ok(LinearX::Linear(Linear::new(ws, Some(bs))));
+            }
             let ln = LnMxfp4::load(in_dim, out_dim, vb.clone(), shard, true)?;
             return Ok(LinearX::LnMxfp4(ln));
         }
 
         if cfg.quant_method == "nvfp4" {
-            let ln = LnNvfp4::load(in_dim, out_dim, vb.clone(), shard, true)?;
+            let is_mlx = cfg.is_mlx_nvfp4;
+            if !has_fp4_scale_tensors(&vb, is_mlx) {
+                let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
+                let ws = if ws.dtype() != dtype {
+                    ws.to_dtype(dtype)?
+                } else {
+                    ws
+                };
+                let bs = vb.get((out_dim,), "bias")?;
+                let bs = if bs.dtype() != dtype {
+                    bs.to_dtype(dtype)?
+                } else {
+                    bs
+                };
+                return Ok(LinearX::Linear(Linear::new(ws, Some(bs))));
+            }
+            let ln = if is_mlx {
+                LnNvfp4::load_mlx(in_dim, out_dim, vb.clone(), shard, true)?
+            } else {
+                LnNvfp4::load(in_dim, out_dim, vb.clone(), shard, true)?
+            };
             return Ok(LinearX::LnNvfp4(ln));
         }
 
@@ -1452,12 +1498,59 @@ pub fn linear_no_bias_x(
         }
 
         if cfg.quant_method == "mxfp4" {
+            if !has_fp4_scale_tensors(&vb, false) {
+                let ws = if let Some((chunk_idx, chunks)) = merged_chunks {
+                    vb.get_with_hints(
+                        (out_dim, in_dim),
+                        "weight",
+                        shard(
+                            shards.dim,
+                            chunk_idx * shards.world_size + shards.rank,
+                            chunks * shards.world_size,
+                        ),
+                    )?
+                } else {
+                    vb.get_with_hints((out_dim, in_dim), "weight", shards)?
+                };
+                let ws = if ws.dtype() != dtype {
+                    ws.to_dtype(dtype)?
+                } else {
+                    ws
+                };
+                return Ok(LinearX::Linear(Linear::new(ws, None)));
+            }
             let ln = LnMxfp4::load(in_dim, out_dim, vb.clone(), shards, false)?;
             return Ok(LinearX::LnMxfp4(ln));
         }
 
         if cfg.quant_method == "nvfp4" {
-            let ln = LnNvfp4::load(in_dim, out_dim, vb.clone(), shards, false)?;
+            let is_mlx = cfg.is_mlx_nvfp4;
+            if !has_fp4_scale_tensors(&vb, is_mlx) {
+                let ws = if let Some((chunk_idx, chunks)) = merged_chunks {
+                    vb.get_with_hints(
+                        (out_dim, in_dim),
+                        "weight",
+                        shard(
+                            shards.dim,
+                            chunk_idx * shards.world_size + shards.rank,
+                            chunks * shards.world_size,
+                        ),
+                    )?
+                } else {
+                    vb.get_with_hints((out_dim, in_dim), "weight", shards)?
+                };
+                let ws = if ws.dtype() != dtype {
+                    ws.to_dtype(dtype)?
+                } else {
+                    ws
+                };
+                return Ok(LinearX::Linear(Linear::new(ws, None)));
+            }
+            let ln = if is_mlx {
+                LnNvfp4::load_mlx(in_dim, out_dim, vb.clone(), shards, false)?
+            } else {
+                LnNvfp4::load(in_dim, out_dim, vb.clone(), shards, false)?
+            };
             return Ok(LinearX::LnNvfp4(ln));
         }
 
@@ -1692,7 +1785,32 @@ impl LnNvfp4 {
         shard: Shard,
         load_bias: bool,
     ) -> Result<Self> {
-        let blocks = if vb.contains_tensor("weight_packed") {
+        Self::load_inner(in_dim, out_dim, vb, shard, load_bias, false)
+    }
+
+    pub fn load_mlx(
+        in_dim: usize,
+        out_dim: usize,
+        vb: VarBuilder,
+        shard: Shard,
+        load_bias: bool,
+    ) -> Result<Self> {
+        Self::load_inner(in_dim, out_dim, vb, shard, load_bias, true)
+    }
+
+    fn load_inner(
+        in_dim: usize,
+        out_dim: usize,
+        vb: VarBuilder,
+        shard: Shard,
+        load_bias: bool,
+        is_mlx: bool,
+    ) -> Result<Self> {
+        let blocks = if is_mlx {
+            let weight =
+                vb.get_with_hints_dtype((out_dim, in_dim / 8), "weight", shard, DType::U32)?;
+            attention_rs::nvfp4_linear::mlx_repack_u32_to_u8(&weight)?
+        } else if vb.contains_tensor("weight_packed") {
             vb.get_with_hints_dtype((out_dim, in_dim / 2), "weight_packed", shard, DType::U8)?
         } else if vb.contains_tensor("weight") {
             vb.get_with_hints_dtype((out_dim, in_dim / 2), "weight", shard, DType::U8)?
@@ -1708,7 +1826,9 @@ impl LnNvfp4 {
         };
 
         let no_shard = Shard::default();
-        let global_scale = if vb.contains_tensor("weight_global_scale") {
+        let global_scale = if is_mlx {
+            1.0
+        } else if vb.contains_tensor("weight_global_scale") {
             let t = match vb.get_with_hints_dtype((1,), "weight_global_scale", no_shard, DType::F32)
             {
                 Ok(t) => t,
@@ -1732,7 +1852,9 @@ impl LnNvfp4 {
             1.0f32
         };
 
-        let input_scale = if vb.contains_tensor("input_scale") {
+        let input_scale = if is_mlx {
+            1.0
+        } else if vb.contains_tensor("input_scale") {
             let t = match vb.get_with_hints_dtype((1,), "input_scale", no_shard, DType::F32) {
                 Ok(t) => t,
                 Err(_) => vb.get_with_hints_dtype((), "input_scale", no_shard, DType::F32)?,

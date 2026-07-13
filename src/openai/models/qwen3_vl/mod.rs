@@ -62,8 +62,23 @@ impl Qwen3VLForConditionalGeneration {
             mm_cfg.text_config.quantization_config = Some(qcfg);
         }
 
+        // Qwen3.5 multimodal exports use the newer `vision_tower` /
+        // `language_model.model` roots, while older Qwen-VL checkpoints use
+        // `model.visual` / `model.language_model`.
+        let vision_prefix = if vb.contains_tensor("vision_tower.patch_embed.proj.weight") {
+            "vision_tower"
+        } else {
+            "model.visual"
+        };
+        let text_prefix = if vb.contains_tensor("language_model.model.embed_tokens.weight")
+            || vb.contains_tensor("language_model.model.embed_tokens.scales")
+        {
+            "language_model.model"
+        } else {
+            "model.language_model"
+        };
         let vision_model =
-            Qwen3VLVisionModel::new(&mm_cfg.vision_config, &vb.pp("model.visual"), dtype, device)?;
+            Qwen3VLVisionModel::new(&mm_cfg.vision_config, &vb.pp(vision_prefix), dtype, device)?;
 
         let arch = mm_cfg
             .architectures
@@ -84,7 +99,7 @@ impl Qwen3VLForConditionalGeneration {
                 device,
                 comm.clone(),
                 progress_reporter.clone(),
-                Some("model.language_model".to_string()),
+                Some(text_prefix.to_string()),
             )?),
             "Qwen3_5MoeForConditionalGeneration" => {
                 Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix(
@@ -94,7 +109,7 @@ impl Qwen3VLForConditionalGeneration {
                     device,
                     comm.clone(),
                     progress_reporter.clone(),
-                    Some("model.language_model".to_string()),
+                    Some(text_prefix.to_string()),
                 )?)
             }
             "Qwen3_5ForConditionalGeneration" => Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix(
@@ -104,7 +119,7 @@ impl Qwen3VLForConditionalGeneration {
                 device,
                 comm.clone(),
                 progress_reporter.clone(),
-                Some("model.language_model".to_string()),
+                Some(text_prefix.to_string()),
             )?),
             "Qwen3NextForConditionalGeneration" if next_is_moe => {
                 Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix(
@@ -114,7 +129,7 @@ impl Qwen3VLForConditionalGeneration {
                     device,
                     comm.clone(),
                     progress_reporter.clone(),
-                    Some("model.language_model".to_string()),
+                    Some(text_prefix.to_string()),
                 )?)
             }
             "Qwen3NextForConditionalGeneration" => {
@@ -125,7 +140,7 @@ impl Qwen3VLForConditionalGeneration {
                     device,
                     comm.clone(),
                     progress_reporter.clone(),
-                    Some("model.language_model".to_string()),
+                    Some(text_prefix.to_string()),
                 )?)
             }
             _ => Qwen3TextModel::Dense(Qwen::new_with_prefix(
@@ -135,7 +150,7 @@ impl Qwen3VLForConditionalGeneration {
                 device,
                 comm,
                 progress_reporter,
-                Some("model.language_model".to_string()),
+                Some(text_prefix.to_string()),
             )?),
         };
 

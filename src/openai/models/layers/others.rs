@@ -154,7 +154,7 @@ impl Conv3dNoBias {
     ) -> Result<Self> {
         use candle_nn::Conv2dConfig;
 
-        let ws = vb.get(
+        let ws = match vb.get(
             (
                 out_channels,
                 in_channels / cfg.groups,
@@ -163,7 +163,24 @@ impl Conv3dNoBias {
                 kernel_sizes[2],
             ),
             "weight",
-        )?;
+        ) {
+            Ok(ws) => ws,
+            Err(_) => {
+                // Qwen3.5 exports this kernel as [out, temporal, h, w, in],
+                // whereas candle's Conv3d path consumes [out, in, temporal, h, w].
+                vb.get(
+                    (
+                        out_channels,
+                        kernel_sizes[0],
+                        kernel_sizes[1],
+                        kernel_sizes[2],
+                        in_channels / cfg.groups,
+                    ),
+                    "weight",
+                )?
+                .permute((0, 4, 1, 2, 3))?
+            }
+        };
 
         let w1 = ws.i((.., .., 0, .., ..))?;
         let w2 = ws.i((.., .., 1, .., ..))?;

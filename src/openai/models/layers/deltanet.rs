@@ -64,12 +64,13 @@ impl GatedDeltaNet {
             "fp8" => vb.contains_tensor("weight_scale") || vb.contains_tensor("weight_scale_inv"),
             "mxfp4" => vb.contains_tensor("weight_packed") || vb.contains_tensor("blocks"),
             "nvfp4" => {
+                let has_mlx = vb.contains_tensor("weight") && vb.contains_tensor("scales");
                 let has_packed =
                     vb.contains_tensor("weight_packed") || vb.contains_tensor("blocks");
                 let has_scale = vb.contains_tensor("weight_scale") || vb.contains_tensor("scales");
                 let has_modelopt =
                     vb.contains_tensor("weight_scale_2") || vb.contains_tensor("input_scale");
-                (has_packed && has_scale) || (has_modelopt && has_scale)
+                has_mlx || (has_packed && has_scale) || (has_modelopt && has_scale)
             }
             _ => true,
         }
@@ -444,7 +445,12 @@ impl GatedDeltaNet {
         )?;
 
         // Conv1D weights are stored global; slice rank-local q/k/v channel blocks.
-        let conv_weight = vb.get((conv_dim_global, 1, conv_kernel_size), "conv1d.weight")?;
+        let conv_weight = match vb.get((conv_dim_global, 1, conv_kernel_size), "conv1d.weight") {
+            Ok(weight) => weight,
+            Err(_) => vb
+                .get((conv_dim_global, conv_kernel_size, 1), "conv1d.weight")?
+                .permute((0, 2, 1))?,
+        };
         let q_start = rank * key_dim;
         let k_start = key_dim_global + rank * key_dim;
         let v_start = key_dim_global * 2 + rank * value_dim;
