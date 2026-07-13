@@ -88,7 +88,10 @@ impl Mlp {
         let scale_dim0 = out_dim.div_ceil(by);
         let scale_dim1 = in_dim.div_ceil(bx);
 
-        let weight = match vb.get_with_hints_dtype((out_dim, in_dim), "weight", shard, DType::U8) {
+        let weight = match vb
+            .get_with_hints_dtype((out_dim, in_dim), "weight", shard, DType::F8E4M3)
+            .or_else(|_| vb.get_with_hints_dtype((out_dim, in_dim), "weight", shard, DType::U8))
+        {
             Ok(weight) => weight,
             Err(_) => return Ok(None),
         };

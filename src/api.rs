@@ -71,7 +71,7 @@ impl EngineBuilder {
             max_num_seqs: 8,
             block_size: if cfg!(feature = "cuda") { 64 } else { 32 },
             kvcache_mem_gpu: 4096,
-            kv_fraction: Some(0.6),
+            kv_fraction: Some(if cfg!(feature = "cuda") { 0.6 } else { 0.4 }),
             mamba_fraction: None,
             kvcache_mem_cpu: 0,
             temperature: None,

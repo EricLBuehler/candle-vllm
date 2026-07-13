@@ -280,8 +280,11 @@ impl MergedParallelColumnLinear {
         }
 
         // Load full weight and scale (no sharding initially)
-        let weight =
-            vb.get_with_hints_dtype((out_dim, in_dim), "weight", Shard::default(), DType::U8)?;
+        let weight = vb
+            .get_with_hints_dtype((out_dim, in_dim), "weight", Shard::default(), DType::F8E4M3)
+            .or_else(|_| {
+                vb.get_with_hints_dtype((out_dim, in_dim), "weight", Shard::default(), DType::U8)
+            })?;
         let scale_dim0 = (out_dim + by - 1) / by;
         let scale_dim1 = (in_dim + bx - 1) / bx;
         let weight_scale = match vb.get_with_hints_dtype(
@@ -908,8 +911,16 @@ impl MergedParallelColumnLinear {
                 candle_core::bail!("LnFp8: invalid zero in weight_block_size");
             }
 
-            let weight =
-                vb.get_with_hints_dtype((out_dim, in_dim), "weight", Shard::default(), DType::U8)?;
+            let weight = vb
+                .get_with_hints_dtype((out_dim, in_dim), "weight", Shard::default(), DType::F8E4M3)
+                .or_else(|_| {
+                    vb.get_with_hints_dtype(
+                        (out_dim, in_dim),
+                        "weight",
+                        Shard::default(),
+                        DType::U8,
+                    )
+                })?;
             let scale_dim0 = (out_dim + by - 1) / by;
             let scale_dim1 = (in_dim + bx - 1) / bx;
             let weight_scale = match vb.get_with_hints_dtype(
