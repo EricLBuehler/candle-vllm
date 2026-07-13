@@ -248,31 +248,26 @@ impl MlaAttention {
             }
         }
 
-        // Build DSA indexer if config specifies it and this layer is past the skip offset
-        let indexer = if let (Some(index_head_dim), Some(index_n_heads), Some(index_topk)) = (
-            mla_cfg.index_head_dim,
-            mla_cfg.index_n_heads,
-            mla_cfg.index_topk,
-        ) {
-            let skip_offset = mla_cfg.index_skip_topk_offset.unwrap_or(0);
-            if layer_idx >= skip_offset {
-                if let Some(q_lora_rank) = mla_cfg.q_lora_rank {
-                    let idx_cfg = IndexerConfig {
-                        index_head_dim,
-                        index_n_heads,
-                        index_topk,
-                        index_skip_topk_offset: skip_offset,
-                        qk_rope_head_dim,
-                        q_lora_rank,
-                        hidden_size,
-                    };
-                    Some(DsaIndexer::new(vb.pp("indexer"), config, idx_cfg, dtype)?)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+        // Match xinfer's DSA layer selection. Layer 0 is kept dense by
+        // default, and an indexer is only constructed when its weights are
+        // present in this layer. This matters for long prefills: enabling a
+        // sparse indexer in a layer without the trained indexer weights
+        // changes the attention pattern and compounds across the model.
+        let skip_offset = mla_cfg.index_skip_topk_offset.unwrap_or(1);
+        let has_indexer = mla_cfg.index_head_dim.is_some()
+            && layer_idx >= skip_offset
+            && vb.pp("indexer").contains_tensor("wq_b.weight");
+        let indexer = if has_indexer {
+            let idx_cfg = IndexerConfig {
+                index_head_dim: mla_cfg.index_head_dim.unwrap(),
+                index_n_heads: mla_cfg.index_n_heads.unwrap_or(4),
+                index_topk: mla_cfg.index_topk.unwrap_or(2048),
+                index_skip_topk_offset: skip_offset,
+                qk_rope_head_dim,
+                q_lora_rank: mla_cfg.q_lora_rank.unwrap_or(256),
+                hidden_size,
+            };
+            Some(DsaIndexer::new(vb.pp("indexer"), config, idx_cfg, dtype)?)
         } else {
             None
         };

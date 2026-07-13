@@ -403,8 +403,8 @@ impl GLM4MoeLiteForCausalLM {
                 vb.pp("lm_head")
             },
             comm.clone(),
-            &config.isq_quant,
-            &config.quantization_config,
+            &None,
+            &None,
             dtype,
         )?;
 

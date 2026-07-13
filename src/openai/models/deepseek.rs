@@ -517,8 +517,8 @@ impl DeepSeek {
                 cfg.vocab_size,
                 vb.pp("lm_head"),
                 comm.clone(),
-                &cfg.isq_quant,
-                &cfg.quantization_config,
+                &None,
+                &None,
                 dtype,
             )?
         };
