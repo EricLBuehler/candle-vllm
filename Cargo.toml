@@ -1,6 +1,6 @@
 [package]
 name = "candle-vllm"
-version = "0.8.7"
+version = "0.8.8"
 edition = "2021"
 default-run = "candle-vllm"
 
@@ -45,7 +45,7 @@ dirs = "5.0.1"
 minijinja = { version = "2.10.2", features = ["builtins", "json"] }
 minijinja-contrib = { version = "2.10.2", features = ["pycompat"] }
 thiserror = "1.0.58"
-attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.6.4", rev = "d8a8098" }
+attention-rs = { git = "https://github.com/guoqingbao/attention.rs.git", version="0.6.4", rev = "ee33c74" }
 metal = { version = "0.27.0", features = ["mps"], optional = true }
 lazy_static = {version = "1.4.0"}
 interprocess = "2.2.2"
