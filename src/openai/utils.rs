@@ -1,12 +1,35 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use std::env;
 
 use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device, Result, Tensor};
 
 use super::models::qwen3_vl::config::VisionConfig;
 use super::models::Config;
+
+pub const SM90_LOWER_PRECISION_GDN_PREFILL_ENV: &str = "SM90_LOWER_PRECISION_GDN_PREFILL";
+
+static SM90_LOWER_PRECISION_GDN_PREFILL: OnceLock<bool> = OnceLock::new();
+
+/// Whether to use FlashInfer's faster, lower-precision SM90 GDN prefill
+/// kernel. The kernel can lose some precision on long prompts, so it remains
+/// opt-in and the normal F32-state recurrence path is the default.
+pub fn sm90_lower_precision_gdn_prefill() -> bool {
+    *SM90_LOWER_PRECISION_GDN_PREFILL.get_or_init(|| {
+        env::var(SM90_LOWER_PRECISION_GDN_PREFILL_ENV)
+            .map(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes"
+                )
+            })
+            .unwrap_or(false)
+    })
+}
 
 pub(crate) fn get_created_time_secs() -> u64 {
     SystemTime::now()

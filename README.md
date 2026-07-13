@@ -179,6 +179,9 @@ candle-vllm --m Qwen/Qwen3.6-35B-A3B --yarn-scaling-factor 4.0 --ui-server
 # FP8 Model (block-wise quant, build with cutlass feature)
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
 
+# Faster GDN prefill on Hopper with slight precision loss
+SM90_LOWER_PRECISION_GDN_PREFILL=1 candle-vllm --m Qwen/Qwen3.5-35B-A3B-FP8
+
 # GLM-5.2 FP8 Model
 candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
 

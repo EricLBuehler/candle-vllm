@@ -153,6 +153,9 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 # FP8 模型 + Web UI
 candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
 
+# Hopper 上加速 GDN 预填充，精度略有损失
+SM90_LOWER_PRECISION_GDN_PREFILL=1 candle-vllm --m Qwen/Qwen3.5-35B-A3B-FP8
+
 # GLM-5.2 FP8 模型
 candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
 
