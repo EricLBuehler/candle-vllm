@@ -926,6 +926,13 @@ pub struct LnFp8 {
     pub sm_version: usize,
 }
 
+fn load_fp8_weight(vb: &VarBuilder, shape: (usize, usize), shard: Shard) -> Result<Tensor> {
+    // Native FP8 checkpoints expose E4M3 weights. Keep the U8 fallback for
+    // older exports that preserve the same bytes as an unsigned tensor.
+    vb.get_with_hints_dtype(shape, "weight", shard, DType::F8E4M3)
+        .or_else(|_| vb.get_with_hints_dtype(shape, "weight", shard, DType::U8))
+}
+
 impl LnFp8 {
     pub fn new(
         in_dim: usize,
@@ -942,7 +949,7 @@ impl LnFp8 {
             candle_core::bail!("LnFp8: weight_block_size must have 2 elements");
         }
 
-        let weight = vb.get_with_hints_dtype((out_dim, in_dim), "weight", shard, DType::U8)?;
+        let weight = load_fp8_weight(&vb, (out_dim, in_dim), shard)?;
 
         let by = block_size[0];
         let bx = block_size[1];
@@ -1114,7 +1121,7 @@ fn load_ln_fp8_with_hints(
     let scale_dim0 = (out_dim + by - 1) / by;
     let scale_dim1 = (in_dim + bx - 1) / bx;
 
-    let weight = vb.get_with_hints_dtype((out_dim, in_dim), "weight", shard, DType::U8)?;
+    let weight = load_fp8_weight(&vb, (out_dim, in_dim), shard)?;
     let weight = normalize_sharded_2d(weight, shard, out_dim, in_dim, "weight")?;
     let weight_scale = match vb.get_with_hints_dtype(
         (scale_dim0, scale_dim1),
@@ -1674,14 +1681,8 @@ impl LnNvfp4 {
         name: &str,
         shard: Shard,
     ) -> Result<Tensor> {
-        if matches!(vb.device(), Device::Metal(_)) {
-            if let Ok(scale) =
-                vb.get_with_hints_dtype((out_dim, scale_dim), name, shard, DType::F8E4M3)
-            {
-                return Ok(scale);
-            }
-        }
-        vb.get_with_hints_dtype((out_dim, scale_dim), name, shard, DType::U8)
+        vb.get_with_hints_dtype((out_dim, scale_dim), name, shard, DType::F8E4M3)
+            .or_else(|_| vb.get_with_hints_dtype((out_dim, scale_dim), name, shard, DType::U8))
     }
 
     pub fn load(
