@@ -50,6 +50,7 @@ pub struct SequenceData {
     pub images: Option<ImageData>,
     pub mamba_prefix_hash: Option<u64>,
     pub mamba_prefix_warmup_tokens: Option<usize>,
+    swapped_time: Option<SystemTime>,
 }
 
 impl SequenceData {
@@ -74,6 +75,7 @@ impl SequenceData {
             images,
             mamba_prefix_hash: None,
             mamba_prefix_warmup_tokens: None,
+            swapped_time: None,
         }
     }
 
@@ -245,6 +247,14 @@ impl _Sequence {
 
     pub fn set_num_cached_tokens(&mut self, num_cached_tokens: usize) {
         self.deref_mut().num_cached_tokens = num_cached_tokens;
+    }
+
+    pub fn swapped_time(&self) -> Option<SystemTime> {
+        self.deref().swapped_time
+    }
+
+    pub fn set_swapped_time(&mut self, swapped_time: Option<SystemTime>) {
+        self.deref_mut().swapped_time = swapped_time;
     }
 
     pub fn get_images(&self) -> Option<ImageData> {

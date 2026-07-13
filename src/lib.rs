@@ -222,7 +222,30 @@ pub fn get_cache_config(
 
     let per_block = (base_per_block + tq_per_block).max(1);
     let num_gpu_blocks = kvcache_mem_gpu * size_in_mb / per_block;
-    let num_cpu_blocks = kvcache_mem_cpu * size_in_mb / per_block;
+    // Match xInfer's default CPU swap policy: reserve half as many CPU KV
+    // blocks as GPU KV blocks. A non-zero `kvcache_mem_cpu` remains an
+    // explicit megabyte override for callers that need a fixed budget.
+    let num_cpu_blocks = if cfg!(feature = "cuda") {
+        if kvcache_mem_cpu == 0 {
+            num_gpu_blocks / 2
+        } else {
+            kvcache_mem_cpu * size_in_mb / per_block
+        }
+    } else {
+        0
+    };
+    tracing::info!(
+        "KV cache block allocation: GPU {} block(s), CPU {} block(s) ({})",
+        num_gpu_blocks,
+        num_cpu_blocks,
+        if !cfg!(feature = "cuda") {
+            "CPU swap disabled for non-CUDA device"
+        } else if kvcache_mem_cpu == 0 {
+            "CPU default 0.5x GPU blocks"
+        } else {
+            "explicit CPU memory budget"
+        }
+    );
 
     crate::scheduler::cache_engine::CacheConfig {
         block_size,
@@ -354,7 +377,6 @@ pub fn compute_workspace_budget(params: &WorkspaceBudgetParams) -> GpuMemoryBudg
 }
 
 pub const MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV: &str = "CANDLE_VLLM_MAMBA_SNAPSHOT_STRIDE_BLOCKS";
-pub const DEFAULT_MAMBA_SNAPSHOT_BLOCK_STRIDE: usize = 1;
 
 pub const STREAM_AS_REASONING_CONTENT_ENV: &str = "CANDLE_VLLM_STREAM_AS_REASONING_CONTENT";
 
@@ -613,8 +635,8 @@ pub fn plan_hybrid_mamba_cache_with_fraction(
     })
 }
 
-pub fn mamba_snapshot_block_stride_blocks() -> usize {
-    let default = DEFAULT_MAMBA_SNAPSHOT_BLOCK_STRIDE;
+pub fn mamba_snapshot_block_stride_blocks(default: usize) -> usize {
+    let default = default.max(1);
     let Ok(raw) = std::env::var(MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV) else {
         return default;
     };

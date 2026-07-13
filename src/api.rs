@@ -73,7 +73,7 @@ impl EngineBuilder {
             kvcache_mem_gpu: 4096,
             kv_fraction: Some(0.6),
             mamba_fraction: None,
-            kvcache_mem_cpu: 128,
+            kvcache_mem_cpu: 0,
             temperature: None,
             top_p: None,
             min_p: None,

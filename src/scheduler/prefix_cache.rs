@@ -386,7 +386,7 @@ impl PrefixCache {
 #[cfg(test)]
 mod tests {
     use super::{PrefixCache, PrefixCacheConfig};
-    use crate::scheduler::block_engine::{PhysicalTokenBlock, _PhysicalTokenBlock};
+    use crate::scheduler::block_engine::{_PhysicalTokenBlock, PhysicalTokenBlock};
     use std::sync::{Arc, Mutex};
 
     fn block(block_id: usize, block_size: usize) -> Arc<PhysicalTokenBlock> {

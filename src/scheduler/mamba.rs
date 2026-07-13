@@ -33,6 +33,10 @@ pub struct FinishedMambaSync {
 }
 
 impl Scheduler {
+    pub fn forget_mamba_sequence_state(&mut self, seq_id: usize) {
+        self.mamba_state.restored_prefix_sequences.remove(&seq_id);
+    }
+
     pub fn reset_mamba_state(&mut self) {
         self.mamba_state.restored_prefix_sequences.clear();
     }
@@ -101,8 +105,15 @@ impl Scheduler {
             return Vec::new();
         }
 
+        // Match xInfer: prompt/chunk-prefill captures are dense, while decode
+        // snapshots are sparse at the effective prefill-chunk boundary. The
+        // final response snapshot is captured by the finished-sequence path.
         let block_size = self.block_engine.get_block_size();
-        let stride_blocks = crate::mamba_snapshot_block_stride_blocks();
+        let stride_blocks = crate::mamba_snapshot_block_stride_blocks(
+            self.prefill_chunk_size
+                .div_ceil(self.block_engine.get_block_size())
+                .max(1),
+        );
         let mut captures = Vec::new();
         for group in groups {
             for seq in Self::ordered_group_sequences(group) {
