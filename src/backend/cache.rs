@@ -1,15 +1,11 @@
 #[cfg(feature = "cuda")]
 use attention_rs::kernels::ffi::{copy_blocks_bf16, copy_blocks_f16, copy_blocks_f32};
 #[cfg(feature = "metal")]
-use candle_core::{
-    backend::BackendStorage, CpuStorage, Device, IndexOp, Layout, MetalDevice, MetalStorage,
-    Result, Storage, Tensor, WithDType,
-};
+use candle_core::{backend::BackendStorage, Device, IndexOp, Result, Storage, Tensor};
 #[cfg(feature = "cuda")]
 use candle_core::{
-    cuda_backend::cudarc::driver::{CudaSlice, DevicePtr},
-    cuda_backend::CudaStorageSlice,
-    Device, IndexOp, Result, Storage, Tensor,
+    cuda_backend::cudarc::driver::DevicePtr, cuda_backend::CudaStorageSlice, Device, IndexOp,
+    Result, Storage, Tensor,
 };
 use std::{collections::HashMap, iter::zip};
 
@@ -168,106 +164,6 @@ pub unsafe fn copy_blocks(
     Ok(())
 }
 
-#[cfg(feature = "cuda")]
-pub fn swap_blocks(
-    src: Tensor,
-    dst: &mut Tensor,
-    block_mapping: HashMap<usize, usize>,
-) -> Result<()> {
-    let block_size_in_bytes = src.dtype().size_in_bytes() * src.dims()[0];
-    match (src.device(), dst.device()) {
-        (Device::Cuda(src_dev), Device::Cuda(dst_dev)) => {
-            if src_dev.ordinal() != dst_dev.ordinal() {
-                candle_core::bail!("Tensors must be on the same device to copy, got ordinals {} (src) and {} (dst).", src_dev.ordinal(), dst_dev.ordinal())
-            }
-            let (src_storage, src_layout) = src.storage_and_layout();
-            let (dst_storage, dst_layout) = dst.storage_and_layout();
-            assert!(matches!(&*src_storage, Storage::Cuda(_)));
-            assert!(matches!(&*dst_storage, Storage::Cuda(_)));
-            let Storage::Cuda(src_storage) = &*src_storage else {
-                unreachable!()
-            };
-            let Storage::Cuda(dst_storage) = &*dst_storage else {
-                unreachable!()
-            };
-            let (src_ptr, dst_ptr) = match (&src_storage.slice, &dst_storage.slice) {
-                (CudaStorageSlice::BF16(slice_src), CudaStorageSlice::BF16(slice_dst)) => {
-                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
-                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
-                    (ptr_src, ptr_dst)
-                }
-                (CudaStorageSlice::F16(slice_src), CudaStorageSlice::F16(slice_dst)) => {
-                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
-                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
-                    (ptr_src, ptr_dst)
-                }
-                (CudaStorageSlice::F32(slice_src), CudaStorageSlice::F32(slice_dst)) => {
-                    let ptr_src = *slice_src.slice(src_layout.start_offset()..).device_ptr();
-                    let ptr_dst = *slice_dst.slice(dst_layout.start_offset()..).device_ptr();
-                    (ptr_src, ptr_dst)
-                }
-                _ => {
-                    candle_core::bail!("only f32, f16 and bf16 input data type supported!");
-                }
-            };
-            // let src_ptr = src_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(src_layout.start_offset()).unwrap();
-            // let dst_ptr = dst_storage.as_cuda_slice::<u8>().map_err(APIError::from)?.device_ptr() + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
-
-            for (src_block_number, dst_block_number) in block_mapping {
-                let src_offset: u64 = (src_block_number * block_size_in_bytes).try_into().unwrap();
-                let dst_offset: u64 = (dst_block_number * block_size_in_bytes).try_into().unwrap();
-                // u8s because we copy by bytes
-                let src_slice: CudaSlice<u8> = unsafe {
-                    src_dev.upgrade_device_ptr(src_ptr + src_offset, block_size_in_bytes)
-                };
-                let mut dst_slice = unsafe {
-                    dst_dev.upgrade_device_ptr(dst_ptr + dst_offset, block_size_in_bytes)
-                };
-
-                src_dev
-                    .dtod_copy(&src_slice, &mut dst_slice)
-                    .map_err(candle_core::Error::wrap)?;
-            }
-        }
-        (Device::Cpu, Device::Cuda(dst_dev)) => {
-            let (src_storage, _src_layout) = src.storage_and_layout();
-            let (dst_storage, dst_layout) = dst.storage_and_layout();
-            assert!(matches!(&*src_storage, Storage::Cpu(_)));
-            assert!(matches!(&*dst_storage, Storage::Cuda(_)));
-            let Storage::Cpu(src_storage) = &*src_storage else {
-                unreachable!()
-            };
-            let Storage::Cuda(dst_storage) = &*dst_storage else {
-                unreachable!()
-            };
-            let dst_ptr = dst_storage.as_cuda_slice::<u8>()?.device_ptr()
-                + TryInto::<u64>::try_into(dst_layout.start_offset()).unwrap();
-            let src_slice = src_storage.as_slice()?;
-
-            for (src_block_number, dst_block_number) in block_mapping {
-                let src_offset = src_block_number * block_size_in_bytes;
-                let dst_offset: u64 = (dst_block_number * block_size_in_bytes).try_into().unwrap();
-                // u8s because we copy by bytes
-                let mut dst_slice: CudaSlice<u8> = unsafe {
-                    dst_dev.upgrade_device_ptr(dst_ptr + dst_offset, block_size_in_bytes)
-                };
-
-                dst_dev
-                    .htod_sync_copy_into(
-                        &src_slice[src_offset..src_offset + block_size_in_bytes],
-                        &mut dst_slice,
-                    )
-                    .map_err(candle_core::Error::wrap)?;
-            }
-        }
-        (src, dst) => {
-            candle_core::bail!("Tensors must be on either the GPU or CPU to swap,, got {src:?} (src) and {dst:?} (dst).")
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(feature = "metal")]
 pub fn copy_blocks(
     key_caches: Vec<&mut Tensor>,
@@ -352,143 +248,6 @@ pub fn copy_blocks(
     Ok(())
 }
 
-// `dst` REALLY should be &mut. That's the only reason this is unsafe.
-/// # Safety
-/// `dst` is the only shared reference and upholds the `&mut` aliasing guarantee.
-#[cfg(feature = "metal")]
-pub fn swap_blocks(src: Tensor, dst: &Tensor, block_mapping: HashMap<usize, usize>) -> Result<()> {
-    let block_size_in_bytes = src.dtype().size_in_bytes() * src.dims()[0];
-    if src.device().location() != dst.device().location() {
-        candle_core::bail!(
-            "Tensors must be on the same device to copy, got locations {:?} (src) and {:?} (dst).",
-            src.device().location(),
-            dst.device().location()
-        );
-    }
-    match (src.device(), dst.device()) {
-        (Device::Metal(src_dev), Device::Metal(_)) => {
-            let (src_storage, src_layout) = src.storage_and_layout();
-            let (dst_storage, dst_layout) = dst.storage_and_layout();
-            assert!(matches!(&*src_storage, Storage::Metal(_)));
-            assert!(matches!(&*dst_storage, Storage::Metal(_)));
-            let Storage::Metal(src_storage) = &*src_storage else {
-                unreachable!()
-            };
-            let Storage::Metal(dst_storage) = &*dst_storage else {
-                unreachable!()
-            };
-
-            for (src_block_number, dst_block_number) in block_mapping {
-                // We copy by bytes
-                let src_offset = src_block_number * block_size_in_bytes
-                    + src_layout.start_offset() * src_storage.dtype().size_in_bytes();
-                let dst_offset = dst_block_number * block_size_in_bytes
-                    + dst_layout.start_offset() * dst_storage.dtype().size_in_bytes();
-
-                let command_buffer = src_dev.command_buffer()?;
-                command_buffer.set_label("swap-blocks-gpu-gpu");
-                let blit = command_buffer.new_blit_command_encoder();
-                blit.set_label("swap-blocks-gpu-gpu");
-                let length = (src_layout.shape().elem_count() * src_storage.dtype().size_in_bytes())
-                    as metal::NSUInteger;
-                blit.copy_from_buffer(
-                    src_storage.buffer(),
-                    src_offset as u64,
-                    dst_storage.buffer(),
-                    dst_offset as u64,
-                    length,
-                );
-                blit.end_encoding();
-            }
-        }
-        (Device::Cpu, Device::Metal(dev)) => {
-            let (src_storage, src_layout) = src.storage_and_layout();
-            let (dst_storage, dst_layout) = dst.storage_and_layout();
-            assert!(matches!(&*src_storage, Storage::Cpu(_)));
-            assert!(matches!(&*dst_storage, Storage::Metal(_)));
-            let Storage::Cpu(src_storage) = &*src_storage else {
-                unreachable!()
-            };
-            let Storage::Metal(dst_storage) = &*dst_storage else {
-                unreachable!()
-            };
-
-            fn swap_thunk<SRCT: WithDType>(
-                src_slice: &[SRCT],
-                src_layout: &Layout,
-                dst_storage: &MetalStorage,
-                dst_layout: &Layout,
-                dev: &MetalDevice,
-                block_size_in_bytes: usize,
-                block_mapping: HashMap<usize, usize>,
-            ) -> Result<()> {
-                for (src_block_number, dst_block_number) in block_mapping {
-                    let src_offset = src_block_number * block_size_in_bytes
-                        + src_layout.start_offset() * SRCT::DTYPE.size_in_bytes();
-                    let dst_offset = dst_block_number * block_size_in_bytes
-                        + dst_layout.start_offset() * dst_storage.dtype().size_in_bytes();
-                    // We copy by bytes
-                    let src_buffer = dev.new_buffer_with_data(
-                        &src_slice[src_offset..src_offset + block_size_in_bytes],
-                    )?;
-
-                    let command_buffer = dev.command_buffer()?;
-                    command_buffer.set_label("swap-blocks-cpu-gpu");
-                    let blit = command_buffer.new_blit_command_encoder();
-                    blit.set_label("swap-blocks-cpu-gpu");
-                    let length = (src_layout.shape().elem_count() * SRCT::DTYPE.size_in_bytes())
-                        as metal::NSUInteger;
-                    blit.copy_from_buffer(
-                        &src_buffer,
-                        src_offset as u64,
-                        dst_storage.buffer(),
-                        dst_offset as u64,
-                        length,
-                    );
-                    blit.end_encoding();
-                }
-                Ok(())
-            }
-
-            match src_storage {
-                CpuStorage::BF16(s) => swap_thunk(
-                    s,
-                    src_layout,
-                    dst_storage,
-                    dst_layout,
-                    dev,
-                    block_size_in_bytes,
-                    block_mapping,
-                )?,
-                CpuStorage::F16(s) => swap_thunk(
-                    s,
-                    src_layout,
-                    dst_storage,
-                    dst_layout,
-                    dev,
-                    block_size_in_bytes,
-                    block_mapping,
-                )?,
-                CpuStorage::F32(s) => swap_thunk(
-                    s,
-                    src_layout,
-                    dst_storage,
-                    dst_layout,
-                    dev,
-                    block_size_in_bytes,
-                    block_mapping,
-                )?,
-                _ => candle_core::bail!("expected bf16, f16, or f32 for cpu<>gpu swap-blocks"),
-            }
-        }
-        (src, dst) => {
-            candle_core::bail!("Tensors must be on either the GPU or CPU to swap, got {src:?} (src) and {dst:?} (dst).");
-        }
-    }
-
-    Ok(())
-}
-
 #[cfg(not(any(feature = "cuda", feature = "metal")))]
 pub unsafe fn copy_blocks(
     _: Vec<&mut candle_core::Tensor>,
@@ -496,13 +255,4 @@ pub unsafe fn copy_blocks(
     _: HashMap<usize, Vec<usize>>,
 ) -> candle_core::Result<()> {
     candle_core::bail!("copy_blocks not implemented for CPU")
-}
-
-#[cfg(not(any(feature = "cuda", feature = "metal")))]
-pub fn swap_blocks(
-    _: candle_core::Tensor,
-    _: &mut candle_core::Tensor,
-    _: HashMap<usize, usize>,
-) -> candle_core::Result<()> {
-    candle_core::bail!("swap_blocks not implemented for CPU")
 }

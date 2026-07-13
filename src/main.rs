@@ -96,8 +96,8 @@ struct Args {
     #[arg(long)]
     mamba_fraction: Option<f32>,
 
-    /// Available CPU memory for kvcache (MB)
-    #[arg(long, default_value_t = 128)]
+    /// Available CPU memory for kvcache (MB; 0 selects 0.5x the GPU KV block count)
+    #[arg(long, default_value_t = 0)]
     kvcache_mem_cpu: usize,
 
     /// Record conversation (default false, the client need to record chat history)
