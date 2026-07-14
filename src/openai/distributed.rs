@@ -717,6 +717,52 @@ pub fn shard(dim: usize, rank: usize, world_size: usize) -> candle_nn::var_build
         world_size,
     }
 }
+
+/// Determine the local KV-head count and weight shard for tensor-parallel
+/// attention. When there are fewer KV heads than ranks, each KV head is
+/// replicated across a contiguous group of ranks so every rank receives a
+/// complete KV head.
+pub fn kv_head_shard(
+    total_num_kv_heads: usize,
+    rank: usize,
+    world_size: usize,
+) -> Result<(usize, Shard)> {
+    if total_num_kv_heads == 0 {
+        candle_core::bail!("num_key_value_heads must be > 0");
+    }
+    if world_size == 0 {
+        candle_core::bail!("tensor parallel world_size must be > 0");
+    }
+    if rank >= world_size {
+        candle_core::bail!(
+            "rank out of bounds for tensor parallel group (rank={}, world_size={})",
+            rank,
+            world_size
+        );
+    }
+
+    if total_num_kv_heads >= world_size {
+        if total_num_kv_heads % world_size != 0 {
+            candle_core::bail!(
+                "KV heads must be divisible by tensor parallel world_size when partitioned (num_kv_heads={}, world_size={})",
+                total_num_kv_heads,
+                world_size
+            );
+        }
+        Ok((total_num_kv_heads / world_size, shard(0, rank, world_size)))
+    } else {
+        if world_size % total_num_kv_heads != 0 {
+            candle_core::bail!(
+                "tensor parallel world_size must be divisible by KV heads when KV heads are replicated (num_kv_heads={}, world_size={})",
+                total_num_kv_heads,
+                world_size
+            );
+        }
+        let ranks_per_kv_head = world_size / total_num_kv_heads;
+        let kv_head_rank = rank / ranks_per_kv_head;
+        Ok((1, shard(0, kv_head_rank, total_num_kv_heads)))
+    }
+}
 use crate::openai::models::QuantConfig;
 impl TensorParallelColumnLinear {
     pub fn load_with_hints(
