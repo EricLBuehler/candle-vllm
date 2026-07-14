@@ -143,6 +143,14 @@ pub fn get_cache_config(
     let kv_layers = config.kv_cache_num_layers().max(1);
     let dsize = kv_dtype.size_in_bytes();
     let size_in_mb = 1024 * 1024;
+    let kv_heads_per_shard = |global_heads: usize| {
+        let shards = num_shards.max(1);
+        if global_heads < shards {
+            1
+        } else {
+            global_heads / shards
+        }
+    };
 
     let tq_full = matches!(kvcache_dtype, KvCacheDtype::Turbo4 | KvCacheDtype::Turbo3);
 
@@ -153,14 +161,14 @@ pub fn get_cache_config(
     } else if let Some(ref per_layer_cfg) = config.gemma4_per_layer_cache_config() {
         let mut total = 0usize;
         for &(kv_heads, head_dim) in per_layer_cfg {
-            let kv_heads_sharded = kv_heads / num_shards;
+            let kv_heads_sharded = kv_heads_per_shard(kv_heads);
             total += block_size * kv_heads_sharded * head_dim * dsize * 2;
         }
         total
     } else {
         dsize
             * block_size
-            * (config.num_key_value_heads.unwrap() / num_shards)
+            * kv_heads_per_shard(config.num_key_value_heads.unwrap())
             * config.k_head_dim()
             * kv_layers
             * 2
@@ -172,12 +180,12 @@ pub fn get_cache_config(
                 per_layer_cfg
                     .iter()
                     .map(|&(kv_heads, hd)| {
-                        let heads = kv_heads / num_shards;
+                        let heads = kv_heads_per_shard(kv_heads);
                         block_size * heads * 4 + block_size * heads * (hd / 2)
                     })
                     .sum()
             } else {
-                let heads = config.num_key_value_heads.unwrap() / num_shards;
+                let heads = kv_heads_per_shard(config.num_key_value_heads.unwrap());
                 let hd = config.k_head_dim();
                 (block_size * heads * 4 + block_size * heads * (hd / 2)) * kv_layers
             }
@@ -187,12 +195,12 @@ pub fn get_cache_config(
                 per_layer_cfg
                     .iter()
                     .map(|&(kv_heads, hd)| {
-                        let heads = kv_heads / num_shards;
+                        let heads = kv_heads_per_shard(kv_heads);
                         block_size * heads * 4 * 2 + block_size * heads * (hd / 2) * 2
                     })
                     .sum()
             } else {
-                let heads = config.num_key_value_heads.unwrap() / num_shards;
+                let heads = kv_heads_per_shard(config.num_key_value_heads.unwrap());
                 let hd = config.k_head_dim();
                 (block_size * heads * 4 * 2 + block_size * heads * (hd / 2) * 2) * kv_layers
             }
@@ -202,14 +210,14 @@ pub fn get_cache_config(
                 per_layer_cfg
                     .iter()
                     .map(|&(kv_heads, hd)| {
-                        let heads = kv_heads / num_shards;
+                        let heads = kv_heads_per_shard(kv_heads);
                         block_size * heads * 4 * 2
                             + block_size * heads * ((hd * 3 + 7) / 8)
                             + block_size * heads * (hd / 2)
                     })
                     .sum()
             } else {
-                let heads = config.num_key_value_heads.unwrap() / num_shards;
+                let heads = kv_heads_per_shard(config.num_key_value_heads.unwrap());
                 let hd = config.k_head_dim();
                 (block_size * heads * 4 * 2
                     + block_size * heads * ((hd * 3 + 7) / 8)

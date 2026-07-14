@@ -205,7 +205,7 @@ impl CacheEngine {
             }
             let mut cache = Vec::new();
             for (layer_kv_heads, layer_head_dim) in configs.iter().copied() {
-                let kv_heads = layer_kv_heads / num_shards.max(1);
+                let kv_heads = (layer_kv_heads / num_shards.max(1)).max(1);
                 if use_flash_layout && layer_head_dim <= 256 {
                     let key_blocks = Tensor::zeros(
                         (num_blocks, block_size, kv_heads, layer_head_dim),
@@ -304,7 +304,7 @@ impl CacheEngine {
         let element_size = dtype.size_in_bytes();
         let x = 16 / element_size;
         (
-            cfg.num_key_value_heads.unwrap_or(cfg.num_attention_heads) / num_shards,
+            (cfg.num_key_value_heads.unwrap_or(cfg.num_attention_heads) / num_shards.max(1)).max(1),
             cfg.k_head_dim() / x,
             block_size,
             x,
@@ -317,7 +317,7 @@ impl CacheEngine {
         num_shards: usize,
     ) -> (usize, usize, usize) {
         (
-            cfg.num_key_value_heads.unwrap_or(cfg.num_attention_heads) / num_shards,
+            (cfg.num_key_value_heads.unwrap_or(cfg.num_attention_heads) / num_shards.max(1)).max(1),
             cfg.v_head_dim(),
             block_size,
         )
@@ -335,7 +335,7 @@ impl CacheEngine {
 
         (
             block_size,
-            cfg.num_key_value_heads.unwrap_or(cfg.num_attention_heads) / num_shards,
+            (cfg.num_key_value_heads.unwrap_or(cfg.num_attention_heads) / num_shards.max(1)).max(1),
             head_dim,
         )
     }
@@ -420,13 +420,14 @@ impl CacheEngine {
         for layer_idx in 0..num_kv_layers {
             let (kv_heads, hd) = if let Some(ref configs) = per_layer_config {
                 let (h, d) = configs[layer_idx];
-                (h / num_shards, d)
+                ((h / num_shards.max(1)).max(1), d)
             } else {
                 (
-                    model_config
+                    (model_config
                         .num_key_value_heads
                         .unwrap_or(model_config.num_attention_heads)
-                        / num_shards,
+                        / num_shards.max(1))
+                    .max(1),
                     model_config
                         .head_dim
                         .unwrap_or(model_config.hidden_size / model_config.num_attention_heads),
