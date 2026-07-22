@@ -435,19 +435,49 @@ impl QuantizedGatedDeltaNet {
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
+            let try_flashinfer = self.num_k_heads != self.num_v_heads
+                && !input_metadata.is_mtp_verify
+                && crate::openai::utils::sm90_lower_precision_gdn_prefill();
+            let flashinfer_result = if try_flashinfer {
+                #[cfg(all(feature = "cuda", feature = "flashinfer"))]
+                {
+                    let g_exp = g.exp()?;
+                    gdn::gated_delta_rule_prefill_flashinfer_gqa(
+                        &q,
+                        &k,
+                        &v,
+                        &g_exp,
+                        &beta,
+                        global_state,
+                        seq_slots,
+                        &cu_seqlens,
+                        self.scale as f32,
+                    )?
+                }
+                #[cfg(not(all(feature = "cuda", feature = "flashinfer")))]
+                {
+                    None
+                }
+            } else {
+                None
+            };
             if self.num_k_heads != self.num_v_heads {
-                gdn::gated_delta_rule_recurrence_varlen_gqa(
-                    &q,
-                    &k,
-                    &v,
-                    &g,
-                    &beta,
-                    global_state,
-                    seq_slots,
-                    cu_seqlens,
-                    self.scale as f32,
-                    None,
-                )?
+                if let Some(output) = flashinfer_result {
+                    output
+                } else {
+                    gdn::gated_delta_rule_recurrence_varlen_gqa(
+                        &q,
+                        &k,
+                        &v,
+                        &g,
+                        &beta,
+                        global_state,
+                        seq_slots,
+                        &cu_seqlens,
+                        self.scale as f32,
+                        None,
+                    )?
+                }
             } else {
                 let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
                 let q_scaled = (&q * self.scale)?;

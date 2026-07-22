@@ -38,6 +38,30 @@ const PREFIX_CACHE_PRESSURE_EVICT_PERCENT: f32 = 0.1; // evict 10% of prefix cac
 const FINISHED_CACHED_TOKENS_MAX: usize = 16_384;
 const SWAP_COOLING_PERIOD: Duration = Duration::from_millis(300);
 
+fn active_sequence_limit(max_num_seqs: usize, mamba_cache_capacity: Option<usize>) -> usize {
+    match mamba_cache_capacity {
+        Some(mamba_capacity) if mamba_capacity > 0 => max_num_seqs.min(mamba_capacity),
+        _ => max_num_seqs,
+    }
+    .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::active_sequence_limit;
+
+    #[test]
+    fn mamba_capacity_cannot_raise_user_sequence_limit() {
+        assert_eq!(active_sequence_limit(4, Some(8)), 4);
+        assert_eq!(active_sequence_limit(8, Some(4)), 4);
+    }
+
+    #[test]
+    fn active_sequence_limit_is_at_least_one() {
+        assert_eq!(active_sequence_limit(0, None), 1);
+    }
+}
+
 pub struct SchedulerOutput {
     pub scheduled: Arc<VecDeque<Arc<SequenceGroup>>>,
     pub blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
@@ -157,15 +181,10 @@ impl Scheduler {
             let mut blocks_to_copy = HashMap::new();
             let pre_existing_running = self.running.len();
 
-            let max_seqs_limit = if let Some(mamba_cap) = self.config.mamba_cache_capacity {
-                if mamba_cap > 0 {
-                    mamba_cap
-                } else {
-                    self.config.max_num_seqs
-                }
-            } else {
-                self.config.max_num_seqs
-            };
+            let max_seqs_limit = active_sequence_limit(
+                self.config.max_num_seqs,
+                self.config.mamba_cache_capacity,
+            );
 
             while !self.waiting.is_empty() {
                 if self.is_last_prefill && pre_existing_running > 0 {
