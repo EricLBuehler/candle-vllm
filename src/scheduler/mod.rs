@@ -74,6 +74,8 @@ pub struct SchedulerOutput {
 
 pub struct SchedulerConfig {
     pub max_num_seqs: usize,
+    /// Per-step prefill token budget, distinct from the total KV-cache pool.
+    pub max_num_batched_tokens: usize,
     pub prefix_cache: PrefixCacheConfig,
     pub mamba_cache_capacity: Option<usize>,
 }
@@ -180,6 +182,7 @@ impl Scheduler {
             let mut ignored_seq_groups = VecDeque::new();
             let mut blocks_to_copy = HashMap::new();
             let pre_existing_running = self.running.len();
+            let mut num_scheduled_tokens = 0usize;
 
             let max_seqs_limit = active_sequence_limit(
                 self.config.max_num_seqs,
@@ -191,6 +194,18 @@ impl Scheduler {
                     break; // interleaved scheduling
                 }
                 let seq_group = self.waiting.front().unwrap().clone();
+
+                let group_tokens = seq_group
+                    .get_seqs()
+                    .values()
+                    .map(|seq| seq.deref().prefill_chunk_tokens(self.prefill_chunk_size))
+                    .sum::<usize>();
+                if group_tokens > 0
+                    && num_scheduled_tokens.saturating_add(group_tokens)
+                        > self.config.max_num_batched_tokens.max(1)
+                {
+                    break;
+                }
 
                 if self.running.len() >= max_seqs_limit {
                     break;
@@ -234,6 +249,7 @@ impl Scheduler {
                 let seq_group = self.waiting.pop_front().unwrap();
                 self.running.push_back(seq_group.clone());
                 scheduled.push_back(seq_group);
+                num_scheduled_tokens = num_scheduled_tokens.saturating_add(group_tokens);
             }
 
             // If we did schedule, or we ignored sequences.

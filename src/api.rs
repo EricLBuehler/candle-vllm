@@ -337,6 +337,10 @@ impl EngineBuilder {
 
         let scheduler_config = SchedulerConfig {
             max_num_seqs: self.max_num_seqs,
+            max_num_batched_tokens: self
+                .max_num_seqs
+                .saturating_mul(self.prefill_chunk_size.unwrap_or(8192))
+                .max(self.prefill_chunk_size.unwrap_or(8192)),
             prefix_cache: PrefixCacheConfig::default(),
             mamba_cache_capacity: None,
         };

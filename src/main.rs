@@ -630,6 +630,10 @@ async fn main() -> Result<()> {
         pipelines,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
+            max_num_batched_tokens: args
+                .max_num_seqs
+                .saturating_mul(prefill_chunk_size)
+                .max(prefill_chunk_size),
             prefix_cache: prefix_cache_config,
             mamba_cache_capacity: None,
         },
