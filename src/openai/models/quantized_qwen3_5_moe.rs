@@ -12,7 +12,7 @@ use crate::openai::models::linear::Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::quantized_qwen3_5::build_extra_config_json;
 use crate::openai::models::utils::{resolve_input_seqlens, resolve_mamba_seq_slots};
-use crate::InputMetadata;
+use crate::{InputMetadata, InputMetadataExt};
 use attention_rs::mamba_cache::MambaCache;
 use candle_core::quantized::{QMatMul, QTensor};
 use candle_core::{DType, Device, Result, Tensor, D};
@@ -736,7 +736,7 @@ impl GGUFQWen3_5MoE {
                 }
                 _ => None,
             };
-            let x = layer.mlp.forward(&x, input_metadata.is_prefill)?;
+            let x = layer.mlp.forward(&x, input_metadata.moe_is_prefill())?;
             xs = if let Some(shared_output) = shared_output {
                 (residual + (x + shared_output)?)?
             } else {

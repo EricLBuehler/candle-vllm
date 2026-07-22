@@ -14,7 +14,7 @@ use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::rotary_emb::DefaultRotaryEmbedding;
 use crate::openai::models::ScalingValue;
 use crate::openai::models::TokenID;
-use crate::InputMetadata;
+use crate::{InputMetadata, InputMetadataExt};
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::{Activation, Linear};
@@ -547,7 +547,7 @@ impl Gemma4DecoderLayer {
                     &moe_input,
                     topk_weights,
                     topk_ids,
-                    input_metadata.is_prefill,
+                    input_metadata.moe_is_prefill(),
                 )?
             } else {
                 let moe_input = self
@@ -555,7 +555,7 @@ impl Gemma4DecoderLayer {
                     .as_ref()
                     .unwrap()
                     .forward(&residual_flat)?;
-                moe.forward(&moe_input, input_metadata.is_prefill)?
+                moe.forward(&moe_input, input_metadata.moe_is_prefill())?
             };
             let moe_output = moe_output.reshape(residual.shape())?;
 

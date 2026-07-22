@@ -7,6 +7,7 @@ use super::{
     Config, InputMetadata, MoEConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
+use crate::InputMetadataExt;
 use crate::openai::distributed::{
     embedding, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
     VocabParallelLinear,
@@ -369,7 +370,7 @@ impl DecoderLayer {
             _ => None,
         };
 
-        let mlp_output = self.mlp.forward(&xs, input_metadata.is_prefill)?;
+        let mlp_output = self.mlp.forward(&xs, input_metadata.moe_is_prefill())?;
 
         if let Some(shared_output) = shared_output {
             residual + (mlp_output + shared_output)?

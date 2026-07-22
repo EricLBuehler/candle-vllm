@@ -11,7 +11,7 @@ use crate::openai::models::layers::moe::{
 use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::layers::rotary_emb::ScalingRotaryEmbedding;
 use crate::openai::models::mask::get_attention_causal_mask;
-use crate::InputMetadata;
+use crate::{InputMetadata, InputMetadataExt};
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use candle_nn::Embedding;
@@ -271,7 +271,7 @@ impl GLM4MoeLiteDecoderLayer {
         } else {
             None
         };
-        let mlp_output = self.mlp.forward(&xs, input_metadata.is_prefill)?;
+        let mlp_output = self.mlp.forward(&xs, input_metadata.moe_is_prefill())?;
         let out = if let Some(shared_output) = shared_output {
             (residual + (mlp_output + shared_output)?)?
         } else {

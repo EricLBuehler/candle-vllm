@@ -11,6 +11,19 @@ pub use attention_rs::{InputMetadata, PagedAttention};
 
 pub mod api;
 
+/// MTP verification uses the attention/GDN prefill layout but the MoE layers
+/// must keep their decode dispatch path so graph-captured scratch buffers stay
+/// stable on older and newer CUDA architectures alike.
+pub trait InputMetadataExt {
+    fn moe_is_prefill(&self) -> bool;
+}
+
+impl InputMetadataExt for InputMetadata {
+    fn moe_is_prefill(&self) -> bool {
+        self.is_prefill && !self.is_mtp_verify
+    }
+}
+
 #[cfg(feature = "flashinfer")]
 #[derive(Clone, Copy, Debug)]
 pub struct FlashInferKvParams {
