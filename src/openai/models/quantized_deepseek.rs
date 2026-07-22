@@ -13,7 +13,7 @@ use crate::openai::distributed::AllReduce;
 use crate::openai::distributed::{Comm, Rc, VocabParallelLinear};
 use crate::openai::models::layers::moe::sort_expert_assignments;
 use crate::openai::models::mask::get_attention_causal_mask;
-use crate::InputMetadata;
+use crate::{InputMetadata, InputMetadataExt};
 use candle_core::quantized::{QMatMul, QTensor};
 use candle_core::{DType, Device, Result, Tensor, D};
 use candle_nn::{Embedding, Module};
@@ -1115,7 +1115,7 @@ impl GGUFDeepSeek {
                 } else {
                     None
                 };
-                let mlp_output = layer.mlp.forward(&x, input_metadata.is_prefill)?;
+                let mlp_output = layer.mlp.forward(&x, input_metadata.moe_is_prefill())?;
                 xs = if let Some(shared_output) = shared_output {
                     (residual + (mlp_output + shared_output)?)?
                 } else {

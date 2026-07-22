@@ -9,7 +9,7 @@ use crate::openai::models::layers::moe::sort_expert_assignments;
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::linear::Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
-use crate::InputMetadata;
+use crate::{InputMetadata, InputMetadataExt};
 use candle_core::quantized::{QMatMul, QTensor};
 use candle_core::{DType, Device, Result, Tensor, D};
 use candle_nn::{Embedding, Module};
@@ -631,7 +631,7 @@ impl GGUFQWenMoE {
                     }
                     _ => None,
                 };
-                let x = layer.mlp.forward(&x, input_metadata.is_prefill)?;
+                let x = layer.mlp.forward(&x, input_metadata.moe_is_prefill())?;
                 let x = if let Some(shared_output) = shared_output {
                     (residual + (x + shared_output)?)?
                 } else {
@@ -665,7 +665,7 @@ impl GGUFQWenMoE {
                     }
                     _ => None,
                 };
-                let x = layer.mlp.forward(&x, input_metadata.is_prefill)?;
+                let x = layer.mlp.forward(&x, input_metadata.moe_is_prefill())?;
                 let x = if let Some(shared_output) = shared_output {
                     (residual + (x + shared_output)?)?
                 } else {

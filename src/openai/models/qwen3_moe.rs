@@ -14,6 +14,7 @@ use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::linear::LinearX as Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::QwenMoEConfig;
+use crate::InputMetadataExt;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use parking_lot::RwLock;
@@ -349,7 +350,7 @@ impl DecoderLayer {
             }
             _ => None,
         };
-        let mlp_output = self.mlp.forward(&xs, input_metadata.is_prefill)?;
+        let mlp_output = self.mlp.forward(&xs, input_metadata.moe_is_prefill())?;
         if let Some(shared_output) = shared_output {
             residual + (mlp_output + shared_output)?
         } else {

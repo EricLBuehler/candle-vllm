@@ -9,7 +9,7 @@ use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::{embedding, Comm, VarBuilder, VocabParallelLinear};
 use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::mask::get_attention_causal_mask;
-use crate::InputMetadata;
+use crate::{InputMetadata, InputMetadataExt};
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;
 use parking_lot::RwLock;
@@ -131,7 +131,7 @@ impl MiniMaxDecoderLayer {
         let xs = (attn_output + residual)?;
         let residual = &xs;
         let xs = self.post_attention_layernorm.forward(&xs)?;
-        let mlp_output = self.moe.forward(&xs, input_metadata.is_prefill)?;
+        let mlp_output = self.moe.forward(&xs, input_metadata.moe_is_prefill())?;
         residual + mlp_output
     }
 }

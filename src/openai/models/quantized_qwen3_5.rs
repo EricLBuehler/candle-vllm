@@ -124,7 +124,6 @@ pub(crate) struct QuantizedGatedDeltaNet {
     head_v_dim: usize,
     key_dim: usize,
     value_dim: usize,
-    kv_group_size: usize,
     gdn_layer_idx: usize,
     rms_norm_eps: f64,
     scale: f64,
@@ -147,7 +146,6 @@ impl QuantizedGatedDeltaNet {
         let head_v_dim = hybrid.value_head_dim;
         let key_dim = num_k_heads * head_k_dim;
         let value_dim = num_v_heads * head_v_dim;
-        let kv_group_size = num_v_heads / num_k_heads;
         let needs_untile = num_k_heads != num_v_heads;
 
         let prefix_vb = vb.pp(prefix);
@@ -339,26 +337,10 @@ impl QuantizedGatedDeltaNet {
             head_v_dim,
             key_dim,
             value_dim,
-            kv_group_size,
             gdn_layer_idx,
             rms_norm_eps,
             scale,
         })
-    }
-
-    pub(crate) fn repeat_kv_heads(&self, x: Tensor) -> Result<Tensor> {
-        if self.num_k_heads == self.num_v_heads {
-            return Ok(x);
-        }
-        let (seq_len, _h, _d) = x.dims3()?;
-        x.unsqueeze(2)?
-            .broadcast_as((
-                seq_len,
-                self.num_k_heads,
-                self.kv_group_size,
-                self.head_k_dim,
-            ))?
-            .reshape((seq_len, self.num_v_heads, self.head_k_dim))
     }
 
     pub(crate) fn forward(
@@ -450,21 +432,50 @@ impl QuantizedGatedDeltaNet {
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            if self.num_k_heads != self.num_v_heads {
-                gdn::gated_delta_rule_recurrence_varlen_gqa(
-                    &q,
-                    &k,
-                    &v,
-                    &g,
-                    &beta,
-                    global_state,
-                    seq_slots,
-                    cu_seqlens,
-                    self.scale as f32,
-                    None,
-                )?
+            let try_flashinfer = self.num_k_heads != self.num_v_heads
+                && !input_metadata.is_mtp_verify
+                && crate::openai::utils::sm90_lower_precision_gdn_prefill();
+            let flashinfer_result = if try_flashinfer {
+                #[cfg(all(feature = "cuda", feature = "flashinfer"))]
+                {
+                    let g_exp = g.exp()?;
+                    gdn::gated_delta_rule_prefill_flashinfer_gqa(
+                        &q,
+                        &k,
+                        &v,
+                        &g_exp,
+                        &beta,
+                        global_state,
+                        seq_slots,
+                        &cu_seqlens,
+                        self.scale as f32,
+                    )?
+                }
+                #[cfg(not(all(feature = "cuda", feature = "flashinfer")))]
+                {
+                    None
+                }
             } else {
-                let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
+                None
+            };
+            if self.num_k_heads != self.num_v_heads {
+                if let Some(output) = flashinfer_result {
+                    output
+                } else {
+                    gdn::gated_delta_rule_recurrence_varlen_gqa(
+                        &q,
+                        &k,
+                        &v,
+                        &g,
+                        &beta,
+                        global_state,
+                        seq_slots,
+                        &cu_seqlens,
+                        self.scale as f32,
+                        None,
+                    )?
+                }
+            } else {
                 let q_scaled = (&q * self.scale)?;
                 gdn::gated_delta_rule_recurrence_varlen(
                     &q_scaled,
@@ -484,13 +495,9 @@ impl QuantizedGatedDeltaNet {
             let g_b = g.reshape((batch, self.num_v_heads))?;
             let beta_b = beta.reshape((batch, self.num_v_heads))?;
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            let (q, k) = (
-                self.repeat_kv_heads(q.clone())?,
-                self.repeat_kv_heads(k.clone())?,
-            );
-            let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
-            let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
-            gdn::gated_delta_rule_decode_slots(
+            let q_b = q.reshape((batch, self.num_k_heads, self.head_k_dim))?;
+            let k_b = k.reshape((batch, self.num_k_heads, self.head_k_dim))?;
+            gdn::gated_delta_rule_decode_slots_gqa(
                 &q_b,
                 &k_b,
                 &v_b,
@@ -498,6 +505,7 @@ impl QuantizedGatedDeltaNet {
                 &beta_b,
                 global_state,
                 seq_slots,
+                self.scale as f32,
             )?
         };
 

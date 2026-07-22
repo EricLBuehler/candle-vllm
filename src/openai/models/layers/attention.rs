@@ -38,7 +38,6 @@ pub struct Attention {
     softcapping: Option<f64>,
     dtype: DType,
     attn_output_gate: bool,
-    no_per_head_norm: bool,
     full_dim_qk_norm: bool,
     qk_l2_norm: bool,
     v_norm_eps: Option<f64>,
@@ -551,25 +550,6 @@ impl Attention {
         } else {
             None
         };
-        let no_per_head_norm_models: Vec<String> = vec![
-            "Gemma3ForConditionalGeneration",
-            "Gemma3ForCausalLM",
-            "Gemma4ForConditionalGeneration",
-            "Gemma4ForCausalLM",
-            "Qwen3VLForConditionalGeneration",
-            "Qwen3VLMoeForConditionalGeneration",
-            "Qwen3_5ForCausalLM",
-            "Qwen3_5ForConditionalGeneration",
-            "Qwen3_5MoeForCausalLM",
-            "Qwen3_5MoeForConditionalGeneration",
-            "Qwen3NextForCausalLM",
-            "Qwen3NextForConditionalGeneration",
-            "MiniMaxM2ForCausalLM",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-
         assert!(cfg.num_attention_heads >= comm.world_size());
         assert!(cfg.num_attention_heads % comm.world_size() == 0);
 
@@ -596,7 +576,6 @@ impl Attention {
             softcapping: cfg.attn_logit_softcapping,
             dtype: vb.dtype(),
             attn_output_gate,
-            no_per_head_norm: no_per_head_norm_models.contains(&arch),
             full_dim_qk_norm,
             qk_l2_norm,
             v_norm_eps,
@@ -676,10 +655,6 @@ impl Attention {
                 let k_2d = k_norm.forward(&k_2d)?;
                 let q = q_2d.reshape((seq_len, self.num_heads, self.head_dim))?;
                 let k = k_2d.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
-                (q, k)
-            } else if self.no_per_head_norm {
-                let q = q_norm.forward(&q)?;
-                let k = k_norm.forward(&k)?;
                 (q, k)
             } else {
                 let q_flat = q.flatten(0, 1)?;

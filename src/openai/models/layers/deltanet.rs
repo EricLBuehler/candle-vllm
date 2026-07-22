@@ -362,21 +362,6 @@ impl GatedDeltaNet {
         }
     }
 
-    fn repeat_kv_heads(&self, x: Tensor) -> Result<Tensor> {
-        if self.num_k_heads == self.num_v_heads {
-            return Ok(x);
-        }
-        let (seq_len, _h, _d) = x.dims3()?;
-        x.unsqueeze(2)?
-            .broadcast_as((
-                seq_len,
-                self.num_k_heads,
-                self.kv_group_size,
-                self.head_k_dim,
-            ))?
-            .reshape((seq_len, self.num_v_heads, self.head_k_dim))
-    }
-
     pub fn new(
         vb: VarBuilder,
         comm: Rc<Comm>,
@@ -662,7 +647,6 @@ impl GatedDeltaNet {
                     )?
                 }
             } else {
-                let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
                 let q_scaled = (&q * self.scale)?;
                 gdn::gated_delta_rule_recurrence_varlen(
                     &q_scaled,
@@ -682,13 +666,9 @@ impl GatedDeltaNet {
             let g_b = g.reshape((batch, self.num_v_heads))?;
             let beta_b = beta.reshape((batch, self.num_v_heads))?;
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
-            let (q, k) = (
-                self.repeat_kv_heads(q.clone())?,
-                self.repeat_kv_heads(k.clone())?,
-            );
-            let q_b = (q.reshape((batch, self.num_v_heads, self.head_k_dim))? * self.scale)?;
-            let k_b = k.reshape((batch, self.num_v_heads, self.head_k_dim))?;
-            gdn::gated_delta_rule_decode_slots(
+            let q_b = q.reshape((batch, self.num_k_heads, self.head_k_dim))?;
+            let k_b = k.reshape((batch, self.num_k_heads, self.head_k_dim))?;
+            gdn::gated_delta_rule_decode_slots_gqa(
                 &q_b,
                 &k_b,
                 &v_b,
@@ -696,6 +676,7 @@ impl GatedDeltaNet {
                 &beta_b,
                 global_state,
                 seq_slots,
+                self.scale as f32,
             )?
         };
 

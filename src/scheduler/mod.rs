@@ -38,6 +38,30 @@ const PREFIX_CACHE_PRESSURE_EVICT_PERCENT: f32 = 0.1; // evict 10% of prefix cac
 const FINISHED_CACHED_TOKENS_MAX: usize = 16_384;
 const SWAP_COOLING_PERIOD: Duration = Duration::from_millis(300);
 
+fn active_sequence_limit(max_num_seqs: usize, mamba_cache_capacity: Option<usize>) -> usize {
+    match mamba_cache_capacity {
+        Some(mamba_capacity) if mamba_capacity > 0 => max_num_seqs.min(mamba_capacity),
+        _ => max_num_seqs,
+    }
+    .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::active_sequence_limit;
+
+    #[test]
+    fn mamba_capacity_cannot_raise_user_sequence_limit() {
+        assert_eq!(active_sequence_limit(4, Some(8)), 4);
+        assert_eq!(active_sequence_limit(8, Some(4)), 4);
+    }
+
+    #[test]
+    fn active_sequence_limit_is_at_least_one() {
+        assert_eq!(active_sequence_limit(0, None), 1);
+    }
+}
+
 pub struct SchedulerOutput {
     pub scheduled: Arc<VecDeque<Arc<SequenceGroup>>>,
     pub blocks_to_swap_in: HashMap<CPUBlockFrom, GPUBlockTo>,
@@ -49,7 +73,13 @@ pub struct SchedulerOutput {
 }
 
 pub struct SchedulerConfig {
+    /// User request/preallocation limit used while sizing the KV cache.
     pub max_num_seqs: usize,
+    /// Resource-derived active request capacity, bounded independently from
+    /// the user request/preallocation limit.
+    pub max_num_parallel_reqs: usize,
+    /// Per-step prefill token budget, distinct from the total KV-cache pool.
+    pub max_num_batched_tokens: usize,
     pub prefix_cache: PrefixCacheConfig,
     pub mamba_cache_capacity: Option<usize>,
 }
@@ -156,22 +186,30 @@ impl Scheduler {
             let mut ignored_seq_groups = VecDeque::new();
             let mut blocks_to_copy = HashMap::new();
             let pre_existing_running = self.running.len();
+            let mut num_scheduled_tokens = 0usize;
 
-            let max_seqs_limit = if let Some(mamba_cap) = self.config.mamba_cache_capacity {
-                if mamba_cap > 0 {
-                    mamba_cap
-                } else {
-                    self.config.max_num_seqs
-                }
-            } else {
-                self.config.max_num_seqs
-            };
+            let max_seqs_limit = active_sequence_limit(
+                self.config.max_num_parallel_reqs.max(1),
+                self.config.mamba_cache_capacity,
+            );
 
             while !self.waiting.is_empty() {
                 if self.is_last_prefill && pre_existing_running > 0 {
                     break; // interleaved scheduling
                 }
                 let seq_group = self.waiting.front().unwrap().clone();
+
+                let group_tokens = seq_group
+                    .get_seqs()
+                    .values()
+                    .map(|seq| seq.deref().prefill_chunk_tokens(self.prefill_chunk_size))
+                    .sum::<usize>();
+                if group_tokens > 0
+                    && num_scheduled_tokens.saturating_add(group_tokens)
+                        > self.config.max_num_batched_tokens.max(1)
+                {
+                    break;
+                }
 
                 if self.running.len() >= max_seqs_limit {
                     break;
@@ -181,7 +219,7 @@ impl Scheduler {
                     .iter()
                     .map(|group| group.get_seqs().len())
                     .sum();
-                if total_individual_seqs + 1 > self.config.max_num_seqs {
+                if total_individual_seqs + 1 > self.config.max_num_parallel_reqs.max(1) {
                     break;
                 }
 
@@ -215,6 +253,7 @@ impl Scheduler {
                 let seq_group = self.waiting.pop_front().unwrap();
                 self.running.push_back(seq_group.clone());
                 scheduled.push_back(seq_group);
+                num_scheduled_tokens = num_scheduled_tokens.saturating_add(group_tokens);
             }
 
             // If we did schedule, or we ignored sequences.
@@ -259,13 +298,13 @@ impl Scheduler {
                     .sum::<usize>();
                 std::cmp::min(
                     mamba_cap.saturating_sub(retained_mamba_slots),
-                    self.config.max_num_seqs,
+                    self.config.max_num_parallel_reqs.max(1),
                 )
             } else {
-                self.config.max_num_seqs
+                self.config.max_num_parallel_reqs.max(1)
             }
         } else {
-            self.config.max_num_seqs
+            self.config.max_num_parallel_reqs.max(1)
         };
 
         let mut running = VecDeque::new();
