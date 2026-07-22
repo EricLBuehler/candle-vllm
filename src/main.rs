@@ -502,7 +502,7 @@ async fn main() -> Result<()> {
         workspace_budget.transient_bytes as f64 / 1024.0 / 1024.0,
     );
 
-    let (kvcache_mem_gpu, mamba_cache_budget_bytes, kvcache_budget_desc) =
+    let (kvcache_mem_gpu, mamba_cache_budget_bytes, mamba_active_slot_limit, kvcache_budget_desc) =
         match candle_vllm::detect_kvcache_mem_gpu_mb_for_devices_with_workspace(
             &devices,
             kv_fraction,
@@ -511,6 +511,7 @@ async fn main() -> Result<()> {
             Ok(detected) => {
                 let mut effective_kvcache_mem_gpu = detected;
                 let mut mamba_cache_budget_bytes = 0usize;
+                let mut mamba_active_slot_limit = None;
                 if let Some(estimate) = candle_vllm::estimate_hybrid_mamba_cache(
                     &first_config,
                     first_model_dtype,
@@ -527,10 +528,11 @@ async fn main() -> Result<()> {
                         if reserved_mamba_mb < detected {
                             effective_kvcache_mem_gpu = detected - reserved_mamba_mb;
                             mamba_cache_budget_bytes = plan.budget_bytes;
+                            mamba_active_slot_limit = Some(plan.active_slot_limit);
                             info!(
-                            "Reserved {:.2} GB of the combined GPU cache budget for hybrid mamba/GDN ({} active slot target, {} prefix slot target); KV cache budget is now {:.2} GB",
+                            "Reserved {:.2} GB of the combined GPU cache budget for hybrid mamba/GDN ({} active slot limit, {} prefix slot target); KV cache budget is now {:.2} GB",
                             plan.budget_bytes as f64 / 1024.0 / 1024.0 / 1024.0,
-                            plan.active_slot_capacity,
+                            plan.active_slot_limit,
                             plan.prefix_slot_capacity,
                             effective_kvcache_mem_gpu as f64 / 1024.0,
                         );
@@ -550,6 +552,7 @@ async fn main() -> Result<()> {
                 (
                     effective_kvcache_mem_gpu,
                     mamba_cache_budget_bytes,
+                    mamba_active_slot_limit,
                     format!(
                         "--kv-fraction {} -> {} MB per rank",
                         kv_fraction, effective_kvcache_mem_gpu
@@ -564,13 +567,14 @@ async fn main() -> Result<()> {
                 (
                     args.kvcache_mem_gpu,
                     0,
+                    None,
                     format!("--mem {} MB", args.kvcache_mem_gpu),
                 )
             }
             Err(err) => return Err(err),
         };
 
-    let pipelines = default_pipelines
+    let pipelines: std::collections::HashMap<usize, _> = default_pipelines
         .into_iter()
         .map(|pipeline| {
             let cfg = pipeline.get_model_config();
@@ -606,6 +610,37 @@ async fn main() -> Result<()> {
     let config = config.as_ref().unwrap().clone();
     info!("Cache config {:?}", cache_config);
 
+    let total_kv_cache_tokens = kv_cache_capacity_tokens(&cache_config);
+    let runtime_devices = pipelines
+        .values()
+        .map(|(pipeline, _)| pipeline.device())
+        .collect::<Vec<_>>();
+    let runtime_available_bytes = candle_vllm::query_device_memory_for_devices(&runtime_devices)
+        .ok()
+        .and_then(|reports| reports.iter().map(|report| report.free_bytes).min())
+        .unwrap_or(usize::MAX);
+    let max_num_parallel_reqs = candle_vllm::compute_max_num_parallel_reqs(
+        total_kv_cache_tokens,
+        prefill_chunk_size,
+        &workspace_budget,
+        runtime_available_bytes,
+        mamba_cache_budget_bytes,
+        mamba_active_slot_limit,
+    );
+    // The planner's Mamba value is only an upper bound. The actual active
+    // state allocation follows the resource-derived parallel capacity, while
+    // the remaining reserved Mamba slots stay available for prefix snapshots.
+    let mamba_active_slot_capacity =
+        mamba_active_slot_limit.map(|limit| max_num_parallel_reqs.min(limit).max(1));
+    let max_num_batched_tokens = max_num_parallel_reqs
+        .saturating_mul(prefill_chunk_size.max(1))
+        .min(total_kv_cache_tokens.max(1))
+        .max(1);
+    info!(
+        "Batch capacity: {} requested, {} parallel, {} scheduled tokens/step, {} KV-cache tokens",
+        args.max_num_seqs, max_num_parallel_reqs, max_num_batched_tokens, total_kv_cache_tokens
+    );
+
     let total_gpu_blocks = cache_config.num_gpu_blocks.unwrap_or(0);
     let default_prefix_cache_blocks = if total_gpu_blocks > 0 {
         std::cmp::max(1, total_gpu_blocks / 2)
@@ -630,12 +665,10 @@ async fn main() -> Result<()> {
         pipelines,
         SchedulerConfig {
             max_num_seqs: args.max_num_seqs,
-            max_num_batched_tokens: args
-                .max_num_seqs
-                .saturating_mul(prefill_chunk_size)
-                .max(prefill_chunk_size),
+            max_num_parallel_reqs,
+            max_num_batched_tokens,
             prefix_cache: prefix_cache_config,
-            mamba_cache_capacity: None,
+            mamba_cache_capacity: mamba_active_slot_capacity,
         },
         &cache_config,
         &config,

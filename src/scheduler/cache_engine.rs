@@ -206,7 +206,7 @@ impl CacheEngine {
             let mut cache = Vec::new();
             for (layer_kv_heads, layer_head_dim) in configs.iter().copied() {
                 let kv_heads = (layer_kv_heads / num_shards.max(1)).max(1);
-                if use_flash_layout && layer_head_dim <= 256 {
+                if use_flash_layout {
                     let key_blocks = Tensor::zeros(
                         (num_blocks, block_size, kv_heads, layer_head_dim),
                         dtype,

@@ -7,7 +7,6 @@ use super::{
     Config, InputMetadata, MoEConfig,
 };
 use crate::backend::progress::{ProgressLike, ProgressReporter};
-use crate::InputMetadataExt;
 use crate::openai::distributed::{
     embedding, Comm, TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
     VocabParallelLinear,
@@ -20,6 +19,7 @@ use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::linear::LinearX as Linear;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::QwenMoEConfig;
+use crate::InputMetadataExt;
 use attention_rs::mamba_cache::MambaCache;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_core as candle;

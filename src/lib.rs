@@ -290,6 +290,8 @@ pub struct GpuMemoryBudget {
     pub moe_pool_bytes: usize,
     pub flash_splitk_bytes: usize,
     pub transient_bytes: usize,
+    /// MLA prefill tensors retained per token (query absorption and output).
+    pub mla_attention_bytes_per_token: usize,
     pub total_bytes: usize,
 }
 
@@ -304,6 +306,7 @@ pub struct WorkspaceBudgetParams {
     pub is_moe: bool,
     pub moe_num_experts_per_tok: usize,
     pub moe_intermediate_size: usize,
+    pub mla_attention_bytes_per_token: usize,
 }
 
 impl WorkspaceBudgetParams {
@@ -325,6 +328,15 @@ impl WorkspaceBudgetParams {
             ),
             None => (false, 0, 0),
         };
+        let mla_attention_bytes_per_token = if config.is_mla() {
+            let heads_per_shard = (config.num_attention_heads / num_shards.max(1)).max(1);
+            3usize
+                .saturating_mul(heads_per_shard)
+                .saturating_mul(config.mla_kv_lora_rank() + config.mla_qk_rope_head_dim())
+                .saturating_mul(model_dtype.size_in_bytes())
+        } else {
+            0
+        };
         Self {
             hidden_size: config.hidden_size,
             num_attention_heads: config.num_attention_heads,
@@ -336,6 +348,7 @@ impl WorkspaceBudgetParams {
             is_moe,
             moe_num_experts_per_tok,
             moe_intermediate_size,
+            mla_attention_bytes_per_token,
         }
     }
 }
@@ -382,10 +395,17 @@ pub fn compute_workspace_budget(params: &WorkspaceBudgetParams) -> GpuMemoryBudg
 
     let transient_bytes =
         2 * params.prefill_chunk_size * params.hidden_size * params.model_dtype_size;
+    let mla_attention_bytes = params
+        .mla_attention_bytes_per_token
+        .saturating_mul(params.prefill_chunk_size);
 
-    let total_bytes =
-        (flashinfer_bytes + cutlass_bytes + moe_pool_bytes + flash_splitk_bytes + transient_bytes)
-            .max(MIN_ACTIVATION_RESERVE_BYTES);
+    let total_bytes = (flashinfer_bytes
+        + cutlass_bytes
+        + moe_pool_bytes
+        + flash_splitk_bytes
+        + transient_bytes
+        + mla_attention_bytes)
+        .max(MIN_ACTIVATION_RESERVE_BYTES);
 
     GpuMemoryBudget {
         flashinfer_bytes,
@@ -393,8 +413,61 @@ pub fn compute_workspace_budget(params: &WorkspaceBudgetParams) -> GpuMemoryBudg
         moe_pool_bytes,
         flash_splitk_bytes,
         transient_bytes,
+        mla_attention_bytes_per_token: params.mla_attention_bytes_per_token,
         total_bytes,
     }
+}
+
+/// Select the runtime request parallelism independently from the user request
+/// limit. Prefill activation memory grows with the total tokens in a step,
+/// while KV capacity limits the number of full prefill chunks that can be
+/// admitted. CUDA graph capture adds an upper bound for graph-backed decode.
+pub fn compute_max_num_parallel_reqs(
+    kv_cache_tokens: usize,
+    prefill_chunk_size: usize,
+    workspace: &GpuMemoryBudget,
+    runtime_available_bytes: usize,
+    mamba_cache_bytes: usize,
+    mamba_active_slots: Option<usize>,
+) -> usize {
+    let chunk = prefill_chunk_size.max(1);
+    let fixed_workspace = workspace
+        .flashinfer_bytes
+        .saturating_add(workspace.cutlass_bytes)
+        .saturating_add(workspace.flash_splitk_bytes)
+        .saturating_add(MIN_ACTIVATION_RESERVE_BYTES);
+    let per_prefill_token = workspace
+        .transient_bytes
+        .saturating_add(workspace.moe_pool_bytes)
+        .saturating_add(
+            workspace
+                .mla_attention_bytes_per_token
+                .saturating_mul(chunk),
+        )
+        .div_ceil(chunk)
+        .max(1);
+    let kv_limit = (kv_cache_tokens / chunk).max(1);
+    let memory_limit = if runtime_available_bytes == usize::MAX {
+        usize::MAX
+    } else {
+        runtime_available_bytes
+            .saturating_sub(mamba_cache_bytes)
+            .saturating_sub(fixed_workspace)
+            .checked_div(per_prefill_token.saturating_mul(chunk).max(1))
+            .unwrap_or(0)
+            .max(1)
+    };
+    let mut parallel = kv_limit.min(memory_limit);
+    if let Some(active_slots) = mamba_active_slots {
+        parallel = parallel.min(active_slots.max(1));
+    }
+
+    #[cfg(all(feature = "cuda", feature = "graph"))]
+    {
+        parallel = parallel.min(32);
+    }
+
+    parallel.max(1)
 }
 
 pub const MAMBA_SNAPSHOT_BLOCK_STRIDE_ENV: &str = "CANDLE_VLLM_MAMBA_SNAPSHOT_STRIDE_BLOCKS";
@@ -426,7 +499,9 @@ pub struct HybridMambaCacheEstimate {
 
 #[derive(Debug, Clone, Copy)]
 pub struct HybridMambaCachePlan {
-    pub active_slot_capacity: usize,
+    /// Upper bound used while solving runtime parallel request capacity.
+    /// The final active capacity is assigned after that solve.
+    pub active_slot_limit: usize,
     pub prefix_slot_capacity: usize,
     pub budget_bytes: usize,
 }
@@ -636,21 +711,24 @@ pub fn plan_hybrid_mamba_cache_with_fraction(
         ((total_cache_budget_bytes as f64) * (mamba_fraction as f64)).round() as usize;
     let budget_bytes = target_budget_bytes.max(baseline_budget_bytes);
     let total_slot_capacity = budget_bytes / estimate.slot_bytes;
-    let active_slot_capacity = if prefix_cache_enabled {
-        active_slot_target
-            .min(total_slot_capacity.saturating_sub(min_prefix_slot_target))
-            .max(1)
+    // `min_active_slots` is only the minimum reservation needed to make the
+    // hybrid cache viable. It must not become the runtime active-slot limit.
+    // This is only a planning bound: after max_num_parallel_reqs is solved,
+    // the caller sets active capacity to the graph-safe parallel batch size
+    // and assigns the remaining slots to prefix snapshots.
+    let active_slot_limit = if prefix_cache_enabled {
+        (total_slot_capacity / 2).max(1)
     } else {
         total_slot_capacity.max(1)
     };
     let prefix_slot_capacity = if prefix_cache_enabled {
-        total_slot_capacity.saturating_sub(active_slot_capacity)
+        total_slot_capacity.saturating_sub(active_slot_limit)
     } else {
         0
     };
 
     Some(HybridMambaCachePlan {
-        active_slot_capacity,
+        active_slot_limit,
         prefix_slot_capacity,
         budget_bytes,
     })
@@ -707,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hybrid_mamba_plan_keeps_two_prefix_slots_per_active_slot() {
+    fn test_hybrid_mamba_plan_uses_active_slot_limit_for_capacity_solve() {
         let estimate = HybridMambaCacheEstimate {
             slot_bytes: 10,
             num_gdn_layers: 1,
@@ -715,8 +793,8 @@ mod tests {
         let plan =
             plan_hybrid_mamba_cache_with_fraction(1_000, estimate, 16, true, Some(0.15)).unwrap();
 
-        assert_eq!(plan.active_slot_capacity, 16);
-        assert_eq!(plan.prefix_slot_capacity, 32);
+        assert_eq!(plan.active_slot_limit, 24);
+        assert_eq!(plan.prefix_slot_capacity, 24);
         assert_eq!(plan.budget_bytes, 480);
     }
 
@@ -729,8 +807,8 @@ mod tests {
         let plan =
             plan_hybrid_mamba_cache_with_fraction(2_000, estimate, 16, true, Some(0.3)).unwrap();
 
-        assert_eq!(plan.active_slot_capacity, 16);
-        assert_eq!(plan.prefix_slot_capacity, 44);
+        assert_eq!(plan.active_slot_limit, 30);
+        assert_eq!(plan.prefix_slot_capacity, 30);
         assert_eq!(plan.budget_bytes, 600);
     }
 }

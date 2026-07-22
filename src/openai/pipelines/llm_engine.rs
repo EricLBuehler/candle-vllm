@@ -697,9 +697,11 @@ impl LLMEngine {
         let hybrid_mamba_estimate =
             crate::estimate_hybrid_mamba_cache(config, model_dtype, num_shards);
         let require_mamba_prefix_snapshots = hybrid_mamba_estimate.is_some();
-        let active_slot_target = scheduler_config
-            .max_num_seqs
-            .max(HYBRID_MAMBA_MIN_ACTIVE_SLOTS);
+        let active_slot_target = scheduler_config.mamba_cache_capacity.unwrap_or_else(|| {
+            scheduler_config
+                .max_num_parallel_reqs
+                .max(HYBRID_MAMBA_MIN_ACTIVE_SLOTS)
+        });
         let mut mamba_slot_capacity = active_slot_target;
         let mut mamba_prefix_capacity = Self::effective_mamba_prefix_capacity(
             scheduler_config.prefix_cache.enabled,
@@ -804,7 +806,10 @@ impl LLMEngine {
             pipeline.preallocate_mamba_cache(mamba_slot_capacity)?;
             pipeline.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
             #[cfg(all(feature = "cuda", feature = "graph"))]
-            pipeline.clamp_mamba_graph_capture_batches(mamba_slot_capacity);
+            {
+                pipeline.clamp_graph_capture_batches(scheduler_config.max_num_parallel_reqs);
+                pipeline.clamp_mamba_graph_capture_batches(mamba_slot_capacity);
+            }
         }
 
         let mut scheduler_config = scheduler_config;

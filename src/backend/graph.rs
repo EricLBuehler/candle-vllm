@@ -380,12 +380,9 @@ impl CapturePhase {
 }
 
 pub fn planned_graph_capture_batches(max_num_seqs: usize) -> Vec<usize> {
-    let small_max = max_num_seqs.clamp(1, 15);
-    let mut graph_bs = (1..=small_max).collect::<Vec<_>>();
-    if max_num_seqs >= 16 {
-        graph_bs.extend((16..=max_num_seqs.min(32)).step_by(16));
-    }
-    graph_bs
+    // Exact batch sizes are important for hybrid GDN/Mamba state-slot
+    // mappings, and the scheduler now selects a capacity no larger than 32.
+    (1..=max_num_seqs.clamp(1, 32)).collect()
 }
 
 #[cfg(feature = "flashinfer")]
@@ -457,14 +454,18 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
         }
     }
 
-    const GRAPH_CAPTURE_MIN_BATCH: usize = 16;
-
     pub fn clamp_mamba_graph_batch_size(&mut self, mamba_slot_capacity: usize) {
-        let graph_capture_max = std::cmp::min(
-            self.max_num_seqs.max(Self::GRAPH_CAPTURE_MIN_BATCH),
-            mamba_slot_capacity.max(1),
-        );
+        let graph_capture_max = std::cmp::min(self.max_num_seqs, mamba_slot_capacity.max(1));
         self.graph_bs = planned_graph_capture_batches(graph_capture_max);
+    }
+
+    pub fn clamp_graph_batch_size(&mut self, max_num_seqs: usize) {
+        // GraphCapturer is constructed before KV/workspace planning, so its
+        // initial max is the user KV allocation default. Apply the finalized
+        // resource-derived scheduler capacity here; this may legitimately
+        // grow the graph batch set beyond max_num_seqs.
+        self.max_num_seqs = max_num_seqs.max(1);
+        self.graph_bs = planned_graph_capture_batches(self.max_num_seqs);
     }
 
     pub fn capture(
@@ -472,6 +473,10 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
         device: &Device,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
     ) -> Result<()> {
+        let _fp8_domain = attention_rs::fp8_linear::set_fp8_execution_domain(
+            attention_rs::fp8_linear::Fp8ExecutionDomain::DecodeGraph,
+        );
+        let _prefill_guard = crate::openai::models::linear::set_linear_is_prefill(false);
         self.device = Some(device.clone());
         let max_bs = self.graph_bs[self.graph_bs.len() - 1];
         let max_num_blocks = (self.max_model_len + self.block_size - 1) / self.block_size;

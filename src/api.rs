@@ -249,7 +249,9 @@ impl EngineBuilder {
         let first_config = first_pipeline.get_model_config();
         let first_model_dtype = first_pipeline.dtype;
         let devices: Vec<_> = pipelines.iter().map(|pipeline| pipeline.device()).collect();
-        let (kvcache_mem_gpu, mamba_cache_budget_bytes) = match self.kv_fraction {
+        let (kvcache_mem_gpu, mamba_cache_budget_bytes, mamba_active_slot_limit) = match self
+            .kv_fraction
+        {
             Some(kv_fraction) => {
                 let workspace_params = crate::WorkspaceBudgetParams::from_config(
                     &first_config,
@@ -265,6 +267,7 @@ impl EngineBuilder {
                 )?;
                 let mut effective_kvcache_mem_gpu = detected;
                 let mut mamba_cache_budget_bytes = 0usize;
+                let mut mamba_active_slot_limit = None;
                 if let Some(estimate) =
                     crate::estimate_hybrid_mamba_cache(&first_config, first_model_dtype, num_shards)
                 {
@@ -279,12 +282,17 @@ impl EngineBuilder {
                         if reserved_mamba_mb < detected {
                             effective_kvcache_mem_gpu = detected - reserved_mamba_mb;
                             mamba_cache_budget_bytes = plan.budget_bytes;
+                            mamba_active_slot_limit = Some(plan.active_slot_limit);
                         }
                     }
                 }
-                (effective_kvcache_mem_gpu, mamba_cache_budget_bytes)
+                (
+                    effective_kvcache_mem_gpu,
+                    mamba_cache_budget_bytes,
+                    mamba_active_slot_limit,
+                )
             }
-            None => (self.kvcache_mem_gpu, 0),
+            None => (self.kvcache_mem_gpu, 0, None),
         };
 
         let pipelines: HashMap<
@@ -335,14 +343,44 @@ impl EngineBuilder {
         let cache_config = cache_config.unwrap();
         let config = config.unwrap();
 
+        let effective_prefill_chunk_size = self.prefill_chunk_size.unwrap_or(8192);
+        let workspace_params = crate::WorkspaceBudgetParams::from_config(
+            &config,
+            dtype,
+            num_shards,
+            effective_prefill_chunk_size,
+        );
+        let workspace_budget = crate::compute_workspace_budget(&workspace_params);
+        let runtime_devices = pipelines
+            .values()
+            .map(|(pipeline, _)| pipeline.device())
+            .collect::<Vec<_>>();
+        let runtime_available_bytes = crate::query_device_memory_for_devices(&runtime_devices)
+            .ok()
+            .and_then(|reports| reports.iter().map(|report| report.free_bytes).min())
+            .unwrap_or(usize::MAX);
+        let total_kv_cache_tokens = crate::openai::kv_cache_capacity_tokens(&cache_config);
+        let max_num_parallel_reqs = crate::compute_max_num_parallel_reqs(
+            total_kv_cache_tokens,
+            effective_prefill_chunk_size,
+            &workspace_budget,
+            runtime_available_bytes,
+            mamba_cache_budget_bytes,
+            mamba_active_slot_limit,
+        );
+        let mamba_active_slot_capacity =
+            mamba_active_slot_limit.map(|limit| max_num_parallel_reqs.min(limit).max(1));
+        let max_num_batched_tokens = max_num_parallel_reqs
+            .saturating_mul(effective_prefill_chunk_size.max(1))
+            .min(total_kv_cache_tokens.max(1))
+            .max(1);
+
         let scheduler_config = SchedulerConfig {
             max_num_seqs: self.max_num_seqs,
-            max_num_batched_tokens: self
-                .max_num_seqs
-                .saturating_mul(self.prefill_chunk_size.unwrap_or(8192))
-                .max(self.prefill_chunk_size.unwrap_or(8192)),
+            max_num_parallel_reqs,
+            max_num_batched_tokens,
             prefix_cache: PrefixCacheConfig::default(),
-            mamba_cache_capacity: None,
+            mamba_cache_capacity: mamba_active_slot_capacity,
         };
 
         let notify = Arc::new(Notify::new());

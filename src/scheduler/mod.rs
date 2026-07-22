@@ -73,7 +73,11 @@ pub struct SchedulerOutput {
 }
 
 pub struct SchedulerConfig {
+    /// User request/preallocation limit used while sizing the KV cache.
     pub max_num_seqs: usize,
+    /// Resource-derived active request capacity, bounded independently from
+    /// the user request/preallocation limit.
+    pub max_num_parallel_reqs: usize,
     /// Per-step prefill token budget, distinct from the total KV-cache pool.
     pub max_num_batched_tokens: usize,
     pub prefix_cache: PrefixCacheConfig,
@@ -185,7 +189,7 @@ impl Scheduler {
             let mut num_scheduled_tokens = 0usize;
 
             let max_seqs_limit = active_sequence_limit(
-                self.config.max_num_seqs,
+                self.config.max_num_parallel_reqs.max(1),
                 self.config.mamba_cache_capacity,
             );
 
@@ -215,7 +219,7 @@ impl Scheduler {
                     .iter()
                     .map(|group| group.get_seqs().len())
                     .sum();
-                if total_individual_seqs + 1 > self.config.max_num_seqs {
+                if total_individual_seqs + 1 > self.config.max_num_parallel_reqs.max(1) {
                     break;
                 }
 
@@ -294,13 +298,13 @@ impl Scheduler {
                     .sum::<usize>();
                 std::cmp::min(
                     mamba_cap.saturating_sub(retained_mamba_slots),
-                    self.config.max_num_seqs,
+                    self.config.max_num_parallel_reqs.max(1),
                 )
             } else {
-                self.config.max_num_seqs
+                self.config.max_num_parallel_reqs.max(1)
             }
         } else {
-            self.config.max_num_seqs
+            self.config.max_num_parallel_reqs.max(1)
         };
 
         let mut running = VecDeque::new();
