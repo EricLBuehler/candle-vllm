@@ -124,7 +124,6 @@ pub(crate) struct QuantizedGatedDeltaNet {
     head_v_dim: usize,
     key_dim: usize,
     value_dim: usize,
-    kv_group_size: usize,
     gdn_layer_idx: usize,
     rms_norm_eps: f64,
     scale: f64,
@@ -147,7 +146,6 @@ impl QuantizedGatedDeltaNet {
         let head_v_dim = hybrid.value_head_dim;
         let key_dim = num_k_heads * head_k_dim;
         let value_dim = num_v_heads * head_v_dim;
-        let kv_group_size = num_v_heads / num_k_heads;
         let needs_untile = num_k_heads != num_v_heads;
 
         let prefix_vb = vb.pp(prefix);
@@ -339,7 +337,6 @@ impl QuantizedGatedDeltaNet {
             head_v_dim,
             key_dim,
             value_dim,
-            kv_group_size,
             gdn_layer_idx,
             rms_norm_eps,
             scale,
@@ -479,7 +476,6 @@ impl QuantizedGatedDeltaNet {
                     )?
                 }
             } else {
-                let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
                 let q_scaled = (&q * self.scale)?;
                 gdn::gated_delta_rule_recurrence_varlen(
                     &q_scaled,

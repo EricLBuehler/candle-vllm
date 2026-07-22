@@ -647,7 +647,6 @@ impl GatedDeltaNet {
                     )?
                 }
             } else {
-                let (q, k) = (self.repeat_kv_heads(q)?, self.repeat_kv_heads(k)?);
                 let q_scaled = (&q * self.scale)?;
                 gdn::gated_delta_rule_recurrence_varlen(
                     &q_scaled,
