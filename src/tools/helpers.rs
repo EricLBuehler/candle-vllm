@@ -2,7 +2,7 @@
 //! Helper functions for tool call processing.
 //!
 //! Handles schema mapping, tool call validation, argument repair/normalization,
-//! and type coercion. Ported from vllm.rs.
+//! and type coercion. Ported from xInfer (vllm.rs).
 
 use super::{FunctionCall, Tool, ToolCall};
 use regex::Regex;
@@ -10,15 +10,22 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::env;
 use std::sync::OnceLock;
-
 static STRICT_TOOL_CALL_VALIDATION: OnceLock<bool> = OnceLock::new();
+/// Resolve tools from request or MCP fallback
+pub fn resolve_tools(request_tools: Option<&[Tool]>, mcp_tools: &[Tool]) -> Vec<Tool> {
+    if let Some(tools) = request_tools {
+        if !tools.is_empty() {
+            return tools.to_vec();
+        }
+    }
+    mcp_tools.to_vec()
+}
 
 /// Returns whether strict server-side tool schema validation is enabled.
-/// When disabled, parsed tool calls are still checked for known tool names before
-/// being returned to clients, but argument-schema failures are allowed through.
+/// When disabled, parsed tool calls are forwarded to clients (SGLang-style retry loop).
 pub fn strict_tool_call_validation_enabled() -> bool {
     *STRICT_TOOL_CALL_VALIDATION.get_or_init(|| {
-        env::var("VLLM_RS_STRICT_TOOL_CALL")
+        env::var("CANDLE_VLLM_STRICT_TOOL_CALL")
             .ok()
             .map(|raw| {
                 let normalized = raw.trim().to_ascii_lowercase();
@@ -36,7 +43,7 @@ pub fn build_tool_schema_map(tools: &[Tool]) -> HashMap<String, Value> {
             let mut schema = tool.function.parameters.clone();
             if tool.function.strict == Some(false) {
                 if let Some(obj) = schema.as_object_mut() {
-                    obj.insert("x-vllm-rs-lenient".to_string(), Value::Bool(true));
+                    obj.insert("x-candle-vllm-lenient".to_string(), Value::Bool(true));
                 }
             }
             (tool.function.name.clone(), schema)
@@ -106,10 +113,7 @@ pub fn build_invalid_tool_call_feedback(
     Some(parts.join(" "))
 }
 
-/// Filter tool calls into valid and invalid based on schema validation.
-///
-/// Valid calls have their arguments parsed, repaired, normalized, and coerced.
-/// Invalid calls have unparseable arguments, unknown tool names, or missing required keys.
+/// Filter tool calls into valid and invalid based on schema validation
 pub fn filter_tool_calls(
     tool_calls: &[ToolCall],
     schemas: &HashMap<String, Value>,
@@ -118,7 +122,7 @@ pub fn filter_tool_calls(
     let mut invalid = Vec::new();
 
     for call in tool_calls {
-        let args_str = &call.function.arguments;
+        let args_str = call.function.arguments.as_deref().unwrap_or("{}");
         let mut parsed_args = match serde_json::from_str::<Value>(args_str) {
             Ok(value) => value,
             Err(e) => {
@@ -146,7 +150,6 @@ pub fn filter_tool_calls(
             }
         };
 
-        // Unwrap double-encoded JSON strings
         if let Value::String(inner) = &parsed_args {
             if let Ok(decoded) = serde_json::from_str::<Value>(inner) {
                 parsed_args = decoded;
@@ -174,6 +177,23 @@ pub fn filter_tool_calls(
         let schema = match schemas.get(&call.function.name) {
             Some(schema) => schema,
             None => {
+                if call.function.name == "TodoWrite" {
+                    tracing::info!(
+                        "Tool 'TodoWrite' not in schema map; attempting TodoWrite -> TaskCreate fallback conversion"
+                    );
+                    if let Some(converted_calls) =
+                        convert_todowrite_to_task_create_calls(call, args_obj, schemas)
+                    {
+                        valid.extend(converted_calls);
+                        continue;
+                    }
+                    tracing::error!(
+                        "Unable to convert TodoWrite: TaskCreate unavailable or TodoWrite payload malformed. Args: {}",
+                        args_str
+                    );
+                    invalid.push(call.clone());
+                    continue;
+                }
                 tracing::error!(
                     "Tool '{}' not found in schema map. Available tools: {:?}",
                     call.function.name,
@@ -190,27 +210,35 @@ pub fn filter_tool_calls(
             coerce_argument_types(&normalized_args_obj, schema, &call.function.name);
 
         if let Some(missing) = missing_required_keys(&coerced_args_obj, schema) {
-            tracing::error!(
-                "Missing required argument(s) for tool '{}': {:?}. Args: {}",
-                call.function.name,
-                missing,
-                args_str
-            );
-            invalid.push(call.clone());
-            continue;
+            if is_lenient_schema(schema) {
+                tracing::warn!(
+                    "Missing required argument(s) for lenient tool '{}': {:?}. Continuing with partial args.",
+                    call.function.name,
+                    missing
+                );
+            } else {
+                tracing::error!(
+                    "Missing required argument(s) for tool '{}': {:?}. Args: {}",
+                    call.function.name,
+                    missing,
+                    args_str
+                );
+                invalid.push(call.clone());
+                continue;
+            }
         }
 
         let filtered_args = Value::Object(coerced_args_obj);
+
         let normalized_args =
             serde_json::to_string(&filtered_args).unwrap_or_else(|_| args_str.to_string());
-
         valid.push(ToolCall {
             index: call.index,
             id: call.id.clone(),
-            call_type: call.call_type.clone(),
+            tool_type: call.tool_type.clone(),
             function: FunctionCall {
                 name: call.function.name.clone(),
-                arguments: normalized_args,
+                arguments: Some(normalized_args),
             },
         });
     }
@@ -218,10 +246,7 @@ pub fn filter_tool_calls(
     (valid, invalid)
 }
 
-/// Attempt to repair malformed/truncated JSON argument strings.
-///
-/// Closes unclosed strings and balances brackets/braces.
-pub fn repair_json_arguments(raw: &str) -> Option<String> {
+fn repair_json_arguments(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Some("{}".to_string());
@@ -267,12 +292,10 @@ pub fn repair_json_arguments(raw: &str) -> Option<String> {
         }
     }
 
-    // Close unclosed string
     if in_string {
         repaired.push('"');
     }
 
-    // Strip trailing whitespace and commas
     while repaired
         .chars()
         .last()
@@ -281,7 +304,6 @@ pub fn repair_json_arguments(raw: &str) -> Option<String> {
         repaired.pop();
     }
 
-    // Close unclosed brackets/braces
     while let Some(open) = stack.pop() {
         repaired.push(match open {
             '{' => '}',
@@ -293,37 +315,137 @@ pub fn repair_json_arguments(raw: &str) -> Option<String> {
     Some(repaired)
 }
 
-/// Format tool calls for logging — returns a summary string.
-pub fn format_tool_calls_summary(tool_calls: &[ToolCall]) -> String {
-    if tool_calls.is_empty() {
-        return String::new();
-    }
-    tool_calls
-        .iter()
-        .map(|call| {
-            let args = call.function.arguments.replace('\n', " ");
-            let truncated = if args.len() > 160 {
-                let snippet: String = args.chars().take(160).collect();
-                format!("{}...", snippet)
-            } else {
-                args
-            };
-            format!("{}(args={})", call.function.name, truncated)
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
+fn convert_todowrite_to_task_create_calls(
+    source_call: &ToolCall,
+    args_obj: &serde_json::Map<String, Value>,
+    schemas: &HashMap<String, Value>,
+) -> Option<Vec<ToolCall>> {
+    let _task_create_schema = match schemas.get("TaskCreate") {
+        Some(schema) => schema,
+        None => {
+            tracing::warn!("TodoWrite fallback conversion skipped: TaskCreate schema not found");
+            return None;
+        }
+    };
 
-/// Log tool calls with a label
-pub fn log_tool_calls(label: &str, tool_calls: &[ToolCall]) {
-    if tool_calls.is_empty() {
-        return;
-    }
-    let summary = format_tool_calls_summary(tool_calls);
-    tracing::info!("{} tool call(s): {}", label, summary);
-}
+    let mut tasks: Vec<&serde_json::Map<String, Value>> = Vec::new();
+    let mut payload_source = "none";
 
-// ── Internal helpers ──────────────────────────────────────────────────────
+    if let Some(values) = args_obj.get("tasks").and_then(Value::as_array) {
+        payload_source = "tasks";
+        for value in values {
+            if let Some(task) = value.as_object() {
+                tasks.push(task);
+            }
+        }
+    } else if let Some(values) = args_obj.get("todos").and_then(Value::as_array) {
+        payload_source = "todos";
+        for value in values {
+            if let Some(task) = value.as_object() {
+                tasks.push(task);
+            }
+        }
+    }
+
+    if tasks.is_empty()
+        && (args_obj.get("title").is_some()
+            || args_obj.get("subject").is_some()
+            || args_obj.get("content").is_some()
+            || args_obj.get("description").is_some())
+    {
+        payload_source = "single";
+        tasks.push(args_obj);
+    }
+
+    if tasks.is_empty() {
+        tracing::warn!(
+            "TodoWrite fallback conversion failed: no tasks/todos array and no single-task fields; keys={:?}",
+            args_obj.keys().collect::<Vec<_>>()
+        );
+        return None;
+    }
+
+    let mut converted = Vec::new();
+    for (index, task) in tasks.iter().enumerate() {
+        let subject = task
+            .get("subject")
+            .and_then(Value::as_str)
+            .or_else(|| task.get("title").and_then(Value::as_str))
+            .or_else(|| task.get("content").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+
+        let Some(subject) = subject else {
+            continue;
+        };
+
+        let description = task
+            .get("description")
+            .and_then(Value::as_str)
+            .or_else(|| task.get("content").and_then(Value::as_str))
+            .or_else(|| task.get("title").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .unwrap_or(subject);
+
+        let active_form = task
+            .get("activeForm")
+            .and_then(Value::as_str)
+            .or_else(|| task.get("active_form").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+
+        let mut mapped = serde_json::Map::new();
+        mapped.insert("subject".to_string(), Value::String(subject.to_string()));
+        mapped.insert(
+            "description".to_string(),
+            Value::String(description.to_string()),
+        );
+        if let Some(active_form) = active_form {
+            mapped.insert(
+                "activeForm".to_string(),
+                Value::String(active_form.to_string()),
+            );
+        }
+        if let Some(metadata) = task.get("metadata").and_then(Value::as_object) {
+            mapped.insert("metadata".to_string(), Value::Object(metadata.clone()));
+        }
+
+        let call_id = if index == 0 {
+            source_call.id.clone()
+        } else {
+            super::generate_tool_call_id()
+        };
+
+        let arguments =
+            serde_json::to_string(&Value::Object(mapped)).unwrap_or_else(|_| "{}".to_string());
+        converted.push(ToolCall {
+            index: None,
+            id: call_id,
+            tool_type: source_call.tool_type.clone(),
+            function: FunctionCall {
+                name: "TaskCreate".to_string(),
+                arguments: Some(arguments),
+            },
+        });
+    }
+
+    if converted.is_empty() {
+        tracing::warn!(
+            "TodoWrite fallback conversion produced no TaskCreate calls from {} candidate item(s)",
+            tasks.len()
+        );
+        None
+    } else {
+        tracing::info!(
+            "Converted TodoWrite payload (source={}, candidates={}) into {} TaskCreate call(s)",
+            payload_source,
+            tasks.len(),
+            converted.len()
+        );
+        Some(converted)
+    }
+}
 
 fn normalize_argument_keys(
     args_obj: &serde_json::Map<String, Value>,
@@ -490,6 +612,17 @@ fn missing_required_keys(
     }
 }
 
+fn is_lenient_schema(schema: &Value) -> bool {
+    schema
+        .get("x-candle-vllm-lenient")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || schema
+            .get("x-candle-vllm-whitelist")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
 fn qwen_parameter_block_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -579,6 +712,7 @@ fn repair_embedded_parameter_blocks(
         if let Some(marker_start) = first_marker_start {
             let prefix = text[..marker_start].trim();
             if prefix.is_empty() {
+                // The value is only malformed nested parameter blocks.
                 repaired.remove(key);
             } else {
                 repaired.insert(key.clone(), Value::String(prefix.to_string()));
@@ -608,12 +742,65 @@ fn extract_parameter_name(text: &str) -> Option<String> {
     }
 }
 
+/// Format tool calls for logging - returns a summary string
+pub fn format_tool_calls_summary(tool_calls: &[ToolCall]) -> String {
+    if tool_calls.is_empty() {
+        return String::new();
+    }
+    tool_calls
+        .iter()
+        .map(|call| {
+            let args = call
+                .function
+                .arguments
+                .as_deref()
+                .unwrap_or("")
+                .replace('\n', " ");
+            let truncated = if args.len() > 160 {
+                let snippet: String = args.chars().take(160).collect();
+                format!("{}...", snippet)
+            } else {
+                args
+            };
+            format!("{}(args={})", call.function.name, truncated)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Log tool calls with a label (uses crate logging)
+pub fn log_tool_calls(label: &str, tool_calls: &[ToolCall]) {
+    if tool_calls.is_empty() {
+        return;
+    }
+    let summary = format_tool_calls_summary(tool_calls);
+    tracing::info!("{} tool call(s): {}", label, summary);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn build_schema_map_works() {
+    fn test_resolve_tools_prefers_request() {
+        let request_tools = vec![crate::tools::function_tool("test", "desc").build()];
+        let mcp_tools = vec![crate::tools::function_tool("mcp", "mcp desc").build()];
+
+        let resolved = resolve_tools(Some(&request_tools), &mcp_tools);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].function.name, "test");
+    }
+
+    #[test]
+    fn test_resolve_tools_falls_back_to_mcp() {
+        let mcp_tools = vec![crate::tools::function_tool("mcp", "mcp desc").build()];
+        let resolved = resolve_tools(None, &mcp_tools);
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].function.name, "mcp");
+    }
+
+    #[test]
+    fn test_build_tool_schema_map() {
         let tools = vec![crate::tools::function_tool("test", "desc")
             .param("arg1", "string", "desc", true)
             .build()];
@@ -622,91 +809,429 @@ mod tests {
     }
 
     #[test]
-    fn repair_json_closes_unclosed_brace() {
-        let raw = r#"{"file_path":"/tmp/a.rs","content":"hello"#;
-        let repaired = repair_json_arguments(raw).unwrap();
-        let parsed: Value = serde_json::from_str(&repaired).unwrap();
-        assert_eq!(parsed["file_path"], "/tmp/a.rs");
-    }
-
-    #[test]
-    fn repair_json_closes_unclosed_string_and_brace() {
-        let raw = r#"{"file_path":"/tmp/a.rs","content":"hello world"#;
-        let repaired = repair_json_arguments(raw).unwrap();
-        let parsed: Value = serde_json::from_str(&repaired).unwrap();
-        assert_eq!(parsed["content"], "hello world");
-    }
-
-    #[test]
-    fn repair_json_returns_empty_object_for_empty_input() {
-        let repaired = repair_json_arguments("").unwrap();
-        assert_eq!(repaired, "{}");
-    }
-
-    #[test]
-    fn filter_valid_tool_call() {
-        let tools = vec![crate::tools::function_tool("read", "desc")
-            .param("path", "string", "path desc", true)
+    fn marks_lenient_schema_when_tool_strict_is_false() {
+        let tools = vec![crate::tools::function_tool("lenient_tool", "desc")
+            .strict(false)
+            .param("arg1", "string", "desc", true)
             .build()];
-        let schemas = build_tool_schema_map(&tools);
-        let calls = vec![ToolCall::new("call_1", "read", r#"{"path": "/tmp/a.txt"}"#)];
-
-        let (valid, invalid) = filter_tool_calls(&calls, &schemas);
-        assert_eq!(valid.len(), 1);
-        assert!(invalid.is_empty());
-        assert_eq!(valid[0].function.name, "read");
+        let map = build_tool_schema_map(&tools);
+        assert_eq!(
+            map.get("lenient_tool")
+                .and_then(|schema| schema.get("x-candle-vllm-lenient"))
+                .and_then(Value::as_bool),
+            Some(true)
+        );
     }
 
     #[test]
-    fn filter_rejects_unknown_tool() {
-        let schemas = build_tool_schema_map(&[]);
-        let calls = vec![ToolCall::new("call_1", "unknown", r#"{"arg": "val"}"#)];
+    fn retains_only_forced_tool_name() {
+        let mut calls = vec![
+            crate::tools::new_tool_call("call_1", "Read", r#"{"path":"a"}"#),
+            crate::tools::new_tool_call("call_2", "Write", r#"{"path":"b"}"#),
+        ];
+        let dropped = retain_tool_calls_forced_name(&mut calls, Some("Write"));
+        assert_eq!(dropped, 1);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].function.name, "Write");
+    }
 
-        let (valid, invalid) = filter_tool_calls(&calls, &schemas);
+    #[test]
+    fn builds_invalid_tool_call_feedback_with_allowed_tools_and_forced_name() {
+        let schemas = HashMap::from([
+            ("Read".to_string(), serde_json::json!({"type":"object"})),
+            ("Write".to_string(), serde_json::json!({"type":"object"})),
+        ]);
+        let invalid = vec![crate::tools::new_tool_call(
+            "call_1",
+            "run",
+            r#"{"command":"ls"}"#,
+        )];
+
+        let feedback = build_invalid_tool_call_feedback(&invalid, &schemas, Some("Write")).unwrap();
+        assert!(feedback.contains("Rejected tool call(s): run."));
+        assert!(feedback.contains("Required tool_choice is 'Write'."));
+        assert!(feedback.contains("Allowed tools: Read, Write."));
+    }
+
+    #[test]
+    fn no_invalid_tool_call_feedback_when_no_invalid_calls() {
+        let schemas = HashMap::new();
+        assert!(build_invalid_tool_call_feedback(&[], &schemas, None).is_none());
+    }
+
+    #[test]
+    fn converts_todowrite_to_taskcreate_calls() {
+        let schemas = HashMap::from([(
+            "TaskCreate".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "subject": {"type":"string"},
+                    "description": {"type":"string"},
+                    "activeForm": {"type":"string"}
+                },
+                "required": ["subject", "description"],
+                "additionalProperties": false
+            }),
+        )]);
+        let args = serde_json::json!({
+            "tasks": [
+                {"id": "1", "title": "Do thing", "status": "in_progress", "activeForm": "Doing thing"},
+                {"id": "2", "title": "Do other thing", "status": "pending"}
+            ]
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "TodoWrite", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 2);
+        assert!(valid.iter().all(|call| call.function.name == "TaskCreate"));
+
+        let first_args = valid[0].function.arguments.as_ref().unwrap();
+        let first: Value = serde_json::from_str(first_args).unwrap();
+        assert_eq!(first["subject"], "Do thing");
+        assert_eq!(first["description"], "Do thing");
+        assert_eq!(first["activeForm"], "Doing thing");
+
+        let second_args = valid[1].function.arguments.as_ref().unwrap();
+        let second: Value = serde_json::from_str(second_args).unwrap();
+        assert_eq!(second["subject"], "Do other thing");
+        assert_eq!(second["description"], "Do other thing");
+    }
+
+    #[test]
+    fn converts_todowrite_todos_content_shape_to_taskcreate_calls() {
+        let schemas = HashMap::from([(
+            "TaskCreate".to_string(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "subject": {"type":"string"},
+                    "description": {"type":"string"},
+                    "activeForm": {"type":"string"}
+                },
+                "required": ["subject", "description"],
+                "additionalProperties": false
+            }),
+        )]);
+
+        let args = serde_json::json!({
+            "todos": [
+                {
+                    "content": "Fix Bug 1: Add Mistral3 variant to ModelType enum",
+                    "status": "in_progress",
+                    "activeForm": "Adding Mistral3 variant to ModelType enum"
+                },
+                {
+                    "content": "Fix Bug 2: Fix shared_gate weight loading shape in Qwen3DecoderLayer",
+                    "status": "pending",
+                    "activeForm": "Fixing shared_gate weight loading shape"
+                }
+            ]
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "TodoWrite", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 2);
+        assert!(valid.iter().all(|call| call.function.name == "TaskCreate"));
+
+        let first: Value =
+            serde_json::from_str(valid[0].function.arguments.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            first["subject"],
+            "Fix Bug 1: Add Mistral3 variant to ModelType enum"
+        );
+        assert_eq!(
+            first["description"],
+            "Fix Bug 1: Add Mistral3 variant to ModelType enum"
+        );
+        assert_eq!(
+            first["activeForm"],
+            "Adding Mistral3 variant to ModelType enum"
+        );
+    }
+
+    #[test]
+    fn rejects_todowrite_when_taskcreate_not_available() {
+        let schemas = HashMap::new();
+        let call =
+            crate::tools::new_tool_call("call_1", "TodoWrite", r#"{"tasks":[{"title":"x"}]}"#);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
         assert!(valid.is_empty());
         assert_eq!(invalid.len(), 1);
     }
 
     #[test]
-    fn coerce_number_to_string() {
-        let schema = serde_json::json!({
-            "type": "object",
-            "properties": {
-                "count": {"type": "string"}
-            }
-        });
-        let mut args = serde_json::Map::new();
-        args.insert("count".to_string(), Value::Number(42.into()));
+    fn rejects_unknown_tool_without_schema() {
+        let schemas = HashMap::new();
+        let call = crate::tools::new_tool_call("call_1", "UnknownTool", r#"{"x":1}"#);
 
-        let coerced = coerce_argument_types(&args, &schema, "test");
-        assert_eq!(coerced["count"], Value::String("42".to_string()));
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(valid.is_empty());
+        assert_eq!(invalid.len(), 1);
     }
 
     #[test]
-    fn normalize_keys_snake_to_camel() {
+    fn repairs_truncated_edit_arguments_with_braces_inside_string() {
         let schema = serde_json::json!({
             "type": "object",
             "properties": {
-                "filePath": {"type": "string"}
-            }
+                "file_path": {"type":"string"},
+                "old_string": {"type":"string"},
+                "new_string": {"type":"string"},
+                "replace_all": {"type":"boolean"}
+            },
+            "required": ["file_path", "old_string", "new_string", "replace_all"],
+            "additionalProperties": false
         });
-        let mut args = serde_json::Map::new();
-        args.insert(
-            "file_path".to_string(),
-            Value::String("/tmp/a.rs".to_string()),
+        let schemas = HashMap::from([("Edit".to_string(), schema)]);
+
+        let args = r#"{"file_path":"/tmp/a.rs","new_string":"fn a() { let x = vec![1,2,3]; }","old_string":"fn a() {}","replace_all":false"#;
+        let call = crate::tools::new_tool_call("call_1", "Edit", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+
+        let parsed: Value =
+            serde_json::from_str(valid[0].function.arguments.as_ref().unwrap()).unwrap();
+        assert_eq!(parsed["file_path"], "/tmp/a.rs");
+        assert_eq!(parsed["new_string"], "fn a() { let x = vec![1,2,3]; }");
+        assert_eq!(parsed["replace_all"], false);
+    }
+
+    #[test]
+    fn repairs_embedded_qwen_parameter_blocks_for_write_tool() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "filePath": {"type":"string"},
+                "content": {"type":"string"}
+            },
+            "required": ["filePath", "content"]
+        });
+        let schemas = HashMap::from([("write".to_string(), schema)]);
+
+        let args = serde_json::json!({
+            "file": "/root/candle-vllm/AGENTS.md\n<parameter=content>\n# Title\n</parameter>"
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "write", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+
+        let args = valid[0].function.arguments.as_ref().unwrap();
+        let parsed: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(parsed["filePath"], "/root/candle-vllm/AGENTS.md");
+        assert_eq!(parsed["content"], "# Title");
+    }
+
+    #[test]
+    fn repairs_embedded_parameter_blocks_when_filepath_already_present() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "filePath": {"type":"string"},
+                "content": {"type":"string"}
+            },
+            "required": ["filePath", "content"]
+        });
+        let schemas = HashMap::from([("write".to_string(), schema)]);
+
+        let args = serde_json::json!({
+            "filePath": "/root/candle-vllm/AGENTS.md",
+            "file": "<parameter=content>\n## Body\n</parameter>"
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "write", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+
+        let args = valid[0].function.arguments.as_ref().unwrap();
+        let parsed: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(parsed["filePath"], "/root/candle-vllm/AGENTS.md");
+        assert_eq!(parsed["content"], "## Body");
+    }
+
+    #[test]
+    fn repairs_unclosed_parameter_block_for_content() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "content": {"type":"string"}
+            },
+            "required": ["content"]
+        });
+        let schemas = HashMap::from([("write".to_string(), schema)]);
+
+        let args = serde_json::json!({
+            "file\n</parameter": "<parameter=content>\n# candle-vllm - AGENTS.md\n\n## Overview"
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "write", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+
+        let args = valid[0].function.arguments.as_ref().unwrap();
+        let parsed: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(
+            parsed["content"],
+            "# candle-vllm - AGENTS.md\n\n## Overview"
         );
-
-        let normalized = normalize_argument_keys(&args, &schema);
-        assert!(normalized.contains_key("filePath"));
-        assert_eq!(normalized["filePath"], "/tmp/a.rs");
     }
 
     #[test]
-    fn format_summary_truncates_long_args() {
-        let long_args = "a".repeat(200);
-        let calls = vec![ToolCall::new("call_1", "test", &long_args)];
-        let summary = format_tool_calls_summary(&calls);
-        assert!(summary.contains("..."));
-        assert!(summary.len() < 200);
+    fn repairs_unclosed_content_when_filepath_exists() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "filePath": {"type":"string"},
+                "content": {"type":"string"}
+            },
+            "required": ["filePath", "content"]
+        });
+        let schemas = HashMap::from([("write".to_string(), schema)]);
+
+        let args = serde_json::json!({
+            "filePath": "/root/candle-vllm/AGENTS.md",
+            "file\n</parameter": "<parameter=content>\n# candle-vllm - AGENTS.md\n\n## Overview"
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "write", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+
+        let args = valid[0].function.arguments.as_ref().unwrap();
+        let parsed: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(parsed["filePath"], "/root/candle-vllm/AGENTS.md");
+        assert_eq!(
+            parsed["content"],
+            "# candle-vllm - AGENTS.md\n\n## Overview"
+        );
+    }
+
+    #[test]
+    fn normalizes_malformed_file_key_to_filepath() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "filePath": {"type":"string"},
+                "content": {"type":"string"}
+            },
+            "required": ["filePath", "content"]
+        });
+        let schemas = HashMap::from([("write".to_string(), schema)]);
+
+        let args = serde_json::json!({
+            "file\n</parameter": "/root/candle-vllm/AGENTS.md",
+            "content": "hello"
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "write", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+
+        let args = valid[0].function.arguments.as_ref().unwrap();
+        let parsed: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(parsed["filePath"], "/root/candle-vllm/AGENTS.md");
+        assert_eq!(parsed["content"], "hello");
+    }
+
+    #[test]
+    fn repairs_spaced_parameter_start_tag() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "filePath": {"type":"string"},
+                "content": {"type":"string"}
+            },
+            "required": ["filePath", "content"]
+        });
+        let schemas = HashMap::from([("write".to_string(), schema)]);
+
+        let args = serde_json::json!({
+            "filePath": "/root/candle-vllm/AGENTS.md",
+            "file": "<parameter = content>\nhello world"
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "write", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+
+        let args = valid[0].function.arguments.as_ref().unwrap();
+        let parsed: Value = serde_json::from_str(args).unwrap();
+        assert_eq!(parsed["filePath"], "/root/candle-vllm/AGENTS.md");
+        assert_eq!(parsed["content"], "hello world");
+    }
+
+    #[test]
+    fn coerces_numeric_task_id_to_string_for_taskupdate() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "taskId": {"type":"string"},
+                "status": {"type":"string"},
+                "activeForm": {"type":"string"}
+            },
+            "required": ["taskId", "status"],
+            "additionalProperties": false
+        });
+        let schemas = HashMap::from([("TaskUpdate".to_string(), schema)]);
+
+        let args = serde_json::json!({
+            "taskId": 1,
+            "status": "in_progress",
+            "activeForm": "Fixing issue"
+        })
+        .to_string();
+        let call = crate::tools::new_tool_call("call_1", "TaskUpdate", args);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+
+        let parsed: Value =
+            serde_json::from_str(valid[0].function.arguments.as_ref().unwrap()).unwrap();
+        assert_eq!(parsed["taskId"], "1");
+        assert_eq!(parsed["status"], "in_progress");
+    }
+
+    #[test]
+    fn lenient_tool_allows_missing_required_arguments() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "x-xinfer-lenient": true,
+            "properties": {
+                "path": {"type":"string"},
+                "query": {"type":"string"}
+            },
+            "required": ["path", "query"]
+        });
+        let schemas = HashMap::from([("search".to_string(), schema)]);
+        let call = crate::tools::new_tool_call("call_1", "search", r#"{"query":"rust"}"#);
+
+        let (valid, invalid) = filter_tool_calls(&[call], &schemas);
+        assert!(invalid.is_empty());
+        assert_eq!(valid.len(), 1);
+        let parsed: Value =
+            serde_json::from_str(valid[0].function.arguments.as_ref().unwrap()).unwrap();
+        assert_eq!(parsed["query"], "rust");
+        assert!(parsed.get("path").is_none());
     }
 }

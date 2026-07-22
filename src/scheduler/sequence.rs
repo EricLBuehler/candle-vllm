@@ -7,6 +7,7 @@ use super::block_engine::LogicalTokenBlock;
 use crate::openai::multimodal::ImageData;
 use crate::openai::sampling_params::{Logprobs, SamplingParams};
 use crate::openai::streaming::ChatResponse;
+use crate::openai::ToolChoiceKind;
 use crate::tools::stream_parser::StreamToolParser;
 use crate::tools::{Tool, ToolCall};
 use std::time::SystemTime;
@@ -22,25 +23,13 @@ pub enum SequenceStatus {
     Finished(String),
 }
 
-#[derive(Clone, PartialEq, Debug)]
-pub enum ToolCallState {
-    Normal,
-    MaybeToolCall,
-    InToolCall,
-}
-
 pub struct SequenceData {
     prompt_token_ids: Vec<u32>,
     output_token_ids: Vec<Logprobs>,
     cumulative_logprob: f32,
     status: SequenceStatus,
     num_cached_tokens: usize, //used for chunked prefill and context cache
-    // Tool call and reasoning tracking
-    pub accumulated_output: String,
-    pub tool_call_state: ToolCallState,
-    pub tool_call_buffer: String,
     pub active_reasoning_end: Option<String>,
-    pub in_code_block: bool,
     pub stream_tool_parser: Option<StreamToolParser>,
     pub pending_tool_calls: Vec<ToolCall>,
     pub pending_finish_logprobs: Option<Logprobs>,
@@ -61,11 +50,7 @@ impl SequenceData {
             cumulative_logprob: 0.,
             status: SequenceStatus::Waiting,
             num_cached_tokens: 0,
-            accumulated_output: String::new(),
-            tool_call_state: ToolCallState::Normal,
-            tool_call_buffer: String::new(),
             active_reasoning_end: None,
-            in_code_block: false,
             stream_tool_parser: None,
             pending_tool_calls: Vec::new(),
             pending_finish_logprobs: None,
@@ -367,14 +352,10 @@ pub struct SequenceGroup {
     pub encoding_format: crate::openai::requests::EncodingFormat,
     pub embedding_type: crate::openai::requests::EmbeddingType,
     pub tools: Vec<Tool>,
+    pub tool_choice: ToolChoiceKind,
     pub sender: Option<Sender<ChatResponse>>,
     pub include_usage: bool,
-    // Tool call and reasoning tracking
-    pub accumulated_output: String,
-    pub tool_call_state: ToolCallState,
-    pub tool_call_buffer: String,
     pub active_reasoning_end: Option<String>,
-    pub in_code_block: bool,
     /// Token IDs from the generation-prompt suffix (e.g. `<think>\n`) that
     /// should be replayed through the streaming tool parser before the first
     /// real decoded token, so the parser sees the reasoning start marker.
@@ -395,6 +376,7 @@ impl SequenceGroup {
         encoding_format: crate::openai::requests::EncodingFormat,
         embedding_type: crate::openai::requests::EmbeddingType,
         tools: Vec<Tool>,
+        tool_choice: ToolChoiceKind,
         sender: Option<Sender<ChatResponse>>,
         include_usage: bool,
     ) -> Self {
@@ -414,13 +396,10 @@ impl SequenceGroup {
             encoding_format,
             embedding_type,
             tools,
+            tool_choice,
             sender,
             include_usage,
-            accumulated_output: "".to_string(),
-            tool_call_state: ToolCallState::Normal,
-            tool_call_buffer: String::new(),
             active_reasoning_end: None,
-            in_code_block: false,
             prompt_replay_token_ids: None,
         }
     }

@@ -803,10 +803,10 @@ fn parse_template_tool_arguments(arguments: Option<&str>) -> serde_json::Value {
 fn to_template_tool_call(call: &crate::tools::ToolCall) -> serde_json::Value {
     serde_json::json!({
         "id": call.id.clone(),
-        "type": call.call_type.clone(),
+        "type": call.tool_type.clone(),
         "function": {
             "name": call.function.name.clone(),
-            "arguments": parse_template_tool_arguments(Some(call.function.arguments.as_str()))
+            "arguments": parse_template_tool_arguments(call.function.arguments.as_deref())
         }
     })
 }

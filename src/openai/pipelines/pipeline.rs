@@ -117,7 +117,7 @@ fn tool_model_type_for(model: &LLMModel) -> ToolModelType {
         | LLMModel::Qwen3_5(_)
         | LLMModel::Qwen3VL(_)
         | LLMModel::QWenGGUF(_)
-        | LLMModel::QWen3_5GGUF(_) => ToolModelType::Qwen,
+        | LLMModel::QWen3_5GGUF(_) => ToolModelType::Qwen3,
         LLMModel::Qwen3MoE(_)
         | LLMModel::Qwen3_5MoE(_)
         | LLMModel::QWenGGUFMoE(_)

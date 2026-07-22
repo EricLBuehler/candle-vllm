@@ -20,6 +20,10 @@ use crate::openai::pipelines::TokenOrFinishReason;
 use crate::openai::streaming::ChatResponse;
 use crate::openai::TaskData;
 use crate::scheduler::Scheduler;
+use crate::tools::helpers::{
+    build_invalid_tool_call_feedback, build_tool_schema_map, filter_tool_calls, log_tool_calls,
+    retain_tool_calls_forced_name,
+};
 use crate::tools::stream_parser::{
     extract_reasoning_content, strip_reasoning_markers, BufferedFinalizeResult, ParserState,
     StreamResult, StreamToolParser,
@@ -1060,6 +1064,7 @@ impl LLMEngine {
                 task.encoding_format.clone(),
                 task.embedding_type.clone(),
                 task.tools.clone(),
+                task.tool_choice.clone(),
                 sender,
                 task.include_usage,
             );
@@ -1459,7 +1464,7 @@ impl LLMEngine {
         let mut reasoning_text = String::new();
         for output in outputs {
             let was_in_reasoning = parser.in_reasoning();
-            match parser.process_token(output.token, &output.bytes) {
+            match futures::executor::block_on(parser.process_token(output.token, &output.bytes)) {
                 StreamResult::Content(text) | StreamResult::FlushBuffer(text) => {
                     if was_in_reasoning {
                         reasoning_text.push_str(&strip_reasoning_markers(&text));
@@ -2070,142 +2075,97 @@ impl LLMEngine {
                         let should_parse_tools = group.sampling_params.mcp_mode.is_some();
                         let mut finish_reason = seq.deref_mut().get_finish_reason().clone();
 
-                        let (content, tool_calls, full_accumulated) = if should_parse_tools {
-                            let mut parser = StreamToolParser::new_with_config(
+                        let raw_output = outputs
+                            .iter()
+                            .map(|output| output.bytes.as_str())
+                            .collect::<String>();
+
+                        let (content, tool_calls) = if should_parse_tools {
+                            let parser = StreamToolParser::new_with_config(
                                 &pipeline.tool_model_type,
                                 pipeline.tool_parser_model_id.clone(),
                                 pipeline.tool_config.clone(),
                                 group.tools.clone(),
                                 pipeline.enforce_parser.clone(),
                             );
-                            if group.active_reasoning_end.is_some() {
-                                parser.set_initial_reasoning_end_marker(
-                                    group.active_reasoning_end.clone(),
+                            let mut parsed_calls = futures::executor::block_on(
+                                parser.parse_complete_with_fallback(&raw_output),
+                            );
+                            if parsed_calls.is_empty() {
+                                let stripped = crate::tools::stream_parser::strip_reasoning_blocks(
+                                    &raw_output,
+                                );
+                                if stripped != raw_output && !stripped.trim().is_empty() {
+                                    parsed_calls = futures::executor::block_on(
+                                        parser.parse_complete_with_fallback(&stripped),
+                                    );
+                                    if !parsed_calls.is_empty() {
+                                        warn!(
+                                                "Recovered {} tool call(s) from reasoning-stripped fallback parse",
+                                                parsed_calls.len()
+                                            );
+                                    }
+                                }
+                            }
+
+                            let forced_name = match &group.tool_choice {
+                                crate::openai::ToolChoiceKind::Function(name) => {
+                                    Some(name.as_str())
+                                }
+                                _ => None,
+                            };
+                            let dropped =
+                                retain_tool_calls_forced_name(&mut parsed_calls, forced_name);
+                            if dropped > 0 {
+                                warn!(
+                                    "Dropped {} tool call(s) that did not match forced tool_choice",
+                                    dropped
                                 );
                             }
-                            if crate::stream_as_reasoning_content() {
-                                parser.set_detect_tools_in_reasoning(true);
+                            let schemas = build_tool_schema_map(&group.tools);
+                            let (valid_calls, invalid_calls) =
+                                filter_tool_calls(&parsed_calls, &schemas);
+                            if !invalid_calls.is_empty() {
+                                warn!("Found {} invalid tool call(s)", invalid_calls.len());
+                                log_tool_calls("Invalid", &invalid_calls);
                             }
-                            let mut pending_tool_calls = Vec::new();
-                            let mut accumulated = String::new();
+                            let invalid_feedback = build_invalid_tool_call_feedback(
+                                &invalid_calls,
+                                &schemas,
+                                forced_name,
+                            );
 
-                            if let Some(replay_ids) = group.prompt_replay_token_ids.as_ref() {
-                                for &token_id in replay_ids {
-                                    let token_text = pipeline
-                                        .tokenizer()
-                                        .decode(&[token_id], false)
-                                        .unwrap_or_default();
-                                    match parser.process_token(token_id, &token_text) {
-                                        StreamResult::Content(text)
-                                        | StreamResult::FlushBuffer(text) => {
-                                            accumulated.push_str(&text);
-                                        }
-                                        StreamResult::Buffering => {}
-                                        StreamResult::ToolCalls(mut calls) => {
-                                            pending_tool_calls.append(&mut calls);
-                                        }
-                                    }
+                            if valid_calls.is_empty() {
+                                if matches!(
+                                    group.tool_choice,
+                                    crate::openai::ToolChoiceKind::Required
+                                        | crate::openai::ToolChoiceKind::Function(_)
+                                ) {
+                                    warn!("Tool choice required but no tool calls were produced");
                                 }
-                            }
-
-                            for output in &outputs {
-                                match parser.process_token(output.token, &output.bytes) {
-                                    StreamResult::Content(text)
-                                    | StreamResult::FlushBuffer(text) => {
-                                        accumulated.push_str(&text);
+                                let fallback_text = invalid_feedback.unwrap_or_else(|| {
+                                    if parser.contains_tool_markup(&raw_output) {
+                                        parser.sanitize_tool_markup_for_display(&raw_output)
+                                    } else {
+                                        raw_output.clone()
                                     }
-                                    StreamResult::Buffering => {}
-                                    StreamResult::ToolCalls(mut calls) => {
-                                        pending_tool_calls.append(&mut calls);
-                                    }
-                                }
-                            }
-
-                            let mut buffered_finish_content = String::new();
-                            if matches!(parser.state(), ParserState::Buffering) {
-                                match parser.finalize_buffered_tool_calls() {
-                                    Some(BufferedFinalizeResult::ToolCalls(mut parsed)) => {
-                                        pending_tool_calls.append(&mut parsed);
-                                    }
-                                    Some(BufferedFinalizeResult::FlushBuffer(buffer)) => {
-                                        if !buffer.is_empty() {
-                                            buffered_finish_content.push_str(&buffer);
-                                        }
-                                    }
-                                    None => {}
-                                }
-                            }
-
-                            if pending_tool_calls.is_empty() {
-                                let mut reparsed = parser.reparse_accumulated_output();
-                                if !reparsed.is_empty() {
-                                    warn!(
-                                        "Recovered {} tool call(s) from full-output fallback parse",
-                                        reparsed.len()
-                                    );
-                                    pending_tool_calls.append(&mut reparsed);
-                                } else {
-                                    let acc = parser.accumulated_output().to_string();
-                                    let stripped = parser.accumulated_output_without_reasoning();
-                                    if stripped != acc && !stripped.trim().is_empty() {
-                                        let stripped_calls = futures::executor::block_on(
-                                            parser.parse_complete_with_fallback(&stripped),
-                                        );
-                                        if !stripped_calls.is_empty() {
-                                            warn!(
-                                                "Recovered {} tool call(s) from reasoning-stripped fallback parse",
-                                                stripped_calls.len()
-                                            );
-                                            reparsed = stripped_calls;
-                                            pending_tool_calls.append(&mut reparsed);
-                                        }
-                                    }
-                                }
-                            }
-
-                            if pending_tool_calls.is_empty() && !buffered_finish_content.is_empty()
-                            {
-                                accumulated.push_str(&buffered_finish_content);
-                            }
-
-                            let full_acc = parser.accumulated_output().to_string();
-
-                            if pending_tool_calls.is_empty() {
-                                let fallback_text = if parser.contains_tool_markup(&accumulated) {
-                                    parser.sanitize_tool_markup_for_display(&accumulated)
-                                } else {
-                                    accumulated
-                                };
-                                let content = if fallback_text.is_empty() {
-                                    None
-                                } else {
-                                    Some(fallback_text)
-                                };
-                                (content, None, full_acc)
+                                });
+                                (Some(fallback_text), None)
                             } else {
                                 finish_reason = "tool_calls".to_string();
-                                (None, Some(pending_tool_calls), full_acc)
+                                log_tool_calls("Valid", &valid_calls);
+                                (None, Some(valid_calls))
                             }
                         } else {
                             let data = outputs
                                 .iter()
                                 .map(|x| x.token.try_into().unwrap())
                                 .collect::<Vec<_>>();
-                            let mut data = pipeline
+                            let data = pipeline
                                 .tokenizer()
                                 .decode(&data, group.sampling_params.skip_special_tokens)
                                 .unwrap();
-                            if let Some(replay_ids) = group.prompt_replay_token_ids.as_ref() {
-                                let replay = pipeline
-                                    .tokenizer()
-                                    .decode(replay_ids, false)
-                                    .unwrap_or_default();
-                                if !replay.is_empty() {
-                                    data = format!("{replay}{data}");
-                                }
-                            }
-                            let full_acc = data.clone();
-                            (Some(data), None, full_acc)
+                            (Some(data), None)
                         };
 
                         if tool_calls.is_none() && finish_reason == "tool_calls" {
@@ -2214,42 +2174,23 @@ impl LLMEngine {
 
                         let has_tool_calls = tool_calls.is_some();
 
-                        // Extract reasoning from the full accumulated output
-                        // so it is available even when tool calls consumed
-                        // the content (setting it to None).
-                        let reasoning_content = if crate::stream_as_reasoning_content() {
-                            if !full_accumulated.is_empty() {
-                                crate::tools::stream_parser::extract_reasoning_content(
-                                    &full_accumulated,
-                                )
-                                .map(|(r, _)| r)
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-
-                        let content = if crate::stream_as_reasoning_content() && content.is_some() {
+                        let (content, reasoning_content) = if crate::stream_as_reasoning_content() {
                             match content {
-                                Some(text) => {
-                                    match crate::tools::stream_parser::extract_reasoning_content(
-                                        &text,
-                                    ) {
-                                        Some((_reasoning, remaining)) => {
-                                            if remaining.is_empty() {
-                                                None
-                                            } else {
-                                                Some(remaining)
-                                            }
-                                        }
-                                        None => Some(text),
+                                Some(text) => match extract_reasoning_content(&text) {
+                                    Some((reasoning, remaining)) => {
+                                        let content = if remaining.is_empty() {
+                                            None
+                                        } else {
+                                            Some(remaining)
+                                        };
+                                        (content, Some(reasoning))
                                     }
-                                }
-                                None => None,
+                                    None => (Some(text), None),
+                                },
+                                None => (None, None),
                             }
                         } else {
-                            content
+                            (content, None)
                         };
 
                         choices.push(ChatChoice {
@@ -2372,6 +2313,7 @@ impl LLMEngine {
         encoding_format: crate::openai::requests::EncodingFormat,
         embedding_type: crate::openai::requests::EmbeddingType,
         tools: Vec<crate::tools::Tool>,
+        tool_choice: crate::openai::ToolChoiceKind,
         sender: Option<Sender<ChatResponse>>,
         include_usage: bool,
     ) -> SequenceGroup {
@@ -2393,6 +2335,7 @@ impl LLMEngine {
             encoding_format,
             embedding_type,
             tools,
+            tool_choice,
             sender,
             include_usage,
         )
@@ -2409,6 +2352,7 @@ impl LLMEngine {
         encoding_format: crate::openai::requests::EncodingFormat,
         embedding_type: crate::openai::requests::EmbeddingType,
         tools: Vec<crate::tools::Tool>,
+        tool_choice: crate::openai::ToolChoiceKind,
         images: Option<ImageData>,
         sender: Option<Arc<Sender<ChatResponse>>>,
         sync_notify: Option<Arc<Notify>>,
@@ -2450,6 +2394,7 @@ impl LLMEngine {
             encoding_format,
             embedding_type,
             tools,
+            tool_choice,
             images,
             include_usage,
             prefilled_reasoning_end,
