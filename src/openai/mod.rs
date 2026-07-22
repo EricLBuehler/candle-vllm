@@ -155,6 +155,7 @@ pub struct TaskData {
     pub encoding_format: requests::EncodingFormat,
     pub embedding_type: requests::EmbeddingType,
     pub tools: Vec<Tool>,
+    pub tool_choice: ToolChoiceKind,
     pub images: Option<multimodal::ImageData>,
     pub include_usage: bool,
     #[serde(default)]
@@ -169,10 +170,11 @@ pub mod openai_server;
 pub mod pipelines;
 pub mod utils;
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ToolChoiceKind {
     Auto,
     None,
+    Required,
     Function(String),
 }
 
@@ -191,7 +193,7 @@ fn normalize_tool_choice(choice: &Option<ToolChoice>) -> ToolChoiceKind {
         Some(ToolChoice::Mode(mode)) => match mode {
             crate::tools::ToolChoiceMode::Auto => ToolChoiceKind::Auto,
             crate::tools::ToolChoiceMode::None => ToolChoiceKind::None,
-            crate::tools::ToolChoiceMode::Required => ToolChoiceKind::Auto,
+            crate::tools::ToolChoiceMode::Required => ToolChoiceKind::Required,
         },
     }
 }
@@ -217,6 +219,12 @@ pub fn resolve_tools_for_request(
     if matches!(choice, ToolChoiceKind::None) {
         tools.clear();
         return Ok(ResolvedToolConfig { tools, choice });
+    }
+
+    if matches!(choice, ToolChoiceKind::Required) && tools.is_empty() {
+        return Err(APIError::new(
+            "tool_choice requires at least one tool but none were provided".to_string(),
+        ));
     }
 
     if let ToolChoiceKind::Function(name) = &choice {

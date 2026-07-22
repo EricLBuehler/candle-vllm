@@ -1527,6 +1527,7 @@ mod tests {
             EncodingFormat::Float,
             EmbeddingType::Last,
             Vec::new(),
+            crate::openai::ToolChoiceKind::Auto,
             None,
             false,
         );

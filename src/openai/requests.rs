@@ -383,10 +383,10 @@ mod tests {
                 tool_calls: Some(vec![crate::tools::ToolCall {
                     index: None,
                     id: "call_1".to_string(),
-                    call_type: "function".to_string(),
+                    tool_type: "function".to_string(),
                     function: crate::tools::FunctionCall {
                         name: "test".to_string(),
-                        arguments: "{}".to_string(),
+                        arguments: Some("{}".to_string()),
                     },
                 }]),
                 tool_call_id: None,

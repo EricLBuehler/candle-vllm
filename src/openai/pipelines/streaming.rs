@@ -7,7 +7,12 @@ use super::{
     DefaultPipeline, LLMEngine, Logprobs, ParserState, Sequence, SequenceGroup, StreamEmission,
     StreamResult, StreamToolParser,
 };
+use crate::openai::ToolChoiceKind;
 use crate::openai::{streaming::ChatResponse, utils::get_created_time_secs};
+use crate::tools::helpers::{
+    build_invalid_tool_call_feedback, build_tool_schema_map, filter_tool_calls, log_tool_calls,
+    retain_tool_calls_forced_name, strict_tool_call_validation_enabled,
+};
 use crate::tools::stream_parser::strip_reasoning_markers;
 use tracing::warn;
 
@@ -28,6 +33,40 @@ impl LLMEngine {
             existing.push_str(&text);
         } else {
             *slot = Some(text);
+        }
+    }
+
+    // Keep the stream router equivalent to xInfer's ReasoningContentRouter:
+    // tool parsing decides whether a token is content or a tool envelope,
+    // while this single path decides whether visible text belongs in
+    // `content` or `reasoning_content`.
+    fn route_stream_text(
+        parser: &StreamToolParser,
+        text: String,
+        was_in_reasoning: bool,
+        has_pending_tool_calls: bool,
+        stream_reasoning: bool,
+    ) -> TokenAction {
+        if text.is_empty() {
+            return TokenAction::None;
+        }
+        if parser.contains_tool_markup(&text) {
+            return TokenAction::SuppressToolMarkup(text);
+        }
+        if has_pending_tool_calls {
+            return TokenAction::None;
+        }
+        if !stream_reasoning {
+            return TokenAction::Content(text);
+        }
+
+        let stripped = strip_reasoning_markers(&text);
+        if stripped.is_empty() {
+            TokenAction::None
+        } else if was_in_reasoning {
+            TokenAction::ReasoningContent(stripped)
+        } else {
+            TokenAction::Content(stripped)
         }
     }
 
@@ -170,58 +209,20 @@ impl LLMEngine {
                                     .tokenizer()
                                     .decode(&[token_id], false)
                                     .unwrap_or_default();
-                                let has_pending = !data.pending_tool_calls.is_empty();
                                 let action = {
                                     let parser = data.stream_tool_parser.as_mut().unwrap();
-                                    match parser.process_token(token_id, &token_text) {
-                                        StreamResult::Content(text) => {
-                                            if text.is_empty() {
-                                                TokenAction::None
-                                            } else if parser.contains_tool_markup(&text) {
-                                                TokenAction::SuppressToolMarkup(text)
-                                            } else if has_pending {
-                                                TokenAction::None
-                                            } else if stream_reasoning {
-                                                let stripped = strip_reasoning_markers(&text);
-                                                if stripped.is_empty() {
-                                                    TokenAction::None
-                                                } else if parser.in_reasoning() {
-                                                    TokenAction::ReasoningContent(stripped)
-                                                } else {
-                                                    TokenAction::Content(stripped)
-                                                }
-                                            } else {
-                                                TokenAction::Content(text)
-                                            }
-                                        }
-                                        StreamResult::FlushBuffer(text) => {
-                                            if text.is_empty() {
-                                                TokenAction::None
-                                            } else if parser.contains_tool_markup(&text) {
-                                                TokenAction::SuppressToolMarkup(text)
-                                            } else if has_pending {
-                                                TokenAction::None
-                                            } else {
-                                                let safe_text =
-                                                    parser.sanitize_tool_markup_for_display(&text);
-                                                if safe_text.is_empty() {
-                                                    TokenAction::None
-                                                } else if stream_reasoning {
-                                                    let stripped =
-                                                        strip_reasoning_markers(&safe_text);
-                                                    if stripped.is_empty() {
-                                                        TokenAction::None
-                                                    } else if parser.in_reasoning() {
-                                                        TokenAction::ReasoningContent(stripped)
-                                                    } else {
-                                                        TokenAction::Content(stripped)
-                                                    }
-                                                } else {
-                                                    TokenAction::Content(safe_text)
-                                                }
-                                            }
-                                        }
-                                        StreamResult::Buffering => TokenAction::None,
+                                    match futures::executor::block_on(
+                                        parser.process_token(token_id, &token_text),
+                                    ) {
+                                        // These tokens belong to the rendered
+                                        // generation prompt, not to the model
+                                        // completion. Replay them only to
+                                        // restore parser state; otherwise
+                                        // Gemma4's `thought` channel name leaks
+                                        // to the client as reasoning text.
+                                        StreamResult::Content(_)
+                                        | StreamResult::FlushBuffer(_)
+                                        | StreamResult::Buffering => TokenAction::None,
                                         StreamResult::ToolCalls(calls) => {
                                             TokenAction::ToolCalls(calls)
                                         }
@@ -253,51 +254,29 @@ impl LLMEngine {
 
                 let has_pending = !data.pending_tool_calls.is_empty();
                 let action = if let Some(parser) = data.stream_tool_parser.as_mut() {
-                    match parser.process_token(logprobs.token, token_str) {
-                        StreamResult::Content(text) => {
-                            if text.is_empty() {
-                                TokenAction::None
-                            } else if parser.contains_tool_markup(&text) {
-                                TokenAction::SuppressToolMarkup(text)
-                            } else if has_pending {
-                                TokenAction::None
-                            } else if stream_reasoning {
-                                let stripped = strip_reasoning_markers(&text);
-                                if stripped.is_empty() {
-                                    TokenAction::None
-                                } else if parser.in_reasoning() {
-                                    TokenAction::ReasoningContent(stripped)
-                                } else {
-                                    TokenAction::Content(stripped)
-                                }
-                            } else {
-                                TokenAction::Content(text)
-                            }
-                        }
+                    // A tokenizer token can contain a reasoning close marker
+                    // together with text. Preserve the state from before the
+                    // token so that text before the close is not reclassified
+                    // as normal content (or dropped before a tool call).
+                    match futures::executor::block_on(
+                        parser.process_token(logprobs.token, token_str),
+                    ) {
+                        StreamResult::Content(text) => Self::route_stream_text(
+                            parser,
+                            text,
+                            parser.in_reasoning(),
+                            has_pending,
+                            stream_reasoning,
+                        ),
                         StreamResult::FlushBuffer(text) => {
-                            if text.is_empty() {
-                                TokenAction::None
-                            } else if parser.contains_tool_markup(&text) {
-                                TokenAction::SuppressToolMarkup(text)
-                            } else if has_pending {
-                                TokenAction::None
-                            } else {
-                                let safe_text = parser.sanitize_tool_markup_for_display(&text);
-                                if safe_text.is_empty() {
-                                    TokenAction::None
-                                } else if stream_reasoning {
-                                    let stripped = strip_reasoning_markers(&safe_text);
-                                    if stripped.is_empty() {
-                                        TokenAction::None
-                                    } else if parser.in_reasoning() {
-                                        TokenAction::ReasoningContent(stripped)
-                                    } else {
-                                        TokenAction::Content(stripped)
-                                    }
-                                } else {
-                                    TokenAction::Content(safe_text)
-                                }
-                            }
+                            let safe_text = parser.sanitize_tool_markup_for_display(&text);
+                            Self::route_stream_text(
+                                parser,
+                                safe_text,
+                                false,
+                                has_pending,
+                                stream_reasoning,
+                            )
                         }
                         StreamResult::Buffering => TokenAction::None,
                         StreamResult::ToolCalls(calls) => TokenAction::ToolCalls(calls),
@@ -343,30 +322,17 @@ impl LLMEngine {
                                     .tokenizer()
                                     .decode(&[token_id], false)
                                     .unwrap_or_default();
-                                let was_in_reasoning = parser.in_reasoning();
                                 parser.advance_reasoning_state(&token_text);
-                                let is_in_reasoning = parser.in_reasoning();
-                                let stripped = strip_reasoning_markers(&token_text);
-                                if stripped.is_empty() {
-                                    continue;
-                                }
-                                if was_in_reasoning || is_in_reasoning {
-                                    Self::append_stream_text(&mut reasoning_content, stripped);
-                                } else {
-                                    Self::append_stream_text(&mut content, stripped);
-                                }
                             }
                         }
                     }
                 }
 
                 if let Some(parser) = data.stream_tool_parser.as_mut() {
-                    let was_in_reasoning = parser.in_reasoning();
                     parser.advance_reasoning_state(token_str);
-                    let is_in_reasoning = parser.in_reasoning();
                     let stripped = strip_reasoning_markers(token_str);
                     if !stripped.is_empty() {
-                        if was_in_reasoning || is_in_reasoning {
+                        if parser.in_reasoning() {
                             Self::append_stream_text(&mut reasoning_content, stripped);
                         } else {
                             Self::append_stream_text(&mut content, stripped);
@@ -446,7 +412,9 @@ impl LLMEngine {
                                 .tokenizer()
                                 .decode(&[token_id], false)
                                 .unwrap_or_default();
-                            let _ = parser.process_token(token_id, &token_text);
+                            let _ = futures::executor::block_on(
+                                parser.process_token(token_id, &token_text),
+                            );
                         }
                         tracing::info!(
                             "Replayed {} prompt suffix token(s) through stream parser",
@@ -457,9 +425,9 @@ impl LLMEngine {
             }
 
             if let Some(parser) = data.stream_tool_parser.as_mut() {
-                if let StreamResult::ToolCalls(calls) =
-                    parser.process_token(logprobs.token, &logprobs.bytes)
-                {
+                if let StreamResult::ToolCalls(calls) = futures::executor::block_on(
+                    parser.process_token(logprobs.token, &logprobs.bytes),
+                ) {
                     data.pending_tool_calls.extend(calls);
                 }
             }
@@ -499,7 +467,8 @@ impl LLMEngine {
                         let mut reparsed_calls = Vec::new();
 
                         if matches!(parser.state(), ParserState::Buffering) {
-                            match parser.finalize_buffered_tool_calls() {
+                            match futures::executor::block_on(parser.finalize_buffered_tool_calls())
+                            {
                                 Some(BufferedFinalizeResult::ToolCalls(parsed)) => {
                                     finalized_calls = parsed;
                                 }
@@ -513,7 +482,10 @@ impl LLMEngine {
                         }
 
                         if pending_was_empty && finalized_calls.is_empty() {
-                            reparsed_calls = parser.reparse_accumulated_output();
+                            let accumulated = parser.accumulated_output().to_string();
+                            reparsed_calls = futures::executor::block_on(
+                                parser.parse_complete_with_fallback(&accumulated),
+                            );
                             if reparsed_calls.is_empty() {
                                 let accumulated = parser.accumulated_output().to_string();
                                 let stripped = parser.accumulated_output_without_reasoning();
@@ -578,9 +550,39 @@ impl LLMEngine {
                 }
             }
 
-            let pending = std::mem::take(&mut data.pending_tool_calls);
+            let mut pending = std::mem::take(&mut data.pending_tool_calls);
             if !pending.is_empty() {
-                tool_calls = Some(pending);
+                let forced_name = match &group.tool_choice {
+                    ToolChoiceKind::Function(name) => Some(name.as_str()),
+                    _ => None,
+                };
+                let dropped = retain_tool_calls_forced_name(&mut pending, forced_name);
+                if dropped > 0 {
+                    warn!(
+                        "Dropped {} tool call(s) that did not match forced tool_choice",
+                        dropped
+                    );
+                }
+
+                let schemas = build_tool_schema_map(&group.tools);
+                let (validated, invalid) = filter_tool_calls(&pending, &schemas);
+                if !invalid.is_empty() {
+                    log_tool_calls("Invalid", &invalid);
+                }
+                let invalid_feedback =
+                    build_invalid_tool_call_feedback(&invalid, &schemas, forced_name);
+                let valid = if !invalid.is_empty() && !strict_tool_call_validation_enabled() {
+                    tracing::error!("Invalid tool call feedback {:?}", invalid_feedback);
+                    pending
+                } else {
+                    validated
+                };
+                if !valid.is_empty() {
+                    log_tool_calls("Valid", &valid);
+                    tool_calls = Some(valid);
+                } else if let Some(feedback) = invalid_feedback {
+                    content = Some(feedback);
+                }
             }
         }
 
@@ -628,6 +630,56 @@ impl LLMEngine {
         }
 
         if let Some(tool_calls) = emission.tool_calls {
+            // A prompt replay or a tokenizer boundary can produce the last
+            // reasoning text in the same emission that completes a tool
+            // call. Do not let the tool-call branch discard that text.
+            if let Some(reasoning) = emission.reasoning_content {
+                let reasoning_chunk = self.get_stream_response(
+                    group.request_id.clone(),
+                    get_created_time_secs(),
+                    None,
+                    None,
+                    Some(reasoning),
+                    None,
+                    None,
+                    None,
+                    pipeline,
+                );
+                if sender
+                    .try_send(ChatResponse::Chunk(reasoning_chunk))
+                    .is_err()
+                {
+                    warn!(
+                        "Send reasoning response error before tool call (sequence id {})",
+                        seq.deref().get_id()
+                    );
+                    seq.deref_mut().set_finish_reason("abort".to_string());
+                    return;
+                }
+            }
+
+            if let Some(content) = emission.content {
+                let content_chunk = self.get_stream_response(
+                    group.request_id.clone(),
+                    get_created_time_secs(),
+                    None,
+                    Some(content),
+                    None,
+                    None,
+                    None,
+                    None,
+                    pipeline,
+                );
+                if sender.try_send(ChatResponse::Chunk(content_chunk)).is_err() {
+                    warn!(
+                        "Send content response before tool call error (sequence id {})",
+                        seq.deref().get_id()
+                    );
+                    seq.deref_mut().set_finish_reason("abort".to_string());
+                    return;
+                }
+            }
+
             // OpenAI streaming spec: tool calls require TWO separate chunks:
             //   1) delta.tool_calls=[...], finish_reason=null
             //   2) delta={}, finish_reason="tool_calls"

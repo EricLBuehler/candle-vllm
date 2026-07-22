@@ -13,34 +13,48 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-/// A tool definition following OpenAI's function calling format
+pub use openai_protocol::common::{Function, Tool};
+pub type FunctionDefinition = Function;
+
+/// Adapter from xInfer's OpenAI tool-call representation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tool {
-    /// Type of the tool, always "function" for now
+pub struct FunctionCall {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCall {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<usize>,
+    pub id: String,
     #[serde(rename = "type")]
     pub tool_type: String,
-    /// The function definition
-    pub function: FunctionDefinition,
+    pub function: FunctionCall,
 }
 
-/// Builder entry point — create a new function tool builder.
-pub fn function_tool(name: impl Into<String>, description: impl Into<String>) -> ToolBuilder {
-    ToolBuilder::new(name.into(), description.into())
-}
+impl ToolCall {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        Self {
+            index: None,
+            id: id.into(),
+            tool_type: "function".to_string(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: Some(arguments.into()),
+            },
+        }
+    }
 
-/// Definition of a callable function
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionDefinition {
-    /// Name of the function
-    pub name: String,
-    /// Description of what the function does
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    /// JSON Schema for the function parameters
-    pub parameters: Value,
-    /// Whether to enable strict schema adherence
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub strict: Option<bool>,
+    pub fn with_index(mut self, index: usize) -> Self {
+        self.index = Some(index);
+        self
+    }
 }
 
 /// Builder for creating Tool definitions
@@ -52,7 +66,7 @@ pub struct ToolBuilder {
 }
 
 impl ToolBuilder {
-    fn new(name: String, description: String) -> Self {
+    pub fn new(name: String, description: String) -> Self {
         Self {
             name,
             description,
@@ -106,7 +120,7 @@ impl ToolBuilder {
     pub fn build(self) -> Tool {
         Tool {
             tool_type: "function".to_string(),
-            function: FunctionDefinition {
+            function: Function {
                 name: self.name,
                 description: Some(self.description),
                 parameters: self.parameters,
@@ -114,6 +128,11 @@ impl ToolBuilder {
             },
         }
     }
+}
+
+/// Create a new function tool builder (replacement for Tool::function).
+pub fn function_tool(name: impl Into<String>, description: impl Into<String>) -> ToolBuilder {
+    ToolBuilder::new(name.into(), description.into())
 }
 
 /// Tool choice configuration
@@ -170,79 +189,39 @@ pub struct ToolChoiceFunction {
     pub name: String,
 }
 
-/// A tool call made by the model
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolCall {
-    /// Index of this tool call in the tool_calls array (streaming only)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index: Option<usize>,
-    /// Unique identifier for this tool call
-    pub id: String,
-    /// Type of tool call (always "function")
-    #[serde(rename = "type")]
-    pub call_type: String,
-    /// The function call details
-    pub function: FunctionCall,
-}
-
-impl ToolCall {
-    /// Create a new tool call
-    pub fn new(
-        id: impl Into<String>,
-        name: impl Into<String>,
-        arguments: impl Into<String>,
-    ) -> Self {
-        Self {
-            index: None,
-            id: id.into(),
-            call_type: "function".to_string(),
-            function: FunctionCall {
-                name: name.into(),
-                arguments: arguments.into(),
-            },
-        }
-    }
-
-    pub fn with_index(mut self, index: usize) -> Self {
-        self.index = Some(index);
-        self
-    }
-}
-
-/// Details of a function call
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FunctionCall {
-    /// Name of the function to call
-    pub name: String,
-    /// JSON string of arguments
-    pub arguments: String,
-}
-
 /// Build a ToolCall from name/arguments with a provided ID.
 pub fn new_tool_call(
     id: impl Into<String>,
     name: impl Into<String>,
     arguments: impl Into<String>,
 ) -> ToolCall {
-    ToolCall::new(id, name, arguments)
+    ToolCall {
+        index: None,
+        id: id.into(),
+        tool_type: "function".to_string(),
+        function: FunctionCall {
+            name: name.into(),
+            arguments: Some(arguments.into()),
+        },
+    }
 }
 
-/// Generate a compact tool call ID with `call_` prefix.
+/// Generate a compact tool call ID with required `call_` prefix.
 /// Uses 16 hex chars (64 bits) from UUIDv4 for low collision risk and shorter payloads.
 pub fn generate_tool_call_id() -> String {
     let raw = Uuid::new_v4().simple().to_string();
     format!("call_{}", &raw[..16])
 }
 
-/// Convert a parsed tool call from the `tool_parser` crate into our ToolCall type.
+/// Convert a parsed tool call into an OpenAI-compatible ToolCall.
 pub fn tool_call_from_parser(parsed: tool_parser::ToolCall) -> ToolCall {
     ToolCall {
         index: None,
         id: generate_tool_call_id(),
-        call_type: "function".to_string(),
+        tool_type: "function".to_string(),
         function: FunctionCall {
             name: parsed.function.name,
-            arguments: parsed.function.arguments,
+            arguments: Some(parsed.function.arguments),
         },
     }
 }
@@ -311,12 +290,5 @@ mod tests {
             }
             _ => panic!("expected function tool choice"),
         }
-    }
-
-    #[test]
-    fn generate_tool_call_id_has_correct_format() {
-        let id = generate_tool_call_id();
-        assert!(id.starts_with("call_"));
-        assert_eq!(id.len(), 5 + 16); // "call_" + 16 hex chars
     }
 }

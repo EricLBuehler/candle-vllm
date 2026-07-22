@@ -108,7 +108,6 @@ impl LLMEngine {
 
                 if is_prefill {
                     let prompt_ids = seq.deref_mut().get_token_ids();
-                    let seq_len = prompt_ids.len();
                     let num_cached_tokens = seq.deref().get_num_cached_tokens();
                     let chunk_size = engine
                         .prefill_chunk_size
@@ -129,18 +128,7 @@ impl LLMEngine {
                             .map(|block| block.deref_mut().block_id)
                             .collect();
                         for i in num_cached_tokens..num_cached_tokens + num_tokens {
-                            let start_idx = if let Some(sw) = engine.config.sliding_window {
-                                if seq_len > sw {
-                                    0.min(seq_len - sw)
-                                } else {
-                                    0
-                                }
-                            } else {
-                                0
-                            };
-                            if i < start_idx {
-                                slot_mapping_vec.push(super::_PAD_SLOT_ID);
-                            } else if i / engine.cache_config.block_size >= table.len() {
+                            if i / engine.cache_config.block_size >= table.len() {
                                 slot_mapping_vec.push(super::_PAD_SLOT_ID);
                             } else {
                                 let block_number = table[i / engine.cache_config.block_size];
@@ -158,11 +146,7 @@ impl LLMEngine {
                     input_ids.push(last_token_id);
                     let position = seq.deref_mut().get_len() - 1;
                     positions.push(position as i64);
-                    let context_len = if let Some(sliding_window) = engine.config.sliding_window {
-                        seq.deref_mut().get_len().min(sliding_window)
-                    } else {
-                        seq.deref_mut().get_len()
-                    };
+                    let context_len = seq.deref_mut().get_len();
                     context_lens_vec.push(context_len as u32);
 
                     let table = engine
@@ -189,13 +173,7 @@ impl LLMEngine {
                         .iter()
                         .map(|&x| x as u32)
                         .collect::<Vec<_>>();
-                    if let Some(sliding_window) = engine.config.sliding_window {
-                        let swb = sliding_window / engine.cache_config.block_size;
-                        let slide_idx = if bt.len() > swb { bt.len() - swb } else { 0 };
-                        block_tables_vecs.push(bt[slide_idx..].to_vec());
-                    } else {
-                        block_tables_vecs.push(bt);
-                    }
+                    block_tables_vecs.push(bt);
                 }
             }
         }

@@ -53,23 +53,10 @@ impl LLMEngine {
                 .block_tables
                 .get(&seq.deref().get_id())
                 .unwrap();
-            let table = table
+            let bt = table
                 .iter()
                 .map(|block| block.deref_mut().block_id as u32)
                 .collect::<Vec<_>>();
-
-            let bt = if let Some(sliding_window) = self.config.sliding_window {
-                let sliding_window_blocks = sliding_window / self.cache_config.block_size;
-                let slide_idx = if table.len() > sliding_window_blocks {
-                    table.len() - sliding_window_blocks
-                } else {
-                    0
-                };
-                table.get(slide_idx..).unwrap().to_vec()
-            } else {
-                table
-            };
-
             flat.extend_from_slice(bt.as_slice());
             flat.extend(std::iter::repeat(0).take(max_len - bt.len()));
         }
@@ -131,12 +118,12 @@ impl LLMEngine {
                 ordered_sequences.push(Arc::clone(&seq));
                 let prompt_ids = seq.deref_mut().get_token_ids();
                 sequence_ids.push(seq.deref().get_id());
-                let seq_len = prompt_ids.len();
-                if seq_len > max_context_len {
-                    max_context_len = seq_len + self.cache_config.block_size;
-                }
                 let num_cached_tokens = seq.deref().get_num_cached_tokens();
                 let num_tokens = seq.deref().prefill_chunk_tokens(chunk_size);
+                let effective_context = num_cached_tokens + num_tokens;
+                if effective_context > max_context_len {
+                    max_context_len = effective_context;
+                }
                 #[cfg(feature = "flashinfer")]
                 prefill_tokens.push(num_tokens);
 
@@ -190,22 +177,7 @@ impl LLMEngine {
                     .map(|block| block.deref_mut().block_id)
                     .collect::<Vec<_>>();
 
-                let start_idx = if let Some(sliding_window) = self.config.sliding_window {
-                    if seq_len > sliding_window {
-                        0.min(seq_len - sliding_window)
-                    } else {
-                        0
-                    }
-                } else {
-                    0
-                };
-
                 for i in num_cached_tokens..num_cached_tokens + num_tokens {
-                    if i < start_idx {
-                        slot_mapping.push(_PAD_SLOT_ID);
-                        continue;
-                    }
-
                     let block_number = if i / self.cache_config.block_size >= table.len() {
                         candle_core::bail!(
                             "Block table is too small (prompt)! i={} block_size={} table_len={}",
@@ -247,14 +219,9 @@ impl LLMEngine {
 
         let slot_mapping = Tensor::from_vec(slot_mapping, (s_len,), device)?;
 
-        let (context_lens, block_tables) = if cu_seqlens_k.last() > cu_seqlens_q.last() {
-            let len = context_lens.len();
-            let context_lens_t = Tensor::from_vec(context_lens, len, device)?;
-            let block_tables_t = self.prepare_block_tables(groups, device)?;
-            (Some(context_lens_t), Some(block_tables_t))
-        } else {
-            (None, None)
-        };
+        let len = context_lens.len();
+        let context_lens = Some(Tensor::from_vec(context_lens, len, device)?);
+        let block_tables = Some(self.prepare_block_tables(groups, device)?);
         let cu_seqlens_q_vec = cu_seqlens_q.clone();
         let cu_seqlens_q = Tensor::from_vec(cu_seqlens_q, (q_len,), device)?;
         let cu_seqlens_k = Tensor::from_vec(cu_seqlens_k, (k_len,), device)?;
@@ -426,11 +393,7 @@ impl LLMEngine {
                 let position = seq.deref_mut().get_len() - 1;
                 positions.push(position as i64);
 
-                let context_len = if let Some(sliding_window) = self.config.sliding_window {
-                    seq.deref_mut().get_len().min(sliding_window)
-                } else {
-                    seq.deref_mut().get_len()
-                };
+                let context_len = seq.deref_mut().get_len();
                 context_lens.push(context_len as u32);
 
                 let table = self
@@ -466,17 +429,7 @@ impl LLMEngine {
                 );
                 let table = table.get(..used_blocks).unwrap_or(&[]).to_vec();
 
-                if let Some(sliding_window) = self.config.sliding_window {
-                    let sliding_window_blocks = sliding_window / self.cache_config.block_size;
-                    let slide_idx = if table.len() > sliding_window_blocks {
-                        table.len() - sliding_window_blocks
-                    } else {
-                        0
-                    };
-                    block_tables.push(table.get(slide_idx..).unwrap().to_vec());
-                } else {
-                    block_tables.push(table);
-                }
+                block_tables.push(table);
             }
         }
 

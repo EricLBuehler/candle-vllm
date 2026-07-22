@@ -10,12 +10,7 @@ use super::streaming::{ChatResponse, Streamer, StreamingStatus};
 use super::OpenAIServerData;
 use crate::openai::multimodal::{build_messages_and_images, ImageData};
 use crate::openai::{resolve_tools_for_request, ResolvedToolConfig};
-use crate::tools::helpers::{
-    build_invalid_tool_call_feedback, build_tool_schema_map, filter_tool_calls,
-};
-use crate::tools::stream_parser::{
-    detect_prefilled_reasoning_end_marker, extract_reasoning_content,
-};
+use crate::tools::stream_parser::detect_prefilled_reasoning_end_marker;
 use axum::response::sse::KeepAlive;
 use axum::{
     extract::{Json, State},
@@ -390,7 +385,6 @@ pub async fn chat_completions(
         Some(Arc::clone(&sync_notify))
     };
     let request_tools_for_engine = tool_config.tools.clone();
-    let response_tools = tool_config.tools.clone();
 
     let _ = tokio::task::spawn_blocking(move || {
         tokio::runtime::Handle::current().block_on(async move {
@@ -406,6 +400,7 @@ pub async fn chat_completions(
                     EncodingFormat::default(),
                     EmbeddingType::default(),
                     request_tools_for_engine.clone(),
+                    tool_config.choice.clone(),
                     image_data,
                     if stream_request {
                         Some(Arc::new(response_tx))
@@ -458,74 +453,9 @@ pub async fn chat_completions(
             (record.0.clone(), record.1.clone())
         };
 
-        let mut final_choices = choices.clone();
-
-        // Extract reasoning content BEFORE tool parsing so that reasoning
-        // blocks are preserved even when tool calls consume the remaining
-        // content.  Without this, tool parsing sets content=None and the
-        // subsequent reasoning extraction finds nothing.
-        if crate::stream_as_reasoning_content() {
-            for choice in &mut final_choices {
-                if let Some(text) = choice.message.content.take() {
-                    match extract_reasoning_content(&text) {
-                        Some((reasoning, remaining)) => {
-                            choice.message.content = if remaining.is_empty() {
-                                None
-                            } else {
-                                Some(remaining)
-                            };
-                            choice.message.reasoning_content = Some(reasoning);
-                        }
-                        None => {
-                            choice.message.content = Some(text);
-                        }
-                    }
-                }
-            }
-        }
-
-        if has_tools {
-            let parser = crate::tools::parser::ToolParser::new();
-            let tool_schemas = build_tool_schema_map(&response_tools);
-            for choice in &mut final_choices {
-                let parsed_calls = if let Some(calls) = choice.message.tool_calls.take() {
-                    calls
-                } else if let Some(content) = &choice.message.content {
-                    parser.parse(content)
-                } else {
-                    Vec::new()
-                };
-
-                if parsed_calls.is_empty() {
-                    continue;
-                }
-
-                let (valid_calls, invalid_calls) = filter_tool_calls(&parsed_calls, &tool_schemas);
-                if !invalid_calls.is_empty() {
-                    tracing::warn!(
-                        "Dropped {} invalid tool call(s) before response",
-                        invalid_calls.len()
-                    );
-                }
-                if valid_calls.is_empty() {
-                    if let Some(feedback) =
-                        build_invalid_tool_call_feedback(&invalid_calls, &tool_schemas, None)
-                    {
-                        choice.message.content = Some(feedback);
-                    }
-                    choice.finish_reason = Some("stop".to_string());
-                    continue;
-                }
-
-                choice.message.tool_calls = Some(valid_calls);
-                choice.message.content = None;
-                choice.finish_reason = Some("tool_calls".to_string());
-            }
-        }
-
         let response = ChatCompletionResponse {
             id: request_id_clone,
-            choices: final_choices,
+            choices,
             created: usage.created,
             model: model_name,
             object: "chat.completion",
@@ -639,6 +569,7 @@ pub async fn create_embeddings(
                     request.encoding_format.clone(),
                     request.embedding_type.clone(),
                     Vec::new(),
+                    crate::openai::ToolChoiceKind::Auto,
                     None,
                     Some(Arc::new(response_tx)),
                     None,

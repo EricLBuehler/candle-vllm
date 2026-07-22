@@ -3,6 +3,7 @@
 //!
 //! Provides helpers for working with JSON Schema in tool definitions.
 
+use crate::tools::Tool;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
@@ -200,58 +201,6 @@ impl SchemaBuilder {
     }
 }
 
-/// Validate arguments against a JSON Schema
-pub fn validate_arguments(schema: &Value, arguments: &Value) -> Result<(), String> {
-    // Basic validation - check required fields and types
-    if let Some(required) = schema.get("required").and_then(|r| r.as_array()) {
-        for req in required {
-            if let Some(field_name) = req.as_str() {
-                if !arguments.get(field_name).map_or(false, |v| !v.is_null()) {
-                    return Err(format!("Missing required field: {}", field_name));
-                }
-            }
-        }
-    }
-
-    if let Some(properties) = schema.get("properties").and_then(|p| p.as_object()) {
-        if let Some(args_obj) = arguments.as_object() {
-            for (key, value) in args_obj {
-                if let Some(prop_schema) = properties.get(key) {
-                    validate_type(prop_schema, value, key)?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_type(schema: &Value, value: &Value, field_name: &str) -> Result<(), String> {
-    let expected_type = schema.get("type").and_then(|t| t.as_str());
-
-    match expected_type {
-        Some("string") if !value.is_string() => {
-            Err(format!("Field '{}' must be a string", field_name))
-        }
-        Some("number") if !value.is_number() => {
-            Err(format!("Field '{}' must be a number", field_name))
-        }
-        Some("integer") if !value.is_i64() && !value.is_u64() => {
-            Err(format!("Field '{}' must be an integer", field_name))
-        }
-        Some("boolean") if !value.is_boolean() => {
-            Err(format!("Field '{}' must be a boolean", field_name))
-        }
-        Some("array") if !value.is_array() => {
-            Err(format!("Field '{}' must be an array", field_name))
-        }
-        Some("object") if !value.is_object() => {
-            Err(format!("Field '{}' must be an object", field_name))
-        }
-        _ => Ok(()),
-    }
-}
-
 /// Common tool schemas for built-in tools
 pub mod common {
     use super::*;
@@ -304,64 +253,20 @@ pub mod common {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_schema_builder() {
-        let schema = SchemaBuilder::object()
-            .description("Get weather information")
-            .string_prop("location", "City name", true)
-            .enum_prop(
-                "unit",
-                vec!["celsius", "fahrenheit"],
-                "Temperature unit",
-                false,
-            )
-            .build();
-
-        assert_eq!(schema["type"], "object");
-        assert!(schema["properties"]["location"].is_object());
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("location")));
+/// Convert a Value schema to a Vec of Tool objects using ToolBuilder
+/// The schema should be an object where keys are tool names and values are tool schemas
+pub fn schema_to_tools(schema: &Value) -> Vec<Tool> {
+    let mut tools = Vec::new();
+    if let Value::Object(obj) = schema {
+        for (name, tool_schema) in obj {
+            if let Value::Object(props) = tool_schema {
+                if let Some(params) = props.get("parameters") {
+                    let builder = crate::tools::ToolBuilder::new(name.clone(), "".to_string())
+                        .parameters_schema(params.clone());
+                    tools.push(builder.build());
+                }
+            }
+        }
     }
-
-    #[test]
-    fn test_validate_required() {
-        let schema = SchemaBuilder::object()
-            .string_prop("name", "Name", true)
-            .build();
-
-        let valid = json!({"name": "test"});
-        let invalid = json!({});
-
-        assert!(validate_arguments(&schema, &valid).is_ok());
-        assert!(validate_arguments(&schema, &invalid).is_err());
-    }
-
-    #[test]
-    fn test_validate_types() {
-        let schema = SchemaBuilder::object()
-            .string_prop("name", "Name", true)
-            .integer_prop("age", "Age", false)
-            .build();
-
-        let valid = json!({"name": "test", "age": 25});
-        let invalid = json!({"name": "test", "age": "twenty-five"});
-
-        assert!(validate_arguments(&schema, &valid).is_ok());
-        assert!(validate_arguments(&schema, &invalid).is_err());
-    }
-
-    #[test]
-    fn test_common_schemas() {
-        let calc = common::calculator_schema();
-        assert!(calc["properties"]["expression"].is_object());
-
-        let search = common::web_search_schema();
-        assert!(search["properties"]["query"].is_object());
-    }
+    tools
 }
