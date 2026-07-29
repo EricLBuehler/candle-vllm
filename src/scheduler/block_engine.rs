@@ -1211,6 +1211,27 @@ impl BlockEngine {
         }
     }
 
+    pub fn reserve_additional_token_slots_for_seq(
+        &mut self,
+        sequence: &Sequence,
+        extra_tokens: usize,
+    ) {
+        if extra_tokens == 0 {
+            return;
+        }
+        let seq = sequence.deref();
+        let seq_id = seq.get_id();
+        let needed_len = seq.get_len() + extra_tokens;
+        let needed_blocks = needed_len.div_ceil(self.block_size);
+        drop(seq);
+        let Some(table) = self.block_tables.get_mut(&seq_id) else {
+            return;
+        };
+        while table.len() < needed_blocks {
+            table.push_back(self.gpu_allocator.allocate());
+        }
+    }
+
     pub fn can_swap_in_seq_group(&self, seq_group: &SequenceGroup) -> bool {
         if !self.cpu_swap_enabled() {
             return false;

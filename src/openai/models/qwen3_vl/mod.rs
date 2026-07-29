@@ -49,6 +49,18 @@ impl Qwen3VLForConditionalGeneration {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
+        Self::new_with_mtp(vb, cfg, dtype, device, comm, progress_reporter, false)
+    }
+
+    pub fn new_with_mtp(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        mtp_enabled: bool,
+    ) -> Result<Self> {
         assert!(
             cfg.extra_config_json.is_some(),
             "Invalid multimodal config file"
@@ -102,7 +114,7 @@ impl Qwen3VLForConditionalGeneration {
                 Some(text_prefix.to_string()),
             )?),
             "Qwen3_5MoeForConditionalGeneration" => {
-                Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix(
+                Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix_and_mtp(
                     vb.clone(),
                     cfg,
                     dtype,
@@ -110,19 +122,11 @@ impl Qwen3VLForConditionalGeneration {
                     comm.clone(),
                     progress_reporter.clone(),
                     Some(text_prefix.to_string()),
+                    mtp_enabled,
                 )?)
             }
-            "Qwen3_5ForConditionalGeneration" => Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix(
-                vb.clone(),
-                cfg,
-                dtype,
-                device,
-                comm.clone(),
-                progress_reporter.clone(),
-                Some(text_prefix.to_string()),
-            )?),
-            "Qwen3NextForConditionalGeneration" if next_is_moe => {
-                Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix(
+            "Qwen3_5ForConditionalGeneration" => {
+                Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix_and_mtp(
                     vb.clone(),
                     cfg,
                     dtype,
@@ -130,10 +134,23 @@ impl Qwen3VLForConditionalGeneration {
                     comm.clone(),
                     progress_reporter.clone(),
                     Some(text_prefix.to_string()),
+                    mtp_enabled,
+                )?)
+            }
+            "Qwen3NextForConditionalGeneration" if next_is_moe => {
+                Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix_and_mtp(
+                    vb.clone(),
+                    cfg,
+                    dtype,
+                    device,
+                    comm.clone(),
+                    progress_reporter.clone(),
+                    Some(text_prefix.to_string()),
+                    mtp_enabled,
                 )?)
             }
             "Qwen3NextForConditionalGeneration" => {
-                Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix(
+                Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix_and_mtp(
                     vb.clone(),
                     cfg,
                     dtype,
@@ -141,6 +158,7 @@ impl Qwen3VLForConditionalGeneration {
                     comm.clone(),
                     progress_reporter.clone(),
                     Some(text_prefix.to_string()),
+                    mtp_enabled,
                 )?)
             }
             _ => Qwen3TextModel::Dense(Qwen::new_with_prefix(
@@ -396,6 +414,74 @@ impl Qwen3VLForConditionalGeneration {
             Qwen3TextModel::Dense35GGUF(m) => m.preallocate_mamba_cache(max_num_seqs),
             Qwen3TextModel::MoE35GGUF(m) => m.preallocate_mamba_cache(max_num_seqs),
             _ => Ok(()),
+        }
+    }
+
+    pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(m) => m.preallocate_mtp_hidden_buffer(max_batch_size),
+            Qwen3TextModel::MoE35(m) => m.preallocate_mtp_hidden_buffer(max_batch_size),
+            Qwen3TextModel::Dense35GGUF(m) => m.preallocate_mtp_hidden_buffer(max_batch_size),
+            Qwen3TextModel::MoE35GGUF(m) => m.preallocate_mtp_hidden_buffer(max_batch_size),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn take_last_hidden_for_mtp(&self) -> Option<Tensor> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(m) => m.take_last_hidden_for_mtp(),
+            Qwen3TextModel::MoE35(m) => m.take_last_hidden_for_mtp(),
+            Qwen3TextModel::Dense35GGUF(m) => m.take_last_hidden_for_mtp(),
+            Qwen3TextModel::MoE35GGUF(m) => m.take_last_hidden_for_mtp(),
+            _ => None,
+        }
+    }
+
+    pub fn forward_with_hidden(
+        &self,
+        input_ids: &Tensor,
+        positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<(Tensor, Tensor)> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(m) => {
+                m.forward_with_hidden(input_ids, positions, kv_caches, input_metadata)
+            }
+            Qwen3TextModel::MoE35(m) => {
+                m.forward_with_hidden(input_ids, positions, kv_caches, input_metadata)
+            }
+            _ => candle_core::bail!("Qwen3VL MTP requires Qwen3.5 text backbone"),
+        }
+    }
+
+    pub fn embed_weight(&self) -> Result<Tensor> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(m) => Ok(m.embed_weight().clone()),
+            Qwen3TextModel::MoE35(m) => Ok(m.embed_weight().clone()),
+            Qwen3TextModel::Dense35GGUF(m) => Ok(m.embed_weight().clone()),
+            Qwen3TextModel::MoE35GGUF(m) => Ok(m.embed_weight().clone()),
+            _ => candle_core::bail!("Qwen3VL MTP requires Qwen3.5 text embeddings"),
+        }
+    }
+
+    pub fn forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(m) => m.forward_lm_head(hidden),
+            Qwen3TextModel::MoE35(m) => m.forward_lm_head(hidden),
+            Qwen3TextModel::Dense35GGUF(m) => m.forward_lm_head(hidden),
+            Qwen3TextModel::MoE35GGUF(m) => m.forward_lm_head(hidden),
+            _ => candle_core::bail!("Qwen3VL MTP requires Qwen3.5 lm_head"),
+        }
+    }
+
+    pub fn mtp_rollback_mamba(&self, seq_id: usize, keep_tokens: usize) -> Result<bool> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(m) => m.mtp_rollback_mamba(seq_id, keep_tokens),
+            Qwen3TextModel::MoE35(m) => m.mtp_rollback_mamba(seq_id, keep_tokens),
+            Qwen3TextModel::Dense35GGUF(m) => m.mtp_rollback_mamba(seq_id, keep_tokens),
+            Qwen3TextModel::MoE35GGUF(m) => m.mtp_rollback_mamba(seq_id, keep_tokens),
+            _ => Ok(false),
         }
     }
 

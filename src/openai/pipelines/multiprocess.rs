@@ -1,10 +1,13 @@
 use std::{collections::HashMap, sync::Arc, time::SystemTime};
 
-use candle_core::{Device, Result, Tensor};
+use candle_core::{DType, Device, Result, Tensor};
+use either::Either;
 use parking_lot::RwLock;
 
 use crate::openai::communicator::{FlashInferHostData, ForwardPayload, MessageType};
 use crate::openai::multimodal::ImageData;
+use crate::openai::pipelines::DefaultPipeline;
+use crate::scheduler::cache_engine::CacheEngine;
 use crate::InputMetadata;
 
 use super::{ChatChoice, ChatCompletionUsageResponse, LLMEngine, PreparedInputs, SequenceGroup};
@@ -84,6 +87,7 @@ impl LLMEngine {
             seqlens: prepared.metadata.seqlens.clone(),
             is_prefill: prepared.metadata.is_prefill,
             is_mla: prepared.metadata.is_mla,
+            is_mtp_verify: prepared.metadata.is_mtp_verify,
             flashinfer_host,
         })
     }
@@ -250,6 +254,7 @@ impl LLMEngine {
             seqlens: prepared.metadata.seqlens.clone(),
             is_prefill,
             is_mla: prepared.metadata.is_mla,
+            is_mtp_verify: prepared.metadata.is_mtp_verify,
             flashinfer_host,
         })
     }
@@ -316,7 +321,7 @@ impl LLMEngine {
             max_context_len: payload.max_context_len,
             seqlens: payload.seqlens.clone(),
             flashinfer_metadata: None,
-            is_mtp_verify: false,
+            is_mtp_verify: payload.is_mtp_verify,
         };
 
         Ok(PreparedInputs {
@@ -390,6 +395,181 @@ impl LLMEngine {
             candle_core::bail!("pipeline for daemon rank 0 was replaced while detached");
         }
         let _logits = _logits?;
+        Ok(())
+    }
+
+    fn prepare_daemon_payload_inputs(
+        engine: &Arc<RwLock<Self>>,
+        payload: &ForwardPayload,
+    ) -> Result<((Box<DefaultPipeline>, CacheEngine), PreparedInputs)> {
+        let mut guard = engine.write();
+        let (pipeline, _) = guard.get_pipeline(0).unwrap();
+        let device = pipeline.device().clone();
+
+        let mut prepared = Self::rebuild_inputs_from_payload(payload, &device)?;
+
+        prepared.metadata.mamba_slot_mapping = guard.prepare_mamba_slot_mapping(
+            &payload.sequence_ids,
+            payload.is_prefill,
+            0,
+            &device,
+        )?;
+
+        #[cfg(feature = "flashinfer")]
+        {
+            Self::build_daemon_flashinfer_metadata(
+                &guard,
+                payload,
+                &device,
+                &mut prepared.metadata,
+            )?;
+        }
+
+        #[cfg(feature = "flashinfer")]
+        if !prepared.metadata.is_prefill {
+            let use_cuda_graph = prepared
+                .metadata
+                .flashinfer_metadata
+                .as_ref()
+                .map(|fm| fm.use_cuda_graph)
+                .unwrap_or(false);
+            if !use_cuda_graph {
+                guard.ensure_flashinfer_decode_plan(
+                    0,
+                    &device,
+                    prepared.tokens.dim(0)?,
+                    &mut prepared.metadata,
+                )?;
+            }
+        }
+
+        let pipeline_entry = guard
+            .pipelines
+            .remove(&0)
+            .ok_or_else(|| candle_core::Error::msg("missing pipeline for daemon rank 0"))?;
+        Ok((pipeline_entry, prepared))
+    }
+
+    fn daemon_run_mtp_step1(engine: &Arc<RwLock<Self>>, payload: &ForwardPayload) -> Result<()> {
+        let (pipeline_entry, prepared) = Self::prepare_daemon_payload_inputs(engine, payload)?;
+        let mut pipeline_entry = pipeline_entry;
+        let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
+        let run_result = pipeline.forward(
+            prepared.tokens,
+            &prepared.positions,
+            Some(&cache_engine.get_kv_cache()),
+            &prepared.metadata,
+            None,
+        );
+
+        let mut guard = engine.write();
+        if guard.pipelines.insert(0, pipeline_entry).is_some() {
+            candle_core::bail!("pipeline for daemon rank 0 was replaced while detached");
+        }
+        let _ = run_result?;
+        let (pipeline, _) = guard.get_pipeline(0).unwrap();
+        guard.multiprocess_mtp_hidden =
+            Some(pipeline.take_last_hidden_for_mtp().ok_or_else(|| {
+                candle_core::Error::msg(
+                    "daemon MTP anchor decode did not populate hidden-state buffer",
+                )
+            })?);
+        Ok(())
+    }
+
+    fn daemon_run_mtp_step2(
+        engine: &Arc<RwLock<Self>>,
+        anchor_token: u32,
+        seq_id: usize,
+        seq_len: usize,
+        verify_payload: &ForwardPayload,
+    ) -> Result<()> {
+        let (pipeline_entry, prepared) =
+            Self::prepare_daemon_payload_inputs(engine, verify_payload)?;
+        let seq_hidden = {
+            let mut guard = engine.write();
+            guard.multiprocess_mtp_hidden.take().ok_or_else(|| {
+                candle_core::Error::msg("missing daemon MTP hidden state from step1")
+            })?
+        };
+
+        let mut pipeline_entry = pipeline_entry;
+        let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
+        let run_result: Result<Option<crate::openai::models::qwen3_5_mtp::MtpVerifyResult>> =
+            (|| {
+                let mtp_head = pipeline.mtp_head.as_ref().ok_or_else(|| {
+                    candle_core::Error::msg("daemon MTP step2 requires loaded MTP head")
+                })?;
+                let embed_weight = pipeline.mtp_embed_weight()?;
+                let anchor_token_tensor =
+                    Tensor::from_vec(vec![anchor_token], (1,), pipeline.device())?;
+                let (draft_tokens, _) = mtp_head.draft_tokens_gpu(
+                    &seq_hidden,
+                    &anchor_token_tensor,
+                    pipeline.mtp_num_speculative,
+                    &embed_weight,
+                    |hidden| pipeline.mtp_forward_lm_head(hidden),
+                    seq_len.saturating_sub(1),
+                )?;
+
+                if draft_tokens.is_empty() {
+                    return Ok(None);
+                }
+
+                let mut verify_tokens = vec![anchor_token];
+                verify_tokens.extend_from_slice(&draft_tokens);
+                let verify_input =
+                    Tensor::from_vec(verify_tokens, (draft_tokens.len() + 1,), pipeline.device())?;
+                #[cfg(all(feature = "cuda", feature = "graph"))]
+                let use_mtp_graph = pipeline.capturer.is_mtp_captured(draft_tokens.len() + 1);
+                #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                let use_mtp_graph = false;
+                let all_logits = if use_mtp_graph {
+                    #[cfg(all(feature = "cuda", feature = "graph"))]
+                    {
+                        pipeline.capturer.replay_mtp(
+                            &verify_input,
+                            &prepared.positions,
+                            &prepared.metadata,
+                        )
+                    }
+                    #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                    {
+                        unreachable!()
+                    }
+                } else {
+                    pipeline.forward(
+                        verify_input,
+                        &prepared.positions,
+                        Some(&cache_engine.get_kv_cache()),
+                        &prepared.metadata,
+                        None,
+                    )
+                }?;
+                let verify_result = crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
+                    &all_logits,
+                    &draft_tokens,
+                )?;
+                Ok(Some(verify_result))
+            })();
+
+        let mut guard = engine.write();
+        if guard.pipelines.insert(0, pipeline_entry).is_some() {
+            candle_core::bail!("pipeline for daemon rank 0 was replaced while detached");
+        }
+        if let Some(verify_result) = run_result? {
+            if verify_result.num_accepted < verify_result.num_proposed {
+                let (pipeline, _) = guard.get_pipeline(0).unwrap();
+                let restored =
+                    pipeline.mtp_rollback_mamba(seq_id, 1 + verify_result.num_accepted)?;
+                if !restored {
+                    candle_core::bail!(
+                        "daemon MTP failed to roll back mamba state for seq {}",
+                        seq_id
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -534,6 +714,33 @@ impl LLMEngine {
             .send_message(&MessageType::RunForward(payload.clone()));
     }
 
+    fn broadcast_mtp_step1(&self, payload: &ForwardPayload) {
+        let mut dm = self.daemon_manager.write();
+        let _ = dm
+            .as_mut()
+            .unwrap()
+            .send_message(&MessageType::RunMtpStep1(payload.clone()));
+    }
+
+    fn broadcast_mtp_step2(
+        &self,
+        anchor_token: u32,
+        seq_id: usize,
+        seq_len: usize,
+        verify_payload: &ForwardPayload,
+    ) {
+        let mut dm = self.daemon_manager.write();
+        let _ = dm
+            .as_mut()
+            .unwrap()
+            .send_message(&MessageType::RunMtpStep2 {
+                anchor_token,
+                seq_id,
+                seq_len,
+                verify_payload: verify_payload.clone(),
+            });
+    }
+
     fn broadcast_finish_sequences(&self, seq_ids: &[usize]) {
         if seq_ids.is_empty() {
             return;
@@ -607,7 +814,16 @@ impl LLMEngine {
         engine: &Arc<RwLock<Self>>,
         scheduled: &VecDeque<Arc<SequenceGroup>>,
     ) -> Result<super::BatchExecution> {
-        let (pipeline_entry, tokens, positions, metadata, images, is_embedding, model_name) = {
+        let (
+            pipeline_entry,
+            tokens,
+            positions,
+            metadata,
+            images,
+            is_embedding,
+            model_name,
+            mtp_context,
+        ) = {
             let mut guard = engine.write();
             let is_embedding = scheduled[0].is_embedding;
             let is_prompt_request = Self::primary_sequence(&scheduled[0]).deref().is_prompt();
@@ -619,6 +835,11 @@ impl LLMEngine {
             let (pipeline, _) = guard.get_pipeline(0).unwrap();
             let device = pipeline.device();
             let model_name = pipeline.name().to_string();
+            let use_mtp = pipeline.has_mtp()
+                && !is_prompt_request
+                && !is_embedding
+                && scheduled.len() == 1
+                && scheduled[0].sampling_params.mcp_mode.is_none();
             #[cfg_attr(not(feature = "flashinfer"), allow(unused_mut))]
             let mut prepared = if is_prompt_request {
                 guard.prepare_prompt(scheduled, device, 0)
@@ -645,7 +866,65 @@ impl LLMEngine {
             }
 
             let payload = Self::build_forward_payload_from_scheduler(&guard, scheduled, &prepared)?;
-            guard.broadcast_forward(&payload);
+            let mtp_context = if use_mtp {
+                guard.broadcast_mtp_step1(&payload);
+                let seq = Self::primary_sequence(&scheduled[0]);
+                let seq_id = seq.deref().get_id();
+                let seq_len = seq.deref().get_len();
+                let block_table = guard
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq_id)
+                    .ok_or_else(|| candle_core::Error::msg("missing MTP block table"))?
+                    .iter()
+                    .map(|block| block.deref_mut().block_id as u32)
+                    .collect::<Vec<_>>();
+                let verify_len = pipeline.mtp_num_speculative + 1;
+                let slot_mappings = Self::compute_mtp_slot_mappings(
+                    &block_table,
+                    seq_len,
+                    verify_len,
+                    guard.cache_config.block_size,
+                )?;
+                let verify_positions = Tensor::from_vec(
+                    (0..verify_len)
+                        .map(|i| (seq_len + i) as i64)
+                        .collect::<Vec<_>>(),
+                    (verify_len,),
+                    device,
+                )?;
+                let verify_metadata = guard.build_mtp_metadata(
+                    0,
+                    device,
+                    seq_id,
+                    seq_len,
+                    &block_table,
+                    slot_mappings,
+                    verify_len,
+                )?;
+                let verify_prepared = PreparedInputs {
+                    tokens: Tensor::zeros((verify_len,), DType::U32, device)?,
+                    positions: verify_positions,
+                    metadata: verify_metadata,
+                };
+                let verify_payload = Self::extract_forward_payload(&verify_prepared)?;
+                let PreparedInputs {
+                    positions: verify_positions,
+                    metadata: verify_metadata,
+                    ..
+                } = verify_prepared;
+                Some((
+                    seq_id,
+                    seq_len,
+                    verify_positions,
+                    verify_metadata,
+                    verify_payload,
+                ))
+            } else {
+                guard.broadcast_forward(&payload);
+                None
+            };
 
             let PreparedInputs {
                 tokens,
@@ -700,37 +979,180 @@ impl LLMEngine {
                 images,
                 is_embedding,
                 model_name,
+                mtp_context,
             )
         };
 
-        let (pipeline, cache_engine) = (&pipeline_entry.0, &pipeline_entry.1);
-        let logits = if is_embedding {
-            pipeline.forward_embedding(
-                tokens,
-                &positions,
-                Some(&cache_engine.get_kv_cache()),
-                &metadata,
-            )
-        } else {
-            pipeline.forward(
-                tokens,
-                &positions,
-                Some(&cache_engine.get_kv_cache()),
-                &metadata,
-                images.as_ref(),
-            )
-        };
+        let mut pipeline_entry = pipeline_entry;
+        let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
+        let mut mtp_results = None;
+        let run_result: Result<Tensor> = (|| {
+            if let Some((seq_id, seq_len, verify_positions, verify_metadata, verify_payload)) =
+                mtp_context
+            {
+                let logits = pipeline.forward(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                    None,
+                )?;
+                let anchor_result = pipeline.sample(&logits, scheduled)?;
+                match anchor_result.first() {
+                    Some(Either::Left(anchor_logprobs)) => {
+                        let anchor_token = anchor_logprobs.token;
+                        engine.read().broadcast_mtp_step2(
+                            anchor_token,
+                            seq_id,
+                            seq_len,
+                            &verify_payload,
+                        );
+
+                        let seq_hidden = pipeline.take_last_hidden_for_mtp().ok_or_else(|| {
+                            candle_core::Error::msg(
+                                "MTP anchor decode did not populate hidden-state buffer",
+                            )
+                        })?;
+                        let mtp_head = pipeline.mtp_head.as_ref().unwrap().clone();
+                        let embed_weight = pipeline.mtp_embed_weight()?;
+                        let anchor_token_tensor =
+                            Tensor::from_vec(vec![anchor_token], (1,), pipeline.device())?;
+                        let (draft_tokens, _) = mtp_head.draft_tokens_gpu(
+                            &seq_hidden,
+                            &anchor_token_tensor,
+                            pipeline.mtp_num_speculative,
+                            &embed_weight,
+                            |hidden| pipeline.mtp_forward_lm_head(hidden),
+                            seq_len.saturating_sub(1),
+                        )?;
+                        if draft_tokens.is_empty() {
+                            mtp_results = Some(anchor_result);
+                            Ok(Tensor::zeros((1, 1), DType::F32, pipeline.device())?)
+                        } else {
+                            let mut verify_tokens = vec![anchor_token];
+                            verify_tokens.extend_from_slice(&draft_tokens);
+                            let verify_input = Tensor::from_vec(
+                                verify_tokens,
+                                (draft_tokens.len() + 1,),
+                                pipeline.device(),
+                            )?;
+                            #[cfg(all(feature = "cuda", feature = "graph"))]
+                            let use_mtp_graph =
+                                pipeline.capturer.is_mtp_captured(draft_tokens.len() + 1);
+                            #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                            let use_mtp_graph = false;
+                            let all_logits = if use_mtp_graph {
+                                #[cfg(all(feature = "cuda", feature = "graph"))]
+                                {
+                                    pipeline.capturer.replay_mtp(
+                                        &verify_input,
+                                        &verify_positions,
+                                        &verify_metadata,
+                                    )
+                                }
+                                #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                                {
+                                    unreachable!()
+                                }
+                            } else {
+                                pipeline.forward(
+                                    verify_input,
+                                    &verify_positions,
+                                    Some(&cache_engine.get_kv_cache()),
+                                    &verify_metadata,
+                                    None,
+                                )
+                            }?;
+                            let verify_result =
+                                crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
+                                    &all_logits,
+                                    &draft_tokens,
+                                )?;
+                            if verify_result.num_accepted < verify_result.num_proposed {
+                                let restored = pipeline
+                                    .mtp_rollback_mamba(seq_id, 1 + verify_result.num_accepted)?;
+                                if !restored {
+                                    candle_core::bail!(
+                                        "MTP failed to roll back mamba state for seq {}",
+                                        seq_id
+                                    );
+                                }
+                            }
+
+                            let mut results = anchor_result;
+                            let mut extra_tokens = verify_result.accepted_tokens.clone();
+                            extra_tokens.push(verify_result.continuation_token);
+                            let seq = Self::primary_sequence(scheduled.front().unwrap());
+                            let generated_before_anchor = seq
+                                .deref()
+                                .get_len()
+                                .saturating_sub(seq.deref().get_prompt_len());
+                            let remaining_after_anchor = scheduled
+                                .front()
+                                .unwrap()
+                                .sampling_params
+                                .max_tokens
+                                .saturating_sub(generated_before_anchor + 1);
+                            extra_tokens.truncate(remaining_after_anchor);
+                            if !extra_tokens.is_empty() {
+                                let mut extra_results =
+                                    pipeline.tokens_to_results(&extra_tokens, scheduled)?;
+                                results.append(&mut extra_results);
+                            }
+                            crate::openai::models::qwen3_5_mtp::mtp_stats_update(
+                                verify_result.num_proposed,
+                                verify_result.num_accepted,
+                            );
+                            let mtp_steps = crate::openai::models::qwen3_5_mtp::MTP_TOTAL_STEPS
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            if crate::openai::models::qwen3_5_mtp::mtp_stats_should_log(mtp_steps) {
+                                tracing::info!(
+                                    "MTP step={} proposed={} accepted={} committed_extra={} {}",
+                                    mtp_steps,
+                                    verify_result.num_proposed,
+                                    verify_result.num_accepted,
+                                    extra_tokens.len(),
+                                    crate::openai::models::qwen3_5_mtp::mtp_stats_summary()
+                                );
+                            }
+                            mtp_results = Some(results);
+                            Ok(all_logits)
+                        }
+                    }
+                    _ => {
+                        mtp_results = Some(anchor_result);
+                        Ok(Tensor::zeros((1, 1), DType::F32, pipeline.device())?)
+                    }
+                }
+            } else if is_embedding {
+                pipeline.forward_embedding(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                )
+            } else {
+                pipeline.forward(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                    images.as_ref(),
+                )
+            }
+        })();
         let mut guard = engine.write();
         if guard.pipelines.insert(0, pipeline_entry).is_some() {
             candle_core::bail!("pipeline for rank 0 was replaced while detached");
         }
-        let logits = logits?;
+        let logits = run_result?;
 
         Ok(super::BatchExecution {
             logits,
             is_prompt: metadata.is_prefill,
             is_embedding,
             model_name,
+            mtp_results,
         })
     }
 
@@ -752,6 +1174,27 @@ impl LLMEngine {
                 Ok(MessageType::RunForward(payload)) => {
                     if let Err(e) = Self::daemon_run_forward(&engine, &payload) {
                         tracing::error!("Daemon forward failed: {:?}", e);
+                    }
+                }
+                Ok(MessageType::RunMtpStep1(payload)) => {
+                    if let Err(e) = Self::daemon_run_mtp_step1(&engine, &payload) {
+                        tracing::error!("Daemon MTP step1 failed: {:?}", e);
+                    }
+                }
+                Ok(MessageType::RunMtpStep2 {
+                    anchor_token,
+                    seq_id,
+                    seq_len,
+                    verify_payload,
+                }) => {
+                    if let Err(e) = Self::daemon_run_mtp_step2(
+                        &engine,
+                        anchor_token,
+                        seq_id,
+                        seq_len,
+                        &verify_payload,
+                    ) {
+                        tracing::error!("Daemon MTP step2 failed: {:?}", e);
                     }
                 }
                 Ok(MessageType::FinishSequences(seq_ids)) => {
@@ -897,17 +1340,29 @@ impl LLMEngine {
                 }
             }
 
-            let results = {
-                let mut e = engine.write();
-                let default_pipeline = e.get_mut_pipeline(0usize).unwrap().0.as_mut();
-                default_pipeline.sample(&batch.logits, &scheduled)?
-            };
-
             engine.read().clear_current_scheduled_groups();
 
             {
                 let mut e = engine.write();
-                e.apply_sample_results(0, &scheduled, results, &mut prompt_finish_times)?;
+                if let Some(results) = batch.mtp_results.take() {
+                    for result in results {
+                        if scheduled.iter().any(|group| group.is_finished()) {
+                            break;
+                        }
+                        e.apply_sample_results(
+                            0,
+                            &scheduled,
+                            vec![result],
+                            &mut prompt_finish_times,
+                        )?;
+                    }
+                } else {
+                    let results = {
+                        let default_pipeline = e.get_mut_pipeline(0usize).unwrap().0.as_mut();
+                        default_pipeline.sample(&batch.logits, &scheduled)?
+                    };
+                    e.apply_sample_results(0, &scheduled, results, &mut prompt_finish_times)?;
+                }
                 e.finalize_post_sampling(&scheduled, 0, &prompt_finish_times, batch.is_prompt)?;
                 let _aborted = e.collect_finished_responses(
                     &scheduled,

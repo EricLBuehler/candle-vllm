@@ -90,9 +90,9 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 | 3 | **Phi3/Phi4** | 153 tks/s (3.8B) | 196 tks/s (3.8B, Q4K) |
 | 4 | **QWen2/Qwen3 Dense** | 127 tks/s (8B) | 154 tks/s **(8B, Q4K)** |
 | 5 | **QWen3 MoE** | 102 tks/s **(30B)** | 124 tks/s **(30B, Q4K)** |
-| 6 | **QWen3-Next MoE** | 80 tks/s **(80B, BF16, tp=2)** | TBD |
+| 6 | **QWen3-Next MoE** | 80 tks/s **(80B, BF16, tp=2)** | 89 tks/s **(AWQ, tp=1)** |
 | 7 | **QWen3.5/3.6 Dense** | 36 tks/s **(27B, BF16)** | ~49 tks/s **(27B, Q4K / FP8)** |
-| 8 | **QWen3.5/3.6 MoE** | 90 tks/s **(35B)** | 105 tks/s **(35B, Q4K)** |
+| 8 | **QWen3.5/3.6 MoE** | 90 tks/s **(35B)** | 118 tks/s **(35B, FP8)** |
 | 9 | **Yi** | 168 tks/s (6B) | 199 tks/s (6B, Q4K) |
 | 10 | **StableLM** | 251 tks/s (3B) | - |
 | 11 | **Gemma-2/Gemma-3** | 103 tks/s (9B) | 130 tks/s (9B, **Marlin**) |
@@ -131,6 +131,7 @@ Chat demo on **Apple Silicon** (M4, 16GB unified memory, Q2K, QWen3-8B)
 - Support `Multi-node` inference via TCP-based coordination
 - Support Chunked Prefilling (default chunk size 8K)
 - Support CUDA Graph
+- Support Qwen3.5 MTP speculative decoding with CUDA Graph via `--mtp`
 - Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
 - Support Prefix Caching
 - Support Block-wise FP8 Models (SM90+, Qwen3 Series)
@@ -139,6 +140,7 @@ Chat demo on **Apple Silicon** (M4, 16GB unified memory, Q2K, QWen3-8B)
 - Support Flashinfer Backend
 - Support manual YaRN RoPE scaling override via `--yarn-scaling-factor`
 - Support MXFP4/NVFP4 models
+- Support GPTQ/AWQ/Marlin models, including pack-quantized AWQ MoE
 - Support DeepSeek V3.2 and GLM-5.2 FP8 models
 
 ---
@@ -181,6 +183,9 @@ candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
 
 # Faster GDN prefill on Hopper with slight precision loss
 SM90_LOWER_PRECISION_GDN_PREFILL=1 candle-vllm --m Qwen/Qwen3.5-35B-A3B-FP8
+
+# Qwen3.5 MTP speculative decoding (2 draft tokens per step)
+candle-vllm --w /data/Qwen3.5-35B-A3B-FP8/ --mtp 2 --ui-server
 
 # GLM-5.2 FP8 Model
 candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
@@ -255,6 +260,9 @@ candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
 # Convert AWQ to Marlin-compatible format
 python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
 candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
+
+# AWQ MoE (pack-quantized), e.g. Qwen3-Coder-Next
+candle-vllm --m cyankiwi/Qwen3-Coder-Next-AWQ-4bit
 
 # Direct Marlin-format model
 candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/

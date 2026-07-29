@@ -751,6 +751,164 @@ impl Attention {
             None,
         )
     }
+
+    /// Single-token attention without KV cache or paged attention.
+    ///
+    /// Qwen3.5 MTP drafting uses this for the lightweight MTP head. For a
+    /// single query/key/value row, the attention weights are a 1x1 softmax, so
+    /// the attention output is the value projection after any GQA expansion.
+    pub fn forward_single_token_no_cache(
+        &self,
+        xs: &Tensor,
+        rotary_emb: &ScalingRotaryEmbedding,
+        input_positions: &Tensor,
+    ) -> Result<Tensor> {
+        let (seq_len, _) = xs.dims2()?;
+        if seq_len != 1 {
+            candle_core::bail!(
+                "forward_single_token_no_cache expects one token, got {}",
+                seq_len
+            );
+        }
+
+        let (query_states, key_states, value_states) = match &self.qkv_proj {
+            QkvProjection::Separate {
+                q_proj,
+                k_proj,
+                v_proj,
+            } => (
+                q_proj.forward(xs)?,
+                k_proj.forward(xs)?,
+                v_proj.forward(xs)?,
+            ),
+            QkvProjection::Packed(qkv_proj) => {
+                let qkv = qkv_proj.forward(xs)?;
+                if qkv.len() != 3 {
+                    candle_core::bail!(
+                        "Expected 3 outputs from packed qkv projection, got {}",
+                        qkv.len()
+                    );
+                }
+                (qkv[0].clone(), qkv[1].clone(), qkv[2].clone())
+            }
+        };
+
+        let local_q_dim = self.num_heads * self.head_dim;
+        let (query_states, q_gate) = if self.attn_output_gate {
+            let q_dim = query_states.dim(1)?;
+            if q_dim != local_q_dim * 2 {
+                candle_core::bail!(
+                    "q_proj output dim mismatch for gated attention, expected {}, got {}",
+                    local_q_dim * 2,
+                    q_dim
+                );
+            }
+            let q_gate = query_states.reshape((seq_len, self.num_heads, self.head_dim * 2))?;
+            let q = q_gate.narrow(2, 0, self.head_dim)?;
+            let gate = q_gate.narrow(2, self.head_dim, self.head_dim)?;
+            (
+                q.reshape((seq_len, local_q_dim))?,
+                Some(gate.reshape((seq_len, local_q_dim))?),
+            )
+        } else {
+            (query_states, None)
+        };
+
+        let q = query_states.reshape((seq_len, self.num_heads, self.head_dim))?;
+        let k = key_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
+        let v = value_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
+
+        let (q, k) = if q.dtype() != DType::F32 {
+            (q.to_dtype(DType::F32)?, k.to_dtype(DType::F32)?)
+        } else {
+            (q, k)
+        };
+
+        let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
+            if self.full_dim_qk_norm {
+                let q_2d = q.reshape((seq_len, self.num_heads * self.head_dim))?;
+                let k_2d = k.reshape((seq_len, self.num_kv_heads * self.head_dim))?;
+                (
+                    q_norm
+                        .forward(&q_2d)?
+                        .reshape((seq_len, self.num_heads, self.head_dim))?,
+                    k_norm
+                        .forward(&k_2d)?
+                        .reshape((seq_len, self.num_kv_heads, self.head_dim))?,
+                )
+            } else {
+                let q_flat = q.flatten(0, 1)?;
+                let k_flat = k.flatten(0, 1)?;
+                (
+                    q_norm
+                        .forward(&q_flat)?
+                        .reshape((seq_len, self.num_heads, self.head_dim))?,
+                    k_norm.forward(&k_flat)?.reshape((
+                        seq_len,
+                        self.num_kv_heads,
+                        self.head_dim,
+                    ))?,
+                )
+            }
+        } else {
+            (q, k)
+        };
+
+        let rope_dtype = rotary_emb.0.cos.dtype();
+        let q = if q.dtype() != rope_dtype {
+            q.to_dtype(rope_dtype)?
+        } else {
+            q
+        };
+        let k = if k.dtype() != rope_dtype {
+            k.to_dtype(rope_dtype)?
+        } else {
+            k
+        };
+        let (mut q, mut k) = rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
+        if self.qk_l2_norm {
+            let q_rms = (q.sqr()?.mean_keepdim(candle_core::D::Minus1)? + 1e-5)?.sqrt()?;
+            let k_rms = (k.sqr()?.mean_keepdim(candle_core::D::Minus1)? + 1e-5)?.sqrt()?;
+            q = q.broadcast_div(&q_rms)?;
+            k = k.broadcast_div(&k_rms)?;
+        }
+        drop(q);
+        drop(k);
+
+        let mut v = if v.dtype() != self.dtype {
+            v.to_dtype(self.dtype)?
+        } else {
+            v
+        };
+        if let Some(eps) = self.v_norm_eps {
+            let orig_dtype = v.dtype();
+            let v_f32 = v.to_dtype(DType::F32)?;
+            let mean_sq = v_f32.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
+            let rms = (mean_sq + eps)?.sqrt()?;
+            v = v_f32.broadcast_div(&rms)?.to_dtype(orig_dtype)?;
+        }
+
+        let groups = self.num_heads / self.num_kv_heads;
+        let y = if groups > 1 {
+            v.unsqueeze(2)?
+                .expand((seq_len, self.num_kv_heads, groups, self.head_dim))?
+                .reshape((seq_len, self.num_heads * self.head_dim))?
+        } else {
+            v.reshape((seq_len, self.num_heads * self.head_dim))?
+        };
+        let y = if let Some(gate) = q_gate {
+            let gate = if gate.dtype() != y.dtype() {
+                gate.to_dtype(y.dtype())?
+            } else {
+                gate
+            };
+            y.broadcast_mul(&candle_nn::ops::sigmoid(&gate)?)?
+        } else {
+            y
+        };
+
+        self.o_proj.forward(&y.to_dtype(xs.dtype())?)
+    }
 }
 
 pub struct QuantizedAttention {
@@ -996,6 +1154,127 @@ impl QuantizedAttention {
 
         let y = if let Some(gate) = gate {
             let gate = gate.to_dtype(y.dtype())?;
+            y.broadcast_mul(&candle_nn::ops::sigmoid(&gate)?)?
+        } else {
+            y
+        };
+
+        let mut y = self.attention_wo.forward(&y.to_dtype(DType::F32)?)?;
+        #[cfg(feature = "nccl")]
+        if let Some(all_reduce) = &self.all_reduce {
+            y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
+            y = y.to_dtype(DType::F32)?;
+        }
+        Ok(y)
+    }
+
+    pub fn forward_single_token_no_cache(
+        &self,
+        x: &Tensor,
+        input_positions: &Tensor,
+    ) -> Result<Tensor> {
+        let (seq_len, _) = x.dims2()?;
+        if seq_len != 1 {
+            candle_core::bail!(
+                "quantized forward_single_token_no_cache expects one token, got {}",
+                seq_len
+            );
+        }
+
+        let q_raw = self.attention_wq.forward(x)?;
+        let k = self.attention_wk.forward(x)?;
+        let v = self.attention_wv.forward(x)?;
+
+        let q_raw = if let Some(bq) = &self.attention_bq {
+            q_raw.broadcast_add(bq)?
+        } else {
+            q_raw
+        };
+        let k = if let Some(bk) = &self.attention_bk {
+            k.broadcast_add(bk)?
+        } else {
+            k
+        };
+        let v = if let Some(bv) = &self.attention_bv {
+            v.broadcast_add(bv)?
+        } else {
+            v
+        };
+
+        let local_q_dim = self.n_head * self.head_dim;
+        let (q_linear, gate) = if self.attn_output_gate {
+            let q_dim = q_raw.dim(1)?;
+            if q_dim != local_q_dim * 2 {
+                candle_core::bail!(
+                    "quantized q_proj output dim mismatch for gated attention, expected {}, got {}",
+                    local_q_dim * 2,
+                    q_dim
+                );
+            }
+            let q_gate = q_raw.reshape((seq_len, self.n_head, self.head_dim * 2))?;
+            let q = q_gate.narrow(2, 0, self.head_dim)?;
+            let gate = q_gate.narrow(2, self.head_dim, self.head_dim)?;
+            (
+                q.reshape((seq_len, local_q_dim))?,
+                Some(gate.reshape((seq_len, local_q_dim))?),
+            )
+        } else {
+            (q_raw, None)
+        };
+
+        let q = q_linear.reshape((seq_len, self.n_head, self.head_dim))?;
+        let k = k.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+        let v = v.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+
+        let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
+            let q_flat = q.flatten(0, 1)?;
+            let k_flat = k.flatten(0, 1)?;
+            (
+                q_norm
+                    .forward(&q_flat)?
+                    .reshape((seq_len, self.n_head, self.head_dim))?,
+                k_norm
+                    .forward(&k_flat)?
+                    .reshape((seq_len, self.n_kv_head, self.head_dim))?,
+            )
+        } else {
+            (q, k)
+        };
+
+        let rope_dtype = self.rotary_emb.0.cos.dtype();
+        let q = if q.dtype() != rope_dtype {
+            q.to_dtype(rope_dtype)?
+        } else {
+            q
+        };
+        let k = if k.dtype() != rope_dtype {
+            k.to_dtype(rope_dtype)?
+        } else {
+            k
+        };
+        let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
+        drop(q);
+        drop(k);
+
+        let v = if v.dtype() != self.dtype {
+            v.to_dtype(self.dtype)?
+        } else {
+            v
+        };
+        let groups = self.n_head / self.n_kv_head;
+        let y = if groups > 1 {
+            v.unsqueeze(2)?
+                .expand((seq_len, self.n_kv_head, groups, self.head_dim))?
+                .reshape((seq_len, self.n_head * self.head_dim))?
+        } else {
+            v.reshape((seq_len, self.n_head * self.head_dim))?
+        };
+        let y = if let Some(gate) = gate {
+            let gate = if gate.dtype() != y.dtype() {
+                gate.to_dtype(y.dtype())?
+            } else {
+                gate
+            };
             y.broadcast_mul(&candle_nn::ops::sigmoid(&gate)?)?
         } else {
             y

@@ -217,6 +217,7 @@ pub struct GGUFQWen3_5MoE {
     cfg: Config,
     dtype: DType,
     device: Device,
+    mtp_hidden_buffer: std::sync::Mutex<Option<Tensor>>,
 }
 
 impl GGUFQWen3_5MoE {
@@ -286,6 +287,7 @@ impl GGUFQWen3_5MoE {
         rank: usize,
         world_size: usize,
         #[allow(unused_variables)] comm: Rc<Comm>,
+        mtp_enabled: bool,
     ) -> Result<Self> {
         let metadata = vb.first_content_metadata();
         let md_get = |s: &str| match metadata.get(s) {
@@ -308,7 +310,28 @@ impl GGUFQWen3_5MoE {
             embedding_length / head_count
         };
         let context_length = md_get(format!("{arch}.context_length").as_str())?.to_u32()? as usize;
-        let block_count = md_get(format!("{arch}.block_count").as_str())?.to_u32()? as usize;
+        let mut block_count = md_get(format!("{arch}.block_count").as_str())?.to_u32()? as usize;
+        let nextn_predict_layers = metadata
+            .get(&format!("{arch}.nextn_predict_layers"))
+            .map(|v| v.to_u32())
+            .transpose()?
+            .unwrap_or(0) as usize;
+        if nextn_predict_layers > 0 {
+            if nextn_predict_layers >= block_count {
+                candle_core::bail!(
+                    "{arch}.nextn_predict_layers ({}) must be smaller than {arch}.block_count ({})",
+                    nextn_predict_layers,
+                    block_count
+                );
+            }
+            tracing::info!(
+                "GGUF model declares {} MTP prediction layer(s); loading {} decoder layer(s) from {} total block(s).",
+                nextn_predict_layers,
+                block_count - nextn_predict_layers,
+                block_count
+            );
+            block_count -= nextn_predict_layers;
+        }
         let rms_norm_eps =
             md_get(format!("{arch}.attention.layer_norm_rms_epsilon").as_str())?.to_f32()? as f64;
         let rope_freq_base = md_get(format!("{arch}.rope.freq_base").as_str())
@@ -450,6 +473,7 @@ impl GGUFQWen3_5MoE {
                     rms_norm_eps,
                     rank,
                     world_size,
+                    mtp_enabled,
                 )?)
             };
 
@@ -614,11 +638,34 @@ impl GGUFQWen3_5MoE {
             cfg,
             dtype,
             device: device.clone(),
+            mtp_hidden_buffer: std::sync::Mutex::new(None),
         })
     }
 
     pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
         self.tok_embeddings.forward(input_ids)
+    }
+
+    pub fn embed_weight(&self) -> &Tensor {
+        self.tok_embeddings.embeddings()
+    }
+
+    pub fn take_last_hidden_for_mtp(&self) -> Option<Tensor> {
+        let guard = self.mtp_hidden_buffer.lock().ok()?;
+        let buf = guard.as_ref()?;
+        buf.get(0).ok()
+    }
+
+    pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
+        let buf = Tensor::zeros(
+            (max_batch_size, self.cfg.hidden_size),
+            self.dtype,
+            &self.device,
+        )?;
+        if let Ok(mut guard) = self.mtp_hidden_buffer.lock() {
+            *guard = Some(buf);
+        }
+        Ok(())
     }
 
     pub fn dtype(&self) -> DType {
@@ -754,7 +801,18 @@ impl GGUFQWen3_5MoE {
         if return_hidden {
             return Ok(xs);
         }
+        if let Ok(guard) = self.mtp_hidden_buffer.lock() {
+            if let Some(buf) = guard.as_ref() {
+                if xs.elem_count() <= buf.elem_count() {
+                    let _ = buf.copy_(&xs, 0);
+                }
+            }
+        }
         self.output.forward(&xs)?.to_dtype(DType::F32)
+    }
+
+    pub fn forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
+        self.output.forward(hidden)?.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {
@@ -810,6 +868,24 @@ impl GGUFQWen3_5MoE {
 
     pub fn restore_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
         self.mamba_cache.write().restore_prefix_state(seq_id, hash)
+    }
+
+    pub fn mtp_rollback_mamba(&self, seq_id: usize, keep_tokens: usize) -> Result<bool> {
+        let mut mamba_cache = self.mamba_cache.write();
+        let slots = mamba_cache
+            .get_slots_for_sequences(&[seq_id])?
+            .into_iter()
+            .map(|s| s as i64)
+            .collect::<Vec<_>>();
+        let seq_slots = Tensor::from_vec(slots, (1,), &self.device)?;
+        let mut restored = false;
+        for layer in &self.layers {
+            if let AttnType::LinearAttention(gdn) = &layer.attn {
+                gdn.rollback_mtp_verify(&mut mamba_cache, &seq_slots, keep_tokens)?;
+                restored = true;
+            }
+        }
+        Ok(restored)
     }
 
     pub fn reset_mamba_cache(&self) -> Result<()> {

@@ -70,6 +70,7 @@ impl DecoderLayer {
         _dtype: DType,
         layer_type: &str,
         gdn_layer_idx: usize,
+        mtp_enabled: bool,
     ) -> Result<Self> {
         let use_norm_offset = cfg
             .quantization_config
@@ -89,6 +90,7 @@ impl DecoderLayer {
                 comm.clone(),
                 cfg,
                 gdn_layer_idx,
+                mtp_enabled,
             )?)
         };
 
@@ -160,6 +162,7 @@ pub struct Qwen3_5 {
     dtype: DType,
     cfg: Config,
     vocab_size: usize,
+    mtp_hidden_buffer: std::sync::Mutex<Option<Tensor>>,
 }
 
 impl Qwen3_5 {
@@ -171,7 +174,28 @@ impl Qwen3_5 {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
-        Self::new_with_prefix(vb, cfg, dtype, device, comm, progress_reporter, None)
+        Self::new_with_mtp(vb, cfg, dtype, device, comm, progress_reporter, false)
+    }
+
+    pub fn new_with_mtp(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        mtp_enabled: bool,
+    ) -> Result<Self> {
+        Self::new_with_prefix_and_mtp(
+            vb,
+            cfg,
+            dtype,
+            device,
+            comm,
+            progress_reporter,
+            None,
+            mtp_enabled,
+        )
     }
 
     pub fn new_with_prefix(
@@ -182,6 +206,28 @@ impl Qwen3_5 {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
         prefix: Option<String>,
+    ) -> Result<Self> {
+        Self::new_with_prefix_and_mtp(
+            vb,
+            cfg,
+            dtype,
+            device,
+            comm,
+            progress_reporter,
+            prefix,
+            false,
+        )
+    }
+
+    pub fn new_with_prefix_and_mtp(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        prefix: Option<String>,
+        mtp_enabled: bool,
     ) -> Result<Self> {
         let text_backbone = resolve_text_backbone(&vb, cfg.tie_word_embeddings);
         let vb_m = if let Some(prefix) = prefix {
@@ -224,6 +270,7 @@ impl Qwen3_5 {
                 dtype,
                 layer_type,
                 cur_gdn_idx,
+                mtp_enabled,
             )?;
             layers.push(layer);
             reporter.write().set_progress(layer_idx + 1);
@@ -310,6 +357,7 @@ impl Qwen3_5 {
             dtype,
             cfg: cfg.clone(),
             vocab_size: cfg.vocab_size,
+            mtp_hidden_buffer: std::sync::Mutex::new(None),
         })
     }
 
@@ -320,6 +368,28 @@ impl Qwen3_5 {
         } else {
             Ok(xs)
         }
+    }
+
+    pub fn embed_weight(&self) -> &Tensor {
+        self.embed_tokens.embeddings()
+    }
+
+    pub fn take_last_hidden_for_mtp(&self) -> Option<Tensor> {
+        let guard = self.mtp_hidden_buffer.lock().ok()?;
+        let buf = guard.as_ref()?;
+        buf.get(0).ok()
+    }
+
+    pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
+        let buf = Tensor::zeros(
+            (max_batch_size, self.cfg.hidden_size),
+            self.dtype,
+            &self.device,
+        )?;
+        if let Ok(mut guard) = self.mtp_hidden_buffer.lock() {
+            *guard = Some(buf);
+        }
+        Ok(())
     }
 
     pub fn forward(
@@ -437,6 +507,13 @@ impl Qwen3_5 {
         if return_hidden {
             return xs.to_dtype(DType::F32);
         }
+        if let Ok(guard) = self.mtp_hidden_buffer.lock() {
+            if let Some(buf) = guard.as_ref() {
+                if xs.elem_count() <= buf.elem_count() {
+                    let _ = buf.copy_(&xs, 0);
+                }
+            }
+        }
         self.lm_head
             .forward(&xs.to_dtype(self.dtype)?)?
             .to_dtype(DType::F32)
@@ -462,6 +539,36 @@ impl Qwen3_5 {
             deepstack_visual_embeds,
             false,
         )
+    }
+
+    pub fn forward_with_hidden(
+        &self,
+        input_ids: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<(Tensor, Tensor)> {
+        let hidden = self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            &None,
+            &None,
+            true,
+        )?;
+        let logits = self
+            .lm_head
+            .forward(&hidden.to_dtype(self.dtype)?)?
+            .to_dtype(DType::F32)?;
+        Ok((logits, hidden))
+    }
+
+    pub fn forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
+        self.lm_head
+            .forward(&hidden.to_dtype(self.dtype)?)?
+            .to_dtype(DType::F32)
     }
 
     pub fn release_sequence_state(&self, sequence_id: usize) {
@@ -513,6 +620,24 @@ impl Qwen3_5 {
 
     pub fn restore_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
         self.mamba_cache.write().restore_prefix_state(seq_id, hash)
+    }
+
+    pub fn mtp_rollback_mamba(&self, seq_id: usize, keep_tokens: usize) -> Result<bool> {
+        let mut mamba_cache = self.mamba_cache.write();
+        let slots = mamba_cache
+            .get_slots_for_sequences(&[seq_id])?
+            .into_iter()
+            .map(|s| s as i64)
+            .collect::<Vec<_>>();
+        let seq_slots = Tensor::from_vec(slots, (1,), &self.device)?;
+        let mut restored = false;
+        for layer in &self.layers {
+            if let AttnType::LinearAttention(gdn) = &layer.attn {
+                gdn.rollback_mtp_verify(&mut mamba_cache, &seq_slots, keep_tokens)?;
+                restored = true;
+            }
+        }
+        Ok(restored)
     }
 
     pub fn reset_mamba_cache(&self) -> Result<()> {
