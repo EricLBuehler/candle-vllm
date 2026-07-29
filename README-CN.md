@@ -90,7 +90,7 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 | 3 | **Phi3/Phi4** | 153 tks/s (3.8B) | 196 tks/s (3.8B, Q4K) |
 | 4 | **QWen2/Qwen3 Dense** | 127 tks/s (8B) | 154 tks/s **(8B, Q4K)** |
 | 5 | **QWen3 MoE** | 102 tks/s **(30B)** | 124 tks/s **(30B, Q4K)** |
-| 6 | **QWen3-Next MoE** | 80 tks/s **(80B, BF16, tp=2)** | TBD |
+| 6 | **QWen3-Next MoE** | 80 tks/s **(80B, BF16, tp=2)** | 支持 **(AWQ MoE)** |
 | 7 | **QWen3.5/3.6 Dense** | 36 tks/s **(27B, BF16)** | ~49 tks/s **(27B, Q4K / FP8)** |
 | 8 | **QWen3.5/3.6 MoE** | 90 tks/s **(35B)** | 105 tks/s **(35B, Q4K)** |
 | 9 | **Yi** | 168 tks/s (6B) | 199 tks/s (6B, Q4K) |
@@ -131,6 +131,7 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 - 支持 `多节点` 推理（基于 TCP 协调）
 - 支持分块 Prefilling（默认块大小 8K）
 - 支持 CUDA Graph
+- 支持 Qwen3.5 MTP 投机解码，并通过 `--mtp` 使用 CUDA Graph
 - 支持 Model Context Protocol（MCP）和 OpenAI 兼容工具调用
 - 支持 Prefix Caching
 - 支持硬件 FP8 模型推理加速（SM90+, Qwen3 系列，Block-wise FP8 量化）
@@ -139,6 +140,7 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 - 支持 Flashinfer 后端
 - 支持通过命令行参数 `--yarn-scaling-factor` 手动设置 YaRN RoPE 缩放因子
 - 支持 MXFP4/NVFP4 模型
+- 支持 GPTQ/AWQ/Marlin 模型，包括 pack-quantized AWQ MoE
 - 支持 DeepSeek V3.2 和 GLM-5.2 FP8 模型
 
 ---
@@ -155,6 +157,9 @@ candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
 
 # Hopper 上加速 GDN 预填充，精度略有损失
 SM90_LOWER_PRECISION_GDN_PREFILL=1 candle-vllm --m Qwen/Qwen3.5-35B-A3B-FP8
+
+# Qwen3.5 MTP 投机解码（每步 2 个 draft token）
+candle-vllm --w /data/Qwen3.5-35B-A3B-FP8/ --mtp 2 --ui-server
 
 # GLM-5.2 FP8 模型
 candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
@@ -255,6 +260,9 @@ candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ_4bit-128g
 # 将 AWQ 转换为 Marlin 兼容格式
 python3 examples/convert_awq_marlin.py --src /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4/ --dst /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/ --bits 4 --method awq --group 128 --nk False
 candle-vllm --d 0 --w /home/Meta-Llama-3.1-8B-Instruct-AWQ-INT4-Marlin/
+
+# AWQ MoE（pack-quantized），例如 Qwen3-Coder-Next
+candle-vllm --m cyankiwi/Qwen3-Coder-Next-AWQ-4bit
 
 # 直接使用 Marlin 格式模型
 candle-vllm --w /home/DeepSeek-R1-Distill-Qwen-14B-GPTQ-Marlin/

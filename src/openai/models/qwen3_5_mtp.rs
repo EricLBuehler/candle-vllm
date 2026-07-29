@@ -14,6 +14,7 @@ use std::sync::Arc;
 pub static MTP_TOTAL_PROPOSED: AtomicUsize = AtomicUsize::new(0);
 pub static MTP_TOTAL_ACCEPTED: AtomicUsize = AtomicUsize::new(0);
 pub static MTP_TOTAL_STEPS: AtomicUsize = AtomicUsize::new(0);
+pub const MTP_STATS_LOG_INTERVAL_STEPS: usize = 256;
 
 #[derive(Debug, Clone)]
 pub struct MtpVerifyResult {
@@ -57,6 +58,10 @@ pub fn mtp_stats_update(proposed: usize, accepted: usize) {
     MTP_TOTAL_PROPOSED.fetch_add(proposed, Ordering::Relaxed);
     MTP_TOTAL_ACCEPTED.fetch_add(accepted, Ordering::Relaxed);
     MTP_TOTAL_STEPS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn mtp_stats_should_log(step: usize) -> bool {
+    step > 0 && step % MTP_STATS_LOG_INTERVAL_STEPS == 0
 }
 
 pub fn mtp_stats_summary() -> String {

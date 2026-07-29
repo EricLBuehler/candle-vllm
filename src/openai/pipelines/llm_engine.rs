@@ -2095,7 +2095,7 @@ impl LLMEngine {
                             );
                             let mtp_steps = crate::openai::models::qwen3_5_mtp::MTP_TOTAL_STEPS
                                 .load(std::sync::atomic::Ordering::Relaxed);
-                            if mtp_steps <= 32 || mtp_steps % 256 == 0 {
+                            if crate::openai::models::qwen3_5_mtp::mtp_stats_should_log(mtp_steps) {
                                 info!(
                                     "MTP step={} proposed={} accepted={} committed_extra={} {}",
                                     mtp_steps,
