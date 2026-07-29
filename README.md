@@ -90,9 +90,9 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 | 3 | **Phi3/Phi4** | 153 tks/s (3.8B) | 196 tks/s (3.8B, Q4K) |
 | 4 | **QWen2/Qwen3 Dense** | 127 tks/s (8B) | 154 tks/s **(8B, Q4K)** |
 | 5 | **QWen3 MoE** | 102 tks/s **(30B)** | 124 tks/s **(30B, Q4K)** |
-| 6 | **QWen3-Next MoE** | 80 tks/s **(80B, BF16, tp=2)** | Supported **(AWQ MoE)** |
+| 6 | **QWen3-Next MoE** | 80 tks/s **(80B, BF16, tp=2)** | 89 tks/s **(AWQ, tp=1)** |
 | 7 | **QWen3.5/3.6 Dense** | 36 tks/s **(27B, BF16)** | ~49 tks/s **(27B, Q4K / FP8)** |
-| 8 | **QWen3.5/3.6 MoE** | 90 tks/s **(35B)** | 105 tks/s **(35B, Q4K)** |
+| 8 | **QWen3.5/3.6 MoE** | 90 tks/s **(35B)** | 118 tks/s **(35B, FP8)** |
 | 9 | **Yi** | 168 tks/s (6B) | 199 tks/s (6B, Q4K) |
 | 10 | **StableLM** | 251 tks/s (3B) | - |
 | 11 | **Gemma-2/Gemma-3** | 103 tks/s (9B) | 130 tks/s (9B, **Marlin**) |
