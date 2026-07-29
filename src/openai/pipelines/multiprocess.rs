@@ -454,19 +454,26 @@ impl LLMEngine {
         let (pipeline_entry, prepared) = Self::prepare_daemon_payload_inputs(engine, payload)?;
         let mut pipeline_entry = pipeline_entry;
         let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
-        let run_result = pipeline.forward_with_hidden(
+        let run_result = pipeline.forward(
             prepared.tokens,
             &prepared.positions,
             Some(&cache_engine.get_kv_cache()),
             &prepared.metadata,
+            None,
         );
 
         let mut guard = engine.write();
         if guard.pipelines.insert(0, pipeline_entry).is_some() {
             candle_core::bail!("pipeline for daemon rank 0 was replaced while detached");
         }
-        let (_, hidden_states) = run_result?;
-        guard.multiprocess_mtp_hidden = Some(Self::select_mtp_last_hidden(hidden_states)?);
+        let _ = run_result?;
+        let (pipeline, _) = guard.get_pipeline(0).unwrap();
+        guard.multiprocess_mtp_hidden =
+            Some(pipeline.take_last_hidden_for_mtp().ok_or_else(|| {
+                candle_core::Error::msg(
+                    "daemon MTP anchor decode did not populate hidden-state buffer",
+                )
+            })?);
         Ok(())
     }
 
@@ -513,13 +520,32 @@ impl LLMEngine {
                 verify_tokens.extend_from_slice(&draft_tokens);
                 let verify_input =
                     Tensor::from_vec(verify_tokens, (draft_tokens.len() + 1,), pipeline.device())?;
-                let all_logits = pipeline.forward(
-                    verify_input,
-                    &prepared.positions,
-                    Some(&cache_engine.get_kv_cache()),
-                    &prepared.metadata,
-                    None,
-                )?;
+                #[cfg(all(feature = "cuda", feature = "graph"))]
+                let use_mtp_graph = pipeline.capturer.is_mtp_captured(draft_tokens.len() + 1);
+                #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                let use_mtp_graph = false;
+                let all_logits = if use_mtp_graph {
+                    #[cfg(all(feature = "cuda", feature = "graph"))]
+                    {
+                        pipeline.capturer.replay_mtp(
+                            &verify_input,
+                            &prepared.positions,
+                            &prepared.metadata,
+                        )
+                    }
+                    #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                    {
+                        unreachable!()
+                    }
+                } else {
+                    pipeline.forward(
+                        verify_input,
+                        &prepared.positions,
+                        Some(&cache_engine.get_kv_cache()),
+                        &prepared.metadata,
+                        None,
+                    )
+                }?;
                 let verify_result = crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
                     &all_logits,
                     &draft_tokens,
@@ -964,11 +990,12 @@ impl LLMEngine {
             if let Some((seq_id, seq_len, verify_positions, verify_metadata, verify_payload)) =
                 mtp_context
             {
-                let (logits, hidden_states) = pipeline.forward_with_hidden(
+                let logits = pipeline.forward(
                     tokens,
                     &positions,
                     Some(&cache_engine.get_kv_cache()),
                     &metadata,
+                    None,
                 )?;
                 let anchor_result = pipeline.sample(&logits, scheduled)?;
                 match anchor_result.first() {
@@ -981,7 +1008,11 @@ impl LLMEngine {
                             &verify_payload,
                         );
 
-                        let seq_hidden = Self::select_mtp_last_hidden(hidden_states)?;
+                        let seq_hidden = pipeline.take_last_hidden_for_mtp().ok_or_else(|| {
+                            candle_core::Error::msg(
+                                "MTP anchor decode did not populate hidden-state buffer",
+                            )
+                        })?;
                         let mtp_head = pipeline.mtp_head.as_ref().unwrap().clone();
                         let embed_weight = pipeline.mtp_embed_weight()?;
                         let anchor_token_tensor =
@@ -1005,13 +1036,33 @@ impl LLMEngine {
                                 (draft_tokens.len() + 1,),
                                 pipeline.device(),
                             )?;
-                            let all_logits = pipeline.forward(
-                                verify_input,
-                                &verify_positions,
-                                Some(&cache_engine.get_kv_cache()),
-                                &verify_metadata,
-                                None,
-                            )?;
+                            #[cfg(all(feature = "cuda", feature = "graph"))]
+                            let use_mtp_graph =
+                                pipeline.capturer.is_mtp_captured(draft_tokens.len() + 1);
+                            #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                            let use_mtp_graph = false;
+                            let all_logits = if use_mtp_graph {
+                                #[cfg(all(feature = "cuda", feature = "graph"))]
+                                {
+                                    pipeline.capturer.replay_mtp(
+                                        &verify_input,
+                                        &verify_positions,
+                                        &verify_metadata,
+                                    )
+                                }
+                                #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                                {
+                                    unreachable!()
+                                }
+                            } else {
+                                pipeline.forward(
+                                    verify_input,
+                                    &verify_positions,
+                                    Some(&cache_engine.get_kv_cache()),
+                                    &verify_metadata,
+                                    None,
+                                )
+                            }?;
                             let verify_result =
                                 crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
                                     &all_logits,

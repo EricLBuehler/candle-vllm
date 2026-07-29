@@ -406,6 +406,13 @@ impl Qwen3VLForConditionalGeneration {
         }
     }
 
+    pub fn take_last_hidden_for_mtp(&self) -> Option<Tensor> {
+        match &self.text_model {
+            Qwen3TextModel::MoE35(m) => m.take_last_hidden_for_mtp(),
+            _ => None,
+        }
+    }
+
     pub fn forward_with_hidden(
         &self,
         input_ids: &Tensor,

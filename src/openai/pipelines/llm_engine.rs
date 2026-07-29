@@ -1726,16 +1726,6 @@ impl LLMEngine {
         Ok(slots)
     }
 
-    fn select_mtp_last_hidden(hidden_states: Tensor) -> Result<Tensor> {
-        if hidden_states.dims().len() == 2 && hidden_states.dim(0)? > 1 {
-            hidden_states.get(hidden_states.dim(0)? - 1)
-        } else if hidden_states.dims().len() == 2 {
-            hidden_states.get(0)
-        } else {
-            Ok(hidden_states)
-        }
-    }
-
     fn build_mtp_metadata(
         &self,
         rank: usize,
@@ -1989,17 +1979,22 @@ impl LLMEngine {
         let mut mtp_results = None;
         let run_result: Result<Tensor> = (|| {
             if let Some((seq_id, seq_len, verify_positions, verify_metadata)) = mtp_context {
-                let (logits, hidden_states) = pipeline.forward_with_hidden(
+                let logits = pipeline.forward(
                     tokens,
                     &positions,
                     Some(&cache_engine.get_kv_cache()),
                     &metadata,
+                    None,
                 )?;
                 let anchor_result = pipeline.sample(&logits, scheduled)?;
                 match anchor_result.first() {
                     Some(Either::Left(anchor_logprobs)) => {
                         let anchor_token = anchor_logprobs.token;
-                        let seq_hidden = Self::select_mtp_last_hidden(hidden_states)?;
+                        let seq_hidden = pipeline.take_last_hidden_for_mtp().ok_or_else(|| {
+                            candle_core::Error::msg(
+                                "MTP anchor decode did not populate hidden-state buffer",
+                            )
+                        })?;
                         let mtp_head = pipeline.mtp_head.as_ref().unwrap().clone();
                         let embed_weight = pipeline.mtp_embed_weight()?;
                         let anchor_token_tensor =
@@ -2028,13 +2023,33 @@ impl LLMEngine {
                                 pipeline.device(),
                             )?;
                             let _prefill_guard = set_linear_is_prefill(true);
-                            let all_logits = pipeline.forward(
-                                verify_input,
-                                &verify_positions,
-                                Some(&cache_engine.get_kv_cache()),
-                                &verify_metadata,
-                                None,
-                            )?;
+                            #[cfg(all(feature = "cuda", feature = "graph"))]
+                            let use_mtp_graph =
+                                pipeline.capturer.is_mtp_captured(draft_tokens.len() + 1);
+                            #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                            let use_mtp_graph = false;
+                            let all_logits = if use_mtp_graph {
+                                #[cfg(all(feature = "cuda", feature = "graph"))]
+                                {
+                                    pipeline.capturer.replay_mtp(
+                                        &verify_input,
+                                        &verify_positions,
+                                        &verify_metadata,
+                                    )
+                                }
+                                #[cfg(not(all(feature = "cuda", feature = "graph")))]
+                                {
+                                    unreachable!()
+                                }
+                            } else {
+                                pipeline.forward(
+                                    verify_input,
+                                    &verify_positions,
+                                    Some(&cache_engine.get_kv_cache()),
+                                    &verify_metadata,
+                                    None,
+                                )
+                            }?;
                             let verify_result =
                                 crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
                                     &all_logits,
