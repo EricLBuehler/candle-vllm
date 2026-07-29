@@ -196,6 +196,9 @@ pub struct QuantConfig {
     /// FP8 E4M3 block scales. This is distinct from native U8-packed NVFP4.
     #[serde(default)]
     pub is_mlx_nvfp4: bool,
+    /// Generic compressed-tensors `pack-quantized` WNA16 weights.
+    #[serde(default)]
+    pub is_compressed_tensors: bool,
 }
 
 impl QuantConfig {
@@ -280,7 +283,34 @@ impl QuantConfig {
         if is_mxfp4 {
             self.quant_method = "mxfp4".to_string();
             self.extract_compressed_tensors_params();
+            return;
         }
+
+        // llm-compressor AWQ/GPTQ checkpoints use the generic
+        // compressed-tensors pack-quantized format. Keep it distinct from
+        // NVFP4/MXFP4 so model loaders can select the WNA16 path.
+        if format_str == "pack-quantized" || self.detect_pack_quantized_from_config_groups() {
+            self.quant_method = "compressed-tensors".to_string();
+            self.is_compressed_tensors = true;
+            self.extract_compressed_tensors_params();
+            if self.sym.is_none() {
+                self.sym = Some(true);
+            }
+        }
+    }
+
+    fn detect_pack_quantized_from_config_groups(&self) -> bool {
+        self.config_groups
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .is_some_and(|groups| {
+                groups.values().any(|group| {
+                    group
+                        .get("format")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|fmt| fmt == "pack-quantized")
+                })
+            })
     }
 
     fn detect_nvfp4_from_config_groups(&self) -> bool {
@@ -400,6 +430,7 @@ impl fmt::Debug for QuantConfig {
             .field("weight_block_size", &self.weight_block_size)
             .field("modules_to_not_convert", &self.modules_to_not_convert)
             .field("is_mlx_nvfp4", &self.is_mlx_nvfp4)
+            .field("is_compressed_tensors", &self.is_compressed_tensors)
             .finish()
     }
 }

@@ -72,6 +72,9 @@ impl GatedDeltaNet {
                     vb.contains_tensor("weight_scale_2") || vb.contains_tensor("input_scale");
                 has_mlx || (has_packed && has_scale) || (has_modelopt && has_scale)
             }
+            "compressed-tensors" => {
+                vb.contains_tensor("weight_packed") && vb.contains_tensor("weight_scale")
+            }
             _ => true,
         }
     }

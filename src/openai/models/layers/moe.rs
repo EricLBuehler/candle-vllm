@@ -905,6 +905,365 @@ impl FusedMoeISQ {
 }
 
 /// FP8 Mixture of Experts layer with block-wise scales
+/// MoE WNA16 loader for compressed-tensors `pack-quantized` and symmetric
+/// classic GPTQ checkpoints.
+///
+/// The checkpoint stores each expert projection independently as
+/// `weight_packed` (`[out, in / pack_factor]`) and `weight_scale`
+/// (`[out, in / group_size]`).  The packed tensors stay packed on device and
+/// are consumed by attention.rs' grouped WNA16 kernel.
+pub struct FusedMoeWNA16 {
+    gate: Linear,
+    gate_up_packed: Tensor,
+    gate_up_scales: Tensor,
+    down_packed: Tensor,
+    down_scales: Tensor,
+    w_size_n: usize,
+    act: Activation,
+    norm_topk_prob: bool,
+    routed_scaling_factor: Option<f64>,
+    num_experts_per_tok: usize,
+    all_reduce: AllReduce,
+    world_size: usize,
+    dtype: DType,
+    bits: usize,
+    group_size: usize,
+    gate_dtype: DType,
+    legacy_gptq: bool,
+}
+
+impl FusedMoeWNA16 {
+    pub fn new(
+        cfg: &Config,
+        vb: VarBuilder,
+        comm: Rc<Comm>,
+        dtype: DType,
+        quant_cfg: &QuantConfig,
+    ) -> Result<Self> {
+        Self::new_with_gate(
+            cfg,
+            vb.pp("gate"),
+            vb.pp("experts"),
+            &vb,
+            comm,
+            dtype,
+            quant_cfg,
+        )
+    }
+
+    pub fn new_with_gate(
+        cfg: &Config,
+        gate_vb: VarBuilder,
+        experts_vb: VarBuilder,
+        _bias_vb: &VarBuilder,
+        comm: Rc<Comm>,
+        dtype: DType,
+        quant_cfg: &QuantConfig,
+    ) -> Result<Self> {
+        let moe_cfg = qwen_moe_cfg(cfg)?;
+        let num_experts = moe_cfg.num_experts.unwrap_or(0);
+        if num_experts == 0 {
+            candle::bail!("num_experts must be > 0");
+        }
+        let bits = quant_cfg.bits;
+        let legacy_gptq = quant_cfg.quant_method == "gptq";
+        if !matches!(bits, 4 | 8) || quant_cfg.group_size <= 0 {
+            candle_core::bail!(
+                "WNA16 MoE requires 4/8 bits and a positive group size, got bits={bits}, group_size={}",
+                quant_cfg.group_size
+            );
+        }
+        let group_size = quant_cfg.group_size as usize;
+        let pack_factor = 32 / bits;
+        if cfg.hidden_size % pack_factor != 0
+            || moe_cfg.moe_intermediate_size % pack_factor != 0
+            || cfg.hidden_size % group_size != 0
+            || moe_cfg.moe_intermediate_size % group_size != 0
+        {
+            candle_core::bail!(
+                "WNA16 MoE dimensions must be divisible by pack_factor/group_size: hidden_size={}, moe_intermediate_size={}, pack_factor={}, group_size={group_size}",
+                cfg.hidden_size,
+                moe_cfg.moe_intermediate_size,
+                pack_factor
+            );
+        }
+        if quant_cfg.sym == Some(false) {
+            candle_core::bail!("asymmetric WNA16 MoE is not supported yet");
+        }
+        if legacy_gptq && quant_cfg.desc_act == Some(true) {
+            candle_core::bail!("classic GPTQ WNA16 MoE with desc_act/g_idx is not supported yet");
+        }
+
+        let gate_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
+        let gate = linear_no_bias(cfg.hidden_size, num_experts, gate_vb, Shard::default())?;
+
+        let mut gate_weights = Vec::with_capacity(num_experts);
+        let mut gate_scales = Vec::with_capacity(num_experts);
+        let mut up_weights = Vec::with_capacity(num_experts);
+        let mut up_scales = Vec::with_capacity(num_experts);
+        let mut down_weights = Vec::with_capacity(num_experts);
+        let mut down_scales = Vec::with_capacity(num_experts);
+        for expert_id in 0..num_experts {
+            let expert = experts_vb.pp(expert_id.to_string().as_str());
+            let (gate_name, up_name, down_name) = resolve_expert_proj_prefix(&expert);
+            let gate_vb = expert.pp(gate_name);
+            let up_vb = expert.pp(up_name);
+            let down_vb = expert.pp(down_name);
+
+            let (gate_weight, gate_scale, up_weight, up_scale, down_weight, down_scale) =
+                if legacy_gptq {
+                    // Classic GPTQ stores qweight=[K/pack,N] and scales=[K/group,N].
+                    // The grouped WNA16 kernels consume [N,K/pack] and [N,K/group].
+                    for (name, vb) in [
+                        ("gate_proj", &gate_vb),
+                        ("up_proj", &up_vb),
+                        ("down_proj", &down_vb),
+                    ] {
+                        if !vb.contains_tensor("qzeros") {
+                            candle_core::bail!(
+                                "classic GPTQ MoE projection {name} is missing qzeros"
+                            );
+                        }
+                    }
+                    let gate_weight = gate_vb
+                        .get_with_hints_dtype(
+                            (cfg.hidden_size / pack_factor, moe_cfg.moe_intermediate_size),
+                            "qweight",
+                            shard(1, comm.rank(), comm.world_size()),
+                            DType::U32,
+                        )?
+                        .t()?
+                        .contiguous()?;
+                    let gate_scale = gate_vb
+                        .get_with_hints_dtype(
+                            (cfg.hidden_size / group_size, moe_cfg.moe_intermediate_size),
+                            "scales",
+                            shard(1, comm.rank(), comm.world_size()),
+                            DType::F32,
+                        )?
+                        .t()?
+                        .contiguous()?;
+                    let up_weight = up_vb
+                        .get_with_hints_dtype(
+                            (cfg.hidden_size / pack_factor, moe_cfg.moe_intermediate_size),
+                            "qweight",
+                            shard(1, comm.rank(), comm.world_size()),
+                            DType::U32,
+                        )?
+                        .t()?
+                        .contiguous()?;
+                    let up_scale = up_vb
+                        .get_with_hints_dtype(
+                            (cfg.hidden_size / group_size, moe_cfg.moe_intermediate_size),
+                            "scales",
+                            shard(1, comm.rank(), comm.world_size()),
+                            DType::F32,
+                        )?
+                        .t()?
+                        .contiguous()?;
+                    let down_weight = down_vb
+                        .get_with_hints_dtype(
+                            (moe_cfg.moe_intermediate_size / pack_factor, cfg.hidden_size),
+                            "qweight",
+                            shard(0, comm.rank(), comm.world_size()),
+                            DType::U32,
+                        )?
+                        .t()?
+                        .contiguous()?;
+                    let down_scale = down_vb
+                        .get_with_hints_dtype(
+                            (moe_cfg.moe_intermediate_size / group_size, cfg.hidden_size),
+                            "scales",
+                            shard(0, comm.rank(), comm.world_size()),
+                            DType::F32,
+                        )?
+                        .t()?
+                        .contiguous()?;
+                    (
+                        gate_weight,
+                        gate_scale,
+                        up_weight,
+                        up_scale,
+                        down_weight,
+                        down_scale,
+                    )
+                } else {
+                    for (name, vb) in [
+                        ("gate_proj", &gate_vb),
+                        ("up_proj", &up_vb),
+                        ("down_proj", &down_vb),
+                    ] {
+                        if vb.contains_tensor("weight_g_idx") {
+                            candle_core::bail!(
+                                "compressed-tensors WNA16 MoE projection {name} has unsupported weight_g_idx"
+                            );
+                        }
+                    }
+                    let gate_weight = gate_vb.get_with_hints_dtype(
+                        (moe_cfg.moe_intermediate_size, cfg.hidden_size / pack_factor),
+                        "weight_packed",
+                        shard(0, comm.rank(), comm.world_size()),
+                        DType::U32,
+                    )?;
+                    let gate_scale = gate_vb.get_with_hints_dtype(
+                        (moe_cfg.moe_intermediate_size, cfg.hidden_size / group_size),
+                        "weight_scale",
+                        shard(0, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )?;
+                    let up_weight = up_vb.get_with_hints_dtype(
+                        (moe_cfg.moe_intermediate_size, cfg.hidden_size / pack_factor),
+                        "weight_packed",
+                        shard(0, comm.rank(), comm.world_size()),
+                        DType::U32,
+                    )?;
+                    let up_scale = up_vb.get_with_hints_dtype(
+                        (moe_cfg.moe_intermediate_size, cfg.hidden_size / group_size),
+                        "weight_scale",
+                        shard(0, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )?;
+                    let down_weight = down_vb.get_with_hints_dtype(
+                        (cfg.hidden_size, moe_cfg.moe_intermediate_size / pack_factor),
+                        "weight_packed",
+                        shard(1, comm.rank(), comm.world_size()),
+                        DType::U32,
+                    )?;
+                    let down_scale = down_vb.get_with_hints_dtype(
+                        (cfg.hidden_size, moe_cfg.moe_intermediate_size / group_size),
+                        "weight_scale",
+                        shard(1, comm.rank(), comm.world_size()),
+                        DType::F32,
+                    )?;
+                    (
+                        gate_weight,
+                        gate_scale,
+                        up_weight,
+                        up_scale,
+                        down_weight,
+                        down_scale,
+                    )
+                };
+            gate_weights.push(gate_weight);
+            gate_scales.push(gate_scale);
+            up_weights.push(up_weight);
+            up_scales.push(up_scale);
+            down_weights.push(down_weight);
+            down_scales.push(down_scale);
+        }
+
+        let gate_up_packed = Tensor::cat(
+            &[
+                &Tensor::stack(&gate_weights, 0)?,
+                &Tensor::stack(&up_weights, 0)?,
+            ],
+            1,
+        )?
+        .contiguous()?;
+        let gate_up_scales = Tensor::cat(
+            &[
+                &Tensor::stack(&gate_scales, 0)?,
+                &Tensor::stack(&up_scales, 0)?,
+            ],
+            1,
+        )?
+        .contiguous()?;
+        let down_packed = Tensor::stack(&down_weights, 0)?.contiguous()?;
+        let down_scales = Tensor::stack(&down_scales, 0)?.contiguous()?;
+        let w_size_n = gate_up_packed.dim(1)? / 2;
+
+        Ok(Self {
+            gate,
+            gate_up_packed,
+            gate_up_scales,
+            down_packed,
+            down_scales,
+            w_size_n,
+            act: get_hidden_act(cfg),
+            norm_topk_prob: moe_cfg.norm_topk_prob,
+            routed_scaling_factor: moe_cfg.routed_scaling_factor,
+            num_experts_per_tok: moe_cfg.num_experts_per_tok,
+            all_reduce: AllReduce::new(comm.clone()),
+            world_size: comm.world_size(),
+            dtype,
+            bits,
+            group_size,
+            gate_dtype,
+            legacy_gptq,
+        })
+    }
+
+    pub fn forward(&self, xs: &Tensor, is_prefill: bool) -> Result<Tensor> {
+        let gate_input = if xs.dtype() != self.gate_dtype {
+            std::borrow::Cow::Owned(xs.to_dtype(self.gate_dtype)?)
+        } else {
+            std::borrow::Cow::Borrowed(xs)
+        };
+        let router_logits = self.gate.forward(&gate_input)?;
+        let (mut topk_weights, topk_ids) = attention_rs::topk::topk_softmax(
+            &router_logits.to_dtype(DType::F32)?,
+            self.num_experts_per_tok,
+        )?;
+        if self.norm_topk_prob {
+            topk_weights = topk_weights.broadcast_div(&topk_weights.sum_keepdim(D::Minus1)?)?;
+        }
+        if let Some(routed_scaling_factor) = self.routed_scaling_factor {
+            topk_weights = (topk_weights * routed_scaling_factor)?;
+        }
+
+        self.forward_with_routing(xs, topk_weights, topk_ids, is_prefill)
+    }
+
+    pub fn forward_with_routing(
+        &self,
+        xs: &Tensor,
+        topk_weights: Tensor,
+        topk_ids: Tensor,
+        is_prefill: bool,
+    ) -> Result<Tensor> {
+        let (num_tokens, hidden_dim) = xs.dims2()?;
+        let (expert_ids, sorted_token_ids) = sort_expert_assignments(&topk_ids, is_prefill)?;
+
+        let gate_up = moe::moe_gemm_wna16(
+            xs,
+            &self.gate_up_packed,
+            &self.gate_up_scales,
+            &None,
+            &sorted_token_ids,
+            &expert_ids,
+            self.num_experts_per_tok,
+            self.bits,
+            self.group_size,
+            is_prefill,
+            self.legacy_gptq,
+        )?;
+        let down_inputs = gated_activation(&gate_up, self.w_size_n, &self.act)?;
+        let mut ys = moe::moe_gemm_wna16(
+            &down_inputs,
+            &self.down_packed,
+            &self.down_scales,
+            &Some(topk_weights),
+            &sorted_token_ids,
+            &expert_ids,
+            self.num_experts_per_tok,
+            self.bits,
+            self.group_size,
+            is_prefill,
+            self.legacy_gptq,
+        )?
+        .reshape((num_tokens, (), hidden_dim))?
+        .sum(D::Minus2)?;
+        if self.world_size > 1 {
+            ys = self.all_reduce.apply(&ys)?;
+        }
+        Ok(ys.to_dtype(self.dtype)?)
+    }
+}
+
 pub struct FusedMoeFp8 {
     gate: Linear,
     gate_up_experts: Tensor,
