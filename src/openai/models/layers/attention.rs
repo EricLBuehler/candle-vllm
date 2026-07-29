@@ -1167,4 +1167,125 @@ impl QuantizedAttention {
         }
         Ok(y)
     }
+
+    pub fn forward_single_token_no_cache(
+        &self,
+        x: &Tensor,
+        input_positions: &Tensor,
+    ) -> Result<Tensor> {
+        let (seq_len, _) = x.dims2()?;
+        if seq_len != 1 {
+            candle_core::bail!(
+                "quantized forward_single_token_no_cache expects one token, got {}",
+                seq_len
+            );
+        }
+
+        let q_raw = self.attention_wq.forward(x)?;
+        let k = self.attention_wk.forward(x)?;
+        let v = self.attention_wv.forward(x)?;
+
+        let q_raw = if let Some(bq) = &self.attention_bq {
+            q_raw.broadcast_add(bq)?
+        } else {
+            q_raw
+        };
+        let k = if let Some(bk) = &self.attention_bk {
+            k.broadcast_add(bk)?
+        } else {
+            k
+        };
+        let v = if let Some(bv) = &self.attention_bv {
+            v.broadcast_add(bv)?
+        } else {
+            v
+        };
+
+        let local_q_dim = self.n_head * self.head_dim;
+        let (q_linear, gate) = if self.attn_output_gate {
+            let q_dim = q_raw.dim(1)?;
+            if q_dim != local_q_dim * 2 {
+                candle_core::bail!(
+                    "quantized q_proj output dim mismatch for gated attention, expected {}, got {}",
+                    local_q_dim * 2,
+                    q_dim
+                );
+            }
+            let q_gate = q_raw.reshape((seq_len, self.n_head, self.head_dim * 2))?;
+            let q = q_gate.narrow(2, 0, self.head_dim)?;
+            let gate = q_gate.narrow(2, self.head_dim, self.head_dim)?;
+            (
+                q.reshape((seq_len, local_q_dim))?,
+                Some(gate.reshape((seq_len, local_q_dim))?),
+            )
+        } else {
+            (q_raw, None)
+        };
+
+        let q = q_linear.reshape((seq_len, self.n_head, self.head_dim))?;
+        let k = k.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+        let v = v.reshape((seq_len, self.n_kv_head, self.head_dim))?;
+
+        let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
+            let q_flat = q.flatten(0, 1)?;
+            let k_flat = k.flatten(0, 1)?;
+            (
+                q_norm
+                    .forward(&q_flat)?
+                    .reshape((seq_len, self.n_head, self.head_dim))?,
+                k_norm
+                    .forward(&k_flat)?
+                    .reshape((seq_len, self.n_kv_head, self.head_dim))?,
+            )
+        } else {
+            (q, k)
+        };
+
+        let rope_dtype = self.rotary_emb.0.cos.dtype();
+        let q = if q.dtype() != rope_dtype {
+            q.to_dtype(rope_dtype)?
+        } else {
+            q
+        };
+        let k = if k.dtype() != rope_dtype {
+            k.to_dtype(rope_dtype)?
+        } else {
+            k
+        };
+        let (q, k) = self.rotary_emb.apply_rotary_emb(&q, &k, input_positions)?;
+        drop(q);
+        drop(k);
+
+        let v = if v.dtype() != self.dtype {
+            v.to_dtype(self.dtype)?
+        } else {
+            v
+        };
+        let groups = self.n_head / self.n_kv_head;
+        let y = if groups > 1 {
+            v.unsqueeze(2)?
+                .expand((seq_len, self.n_kv_head, groups, self.head_dim))?
+                .reshape((seq_len, self.n_head * self.head_dim))?
+        } else {
+            v.reshape((seq_len, self.n_head * self.head_dim))?
+        };
+        let y = if let Some(gate) = gate {
+            let gate = if gate.dtype() != y.dtype() {
+                gate.to_dtype(y.dtype())?
+            } else {
+                gate
+            };
+            y.broadcast_mul(&candle_nn::ops::sigmoid(&gate)?)?
+        } else {
+            y
+        };
+
+        let mut y = self.attention_wo.forward(&y.to_dtype(DType::F32)?)?;
+        #[cfg(feature = "nccl")]
+        if let Some(all_reduce) = &self.all_reduce {
+            y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
+            y = y.to_dtype(DType::F32)?;
+        }
+        Ok(y)
+    }
 }

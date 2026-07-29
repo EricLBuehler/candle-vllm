@@ -1092,13 +1092,51 @@ impl DefaultLoader {
                 }
                 _ => panic!("Model not supported!"),
             };
+            let mtp_num_speculative = self.mtp_num_speculative.unwrap_or(0);
+            let mtp_head = if mtp_num_speculative > 0 {
+                let is_mtp_model = matches!(arch.as_str(), "qwen35" | "qwen35moe");
+                if is_mtp_model && Qwen3_5MtpHead::has_gguf_mtp_weights(&vb, &config) {
+                    match Qwen3_5MtpHead::new_gguf(
+                        &vb,
+                        gguf_comm.clone(),
+                        &config,
+                        dtype,
+                        &device,
+                        gguf_rank,
+                        gguf_world_size,
+                    ) {
+                        Ok(head) => {
+                            info!(
+                                "GGUF MTP head loaded: {} speculative tokens per step",
+                                mtp_num_speculative
+                            );
+                            Some(Arc::new(head))
+                        }
+                        Err(e) => {
+                            warn!("Failed to load GGUF MTP head: {}. MTP disabled.", e);
+                            None
+                        }
+                    }
+                } else if is_mtp_model {
+                    warn!("MTP requested but GGUF model weights do not contain Qwen3.5 MTP layers. MTP disabled.");
+                    None
+                } else {
+                    warn!(
+                        "MTP requested but GGUF model type {} does not support MTP. MTP disabled.",
+                        arch
+                    );
+                    None
+                }
+            } else {
+                None
+            };
             handle.join().unwrap();
             (
                 vec![model],
                 vec![device],
                 config.to_owned(),
                 sep_style,
-                vec![None],
+                vec![mtp_head],
             )
         } else {
             let cfile = paths.get_config_filename();
@@ -2285,7 +2323,10 @@ impl DefaultPipeline {
 
     pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
         match &self.model {
+            LLMModel::Qwen3_5(model) => model.preallocate_mtp_hidden_buffer(max_batch_size),
             LLMModel::Qwen3_5MoE(model) => model.preallocate_mtp_hidden_buffer(max_batch_size),
+            LLMModel::QWen3_5GGUF(model) => model.preallocate_mtp_hidden_buffer(max_batch_size),
+            LLMModel::QWen3_5GGUFMoE(model) => model.preallocate_mtp_hidden_buffer(max_batch_size),
             LLMModel::Qwen3VL(model) => model.preallocate_mtp_hidden_buffer(max_batch_size),
             _ => Ok(()),
         }
@@ -2293,7 +2334,10 @@ impl DefaultPipeline {
 
     pub fn take_last_hidden_for_mtp(&self) -> Option<Tensor> {
         match &self.model {
+            LLMModel::Qwen3_5(model) => model.take_last_hidden_for_mtp(),
             LLMModel::Qwen3_5MoE(model) => model.take_last_hidden_for_mtp(),
+            LLMModel::QWen3_5GGUF(model) => model.take_last_hidden_for_mtp(),
+            LLMModel::QWen3_5GGUFMoE(model) => model.take_last_hidden_for_mtp(),
             LLMModel::Qwen3VL(model) => model.take_last_hidden_for_mtp(),
             _ => None,
         }
@@ -2308,35 +2352,47 @@ impl DefaultPipeline {
     ) -> Result<(Tensor, Tensor)> {
         let _fp8_linear_prefill_guard = set_linear_is_prefill(input_metadata.is_prefill);
         match &self.model {
+            LLMModel::Qwen3_5(model) => {
+                model.forward_with_hidden(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
             LLMModel::Qwen3_5MoE(model) => {
                 model.forward_with_hidden(&input_tokens, input_positions, kv_cache, input_metadata)
             }
             LLMModel::Qwen3VL(model) => {
                 model.forward_with_hidden(&input_tokens, input_positions, kv_cache, input_metadata)
             }
-            _ => candle_core::bail!("MTP requires Qwen3.5 MoE safetensor model support"),
+            _ => candle_core::bail!("MTP requires Qwen3.5 model support"),
         }
     }
 
     pub fn mtp_embed_weight(&self) -> Result<Tensor> {
         match &self.model {
+            LLMModel::Qwen3_5(model) => Ok(model.embed_weight().clone()),
             LLMModel::Qwen3_5MoE(model) => Ok(model.embed_weight().clone()),
+            LLMModel::QWen3_5GGUF(model) => Ok(model.embed_weight().clone()),
+            LLMModel::QWen3_5GGUFMoE(model) => Ok(model.embed_weight().clone()),
             LLMModel::Qwen3VL(model) => model.embed_weight(),
-            _ => candle_core::bail!("MTP requires Qwen3.5 MoE embedding weights"),
+            _ => candle_core::bail!("MTP requires Qwen3.5 embedding weights"),
         }
     }
 
     pub fn mtp_forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
         match &self.model {
+            LLMModel::Qwen3_5(model) => model.forward_lm_head(hidden),
             LLMModel::Qwen3_5MoE(model) => model.forward_lm_head(hidden),
+            LLMModel::QWen3_5GGUF(model) => model.forward_lm_head(hidden),
+            LLMModel::QWen3_5GGUFMoE(model) => model.forward_lm_head(hidden),
             LLMModel::Qwen3VL(model) => model.forward_lm_head(hidden),
-            _ => candle_core::bail!("MTP requires Qwen3.5 MoE lm_head"),
+            _ => candle_core::bail!("MTP requires Qwen3.5 lm_head"),
         }
     }
 
     pub fn mtp_rollback_mamba(&self, seq_id: usize, keep_tokens: usize) -> Result<bool> {
         match &self.model {
+            LLMModel::Qwen3_5(model) => model.mtp_rollback_mamba(seq_id, keep_tokens),
             LLMModel::Qwen3_5MoE(model) => model.mtp_rollback_mamba(seq_id, keep_tokens),
+            LLMModel::QWen3_5GGUF(model) => model.mtp_rollback_mamba(seq_id, keep_tokens),
+            LLMModel::QWen3_5GGUFMoE(model) => model.mtp_rollback_mamba(seq_id, keep_tokens),
             LLMModel::Qwen3VL(model) => model.mtp_rollback_mamba(seq_id, keep_tokens),
             _ => Ok(false),
         }

@@ -127,6 +127,8 @@ pub(crate) struct QuantizedGatedDeltaNet {
     gdn_layer_idx: usize,
     rms_norm_eps: f64,
     scale: f64,
+    conv_mtp_state: Tensor,
+    recurrent_mtp_state: Tensor,
 }
 
 impl QuantizedGatedDeltaNet {
@@ -318,6 +320,18 @@ impl QuantizedGatedDeltaNet {
             .transpose()?;
 
         let scale = 1.0f64 / (head_k_dim as f64).sqrt();
+        let d_conv = key_dim * 2 + value_dim;
+        let max_verify_tokens = 16;
+        let conv_mtp_state = Tensor::zeros(
+            (max_verify_tokens, d_conv, hybrid.conv_kernel_size - 1),
+            DType::F32,
+            device,
+        )?;
+        let recurrent_mtp_state = Tensor::zeros(
+            (max_verify_tokens, num_v_heads, head_k_dim, head_v_dim),
+            DType::F32,
+            device,
+        )?;
 
         Ok(Self {
             in_proj_qkv,
@@ -340,6 +354,8 @@ impl QuantizedGatedDeltaNet {
             gdn_layer_idx,
             rms_norm_eps,
             scale,
+            conv_mtp_state,
+            recurrent_mtp_state,
         })
     }
 
@@ -379,12 +395,17 @@ impl QuantizedGatedDeltaNet {
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
 
+            let conv_snapshots = if input_metadata.is_mtp_verify {
+                Some(self.conv_mtp_state.narrow(0, 0, token_count)?)
+            } else {
+                None
+            };
             let out = gdn::causal_conv1d_fwd(
                 &mixed_qkv,
                 &self.conv_weight,
                 self.conv_bias.as_ref(),
                 &mut conv_state,
-                None,
+                conv_snapshots.as_ref(),
                 Some(cu_seqlens),
                 true,
             )?;
@@ -432,6 +453,11 @@ impl QuantizedGatedDeltaNet {
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
+            let recurrent_snapshots = if input_metadata.is_mtp_verify {
+                Some(self.recurrent_mtp_state.narrow(0, 0, token_count)?)
+            } else {
+                None
+            };
             let try_flashinfer = self.num_k_heads != self.num_v_heads
                 && !input_metadata.is_mtp_verify
                 && crate::openai::utils::sm90_lower_precision_gdn_prefill();
@@ -472,7 +498,7 @@ impl QuantizedGatedDeltaNet {
                         seq_slots,
                         &cu_seqlens,
                         self.scale as f32,
-                        None,
+                        recurrent_snapshots.as_ref(),
                     )?
                 }
             } else {
@@ -486,7 +512,7 @@ impl QuantizedGatedDeltaNet {
                     global_state,
                     seq_slots,
                     cu_seqlens,
-                    None,
+                    recurrent_snapshots.as_ref(),
                 )?
             }
         } else {
@@ -521,6 +547,34 @@ impl QuantizedGatedDeltaNet {
 
         self.out_proj.forward(&gated_output)
     }
+
+    pub(crate) fn rollback_mtp_verify(
+        &self,
+        mamba_cache: &mut MambaCache,
+        seq_slots: &Tensor,
+        keep_tokens: usize,
+    ) -> Result<()> {
+        if keep_tokens == 0 {
+            return Ok(());
+        }
+        let idx = keep_tokens - 1;
+        let conv_snapshot = self.conv_mtp_state.narrow(0, idx, 1)?;
+        let conv_state_dtype = mamba_cache.conv_state(self.gdn_layer_idx).dtype();
+        let conv_snapshot = if conv_snapshot.dtype() != conv_state_dtype {
+            conv_snapshot.to_dtype(conv_state_dtype)?
+        } else {
+            conv_snapshot
+        };
+        mamba_cache.set_batch_conv_state(self.gdn_layer_idx, seq_slots, &conv_snapshot)?;
+
+        let recurrent_snapshot = self.recurrent_mtp_state.narrow(0, idx, 1)?;
+        mamba_cache.set_batch_recurrent_state(
+            self.gdn_layer_idx,
+            seq_slots,
+            &recurrent_snapshot,
+        )?;
+        Ok(())
+    }
 }
 
 enum AttnType {
@@ -551,6 +605,7 @@ pub struct GGUFQWen3_5 {
     cfg: Config,
     dtype: DType,
     device: Device,
+    mtp_hidden_buffer: std::sync::Mutex<Option<Tensor>>,
 }
 
 pub fn parse_gguf_hybrid_config(
@@ -728,7 +783,28 @@ impl GGUFQWen3_5 {
             embedding_length / head_count
         };
         let context_length = md_get(format!("{arch}.context_length").as_str())?.to_u32()? as usize;
-        let block_count = md_get(format!("{arch}.block_count").as_str())?.to_u32()? as usize;
+        let mut block_count = md_get(format!("{arch}.block_count").as_str())?.to_u32()? as usize;
+        let nextn_predict_layers = metadata
+            .get(&format!("{arch}.nextn_predict_layers"))
+            .map(|v| v.to_u32())
+            .transpose()?
+            .unwrap_or(0) as usize;
+        if nextn_predict_layers > 0 {
+            if nextn_predict_layers >= block_count {
+                candle_core::bail!(
+                    "{arch}.nextn_predict_layers ({}) must be smaller than {arch}.block_count ({})",
+                    nextn_predict_layers,
+                    block_count
+                );
+            }
+            tracing::info!(
+                "GGUF model declares {} MTP prediction layer(s); loading {} decoder layer(s) from {} total block(s).",
+                nextn_predict_layers,
+                block_count - nextn_predict_layers,
+                block_count
+            );
+            block_count -= nextn_predict_layers;
+        }
         let rms_norm_eps =
             md_get(format!("{arch}.attention.layer_norm_rms_epsilon").as_str())?.to_f32()? as f64;
         let rope_freq_base = md_get(format!("{arch}.rope.freq_base").as_str())
@@ -901,11 +977,34 @@ impl GGUFQWen3_5 {
             cfg,
             dtype,
             device: device.clone(),
+            mtp_hidden_buffer: std::sync::Mutex::new(None),
         })
     }
 
     pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
         self.tok_embeddings.forward(input_ids)
+    }
+
+    pub fn embed_weight(&self) -> &Tensor {
+        self.tok_embeddings.embeddings()
+    }
+
+    pub fn take_last_hidden_for_mtp(&self) -> Option<Tensor> {
+        let guard = self.mtp_hidden_buffer.lock().ok()?;
+        let buf = guard.as_ref()?;
+        buf.get(0).ok()
+    }
+
+    pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
+        let buf = Tensor::zeros(
+            (max_batch_size, self.cfg.hidden_size),
+            self.dtype,
+            &self.device,
+        )?;
+        if let Ok(mut guard) = self.mtp_hidden_buffer.lock() {
+            *guard = Some(buf);
+        }
+        Ok(())
     }
 
     pub fn dtype(&self) -> DType {
@@ -1028,7 +1127,18 @@ impl GGUFQWen3_5 {
         if return_hidden {
             return Ok(xs);
         }
+        if let Ok(guard) = self.mtp_hidden_buffer.lock() {
+            if let Some(buf) = guard.as_ref() {
+                if xs.elem_count() <= buf.elem_count() {
+                    let _ = buf.copy_(&xs, 0);
+                }
+            }
+        }
         self.output.forward(&xs)?.to_dtype(DType::F32)
+    }
+
+    pub fn forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
+        self.output.forward(hidden)?.to_dtype(DType::F32)
     }
 
     pub fn get_config(&self) -> &Config {
@@ -1084,6 +1194,24 @@ impl GGUFQWen3_5 {
 
     pub fn restore_mamba_prefix_state(&self, seq_id: usize, hash: u64) -> Result<bool> {
         self.mamba_cache.write().restore_prefix_state(seq_id, hash)
+    }
+
+    pub fn mtp_rollback_mamba(&self, seq_id: usize, keep_tokens: usize) -> Result<bool> {
+        let mut mamba_cache = self.mamba_cache.write();
+        let slots = mamba_cache
+            .get_slots_for_sequences(&[seq_id])?
+            .into_iter()
+            .map(|s| s as i64)
+            .collect::<Vec<_>>();
+        let seq_slots = Tensor::from_vec(slots, (1,), &self.device)?;
+        let mut restored = false;
+        for layer in &self.layers {
+            if let AttnType::LinearAttention(gdn) = &layer.attn {
+                gdn.rollback_mtp_verify(&mut mamba_cache, &seq_slots, keep_tokens)?;
+                restored = true;
+            }
+        }
+        Ok(restored)
     }
 
     pub fn reset_mamba_cache(&self) -> Result<()> {
