@@ -16,6 +16,7 @@ const HYBRID_MAMBA_MIN_ACTIVE_SLOTS: usize = 4;
 
 #[cfg(feature = "nccl")]
 use crate::openai::communicator::{DaemonManager, MessageType};
+use crate::openai::models::linear::set_linear_is_prefill;
 use crate::openai::pipelines::TokenOrFinishReason;
 use crate::openai::streaming::ChatResponse;
 use crate::openai::TaskData;
@@ -89,6 +90,7 @@ pub struct BatchExecution {
     is_prompt: bool,
     is_embedding: bool,
     model_name: String,
+    mtp_results: Option<Vec<TokenOrFinishReason>>,
 }
 
 const _PAD_SLOT_ID: i64 = -1;
@@ -120,6 +122,7 @@ pub struct LLMEngine {
     tokenizer: tokenizers::Tokenizer,
     conversation: DefaultConversation,
     image_config: Option<ImageProcessConfig>,
+    multiprocess_mtp_hidden: Option<Tensor>,
 }
 
 impl LLMEngine {
@@ -808,6 +811,10 @@ impl LLMEngine {
 
         for (pipeline, _) in pipelines.values_mut() {
             pipeline.preallocate_mamba_cache(mamba_slot_capacity)?;
+            if pipeline.has_mtp() {
+                pipeline
+                    .preallocate_mtp_hidden_buffer(scheduler_config.max_num_parallel_reqs.max(8))?;
+            }
             pipeline.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
             #[cfg(all(feature = "cuda", feature = "graph"))]
             {
@@ -864,6 +871,7 @@ impl LLMEngine {
             tokenizer,
             conversation,
             image_config,
+            multiprocess_mtp_hidden: None,
         }));
         {
             let mut e = engine.write();
@@ -1636,6 +1644,20 @@ impl LLMEngine {
             }
         }
         self.execute_scheduler_ops(&scheduler_outputs, rank)?;
+        if let Some((pipeline, _)) = self.get_pipeline(rank) {
+            if pipeline.has_mtp() && scheduler_outputs.scheduled.len() == 1 {
+                let group = scheduler_outputs.scheduled.front().unwrap();
+                let seq = Self::primary_sequence(group);
+                if !seq.deref().is_prompt() {
+                    self.scheduler
+                        .block_engine
+                        .reserve_additional_token_slots_for_seq(
+                            &seq,
+                            pipeline.mtp_num_speculative + 1,
+                        );
+                }
+            }
+        }
         let mut groups = self.sequence_groups.write();
         *groups = match Arc::try_unwrap(scheduler_outputs.scheduled) {
             Ok(deq) => deq,
@@ -1681,12 +1703,154 @@ impl LLMEngine {
         self.sequence_groups.write().clear();
     }
 
+    fn compute_mtp_slot_mappings(
+        block_table: &[u32],
+        seq_len: usize,
+        num_tokens: usize,
+        block_size: usize,
+    ) -> Result<Vec<i64>> {
+        let mut slots = Vec::with_capacity(num_tokens);
+        for i in 0..num_tokens {
+            let pos = seq_len + i;
+            let block_idx = pos / block_size;
+            let block_offset = pos % block_size;
+            let Some(&physical_block) = block_table.get(block_idx) else {
+                candle_core::bail!(
+                    "MTP verify missing KV block: block_idx {} >= block_table.len() {}",
+                    block_idx,
+                    block_table.len()
+                );
+            };
+            slots.push(physical_block as i64 * block_size as i64 + block_offset as i64);
+        }
+        Ok(slots)
+    }
+
+    fn select_mtp_last_hidden(hidden_states: Tensor) -> Result<Tensor> {
+        if hidden_states.dims().len() == 2 && hidden_states.dim(0)? > 1 {
+            hidden_states.get(hidden_states.dim(0)? - 1)
+        } else if hidden_states.dims().len() == 2 {
+            hidden_states.get(0)
+        } else {
+            Ok(hidden_states)
+        }
+    }
+
+    fn build_mtp_metadata(
+        &self,
+        rank: usize,
+        device: &candle_core::Device,
+        seq_id: usize,
+        seq_len: usize,
+        block_table: &[u32],
+        slot_mappings: Vec<i64>,
+        q_len: usize,
+    ) -> Result<InputMetadata> {
+        let total_kv_len = (seq_len + q_len) as u32;
+        let mamba_slot_mapping = self.prepare_mamba_slot_mapping(&[seq_id], false, rank, device)?;
+
+        #[cfg(feature = "flashinfer")]
+        let flashinfer_metadata = if let Some(params) = self.flashinfer_kv_params_for_rank(rank)? {
+            let num_pages = (total_kv_len as usize).div_ceil(params.page_size);
+            if num_pages > block_table.len() {
+                candle_core::bail!(
+                    "MTP verify needs {} KV pages for {} tokens, but only {} pages are allocated",
+                    num_pages,
+                    total_kv_len,
+                    block_table.len()
+                );
+            }
+            let indptr_host = vec![0u32, num_pages as u32];
+            let indices_vec = block_table[..num_pages].to_vec();
+            let last_page_tokens = if total_kv_len == 0 {
+                0
+            } else {
+                (total_kv_len as usize - 1) % params.page_size + 1
+            };
+            let last_len_host = vec![last_page_tokens as u32];
+            let kv_len_arr_host = vec![total_kv_len];
+            let q_cu_seqlens_host = vec![0u32, q_len as u32];
+            let prefill_plan_info = Some(attention_rs::flashinfer::prefill_plan(
+                device,
+                &q_cu_seqlens_host,
+                &indptr_host,
+                &kv_len_arr_host,
+                q_len as u32,
+                1,
+                params.num_qo_heads,
+                params.num_kv_heads,
+                params.head_dim,
+                params.page_size,
+                params.out_dtype,
+                None,
+                Some(params.kv_dtype),
+                false,
+            )?);
+
+            Some(attention_rs::FlashInferMetadata {
+                indptr: Tensor::from_vec(indptr_host.clone(), (2,), device)?,
+                indptr_host,
+                indices: Tensor::from_vec(indices_vec, (num_pages,), device)?,
+                last_len: Tensor::from_vec(last_len_host.clone(), (1,), device)?,
+                last_len_host: Some(last_len_host),
+                kv_len_arr_host: Some(kv_len_arr_host),
+                total_num_rows: Some(q_len as u32),
+                batch_indices: Some(Tensor::zeros((q_len,), candle_core::DType::U32, device)?),
+                positions: Some(Tensor::from_vec(
+                    (seq_len as u32..total_kv_len).collect::<Vec<_>>(),
+                    (q_len,),
+                    device,
+                )?),
+                use_cuda_graph: false,
+                decode_plan_info: None,
+                prefill_plan_info,
+                mla_decode_plan_info: None,
+                mla_prefill_plan_info: None,
+            })
+        } else {
+            None
+        };
+        #[cfg(not(feature = "flashinfer"))]
+        let flashinfer_metadata = None;
+
+        Ok(InputMetadata {
+            is_prefill: true,
+            is_mla: self.config.is_mla(),
+            sequence_ids: Some(vec![seq_id]),
+            mamba_slot_mapping,
+            slot_mapping: Tensor::from_vec(slot_mappings, (q_len,), device)?,
+            block_tables: Some(Tensor::from_vec(
+                block_table.to_vec(),
+                (1, block_table.len()),
+                device,
+            )?),
+            context_lens: Some(Tensor::from_vec(vec![total_kv_len], (1,), device)?),
+            cu_seqlens_q: Some(Tensor::from_vec(vec![0u32, q_len as u32], (2,), device)?),
+            cu_seqlens_k: Some(Tensor::from_vec(vec![0u32, total_kv_len], (2,), device)?),
+            max_seqlen_q: q_len,
+            max_seqlen_k: seq_len + q_len,
+            max_context_len: seq_len + q_len,
+            seqlens: Some(Vec::new()),
+            flashinfer_metadata,
+            is_mtp_verify: true,
+        })
+    }
+
     fn execute_scheduled_batch(
         engine: &Arc<RwLock<Self>>,
         scheduled: &VecDeque<Arc<SequenceGroup>>,
         rank: usize,
     ) -> Result<BatchExecution> {
-        let (pipeline_entry, tokens, positions, metadata, images, is_embedding, model_name) = {
+        let (
+            pipeline_entry,
+            tokens,
+            positions,
+            metadata,
+            images,
+            is_embedding,
+            model_name,
+            mtp_context,
+        ) = {
             let mut guard = engine.write();
             let is_embedding = scheduled[0].is_embedding;
             let is_prompt_request = Self::primary_sequence(&scheduled[0]).deref().is_prompt();
@@ -1698,6 +1862,11 @@ impl LLMEngine {
             let (pipeline, _) = guard.get_pipeline(rank).unwrap();
             let device = pipeline.device();
             let model_name = pipeline.name().to_string();
+            let use_mtp = pipeline.has_mtp()
+                && !is_prompt_request
+                && !is_embedding
+                && scheduled.len() == 1
+                && scheduled[0].sampling_params.mcp_mode.is_none();
             #[cfg_attr(not(feature = "flashinfer"), allow(unused_mut))]
             let mut prepared = if is_prompt_request {
                 guard.prepare_prompt(scheduled, device, rank)
@@ -1726,6 +1895,47 @@ impl LLMEngine {
                 positions,
                 metadata,
             } = prepared;
+
+            let mtp_context = if use_mtp {
+                let seq = Self::primary_sequence(&scheduled[0]);
+                let seq_id = seq.deref().get_id();
+                let seq_len = seq.deref().get_len();
+                let block_table = guard
+                    .scheduler
+                    .block_engine
+                    .block_tables
+                    .get(&seq_id)
+                    .ok_or_else(|| candle_core::Error::msg("missing MTP block table"))?
+                    .iter()
+                    .map(|block| block.deref_mut().block_id as u32)
+                    .collect::<Vec<_>>();
+                let verify_len = pipeline.mtp_num_speculative + 1;
+                let slot_mappings = Self::compute_mtp_slot_mappings(
+                    &block_table,
+                    seq_len,
+                    verify_len,
+                    guard.cache_config.block_size,
+                )?;
+                let verify_positions = Tensor::from_vec(
+                    (0..verify_len)
+                        .map(|i| (seq_len + i) as i64)
+                        .collect::<Vec<_>>(),
+                    (verify_len,),
+                    device,
+                )?;
+                let verify_metadata = guard.build_mtp_metadata(
+                    rank,
+                    device,
+                    seq_id,
+                    seq_len,
+                    &block_table,
+                    slot_mappings,
+                    verify_len,
+                )?;
+                Some((seq_id, seq_len, verify_positions, verify_metadata))
+            } else {
+                None
+            };
 
             let images: Option<ImageData> = if is_prompt_request {
                 let seq = Self::primary_sequence(&scheduled[0]);
@@ -1770,37 +1980,158 @@ impl LLMEngine {
                 images,
                 is_embedding,
                 model_name,
+                mtp_context,
             )
         };
 
-        let (pipeline, cache_engine) = (&pipeline_entry.0, &pipeline_entry.1);
-        let logits = if is_embedding {
-            pipeline.forward_embedding(
-                tokens,
-                &positions,
-                Some(&cache_engine.get_kv_cache()),
-                &metadata,
-            )
-        } else {
-            pipeline.forward(
-                tokens,
-                &positions,
-                Some(&cache_engine.get_kv_cache()),
-                &metadata,
-                images.as_ref(),
-            )
-        };
+        let mut pipeline_entry = pipeline_entry;
+        let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
+        let mut mtp_results = None;
+        let run_result: Result<Tensor> = (|| {
+            if let Some((seq_id, seq_len, verify_positions, verify_metadata)) = mtp_context {
+                let (logits, hidden_states) = pipeline.forward_with_hidden(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                )?;
+                let anchor_result = pipeline.sample(&logits, scheduled)?;
+                match anchor_result.first() {
+                    Some(Either::Left(anchor_logprobs)) => {
+                        let anchor_token = anchor_logprobs.token;
+                        let seq_hidden = Self::select_mtp_last_hidden(hidden_states)?;
+                        let mtp_head = pipeline.mtp_head.as_ref().unwrap().clone();
+                        let embed_weight = pipeline.mtp_embed_weight()?;
+                        let anchor_token_tensor =
+                            Tensor::from_vec(vec![anchor_token], (1,), pipeline.device())?;
+                        let (draft_tokens, _) = mtp_head.draft_tokens_gpu(
+                            &seq_hidden,
+                            &anchor_token_tensor,
+                            pipeline.mtp_num_speculative,
+                            &embed_weight,
+                            |hidden| pipeline.mtp_forward_lm_head(hidden),
+                            seq_len.saturating_sub(1),
+                        )?;
+                        if draft_tokens.is_empty() {
+                            mtp_results = Some(anchor_result);
+                            Ok(Tensor::zeros(
+                                (1, 1),
+                                candle_core::DType::F32,
+                                pipeline.device(),
+                            )?)
+                        } else {
+                            let mut verify_tokens = vec![anchor_token];
+                            verify_tokens.extend_from_slice(&draft_tokens);
+                            let verify_input = Tensor::from_vec(
+                                verify_tokens,
+                                (draft_tokens.len() + 1,),
+                                pipeline.device(),
+                            )?;
+                            let _prefill_guard = set_linear_is_prefill(true);
+                            let all_logits = pipeline.forward(
+                                verify_input,
+                                &verify_positions,
+                                Some(&cache_engine.get_kv_cache()),
+                                &verify_metadata,
+                                None,
+                            )?;
+                            let verify_result =
+                                crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
+                                    &all_logits,
+                                    &draft_tokens,
+                                )?;
+                            if verify_result.num_accepted < verify_result.num_proposed {
+                                let commit_len = 1 + verify_result.num_accepted;
+                                let restored = pipeline.mtp_rollback_mamba(seq_id, commit_len)?;
+                                if !restored {
+                                    candle_core::bail!(
+                                    "MTP failed to roll back mamba state for seq {} to {} verified token(s)",
+                                    seq_id,
+                                    commit_len
+                                );
+                                }
+                            }
+
+                            let mut results = anchor_result;
+                            let mut extra_tokens = verify_result.accepted_tokens.clone();
+                            extra_tokens.push(verify_result.continuation_token);
+
+                            let seq = Self::primary_sequence(scheduled.front().unwrap());
+                            let generated_before_anchor = seq
+                                .deref()
+                                .get_len()
+                                .saturating_sub(seq.deref().get_prompt_len());
+                            let remaining_after_anchor = scheduled
+                                .front()
+                                .unwrap()
+                                .sampling_params
+                                .max_tokens
+                                .saturating_sub(generated_before_anchor + 1);
+                            extra_tokens.truncate(remaining_after_anchor);
+
+                            if !extra_tokens.is_empty() {
+                                let mut extra_results =
+                                    pipeline.tokens_to_results(&extra_tokens, scheduled)?;
+                                results.append(&mut extra_results);
+                            }
+                            crate::openai::models::qwen3_5_mtp::mtp_stats_update(
+                                verify_result.num_proposed,
+                                verify_result.num_accepted,
+                            );
+                            let mtp_steps = crate::openai::models::qwen3_5_mtp::MTP_TOTAL_STEPS
+                                .load(std::sync::atomic::Ordering::Relaxed);
+                            if mtp_steps <= 32 || mtp_steps % 256 == 0 {
+                                info!(
+                                    "MTP step={} proposed={} accepted={} committed_extra={} {}",
+                                    mtp_steps,
+                                    verify_result.num_proposed,
+                                    verify_result.num_accepted,
+                                    extra_tokens.len(),
+                                    crate::openai::models::qwen3_5_mtp::mtp_stats_summary()
+                                );
+                            }
+                            mtp_results = Some(results);
+                            Ok(all_logits)
+                        }
+                    }
+                    _ => {
+                        mtp_results = Some(anchor_result);
+                        Ok(Tensor::zeros(
+                            (1, 1),
+                            candle_core::DType::F32,
+                            pipeline.device(),
+                        )?)
+                    }
+                }
+            } else if is_embedding {
+                pipeline.forward_embedding(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                )
+            } else {
+                pipeline.forward(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                    images.as_ref(),
+                )
+            }
+        })();
         let mut guard = engine.write();
         if guard.pipelines.insert(rank, pipeline_entry).is_some() {
             candle_core::bail!("pipeline for rank {rank} was replaced while detached");
         }
-        let logits = logits?;
+        let logits = run_result?;
 
         Ok(BatchExecution {
             logits,
             is_prompt: metadata.is_prefill,
             is_embedding,
             model_name,
+            mtp_results,
         })
     }
 

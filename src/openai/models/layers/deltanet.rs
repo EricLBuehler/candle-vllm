@@ -56,6 +56,8 @@ pub struct GatedDeltaNet {
     scale: f64,
     kernel_dtype: DType,
     projection_dtype: DType,
+    conv_mtp_state: Tensor,
+    recurrent_mtp_state: Tensor,
 }
 
 impl GatedDeltaNet {
@@ -489,6 +491,19 @@ impl GatedDeltaNet {
             .map(|b| b.to_dtype(DType::F32))
             .transpose()?;
         let scale = 1.0f64 / (head_k_dim as f64).sqrt();
+        let d_conv = key_dim * 2 + value_dim;
+        let max_verify_tokens = 16;
+        let conv_mtp_state = Tensor::zeros(
+            (max_verify_tokens, d_conv, conv_kernel_size - 1),
+            kernel_dtype,
+            vb.device(),
+        )?;
+        let recurrent_mtp_state = Tensor::zeros(
+            (max_verify_tokens, num_v_heads, head_k_dim, head_v_dim),
+            DType::F32,
+            vb.device(),
+        )?;
+
         Ok(Self {
             projection,
             out_proj,
@@ -510,6 +525,8 @@ impl GatedDeltaNet {
             scale,
             kernel_dtype,
             projection_dtype,
+            conv_mtp_state,
+            recurrent_mtp_state,
         })
     }
 
@@ -551,12 +568,17 @@ impl GatedDeltaNet {
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
 
+            let conv_snapshots = if input_metadata.is_mtp_verify {
+                Some(self.conv_mtp_state.narrow(0, 0, token_count)?)
+            } else {
+                None
+            };
             let out = gdn::causal_conv1d_fwd(
                 &mixed_qkv,
                 &self.conv_weight,
                 self.conv_bias.as_ref(),
                 &mut conv_state,
-                None,
+                conv_snapshots.as_ref(),
                 Some(cu_seqlens),
                 true, // SiLU activation
             )?;
@@ -606,6 +628,11 @@ impl GatedDeltaNet {
                 .as_ref()
                 .expect("cu_seqlens_q must be present in prefill!");
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
+            let recurrent_snapshots = if input_metadata.is_mtp_verify {
+                Some(self.recurrent_mtp_state.narrow(0, 0, token_count)?)
+            } else {
+                None
+            };
             let try_flashinfer = self.num_k_heads != self.num_v_heads
                 && !input_metadata.is_mtp_verify
                 && crate::openai::utils::sm90_lower_precision_gdn_prefill();
@@ -646,7 +673,7 @@ impl GatedDeltaNet {
                         seq_slots,
                         &cu_seqlens,
                         self.scale as f32,
-                        None,
+                        recurrent_snapshots.as_ref(),
                     )?
                 }
             } else {
@@ -660,7 +687,7 @@ impl GatedDeltaNet {
                     global_state,
                     seq_slots,
                     &cu_seqlens,
-                    None,
+                    recurrent_snapshots.as_ref(),
                 )?
             }
         } else {
@@ -704,5 +731,33 @@ impl GatedDeltaNet {
         } else {
             Ok(out)
         }
+    }
+
+    pub fn rollback_mtp_verify(
+        &self,
+        mamba_cache: &mut MambaCache,
+        seq_slots: &Tensor,
+        keep_tokens: usize,
+    ) -> Result<()> {
+        if keep_tokens == 0 {
+            return Ok(());
+        }
+        let idx = keep_tokens - 1;
+        let conv_snapshot = self.conv_mtp_state.narrow(0, idx, 1)?;
+        let conv_state_dtype = mamba_cache.conv_state(self.gdn_layer_idx).dtype();
+        let conv_snapshot = if conv_snapshot.dtype() != conv_state_dtype {
+            conv_snapshot.to_dtype(conv_state_dtype)?
+        } else {
+            conv_snapshot
+        };
+        mamba_cache.set_batch_conv_state(self.gdn_layer_idx, seq_slots, &conv_snapshot)?;
+
+        let recurrent_snapshot = self.recurrent_mtp_state.narrow(0, idx, 1)?;
+        mamba_cache.set_batch_recurrent_state(
+            self.gdn_layer_idx,
+            seq_slots,
+            &recurrent_snapshot,
+        )?;
+        Ok(())
     }
 }

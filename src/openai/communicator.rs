@@ -71,12 +71,20 @@ pub struct ForwardPayload {
     pub seqlens: Option<Vec<u32>>,
     pub is_prefill: bool,
     pub is_mla: bool,
+    pub is_mtp_verify: bool,
     pub flashinfer_host: Option<FlashInferHostData>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum MessageType {
     RunForward(ForwardPayload),
+    RunMtpStep1(ForwardPayload),
+    RunMtpStep2 {
+        anchor_token: u32,
+        seq_id: usize,
+        seq_len: usize,
+        verify_payload: ForwardPayload,
+    },
     FinishSequences(Vec<usize>),
     MambaPrefixCapture {
         seq_id: usize,

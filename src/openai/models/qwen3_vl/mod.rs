@@ -399,6 +399,49 @@ impl Qwen3VLForConditionalGeneration {
         }
     }
 
+    pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
+        match &self.text_model {
+            Qwen3TextModel::MoE35(m) => m.preallocate_mtp_hidden_buffer(max_batch_size),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn forward_with_hidden(
+        &self,
+        input_ids: &Tensor,
+        positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<(Tensor, Tensor)> {
+        match &self.text_model {
+            Qwen3TextModel::MoE35(m) => {
+                m.forward_with_hidden(input_ids, positions, kv_caches, input_metadata)
+            }
+            _ => candle_core::bail!("Qwen3VL MTP requires Qwen3.5 MoE text backbone"),
+        }
+    }
+
+    pub fn embed_weight(&self) -> Result<Tensor> {
+        match &self.text_model {
+            Qwen3TextModel::MoE35(m) => Ok(m.embed_weight().clone()),
+            _ => candle_core::bail!("Qwen3VL MTP requires Qwen3.5 MoE text embeddings"),
+        }
+    }
+
+    pub fn forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
+        match &self.text_model {
+            Qwen3TextModel::MoE35(m) => m.forward_lm_head(hidden),
+            _ => candle_core::bail!("Qwen3VL MTP requires Qwen3.5 MoE lm_head"),
+        }
+    }
+
+    pub fn mtp_rollback_mamba(&self, seq_id: usize, keep_tokens: usize) -> Result<bool> {
+        match &self.text_model {
+            Qwen3TextModel::MoE35(m) => m.mtp_rollback_mamba(seq_id, keep_tokens),
+            _ => Ok(false),
+        }
+    }
+
     pub fn set_mamba_prefix_cache_capacity(&self, capacity: usize) {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => m.set_mamba_prefix_cache_capacity(capacity),

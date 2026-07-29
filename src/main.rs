@@ -80,6 +80,10 @@ struct Args {
     #[arg(long)]
     isq: Option<String>,
 
+    /// Enable Qwen3.5 MTP speculative decoding with this many draft tokens per step.
+    #[arg(long)]
+    mtp: Option<usize>,
+
     #[arg(long, default_value_t = false)]
     cpu: bool,
 
@@ -239,13 +243,16 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    let loader = Box::new(DefaultLoader::new(
-        args.model_id,
-        args.weight_path,
-        args.weight_file,
-        args.enforce_parser.clone(),
-        args.yarn_scaling_factor,
-    ));
+    let loader = Box::new(
+        DefaultLoader::new(
+            args.model_id,
+            args.weight_path,
+            args.weight_file,
+            args.enforce_parser.clone(),
+            args.yarn_scaling_factor,
+        )
+        .with_mtp(args.mtp),
+    );
 
     let (paths, gguf) = loader.prepare_model_weights(args.hf_token, args.hf_token_path)?;
 

@@ -98,21 +98,36 @@ impl ThreadedRunner {
                 }
             }
 
-            let results = {
-                let mut e = self.engine.write();
-                let default_pipeline = e.get_mut_pipeline(0usize).unwrap().0.as_mut();
-                default_pipeline.sample(&batch.logits, &scheduled)?
-            };
-
             self.engine.read().clear_current_scheduled_groups();
 
             let mut e = self.engine.write();
-            e.apply_sample_results(
-                self.rank,
-                &scheduled,
-                results,
-                &mut self.prompt_finish_times,
-            )?;
+            if let Some(mtp_results) = batch.mtp_results.take() {
+                for result in mtp_results {
+                    e.apply_sample_results(
+                        self.rank,
+                        &scheduled,
+                        vec![result],
+                        &mut self.prompt_finish_times,
+                    )?;
+                    if LLMEngine::primary_sequence(&scheduled[0])
+                        .deref()
+                        .is_finished()
+                    {
+                        break;
+                    }
+                }
+            } else {
+                let results = {
+                    let default_pipeline = e.get_mut_pipeline(0usize).unwrap().0.as_mut();
+                    default_pipeline.sample(&batch.logits, &scheduled)?
+                };
+                e.apply_sample_results(
+                    self.rank,
+                    &scheduled,
+                    results,
+                    &mut self.prompt_finish_times,
+                )?;
+            }
             e.finalize_post_sampling(
                 &scheduled,
                 self.rank,

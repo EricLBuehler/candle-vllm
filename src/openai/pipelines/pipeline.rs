@@ -46,6 +46,7 @@ use crate::{
             qwen::Qwen,
             qwen3_5::Qwen3_5,
             qwen3_5_moe::Qwen3_5MoE,
+            qwen3_5_mtp::Qwen3_5MtpHead,
             qwen3_moe::Qwen3MoE,
             qwen3_vl::{Qwen3TextModel, Qwen3VLForConditionalGeneration},
             stable_lm::StableLM,
@@ -161,6 +162,8 @@ pub struct DefaultPipeline {
     pub tool_parser_model_id: String,
     pub enforce_parser: Option<String>,
     pub image_config: Option<ImageProcessConfig>,
+    pub mtp_head: Option<Arc<Qwen3_5MtpHead>>,
+    pub mtp_num_speculative: usize,
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
 }
@@ -171,6 +174,7 @@ pub struct DefaultLoader {
     weight_file: Option<String>,
     enforce_parser: Option<String>,
     yarn_scaling_factor: Option<f64>,
+    mtp_num_speculative: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +222,13 @@ impl DefaultLoader {
             weight_file,
             enforce_parser,
             yarn_scaling_factor,
+            mtp_num_speculative: None,
         }
+    }
+
+    pub fn with_mtp(mut self, mtp_num_speculative: Option<usize>) -> Self {
+        self.mtp_num_speculative = mtp_num_speculative;
+        self
     }
 
     fn public_model_name(&self) -> Option<String> {
@@ -729,7 +739,7 @@ impl DefaultLoader {
         let pipeline_num_shards = local_world_size.unwrap_or(device_ids.len());
         let _guard = candle_core::InferenceMode::enter();
         attention_rs::reset_paged_attention_layer_counter();
-        let (models, devices, config, sep_style) = if gguf {
+        let (models, devices, config, sep_style, mtp_heads) = if gguf {
             let device = crate::new_device(device_ids[0]).unwrap();
             let path = paths.get_weight_filenames()[0].clone();
             info!("Loading quantized model from file {}", path.display());
@@ -1083,7 +1093,13 @@ impl DefaultLoader {
                 _ => panic!("Model not supported!"),
             };
             handle.join().unwrap();
-            (vec![model], vec![device], config.to_owned(), sep_style)
+            (
+                vec![model],
+                vec![device],
+                config.to_owned(),
+                sep_style,
+                vec![None],
+            )
         } else {
             let cfile = paths.get_config_filename();
             let arch = Config::get_model_arch(&cfile)?;
@@ -1264,6 +1280,46 @@ impl DefaultLoader {
                             &paths, dtype, &device,
                         )
                         .unwrap()
+                    };
+
+                    let mtp_num_speculative = self.mtp_num_speculative.unwrap_or(0);
+                    let mtp_head = if mtp_num_speculative > 0 {
+                        let is_mtp_model = matches!(
+                            arch.as_str(),
+                            "Qwen3_5ForCausalLM"
+                                | "Qwen3_5MoeForCausalLM"
+                                | "Qwen3_5MoeForConditionalGeneration"
+                                | "Qwen3NextForCausalLM"
+                                | "Qwen3NextForConditionalGeneration"
+                        );
+                        if is_mtp_model && Qwen3_5MtpHead::has_mtp_weights(&vb) {
+                            match Qwen3_5MtpHead::new(
+                                vb.clone(),
+                                comm.clone(),
+                                &config,
+                                dtype,
+                                &device,
+                            ) {
+                                Ok(head) => {
+                                    info!(
+                                        "MTP head loaded: {} speculative tokens per step",
+                                        mtp_num_speculative
+                                    );
+                                    Some(Arc::new(head))
+                                }
+                                Err(e) => {
+                                    warn!("Failed to load MTP head: {}. MTP disabled.", e);
+                                    None
+                                }
+                            }
+                        } else {
+                            warn!(
+                                "MTP requested but model weights/type do not expose Qwen3.5 MTP layers. MTP disabled."
+                            );
+                            None
+                        }
+                    } else {
+                        None
                     };
 
                     let (model, sep) = match arch.as_str() {
@@ -1586,7 +1642,7 @@ impl DefaultLoader {
                     #[cfg(feature = "cuda")]
                     device.synchronize()?;
 
-                    Ok((model, device, sep))
+                    Ok((model, device, sep, mtp_head))
                 })
                 .collect();
             let has_err = results.iter().any(|r| r.is_err());
@@ -1598,13 +1654,15 @@ impl DefaultLoader {
             let mut devices = Vec::new();
             let mut models = Vec::new();
             let mut sep_style = Vec::new();
+            let mut mtp_heads = Vec::new();
 
             for result in results {
                 match result {
-                    Ok((model, device, sep)) => {
+                    Ok((model, device, sep, mtp_head)) => {
                         devices.push(device);
                         models.push(model);
-                        sep_style.push(sep)
+                        sep_style.push(sep);
+                        mtp_heads.push(mtp_head);
                     }
                     Err(e) => {
                         return Err(e);
@@ -1612,7 +1670,7 @@ impl DefaultLoader {
                 }
             }
 
-            (models, devices, config, sep_style[0].clone())
+            (models, devices, config, sep_style[0].clone(), mtp_heads)
         };
 
         warn!("Done loading.");
@@ -1645,6 +1703,7 @@ impl DefaultLoader {
             .into_iter()
             .enumerate()
             .map(|(rank, model)| {
+                let mtp_head = mtp_heads.get(rank).cloned().unwrap_or(None);
                 let logits_processor = {
                     LogitsProcessor::new(
                         SAMPLING_SEED,
@@ -1835,6 +1894,8 @@ impl DefaultLoader {
                         self.enforce_parser.clone(),
                         kv_cache_dtype,
                         pipeline_num_shards,
+                        mtp_head,
+                        self.mtp_num_speculative.unwrap_or(0),
                         #[cfg(all(feature = "cuda", feature = "graph"))]
                         block_size,
                         #[cfg(all(feature = "cuda", feature = "graph"))]
@@ -1894,6 +1955,8 @@ impl DefaultPipeline {
         enforce_parser: Option<String>,
         _kv_cache_dtype: DType,
         _num_shards: usize,
+        mtp_head: Option<Arc<Qwen3_5MtpHead>>,
+        mtp_num_speculative: usize,
         #[cfg(all(feature = "cuda", feature = "graph"))] block_size: usize,
         #[cfg(all(feature = "cuda", feature = "graph"))] max_num_seqs: usize,
     ) -> Result<Self> {
@@ -2038,6 +2101,8 @@ impl DefaultPipeline {
             tool_parser_model_id,
             enforce_parser,
             image_config,
+            mtp_head,
+            mtp_num_speculative,
             #[cfg(all(feature = "cuda", feature = "graph"))]
             capturer: GraphCapturer::new(
                 wrapper,
@@ -2211,6 +2276,61 @@ impl DefaultPipeline {
             LLMModel::GLM5GGUF(m) | LLMModel::DeepSeekGGUF(m) => {
                 m.forward(&input_tokens, input_positions, kv_cache, input_metadata)
             }
+        }
+    }
+
+    pub fn has_mtp(&self) -> bool {
+        self.mtp_head.is_some() && self.mtp_num_speculative > 0
+    }
+
+    pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
+        match &self.model {
+            LLMModel::Qwen3_5MoE(model) => model.preallocate_mtp_hidden_buffer(max_batch_size),
+            LLMModel::Qwen3VL(model) => model.preallocate_mtp_hidden_buffer(max_batch_size),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn forward_with_hidden(
+        &self,
+        input_tokens: Tensor,
+        input_positions: &Tensor,
+        kv_cache: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+    ) -> Result<(Tensor, Tensor)> {
+        let _fp8_linear_prefill_guard = set_linear_is_prefill(input_metadata.is_prefill);
+        match &self.model {
+            LLMModel::Qwen3_5MoE(model) => {
+                model.forward_with_hidden(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            LLMModel::Qwen3VL(model) => {
+                model.forward_with_hidden(&input_tokens, input_positions, kv_cache, input_metadata)
+            }
+            _ => candle_core::bail!("MTP requires Qwen3.5 MoE safetensor model support"),
+        }
+    }
+
+    pub fn mtp_embed_weight(&self) -> Result<Tensor> {
+        match &self.model {
+            LLMModel::Qwen3_5MoE(model) => Ok(model.embed_weight().clone()),
+            LLMModel::Qwen3VL(model) => model.embed_weight(),
+            _ => candle_core::bail!("MTP requires Qwen3.5 MoE embedding weights"),
+        }
+    }
+
+    pub fn mtp_forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
+        match &self.model {
+            LLMModel::Qwen3_5MoE(model) => model.forward_lm_head(hidden),
+            LLMModel::Qwen3VL(model) => model.forward_lm_head(hidden),
+            _ => candle_core::bail!("MTP requires Qwen3.5 MoE lm_head"),
+        }
+    }
+
+    pub fn mtp_rollback_mamba(&self, seq_id: usize, keep_tokens: usize) -> Result<bool> {
+        match &self.model {
+            LLMModel::Qwen3_5MoE(model) => model.mtp_rollback_mamba(seq_id, keep_tokens),
+            LLMModel::Qwen3VL(model) => model.mtp_rollback_mamba(seq_id, keep_tokens),
+            _ => Ok(false),
         }
     }
 
@@ -2521,6 +2641,70 @@ impl DefaultPipeline {
             })
             .collect();
         Ok(result)
+    }
+
+    pub fn tokens_to_results(
+        &mut self,
+        tokens: &[u32],
+        groups: &VecDeque<Arc<SequenceGroup>>,
+    ) -> Result<Vec<TokenOrFinishReason>> {
+        if groups.len() != 1 {
+            candle_core::bail!("MTP token conversion supports a single sequence group");
+        }
+        let group = groups.front().unwrap();
+        let seq = group.get_seqs().values().next().unwrap();
+        let mut results = Vec::with_capacity(tokens.len());
+        for &next_token in tokens {
+            let mut text = String::new();
+            let mut decoder_map = self.stream_decoders.write();
+            match decoder_map.get_mut(&group.group_id) {
+                Some(decoder) => {
+                    if let Some(output) = decoder.step(next_token) {
+                        text = output;
+                    }
+                }
+                None => {
+                    let leaked: &'static _ = Box::leak(Box::new(self.tokenizer.clone()));
+                    let decoder = leaked.decode_stream(false);
+                    let wrapped = super::StreamWithTokenizer {
+                        _tokenizer: unsafe { Box::from_raw(leaked as *const _ as *mut _) },
+                        stream: decoder,
+                    };
+                    let mut boxed_decoder: Box<dyn super::DecodeStreamTrait + Send + Sync> =
+                        Box::new(wrapped);
+                    if let Some(output) = boxed_decoder.step(next_token) {
+                        text = output;
+                    }
+                    decoder_map.insert(group.group_id, boxed_decoder);
+                }
+            }
+            drop(decoder_map);
+
+            let custom_stop_token_match = match &group.sampling_params.stop {
+                Some(StopTokens::Multi(v)) => v.contains(&text.trim().to_string()),
+                Some(StopTokens::Single(v)) => v == text.trim(),
+                _ => false,
+            };
+            let generated = seq.deref().get_len() - seq.deref().get_prompt_len() + results.len();
+            let result = if generated > group.sampling_params.max_tokens {
+                Right("length".to_string())
+            } else if custom_stop_token_match || self.stop_token_ids.contains(&next_token) {
+                Right("stop".to_string())
+            } else {
+                Left(Logprobs {
+                    token: next_token,
+                    logprob: 0.0,
+                    top_logprobs: Vec::<TopLogprob>::new(),
+                    bytes: text,
+                })
+            };
+            let finished = result.is_right();
+            results.push(result);
+            if finished {
+                break;
+            }
+        }
+        Ok(results)
     }
 
     pub fn name(&self) -> &str {
