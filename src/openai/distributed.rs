@@ -287,26 +287,34 @@ impl MergedParallelColumnLinear {
             })?;
         let scale_dim0 = (out_dim + by - 1) / by;
         let scale_dim1 = (in_dim + bx - 1) / bx;
-        let weight_scale = match vb.get_with_hints_dtype(
-            (scale_dim0, scale_dim1),
-            "weight_scale",
-            Shard::default(),
-            DType::F32,
-        ) {
-            Ok(s) => s,
-            Err(_) => vb
-                .get_with_hints_dtype(
-                    (scale_dim0, scale_dim1),
-                    "weight_scale_inv",
-                    Shard::default(),
-                    DType::F32,
-                )
-                .map_err(|_| {
-                    candle_core::Error::Msg(
-                        "LnFp8: Missing weight_scale or weight_scale_inv".into(),
+        let no_shard = Shard::default();
+        let weight_scale = match vb
+            .get_with_hints_dtype((), "weight_scale", no_shard, DType::F32)
+            .or_else(|_| vb.get_with_hints_dtype((1,), "weight_scale", no_shard, DType::F32))
+        {
+            Ok(s) => s.broadcast_as((scale_dim0, scale_dim1))?.contiguous()?,
+            Err(_) => match vb.get_with_hints_dtype(
+                (scale_dim0, scale_dim1),
+                "weight_scale",
+                no_shard,
+                DType::F32,
+            ) {
+                Ok(s) => s,
+                Err(_) => vb
+                    .get_with_hints_dtype(
+                        (scale_dim0, scale_dim1),
+                        "weight_scale_inv",
+                        no_shard,
+                        DType::F32,
                     )
-                })?,
+                    .map_err(|_| {
+                        candle_core::Error::Msg(
+                            "LnFp8: Missing weight_scale or weight_scale_inv".into(),
+                        )
+                    })?,
+            },
         };
+        let input_scale = crate::openai::models::linear::load_fp8_input_scale(&vb)?;
 
         #[cfg(feature = "cuda")]
         let sm_version = attention_rs::cuda_utils::sm_version(vb.device().as_cuda_device()?)
@@ -404,6 +412,7 @@ impl MergedParallelColumnLinear {
             weight: gate_weight_shard,
             weight_scale: gate_scale_shard,
             weight_scale_cutlass: gate_scale_cutlass,
+            input_scale,
             bias: None,
             weight_block_size: block_size.clone(),
             sm_version,
@@ -417,6 +426,7 @@ impl MergedParallelColumnLinear {
             weight: up_weight_shard,
             weight_scale: up_scale_shard,
             weight_scale_cutlass: up_scale_cutlass,
+            input_scale,
             bias: None,
             weight_block_size: block_size.clone(),
             sm_version,
@@ -478,6 +488,7 @@ impl MergedParallelColumnLinear {
             weight: packed_weight,
             weight_scale: packed_scale,
             weight_scale_cutlass: packed_scale_cutlass,
+            input_scale: None,
             bias: None,
             weight_block_size: block_size,
             sm_version,
@@ -969,26 +980,34 @@ impl MergedParallelColumnLinear {
                 })?;
             let scale_dim0 = (out_dim + by - 1) / by;
             let scale_dim1 = (in_dim + bx - 1) / bx;
-            let weight_scale = match vb.get_with_hints_dtype(
-                (scale_dim0, scale_dim1),
-                "weight_scale",
-                Shard::default(),
-                DType::F32,
-            ) {
-                Ok(s) => s,
-                Err(_) => vb
-                    .get_with_hints_dtype(
-                        (scale_dim0, scale_dim1),
-                        "weight_scale_inv",
-                        Shard::default(),
-                        DType::F32,
-                    )
-                    .map_err(|_| {
-                        candle_core::Error::Msg(
-                            "LnFp8: Missing weight_scale or weight_scale_inv".into(),
+            let no_shard = Shard::default();
+            let weight_scale = match vb
+                .get_with_hints_dtype((), "weight_scale", no_shard, DType::F32)
+                .or_else(|_| vb.get_with_hints_dtype((1,), "weight_scale", no_shard, DType::F32))
+            {
+                Ok(s) => s.broadcast_as((scale_dim0, scale_dim1))?.contiguous()?,
+                Err(_) => match vb.get_with_hints_dtype(
+                    (scale_dim0, scale_dim1),
+                    "weight_scale",
+                    no_shard,
+                    DType::F32,
+                ) {
+                    Ok(s) => s,
+                    Err(_) => vb
+                        .get_with_hints_dtype(
+                            (scale_dim0, scale_dim1),
+                            "weight_scale_inv",
+                            no_shard,
+                            DType::F32,
                         )
-                    })?,
+                        .map_err(|_| {
+                            candle_core::Error::Msg(
+                                "LnFp8: Missing weight_scale or weight_scale_inv".into(),
+                            )
+                        })?,
+                },
             };
+            let input_scale = crate::openai::models::linear::load_fp8_input_scale(&vb)?;
 
             #[cfg(feature = "cuda")]
             let sm_version = attention_rs::cuda_utils::sm_version(vb.device().as_cuda_device()?)
@@ -1079,6 +1098,7 @@ impl MergedParallelColumnLinear {
                 weight: merged_weight,
                 weight_scale: merged_scale,
                 weight_scale_cutlass: merged_scale_cutlass,
+                input_scale,
                 bias: None,
                 weight_block_size: block_size.clone(),
                 sm_version,
@@ -1495,16 +1515,40 @@ impl VocabParallelLinear {
         }
 
         let padded_vocab = pad_vocab_size(out_dim, world_size);
-        let linear = linear(
-            in_dim,
-            padded_vocab,
-            vb,
-            shard(0, comm.rank(), world_size),
-            quant,
-            quant_config,
-            dtype,
-            None,
-        )?;
+        let linear = if padded_vocab == out_dim {
+            linear(
+                in_dim,
+                padded_vocab,
+                vb,
+                shard(0, comm.rank(), world_size),
+                quant,
+                quant_config,
+                dtype,
+                None,
+            )?
+        } else {
+            let full = linear(
+                in_dim,
+                out_dim,
+                vb,
+                shard(0, 0, 1),
+                quant,
+                quant_config,
+                dtype,
+                None,
+            )?;
+            let (weight, bias) = match full {
+                LinearX::Linear(ln) => (ln.weight().clone(), ln.bias().cloned()),
+                LinearX::QLinear(qln) => {
+                    let weight = qln.dequantize()?.to_dtype(dtype)?;
+                    (weight, qln.bias().cloned())
+                }
+                other => candle_core::bail!(
+                    "VocabParallelLinear TP padding path requires dense/GPTQ/AWQ weights, got {other:?}"
+                ),
+            };
+            return Self::from_weight_bias(weight, bias, comm, out_dim, dtype);
+        };
 
         #[cfg(feature = "nccl")]
         let all_gather = Some(AllGather::new(comm));

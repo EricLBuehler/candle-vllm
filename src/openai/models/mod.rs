@@ -187,6 +187,8 @@ pub struct QuantConfig {
     #[serde(default)]
     pub config_groups: Option<serde_json::Value>,
     #[serde(default)]
+    pub quantized_layers: Option<serde_json::Value>,
+    #[serde(default)]
     pub quant_algo: Option<String>,
     #[serde(default)]
     pub mode: Option<String>,
@@ -231,7 +233,14 @@ impl QuantConfig {
             }
         }
 
-        if self.quant_method == "modelopt" {
+        // ModelOpt mixed-precision checkpoints use the same tensor layouts as
+        // the regular ModelOpt loaders, but identify the selected kernel in
+        // `quantized_layers` rather than in the top-level quant_algo field.
+        if self.quant_method.eq_ignore_ascii_case("modelopt_mixed") {
+            self.quant_method = "modelopt".to_string();
+        }
+
+        if self.quant_method.eq_ignore_ascii_case("modelopt") {
             if let Some(algo) = &self.quant_algo {
                 if algo.eq_ignore_ascii_case("NVFP4") || algo.eq_ignore_ascii_case("FP4") {
                     self.quant_method = "nvfp4".to_string();
@@ -241,6 +250,22 @@ impl QuantConfig {
                     }
                     if self.bits == 0 {
                         self.bits = 4;
+                    }
+                    return;
+                }
+                if algo.eq_ignore_ascii_case("FP8") {
+                    self.quant_method = "fp8".to_string();
+                    return;
+                }
+                if algo.eq_ignore_ascii_case("MIXED_PRECISION") {
+                    if self.detect_nvfp4_from_config_groups()
+                        || self.detect_nvfp4_from_quantized_layers()
+                    {
+                        self.quant_method = "nvfp4".to_string();
+                        self.bits = 4;
+                        self.group_size = 16;
+                    } else if self.detect_fp8_from_quantized_layers() {
+                        self.quant_method = "fp8".to_string();
                     }
                     return;
                 }
@@ -254,6 +279,21 @@ impl QuantConfig {
                 if self.bits == 0 {
                     self.bits = 4;
                 }
+                return;
+            }
+            if self.detect_nvfp4_from_quantized_layers() {
+                self.quant_method = "nvfp4".to_string();
+                self.extract_compressed_tensors_params();
+                if self.group_size == 0 {
+                    self.group_size = 16;
+                }
+                if self.bits == 0 {
+                    self.bits = 4;
+                }
+                return;
+            }
+            if self.detect_fp8_from_quantized_layers() {
+                self.quant_method = "fp8".to_string();
                 return;
             }
         }
@@ -351,6 +391,38 @@ impl QuantConfig {
             }
         }
         false
+    }
+
+    fn detect_nvfp4_from_quantized_layers(&self) -> bool {
+        self.quantized_layers
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .map(|layers| {
+                layers.values().any(|layer| {
+                    layer
+                        .get("quant_algo")
+                        .and_then(|v| v.as_str())
+                        .map(|algo| algo.to_ascii_uppercase().contains("NVFP4"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn detect_fp8_from_quantized_layers(&self) -> bool {
+        self.quantized_layers
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .map(|layers| {
+                layers.values().any(|layer| {
+                    layer
+                        .get("quant_algo")
+                        .and_then(|v| v.as_str())
+                        .map(|algo| algo.to_ascii_uppercase().contains("FP8"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
     }
 
     fn detect_mxfp4_from_config_groups(&self) -> bool {
