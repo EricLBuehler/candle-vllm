@@ -546,6 +546,10 @@ impl MlaAttention {
                     block_tables,
                     context_lens,
                     self.sm_scale,
+                    input_metadata
+                        .max_context_len
+                        .max(input_metadata.max_seqlen_k)
+                        .max(1),
                 )?;
                 return self.project_mla_output(&attn_out, seq_len, xs.dtype());
             }

@@ -1,5 +1,6 @@
 use super::{
     attention::Attention,
+    layers::moe::FusedMoeWNA16,
     layers::moe::{FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4},
     rotary_emb::ScalingRotaryEmbedding,
     utils::resolve_input_seqlens,
@@ -23,6 +24,7 @@ enum MoeVariant {
     FusedMoeFp8(FusedMoeFp8),
     FusedMoeMxfp4(FusedMoeMxfp4),
     FusedMoeNvfp4(FusedMoeNvfp4),
+    FusedMoeWNA16(FusedMoeWNA16),
 }
 
 impl MoeVariant {
@@ -33,6 +35,7 @@ impl MoeVariant {
             Self::FusedMoeFp8(m) => m.forward(xs, is_prefill),
             Self::FusedMoeMxfp4(m) => m.forward(xs, is_prefill),
             Self::FusedMoeNvfp4(m) => m.forward(xs, is_prefill),
+            Self::FusedMoeWNA16(m) => m.forward(xs, is_prefill),
         }
     }
 }
@@ -83,6 +86,16 @@ impl MiniMaxDecoderLayer {
                 let mut m = FusedMoeNvfp4::new(cfg, moe_vb.clone(), comm.clone(), dtype)?;
                 m.set_sigmoid_routing();
                 MoeVariant::FusedMoeNvfp4(m)
+            } else if quant_cfg.is_compressed_tensors {
+                MoeVariant::FusedMoeWNA16(FusedMoeWNA16::new_with_gate(
+                    cfg,
+                    moe_vb.pp("gate"),
+                    moe_vb.pp("experts"),
+                    &moe_vb,
+                    comm.clone(),
+                    dtype,
+                    quant_cfg,
+                )?)
             } else {
                 MoeVariant::FusedMoe(FusedMoe::new(cfg, moe_vb.clone(), comm.clone(), dtype)?)
             }

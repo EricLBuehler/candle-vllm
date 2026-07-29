@@ -1397,6 +1397,24 @@ pub fn linear_x(
             return Ok(LinearX::LnNvfp4(ln));
         }
 
+        // Compressed-tensors may leave some modules dense. Do not route
+        // those modules into a packed WNA16 loader.
+        if cfg.is_compressed_tensors && !vb.contains_tensor("weight_packed") {
+            let ws = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
+            let ws = if ws.dtype() != dtype {
+                ws.to_dtype(dtype)?
+            } else {
+                ws
+            };
+            let bs = vb.get((out_dim,), "bias")?;
+            let bs = if bs.dtype() != dtype {
+                bs.to_dtype(dtype)?
+            } else {
+                bs
+            };
+            return Ok(LinearX::Linear(Linear::new(ws, Some(bs))));
+        }
+
         if matches!(cfg.quant_method.as_str(), "gptq" | "awq" | "marlin") {
             let ln = qlinear(in_dim, out_dim, vb, shard, &quant_config_local, true, dtype)?;
             return Ok(LinearX::QLinear(QLinear::from_linear_x(
@@ -1552,6 +1570,16 @@ pub fn linear_no_bias_x(
                 LnNvfp4::load(in_dim, out_dim, vb.clone(), shards, false)?
             };
             return Ok(LinearX::LnNvfp4(ln));
+        }
+
+        if cfg.is_compressed_tensors && !vb.contains_tensor("weight_packed") {
+            let ws = vb.get_with_hints((out_dim, in_dim), "weight", shards)?;
+            let ws = if ws.dtype() != dtype {
+                ws.to_dtype(dtype)?
+            } else {
+                ws
+            };
+            return Ok(LinearX::Linear(Linear::new(ws, None)));
         }
 
         if matches!(cfg.quant_method.as_str(), "gptq" | "awq" | "marlin") {

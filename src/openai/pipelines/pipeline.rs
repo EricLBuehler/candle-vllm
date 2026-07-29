@@ -1179,11 +1179,12 @@ impl DefaultLoader {
                 assert!(
                     qcfg.quant_method == "gptq"
                         || qcfg.quant_method == "awq"
+                        || qcfg.quant_method == "compressed-tensors"
                         || qcfg.quant_method == "fp8"
                         || qcfg.quant_method == "mxfp4"
                         || qcfg.quant_method == "nvfp4"
                         || qcfg.quant_method == "marlin",
-                    "Invalid quantization format! Only `gptq`, `awq`, `fp8`, `mxfp4` and `nvfp4` supported, got `{}`",
+                    "Invalid quantization format! Only `gptq`, `awq`, `compressed-tensors`, `fp8`, `mxfp4` and `nvfp4` supported, got `{}`",
                     qcfg.quant_method
                 );
             }

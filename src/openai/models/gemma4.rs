@@ -7,7 +7,7 @@ use crate::openai::distributed::{
     embedding, Comm, ReplicatedLinear, VarBuilder, VocabParallelLinear,
 };
 use crate::openai::models::layers::moe::{
-    FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4,
+    FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4, FusedMoeWNA16,
 };
 use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::mask::get_attention_causal_mask;
@@ -201,6 +201,7 @@ enum Gemma4MoE {
     FusedMoeFp8(FusedMoeFp8),
     FusedMoeMxfp4(FusedMoeMxfp4),
     FusedMoeNvfp4(FusedMoeNvfp4),
+    FusedMoeWNA16(FusedMoeWNA16),
 }
 
 impl Gemma4MoE {
@@ -211,6 +212,7 @@ impl Gemma4MoE {
             Self::FusedMoeFp8(m) => m.forward(xs, is_prefill),
             Self::FusedMoeMxfp4(m) => m.forward(xs, is_prefill),
             Self::FusedMoeNvfp4(m) => m.forward(xs, is_prefill),
+            Self::FusedMoeWNA16(m) => m.forward(xs, is_prefill),
         }
     }
 
@@ -229,6 +231,9 @@ impl Gemma4MoE {
                 m.forward_with_routing(xs, topk_weights, topk_ids, is_prefill)
             }
             Self::FusedMoeNvfp4(m) => {
+                m.forward_with_routing(xs, topk_weights, topk_ids, is_prefill)
+            }
+            Self::FusedMoeWNA16(m) => {
                 m.forward_with_routing(xs, topk_weights, topk_ids, is_prefill)
             }
         }
@@ -332,6 +337,16 @@ impl Gemma4DecoderLayer {
                         vb.pp("experts"),
                         comm.clone(),
                         dtype,
+                    )?)
+                } else if quant_cfg.is_compressed_tensors {
+                    Gemma4MoE::FusedMoeWNA16(FusedMoeWNA16::new_with_gate(
+                        cfg,
+                        vb.pp("router").pp("proj"),
+                        vb.pp("experts"),
+                        &vb,
+                        comm.clone(),
+                        dtype,
+                        quant_cfg,
                     )?)
                 } else {
                     candle::bail!(

@@ -13,7 +13,7 @@ use crate::openai::distributed::{
 };
 use crate::openai::models::layers::deepstack::ApplyDeepStack;
 use crate::openai::models::layers::moe::{
-    FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4,
+    FusedMoe, FusedMoeFp8, FusedMoeISQ, FusedMoeMxfp4, FusedMoeNvfp4, FusedMoeWNA16,
 };
 use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::linear::LinearX as Linear;
@@ -164,6 +164,7 @@ enum MoeOrMlp {
     FusedMoeFp8(FusedMoeFp8),
     FusedMoeMxfp4(FusedMoeMxfp4),
     FusedMoeNvfp4(FusedMoeNvfp4),
+    FusedMoeWNA16(FusedMoeWNA16),
 }
 
 impl MoeOrMlp {
@@ -174,6 +175,7 @@ impl MoeOrMlp {
             Self::FusedMoeFp8(m) => m.forward(xs, is_prefill),
             Self::FusedMoeMxfp4(m) => m.forward(xs, is_prefill),
             Self::FusedMoeNvfp4(m) => m.forward(xs, is_prefill),
+            Self::FusedMoeWNA16(m) => m.forward(xs, is_prefill),
         }
     }
 }
@@ -252,6 +254,14 @@ impl DecoderLayer {
                     vb.pp("mlp").clone(),
                     comm.clone(),
                     dtype,
+                )?)
+            } else if quant_cfg.is_compressed_tensors {
+                MoeOrMlp::FusedMoeWNA16(FusedMoeWNA16::new(
+                    cfg,
+                    vb.pp("mlp").clone(),
+                    comm.clone(),
+                    dtype,
+                    quant_cfg,
                 )?)
             } else {
                 MoeOrMlp::FusedMoe(FusedMoe::new(
