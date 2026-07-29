@@ -49,6 +49,18 @@ impl Qwen3VLForConditionalGeneration {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
+        Self::new_with_mtp(vb, cfg, dtype, device, comm, progress_reporter, false)
+    }
+
+    pub fn new_with_mtp(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        mtp_enabled: bool,
+    ) -> Result<Self> {
         assert!(
             cfg.extra_config_json.is_some(),
             "Invalid multimodal config file"
@@ -102,7 +114,7 @@ impl Qwen3VLForConditionalGeneration {
                 Some(text_prefix.to_string()),
             )?),
             "Qwen3_5MoeForConditionalGeneration" => {
-                Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix(
+                Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix_and_mtp(
                     vb.clone(),
                     cfg,
                     dtype,
@@ -110,19 +122,11 @@ impl Qwen3VLForConditionalGeneration {
                     comm.clone(),
                     progress_reporter.clone(),
                     Some(text_prefix.to_string()),
+                    mtp_enabled,
                 )?)
             }
-            "Qwen3_5ForConditionalGeneration" => Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix(
-                vb.clone(),
-                cfg,
-                dtype,
-                device,
-                comm.clone(),
-                progress_reporter.clone(),
-                Some(text_prefix.to_string()),
-            )?),
-            "Qwen3NextForConditionalGeneration" if next_is_moe => {
-                Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix(
+            "Qwen3_5ForConditionalGeneration" => {
+                Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix_and_mtp(
                     vb.clone(),
                     cfg,
                     dtype,
@@ -130,10 +134,23 @@ impl Qwen3VLForConditionalGeneration {
                     comm.clone(),
                     progress_reporter.clone(),
                     Some(text_prefix.to_string()),
+                    mtp_enabled,
+                )?)
+            }
+            "Qwen3NextForConditionalGeneration" if next_is_moe => {
+                Qwen3TextModel::MoE35(Qwen3_5MoE::new_with_prefix_and_mtp(
+                    vb.clone(),
+                    cfg,
+                    dtype,
+                    device,
+                    comm.clone(),
+                    progress_reporter.clone(),
+                    Some(text_prefix.to_string()),
+                    mtp_enabled,
                 )?)
             }
             "Qwen3NextForConditionalGeneration" => {
-                Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix(
+                Qwen3TextModel::Dense35(Qwen3_5::new_with_prefix_and_mtp(
                     vb.clone(),
                     cfg,
                     dtype,
@@ -141,6 +158,7 @@ impl Qwen3VLForConditionalGeneration {
                     comm.clone(),
                     progress_reporter.clone(),
                     Some(text_prefix.to_string()),
+                    mtp_enabled,
                 )?)
             }
             _ => Qwen3TextModel::Dense(Qwen::new_with_prefix(

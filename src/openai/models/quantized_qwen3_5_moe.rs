@@ -287,6 +287,7 @@ impl GGUFQWen3_5MoE {
         rank: usize,
         world_size: usize,
         #[allow(unused_variables)] comm: Rc<Comm>,
+        mtp_enabled: bool,
     ) -> Result<Self> {
         let metadata = vb.first_content_metadata();
         let md_get = |s: &str| match metadata.get(s) {
@@ -472,6 +473,7 @@ impl GGUFQWen3_5MoE {
                     rms_norm_eps,
                     rank,
                     world_size,
+                    mtp_enabled,
                 )?)
             };
 

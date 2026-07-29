@@ -56,8 +56,8 @@ pub struct GatedDeltaNet {
     scale: f64,
     kernel_dtype: DType,
     projection_dtype: DType,
-    conv_mtp_state: Tensor,
-    recurrent_mtp_state: Tensor,
+    conv_mtp_state: Option<Tensor>,
+    recurrent_mtp_state: Option<Tensor>,
 }
 
 impl GatedDeltaNet {
@@ -372,6 +372,7 @@ impl GatedDeltaNet {
         comm: Rc<Comm>,
         config: &Config,
         gdn_layer_idx: usize,
+        mtp_enabled: bool,
     ) -> Result<Self> {
         let hidden_size = config.hidden_size;
         let hybrid = resolve_qwen3_hybrid_config(config);
@@ -492,17 +493,23 @@ impl GatedDeltaNet {
             .transpose()?;
         let scale = 1.0f64 / (head_k_dim as f64).sqrt();
         let d_conv = key_dim * 2 + value_dim;
-        let max_verify_tokens = 16;
-        let conv_mtp_state = Tensor::zeros(
-            (max_verify_tokens, d_conv, conv_kernel_size - 1),
-            kernel_dtype,
-            vb.device(),
-        )?;
-        let recurrent_mtp_state = Tensor::zeros(
-            (max_verify_tokens, num_v_heads, head_k_dim, head_v_dim),
-            DType::F32,
-            vb.device(),
-        )?;
+        let (conv_mtp_state, recurrent_mtp_state) = if mtp_enabled {
+            let max_verify_tokens = 16;
+            (
+                Some(Tensor::zeros(
+                    (max_verify_tokens, d_conv, conv_kernel_size - 1),
+                    kernel_dtype,
+                    vb.device(),
+                )?),
+                Some(Tensor::zeros(
+                    (max_verify_tokens, num_v_heads, head_k_dim, head_v_dim),
+                    DType::F32,
+                    vb.device(),
+                )?),
+            )
+        } else {
+            (None, None)
+        };
 
         Ok(Self {
             projection,
@@ -569,7 +576,17 @@ impl GatedDeltaNet {
                 .expect("cu_seqlens_q must be present in prefill!");
 
             let conv_snapshots = if input_metadata.is_mtp_verify {
-                Some(self.conv_mtp_state.narrow(0, 0, token_count)?)
+                Some(
+                    self.conv_mtp_state
+                        .as_ref()
+                        .ok_or_else(|| {
+                            candle_core::Error::Msg(format!(
+                                "Missing MTP conv snapshot buffer for GDN layer {}",
+                                self.gdn_layer_idx
+                            ))
+                        })?
+                        .narrow(0, 0, token_count)?,
+                )
             } else {
                 None
             };
@@ -629,7 +646,17 @@ impl GatedDeltaNet {
                 .expect("cu_seqlens_q must be present in prefill!");
             let global_state = mamba_cache.recurrent_state_mut(self.gdn_layer_idx);
             let recurrent_snapshots = if input_metadata.is_mtp_verify {
-                Some(self.recurrent_mtp_state.narrow(0, 0, token_count)?)
+                Some(
+                    self.recurrent_mtp_state
+                        .as_ref()
+                        .ok_or_else(|| {
+                            candle_core::Error::Msg(format!(
+                                "Missing MTP recurrent snapshot buffer for GDN layer {}",
+                                self.gdn_layer_idx
+                            ))
+                        })?
+                        .narrow(0, 0, token_count)?,
+                )
             } else {
                 None
             };
@@ -743,7 +770,13 @@ impl GatedDeltaNet {
             return Ok(());
         }
         let idx = keep_tokens - 1;
-        let conv_snapshot = self.conv_mtp_state.narrow(0, idx, 1)?;
+        let conv_mtp_state = self.conv_mtp_state.as_ref().ok_or_else(|| {
+            candle_core::Error::Msg(format!(
+                "Missing MTP conv snapshot buffer for GDN layer {} rollback",
+                self.gdn_layer_idx
+            ))
+        })?;
+        let conv_snapshot = conv_mtp_state.narrow(0, idx, 1)?;
         let conv_state_dtype = mamba_cache.conv_state(self.gdn_layer_idx).dtype();
         let conv_snapshot = if conv_snapshot.dtype() != conv_state_dtype {
             conv_snapshot.to_dtype(conv_state_dtype)?
@@ -752,7 +785,13 @@ impl GatedDeltaNet {
         };
         mamba_cache.set_batch_conv_state(self.gdn_layer_idx, seq_slots, &conv_snapshot)?;
 
-        let recurrent_snapshot = self.recurrent_mtp_state.narrow(0, idx, 1)?;
+        let recurrent_mtp_state = self.recurrent_mtp_state.as_ref().ok_or_else(|| {
+            candle_core::Error::Msg(format!(
+                "Missing MTP recurrent snapshot buffer for GDN layer {} rollback",
+                self.gdn_layer_idx
+            ))
+        })?;
+        let recurrent_snapshot = recurrent_mtp_state.narrow(0, idx, 1)?;
         mamba_cache.set_batch_recurrent_state(
             self.gdn_layer_idx,
             seq_slots,

@@ -701,12 +701,16 @@ impl GgufMtpHead {
         format!("blk.{}", config.num_hidden_layers)
     }
 
-    fn has_mtp_weights(vb: &QVarBuilder, config: &Config) -> bool {
-        let mtp_vb = vb.pp(Self::block_prefix(config));
+    fn has_mtp_weights_at(vb: &QVarBuilder, block_idx: usize) -> bool {
+        let mtp_vb = vb.pp(format!("blk.{block_idx}"));
         mtp_vb.contains_key("nextn.eh_proj.weight")
             || mtp_vb.contains_key("attn_q.weight")
             || mtp_vb.contains_key("ffn_gate.weight")
             || mtp_vb.contains_key("ffn_gate_inp.weight")
+    }
+
+    fn has_mtp_weights(vb: &QVarBuilder, config: &Config) -> bool {
+        Self::has_mtp_weights_at(vb, config.num_hidden_layers)
     }
 
     fn new(
@@ -901,6 +905,10 @@ impl Qwen3_5MtpHead {
 
     pub fn has_gguf_mtp_weights(vb: &QVarBuilder, config: &Config) -> bool {
         GgufMtpHead::has_mtp_weights(vb, config)
+    }
+
+    pub fn has_gguf_mtp_weights_at(vb: &QVarBuilder, block_idx: usize) -> bool {
+        GgufMtpHead::has_mtp_weights_at(vb, block_idx)
     }
 
     pub fn new(

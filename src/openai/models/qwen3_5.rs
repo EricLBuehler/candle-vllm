@@ -70,6 +70,7 @@ impl DecoderLayer {
         _dtype: DType,
         layer_type: &str,
         gdn_layer_idx: usize,
+        mtp_enabled: bool,
     ) -> Result<Self> {
         let use_norm_offset = cfg
             .quantization_config
@@ -89,6 +90,7 @@ impl DecoderLayer {
                 comm.clone(),
                 cfg,
                 gdn_layer_idx,
+                mtp_enabled,
             )?)
         };
 
@@ -172,7 +174,28 @@ impl Qwen3_5 {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
     ) -> Result<Self> {
-        Self::new_with_prefix(vb, cfg, dtype, device, comm, progress_reporter, None)
+        Self::new_with_mtp(vb, cfg, dtype, device, comm, progress_reporter, false)
+    }
+
+    pub fn new_with_mtp(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        mtp_enabled: bool,
+    ) -> Result<Self> {
+        Self::new_with_prefix_and_mtp(
+            vb,
+            cfg,
+            dtype,
+            device,
+            comm,
+            progress_reporter,
+            None,
+            mtp_enabled,
+        )
     }
 
     pub fn new_with_prefix(
@@ -183,6 +206,28 @@ impl Qwen3_5 {
         comm: Rc<Comm>,
         progress_reporter: Arc<RwLock<ProgressReporter>>,
         prefix: Option<String>,
+    ) -> Result<Self> {
+        Self::new_with_prefix_and_mtp(
+            vb,
+            cfg,
+            dtype,
+            device,
+            comm,
+            progress_reporter,
+            prefix,
+            false,
+        )
+    }
+
+    pub fn new_with_prefix_and_mtp(
+        vb: VarBuilder,
+        cfg: &Config,
+        dtype: DType,
+        device: &Device,
+        comm: Rc<Comm>,
+        progress_reporter: Arc<RwLock<ProgressReporter>>,
+        prefix: Option<String>,
+        mtp_enabled: bool,
     ) -> Result<Self> {
         let text_backbone = resolve_text_backbone(&vb, cfg.tie_word_embeddings);
         let vb_m = if let Some(prefix) = prefix {
@@ -225,6 +270,7 @@ impl Qwen3_5 {
                 dtype,
                 layer_type,
                 cur_gdn_idx,
+                mtp_enabled,
             )?;
             layers.push(layer);
             reporter.write().set_progress(layer_idx + 1);

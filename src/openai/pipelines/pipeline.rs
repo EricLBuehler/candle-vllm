@@ -825,6 +825,34 @@ impl DefaultLoader {
             let gguf_comm =
                 crate::openai::distributed::Rc::new(crate::openai::distributed::Comm::default());
 
+            let mtp_num_speculative = self.mtp_num_speculative.unwrap_or(0);
+            let gguf_mtp_enabled = if mtp_num_speculative > 0 {
+                let is_mtp_model = matches!(arch.as_str(), "qwen35" | "qwen35moe");
+                if is_mtp_model {
+                    let metadata = vb.first_content_metadata();
+                    let nextn_predict_layers = metadata
+                        .get(&format!("{arch}.nextn_predict_layers"))
+                        .map(|v| v.to_u32())
+                        .transpose()?
+                        .unwrap_or(0) as usize;
+                    let mtp_block_idx = nlayers.saturating_sub(nextn_predict_layers);
+                    let has_mtp_weights =
+                        Qwen3_5MtpHead::has_gguf_mtp_weights_at(&vb, mtp_block_idx);
+                    if !has_mtp_weights {
+                        warn!("MTP requested but GGUF model weights do not contain Qwen3.5 MTP layers. MTP disabled.");
+                    }
+                    has_mtp_weights
+                } else {
+                    warn!(
+                        "MTP requested but GGUF model type {} does not support MTP. MTP disabled.",
+                        arch
+                    );
+                    false
+                }
+            } else {
+                false
+            };
+
             let (model, config, sep_style) = match arch.as_str() {
                 "llama" => {
                     let model = GGUFLLaMa::from_gguf(
@@ -937,6 +965,7 @@ impl DefaultLoader {
                         gguf_rank,
                         gguf_world_size,
                         gguf_comm.clone(),
+                        gguf_mtp_enabled,
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -989,6 +1018,7 @@ impl DefaultLoader {
                         gguf_rank,
                         gguf_world_size,
                         gguf_comm.clone(),
+                        gguf_mtp_enabled,
                     )
                     .map_err(candle_core::Error::wrap)?;
                     let cfg = model.get_config().clone();
@@ -1092,10 +1122,8 @@ impl DefaultLoader {
                 }
                 _ => panic!("Model not supported!"),
             };
-            let mtp_num_speculative = self.mtp_num_speculative.unwrap_or(0);
             let mtp_head = if mtp_num_speculative > 0 {
-                let is_mtp_model = matches!(arch.as_str(), "qwen35" | "qwen35moe");
-                if is_mtp_model && Qwen3_5MtpHead::has_gguf_mtp_weights(&vb, &config) {
+                if gguf_mtp_enabled {
                     match Qwen3_5MtpHead::new_gguf(
                         &vb,
                         gguf_comm.clone(),
@@ -1117,14 +1145,7 @@ impl DefaultLoader {
                             None
                         }
                     }
-                } else if is_mtp_model {
-                    warn!("MTP requested but GGUF model weights do not contain Qwen3.5 MTP layers. MTP disabled.");
-                    None
                 } else {
-                    warn!(
-                        "MTP requested but GGUF model type {} does not support MTP. MTP disabled.",
-                        arch
-                    );
                     None
                 }
             } else {
@@ -1413,13 +1434,14 @@ impl DefaultLoader {
                         ),
                         "Qwen3_5ForCausalLM" => (
                             LLMModel::Qwen3_5(Arc::new(
-                                Qwen3_5::new(
+                                Qwen3_5::new_with_mtp(
                                     vb,
                                     &config,
                                     dtype,
                                     &device,
                                     comm,
                                     Arc::clone(&reporter),
+                                    mtp_head.is_some(),
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
@@ -1432,13 +1454,14 @@ impl DefaultLoader {
                         ),
                         "Qwen3_5ForConditionalGeneration" => (
                             LLMModel::Qwen3VL(Arc::new(
-                                Qwen3VLForConditionalGeneration::new(
+                                Qwen3VLForConditionalGeneration::new_with_mtp(
                                     vb,
                                     &config,
                                     dtype,
                                     &device,
                                     comm,
                                     Arc::clone(&reporter),
+                                    mtp_head.is_some(),
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
@@ -1465,13 +1488,14 @@ impl DefaultLoader {
                         ),
                         "Qwen3_5MoeForCausalLM" | "Qwen3NextForCausalLM" => (
                             LLMModel::Qwen3_5MoE(Arc::new(
-                                Qwen3_5MoE::new(
+                                Qwen3_5MoE::new_with_mtp(
                                     vb,
                                     &config,
                                     dtype,
                                     &device,
                                     comm,
                                     Arc::clone(&reporter),
+                                    mtp_head.is_some(),
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
@@ -1487,13 +1511,14 @@ impl DefaultLoader {
                         | "Qwen3VLForConditionalGeneration"
                         | "Qwen3VLMoeForConditionalGeneration" => (
                             LLMModel::Qwen3VL(Arc::new(
-                                Qwen3VLForConditionalGeneration::new(
+                                Qwen3VLForConditionalGeneration::new_with_mtp(
                                     vb,
                                     &config,
                                     dtype,
                                     &device,
                                     comm,
                                     Arc::clone(&reporter),
+                                    mtp_head.is_some(),
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
