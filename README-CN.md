@@ -91,7 +91,7 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 | 4 | **QWen2/Qwen3 Dense** | 127 tks/s (8B) | 154 tks/s **(8B, Q4K)** |
 | 5 | **QWen3 MoE** | 102 tks/s **(30B)** | 124 tks/s **(30B, Q4K)** |
 | 6 | **QWen3-Next MoE** | 80 tks/s **(80B, BF16, tp=2)** | 89 tks/s **(AWQ, tp=1)** |
-| 7 | **QWen3.5/3.6 Dense** | 36 tks/s **(27B, BF16)** | ~49 tks/s **(27B, Q4K / FP8)** |
+| 7 | **QWen3.5/3.6/3.8 Dense** | 36 tks/s **(27B, BF16)** | 49/58 tks/s **(27B, Q4K / FP8)** |
 | 8 | **QWen3.5/3.6 MoE** | 90 tks/s **(35B)** | 118 tks/s **(35B, FP8)** |
 | 9 | **Yi** | 168 tks/s (6B) | 199 tks/s (6B, Q4K) |
 | 10 | **StableLM** | 251 tks/s (3B) | - |
@@ -153,7 +153,7 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 
 ```bash
 # FP8 模型 + Web UI
-candle-vllm --m Qwen/Qwen3.6-27B-FP8 --ui-server
+candle-vllm --m Qwen/Qwen3.8-27B-FP8 --ui-server
 
 # Hopper 上加速 GDN 预填充，精度略有损失
 SM90_LOWER_PRECISION_GDN_PREFILL=1 candle-vllm --m Qwen/Qwen3.5-35B-A3B-FP8
@@ -168,7 +168,7 @@ candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
 candle-vllm --d 0,1 --w /home/Qwen3-30B-A3B-Instruct-2507/
 
 # ISQ 即时量化
-candle-vllm --m Qwen/Qwen3.6-27B --isq q4k
+candle-vllm --m Qwen/Qwen3.8-27B --isq q4k
 
 # FP4 模型
 candle-vllm --m GadflyII/GLM-4.7-Flash-NVFP4 --ui-server
