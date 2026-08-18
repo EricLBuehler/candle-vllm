@@ -1714,10 +1714,7 @@ impl StreamToolParser {
             ToolModelType::Mistral | ToolModelType::Mistral3VL => "mistral",
             ToolModelType::Qwen3_5 | ToolModelType::Qwen3_5MoE => "qwen_coder",
             ToolModelType::Qwen3 | ToolModelType::Qwen3MoE | ToolModelType::Qwen3VL => {
-                if model_lower.contains("coder")
-                    || model_lower.contains("qwen3.5")
-                    || model_lower.contains("qwen3.6")
-                {
+                if model_lower.contains("coder") || model_lower.contains("qwen3.") {
                     "qwen_coder"
                 } else {
                     "qwen"

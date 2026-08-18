@@ -428,7 +428,7 @@ impl LLama4ForConditionalGeneration {
                 vb.pp("language_model.model.embed_tokens"),
                 comm.clone(),
                 &None,
-                &None,
+                &config.quantization_config,
                 dtype,
             )?
         } else {
@@ -438,7 +438,7 @@ impl LLama4ForConditionalGeneration {
                 vb.pp("language_model.lm_head"),
                 comm.clone(),
                 &None,
-                &None,
+                &config.quantization_config,
                 dtype,
             )?
         };

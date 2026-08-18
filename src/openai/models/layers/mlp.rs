@@ -78,8 +78,11 @@ impl Mlp {
         in_dim: usize,
         shard: Shard,
         block_size: &[usize],
-    ) -> Result<Option<(Tensor, Tensor)>> {
-        if !vb.contains_tensor("weight_scale") && !vb.contains_tensor("weight_scale_inv") {
+    ) -> Result<Option<(Tensor, Tensor, Vec<usize>)>> {
+        if !vb.contains_tensor("weight_scale")
+            && !vb.contains_tensor("weight_scale_inv")
+            && !vb.contains_tensor("scale")
+        {
             return Ok(None);
         }
 
@@ -96,31 +99,62 @@ impl Mlp {
             Err(_) => return Ok(None),
         };
         let weight = Self::normalize_sharded_2d(weight, shard, out_dim, in_dim, "weight")?;
-        let weight_scale = match vb.get_with_hints_dtype(
-            (scale_dim0, scale_dim1),
-            "weight_scale",
-            shard,
-            DType::F32,
-        ) {
-            Ok(scale) => scale,
-            Err(_) => match vb.get_with_hints_dtype(
-                (scale_dim0, scale_dim1),
-                "weight_scale_inv",
-                shard,
-                DType::F32,
-            ) {
-                Ok(scale) => scale,
-                Err(_) => return Ok(None),
-            },
+        // Channel-wise compressed-tensors FP8 stores [out_dim, 1].
+        let channel_shard = if shard.dim == 0 {
+            shard
+        } else {
+            Shard::default()
         };
+        let channel_scale = ["weight_scale", "weight_scale_inv", "scale"]
+            .into_iter()
+            .find_map(|name| {
+                vb.get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
+                    .ok()
+            });
+        let (weight_scale, effective_block_size, scale_shard, global_dims) =
+            if let Some(scale) = channel_scale {
+                (scale, vec![1, weight.dim(1)?], channel_shard, (out_dim, 1))
+            } else {
+                let weight_scale = match vb.get_with_hints_dtype(
+                    (scale_dim0, scale_dim1),
+                    "weight_scale",
+                    shard,
+                    DType::F32,
+                ) {
+                    Ok(scale) => scale,
+                    Err(_) => match vb.get_with_hints_dtype(
+                        (scale_dim0, scale_dim1),
+                        "weight_scale_inv",
+                        shard,
+                        DType::F32,
+                    ) {
+                        Ok(scale) => scale,
+                        Err(_) => match vb.get_with_hints_dtype(
+                            (scale_dim0, scale_dim1),
+                            "scale",
+                            shard,
+                            DType::F32,
+                        ) {
+                            Ok(scale) => scale,
+                            Err(_) => return Ok(None),
+                        },
+                    },
+                };
+                (
+                    weight_scale,
+                    block_size.to_vec(),
+                    shard,
+                    (scale_dim0, scale_dim1),
+                )
+            };
         let weight_scale = Self::normalize_sharded_2d(
             weight_scale,
-            shard,
-            scale_dim0,
-            scale_dim1,
+            scale_shard,
+            global_dims.0,
+            global_dims.1,
             "weight_scale",
         )?;
-        Ok(Some((weight, weight_scale)))
+        Ok(Some((weight, weight_scale, effective_block_size)))
     }
 
     fn try_load_packed_gate_up(
@@ -171,28 +205,33 @@ impl Mlp {
                 if block_size.len() != 2 {
                     candle_core::bail!("LnFp8: weight_block_size must have 2 elements");
                 }
-                let by = block_size[0];
                 let total_out = intermediate_sz * 2;
-                let Some((gate_weight, gate_scale)) = Self::try_load_sharded_fp8_weight_scale(
-                    &gate_up_vb,
-                    total_out,
-                    hidden_sz,
-                    gate_shard,
-                    &block_size,
-                )?
+                let Some((gate_weight, gate_scale, gate_block_size)) =
+                    Self::try_load_sharded_fp8_weight_scale(
+                        &gate_up_vb,
+                        total_out,
+                        hidden_sz,
+                        gate_shard,
+                        &block_size,
+                    )?
                 else {
                     return Ok(None);
                 };
-                let Some((up_weight, up_scale)) = Self::try_load_sharded_fp8_weight_scale(
-                    &gate_up_vb,
-                    total_out,
-                    hidden_sz,
-                    up_shard,
-                    &block_size,
-                )?
+                let Some((up_weight, up_scale, up_block_size)) =
+                    Self::try_load_sharded_fp8_weight_scale(
+                        &gate_up_vb,
+                        total_out,
+                        hidden_sz,
+                        up_shard,
+                        &block_size,
+                    )?
                 else {
                     return Ok(None);
                 };
+                if gate_block_size != up_block_size {
+                    return Ok(None);
+                }
+                let by = gate_block_size[0];
                 let local_gate = gate_weight.dim(0)?;
                 let local_up = up_weight.dim(0)?;
                 let gate_start = gate_shard.rank * local_gate;
@@ -211,7 +250,7 @@ impl Mlp {
                     packed_weight,
                     packed_scale,
                     None,
-                    block_size,
+                    gate_block_size,
                     sm_version,
                     vec![local_gate, local_up],
                 );
@@ -271,27 +310,32 @@ impl Mlp {
             if block_size.len() != 2 {
                 candle_core::bail!("LnFp8: weight_block_size must have 2 elements");
             }
-            let by = block_size[0];
-            let Some((gate_weight, gate_scale)) = Self::try_load_sharded_fp8_weight_scale(
-                &gate_vb,
-                intermediate_sz,
-                hidden_sz,
-                gate_shard,
-                &block_size,
-            )?
+            let Some((gate_weight, gate_scale, gate_block_size)) =
+                Self::try_load_sharded_fp8_weight_scale(
+                    &gate_vb,
+                    intermediate_sz,
+                    hidden_sz,
+                    gate_shard,
+                    &block_size,
+                )?
             else {
                 return Ok(None);
             };
-            let Some((up_weight, up_scale)) = Self::try_load_sharded_fp8_weight_scale(
-                &up_vb,
-                intermediate_sz,
-                hidden_sz,
-                up_shard,
-                &block_size,
-            )?
+            let Some((up_weight, up_scale, up_block_size)) =
+                Self::try_load_sharded_fp8_weight_scale(
+                    &up_vb,
+                    intermediate_sz,
+                    hidden_sz,
+                    up_shard,
+                    &block_size,
+                )?
             else {
                 return Ok(None);
             };
+            if gate_block_size != up_block_size {
+                return Ok(None);
+            }
+            let by = gate_block_size[0];
             let local_gate = gate_weight.dim(0)?;
             let local_up = up_weight.dim(0)?;
             let gate_start = gate_shard.rank * local_gate;
@@ -310,7 +354,7 @@ impl Mlp {
                 packed_weight,
                 packed_scale,
                 None,
-                block_size,
+                gate_block_size,
                 sm_version,
                 vec![local_gate, local_up],
             );

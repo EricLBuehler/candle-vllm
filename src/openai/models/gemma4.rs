@@ -1022,7 +1022,7 @@ impl Gemma4 {
             },
             comm.clone(),
             &None,
-            &None,
+            &cfg.quantization_config,
             dtype,
         )?;
 

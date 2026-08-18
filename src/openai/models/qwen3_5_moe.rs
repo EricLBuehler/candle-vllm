@@ -567,7 +567,7 @@ impl Qwen3_5MoE {
                 },
                 comm.clone(),
                 &None,
-                &None,
+                &cfg.quantization_config,
                 dtype,
             )?
         };

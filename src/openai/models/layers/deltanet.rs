@@ -63,7 +63,11 @@ pub struct GatedDeltaNet {
 impl GatedDeltaNet {
     fn is_weight_quantized(vb: &VarBuilder, quant_method: &str) -> bool {
         match quant_method {
-            "fp8" => vb.contains_tensor("weight_scale") || vb.contains_tensor("weight_scale_inv"),
+            "fp8" => {
+                vb.contains_tensor("weight_scale")
+                    || vb.contains_tensor("weight_scale_inv")
+                    || vb.contains_tensor("scale")
+            }
             "mxfp4" => vb.contains_tensor("weight_packed") || vb.contains_tensor("blocks"),
             "nvfp4" => {
                 let has_mlx = vb.contains_tensor("weight") && vb.contains_tensor("scales");
@@ -81,6 +85,12 @@ impl GatedDeltaNet {
         }
     }
 
+    fn is_weight_fp8(vb: &VarBuilder) -> bool {
+        vb.contains_tensor("weight_scale")
+            || vb.contains_tensor("weight_scale_inv")
+            || vb.contains_tensor("scale")
+    }
+
     fn resolve_quant_for_weight(
         vb: &VarBuilder,
         quantization_config: &Option<crate::openai::models::QuantConfig>,
@@ -88,6 +98,13 @@ impl GatedDeltaNet {
         if let Some(cfg) = quantization_config {
             if Self::is_weight_quantized(vb, &cfg.quant_method) {
                 return quantization_config.clone();
+            }
+            // Qwen3.8 mixed-precision checkpoints use NVFP4 globally, but
+            // the GDN projections are native channel-wise FP8.
+            if cfg.quant_method == "nvfp4" && Self::is_weight_fp8(vb) {
+                let mut fp8_cfg = cfg.clone();
+                fp8_cfg.quant_method = "fp8".to_string();
+                return Some(fp8_cfg);
             }
         }
         None

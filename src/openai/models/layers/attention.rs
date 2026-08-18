@@ -143,8 +143,11 @@ impl Attention {
         in_dim: usize,
         shard: candle_nn::var_builder::Shard,
         block_size: &[usize],
-    ) -> Result<Option<(Tensor, Tensor)>> {
-        if !vb.contains_tensor("weight_scale") && !vb.contains_tensor("weight_scale_inv") {
+    ) -> Result<Option<(Tensor, Tensor, Vec<usize>)>> {
+        if !vb.contains_tensor("weight_scale")
+            && !vb.contains_tensor("weight_scale_inv")
+            && !vb.contains_tensor("scale")
+        {
             return Ok(None);
         }
 
@@ -162,32 +165,62 @@ impl Attention {
         };
         let weight = Self::normalize_sharded_2d(weight, shard, out_dim, in_dim, "weight")?;
 
-        let weight_scale = match vb.get_with_hints_dtype(
-            (scale_dim0, scale_dim1),
-            "weight_scale",
-            shard,
-            DType::F32,
-        ) {
-            Ok(scale) => scale,
-            Err(_) => match vb.get_with_hints_dtype(
-                (scale_dim0, scale_dim1),
-                "weight_scale_inv",
-                shard,
-                DType::F32,
-            ) {
-                Ok(scale) => scale,
-                Err(_) => return Ok(None),
-            },
+        let channel_shard = if shard.dim == 0 {
+            shard
+        } else {
+            Shard::default()
         };
+        let channel_scale = ["weight_scale", "weight_scale_inv", "scale"]
+            .into_iter()
+            .find_map(|name| {
+                vb.get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
+                    .ok()
+            });
+        let (weight_scale, effective_block_size, scale_shard, global_dims) =
+            if let Some(scale) = channel_scale {
+                (scale, vec![1, weight.dim(1)?], channel_shard, (out_dim, 1))
+            } else {
+                let weight_scale = match vb.get_with_hints_dtype(
+                    (scale_dim0, scale_dim1),
+                    "weight_scale",
+                    shard,
+                    DType::F32,
+                ) {
+                    Ok(scale) => scale,
+                    Err(_) => match vb.get_with_hints_dtype(
+                        (scale_dim0, scale_dim1),
+                        "weight_scale_inv",
+                        shard,
+                        DType::F32,
+                    ) {
+                        Ok(scale) => scale,
+                        Err(_) => match vb.get_with_hints_dtype(
+                            (scale_dim0, scale_dim1),
+                            "scale",
+                            shard,
+                            DType::F32,
+                        ) {
+                            Ok(scale) => scale,
+                            Err(_) => return Ok(None),
+                        },
+                    },
+                };
+                (
+                    weight_scale,
+                    block_size.to_vec(),
+                    shard,
+                    (scale_dim0, scale_dim1),
+                )
+            };
         let weight_scale = Self::normalize_sharded_2d(
             weight_scale,
-            shard,
-            scale_dim0,
-            scale_dim1,
+            scale_shard,
+            global_dims.0,
+            global_dims.1,
             "weight_scale",
         )?;
 
-        Ok(Some((weight, weight_scale)))
+        Ok(Some((weight, weight_scale, effective_block_size)))
     }
 
     fn try_load_packed_qkv(
@@ -237,7 +270,7 @@ impl Attention {
                 candle_core::bail!("LnFp8: weight_block_size must have 2 elements");
             }
 
-            let Some((q_weight, q_scale)) = Self::try_load_sharded_fp8_weight_scale(
+            let Some((q_weight, q_scale, q_block_size)) = Self::try_load_sharded_fp8_weight_scale(
                 &q_vb,
                 q_out_dim,
                 hidden_sz,
@@ -247,7 +280,7 @@ impl Attention {
             else {
                 return Ok(None);
             };
-            let Some((k_weight, k_scale)) = Self::try_load_sharded_fp8_weight_scale(
+            let Some((k_weight, k_scale, k_block_size)) = Self::try_load_sharded_fp8_weight_scale(
                 &k_vb,
                 kv_out_dim,
                 hidden_sz,
@@ -257,7 +290,7 @@ impl Attention {
             else {
                 return Ok(None);
             };
-            let Some((v_weight, v_scale)) = Self::try_load_sharded_fp8_weight_scale(
+            let Some((v_weight, v_scale, v_block_size)) = Self::try_load_sharded_fp8_weight_scale(
                 &v_vb,
                 kv_out_dim,
                 hidden_sz,
@@ -267,11 +300,14 @@ impl Attention {
             else {
                 return Ok(None);
             };
+            if q_block_size != k_block_size || q_block_size != v_block_size {
+                return Ok(None);
+            }
 
             let local_q = q_weight.dim(0)?;
             let local_k = k_weight.dim(0)?;
             let local_v = v_weight.dim(0)?;
-            let by = block_size[0];
+            let by = q_block_size[0];
             let q_global_start = q_shard.rank * local_q;
             let k_global_start = q_out_dim + kv_shard.rank * local_k;
             let v_global_start = q_out_dim + kv_out_dim + kv_shard.rank * local_v;
@@ -305,7 +341,7 @@ impl Attention {
                 packed_weight,
                 packed_scale,
                 packed_bias,
-                block_size,
+                q_block_size,
                 sm_version,
                 vec![local_q, local_k, local_v],
             );

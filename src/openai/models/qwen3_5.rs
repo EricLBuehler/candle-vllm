@@ -311,7 +311,7 @@ impl Qwen3_5 {
                 },
                 comm.clone(),
                 &None,
-                &None,
+                &cfg.quantization_config,
                 dtype,
             )?
         };
