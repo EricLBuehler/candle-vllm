@@ -256,6 +256,9 @@ pub struct ChatCompletionRequest {
     pub logprobs: Option<bool>, //false
     #[serde(alias = "enable_thinking")]
     pub thinking: Option<bool>, //false
+    /// Optional reasoning effort forwarded to the model chat template.
+    #[serde(default, alias = "reasoning")]
+    pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub tools: Option<Vec<crate::tools::Tool>>,
     #[serde(default)]
@@ -288,6 +291,7 @@ impl Default for ChatCompletionRequest {
             stop_token_ids: None,
             logprobs: None,
             thinking: None,
+            reasoning_effort: None,
             tools: None,
             tool_choice: None,
         }

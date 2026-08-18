@@ -102,8 +102,25 @@ async fn get_gen_prompt(
         }
     }
 
-    let enable_thinking = request.thinking.unwrap_or(true);
-    let prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
+    let (enable_thinking, reasoning_effort) = match request
+        .reasoning_effort
+        .as_deref()
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        None => (request.thinking.unwrap_or(true), None),
+        Some("none") => (false, None),
+        Some("low") => (true, Some("low")),
+        Some("medium") | Some("normal") => (true, Some("medium")),
+        Some("high") | Some("xhigh") | Some("x_high") | Some("very_high") => (true, Some("xhigh")),
+        Some(other) => {
+            return Err(APIError::new(format!(
+                "Unsupported reasoning_effort '{}'; expected none, low, medium, high, or xhigh",
+                other
+            )))
+        }
+    };
+    let prompt = conversation.get_prompt(enable_thinking, reasoning_effort, &tool_config.tools);
 
     Ok((prompt, image_data))
 }
