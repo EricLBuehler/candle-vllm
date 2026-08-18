@@ -313,6 +313,8 @@ impl LLMEngine {
             mamba_slot_mapping: None,
             slot_mapping,
             block_tables,
+            block_tables_host: None,
+            context_lens_host: None,
             context_lens,
             cu_seqlens_q,
             cu_seqlens_k,

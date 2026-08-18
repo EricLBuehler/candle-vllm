@@ -1814,6 +1814,8 @@ impl LLMEngine {
                 (1, block_table.len()),
                 device,
             )?),
+            block_tables_host: None,
+            context_lens_host: None,
             context_lens: Some(Tensor::from_vec(vec![total_kv_len], (1,), device)?),
             cu_seqlens_q: Some(Tensor::from_vec(vec![0u32, q_len as u32], (2,), device)?),
             cu_seqlens_k: Some(Tensor::from_vec(vec![0u32, total_kv_len], (2,), device)?),
