@@ -621,15 +621,42 @@ impl TryFrom<Normalizer<'_>> for NormalizerWrapper {
 }
 
 pub fn get_arch_and_num_of_layers(ct: gguf_file::Content) -> Result<(String, usize)> {
+    let (architecture, block_count, _) = get_arch_and_layer_counts(ct)?;
+    Ok((architecture, block_count))
+}
+
+/// Returns the GGUF architecture, total block count, and the number of
+/// decoder layers. Qwen3.5 GGUF files include MTP prediction blocks in
+/// `*.block_count`, but those blocks are loaded by the dedicated MTP path.
+pub fn get_arch_and_layer_counts(ct: gguf_file::Content) -> Result<(String, usize, usize)> {
     let md_get = |s: &str| match ct.metadata.get(s) {
         None => candle_core::bail!("cannot find {s} in metadata"),
         Some(v) => Ok(v),
     };
     let architecture = md_get("general.architecture")?.to_string()?;
 
-    let nlayers =
+    let block_count =
         md_get(format!("{}.block_count", architecture.as_str()).as_str())?.to_u32()? as usize;
-    Ok((architecture.clone(), nlayers))
+    let mtp_layers = ct
+        .metadata
+        .get(&format!("{architecture}.nextn_predict_layers"))
+        .map(|v| v.to_u32())
+        .transpose()?
+        .unwrap_or(0) as usize;
+    if mtp_layers >= block_count && mtp_layers != 0 {
+        anyhow::bail!(
+            "{}.nextn_predict_layers ({}) must be smaller than {}.block_count ({})",
+            architecture,
+            mtp_layers,
+            architecture,
+            block_count
+        );
+    }
+    Ok((
+        architecture.clone(),
+        block_count,
+        block_count.saturating_sub(mtp_layers),
+    ))
 }
 
 // Get model name from GGUF metadata if it exists

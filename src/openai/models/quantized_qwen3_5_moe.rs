@@ -324,12 +324,6 @@ impl GGUFQWen3_5MoE {
                     block_count
                 );
             }
-            tracing::info!(
-                "GGUF model declares {} MTP prediction layer(s); loading {} decoder layer(s) from {} total block(s).",
-                nextn_predict_layers,
-                block_count - nextn_predict_layers,
-                block_count
-            );
             block_count -= nextn_predict_layers;
         }
         let rms_norm_eps =

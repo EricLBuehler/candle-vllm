@@ -2,6 +2,7 @@ use crate::openai::distributed::{
     shard, Comm, MergedParallelColumnLinear, TensorParallelColumnLinear, TensorParallelRowLinear,
     VarBuilder,
 };
+use crate::openai::models::linear::is_channel_scale_shape;
 use crate::openai::models::Config;
 use candle::{DType, Module, Result, Tensor};
 use candle_core as candle;
@@ -108,8 +109,10 @@ impl Mlp {
         let channel_scale = ["weight_scale", "weight_scale_inv", "scale"]
             .into_iter()
             .find_map(|name| {
-                vb.get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
-                    .ok()
+                let scale = vb
+                    .get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
+                    .ok()?;
+                is_channel_scale_shape(scale.dims(), out_dim, channel_shard).then_some(scale)
             });
         let (weight_scale, effective_block_size, scale_shard, global_dims) =
             if let Some(scale) = channel_scale {

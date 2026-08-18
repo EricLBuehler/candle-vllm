@@ -743,7 +743,7 @@ impl DefaultLoader {
             let device = crate::new_device(device_ids[0]).unwrap();
             let path = paths.get_weight_filenames()[0].clone();
             info!("Loading quantized model from file {}", path.display());
-            let (arch, nlayers) = {
+            let (arch, total_nlayers, decoder_nlayers) = {
                 let mut file = match std::fs::File::open(path.clone())
                     .map_err(candle_core::Error::wrap)
                 {
@@ -763,8 +763,8 @@ impl DefaultLoader {
                         return Err(e);
                     }
                 };
-                let (arch, nlayers) =
-                    gguf::get_arch_and_num_of_layers(content).map_err(candle_core::Error::wrap)?;
+                let (arch, total_nlayers, decoder_nlayers) =
+                    gguf::get_arch_and_layer_counts(content).map_err(candle_core::Error::wrap)?;
                 if !matches!(
                     arch.as_str(),
                     "llama"
@@ -782,12 +782,19 @@ impl DefaultLoader {
                 ) {
                     panic!("Model arch {} not supported!", arch);
                 } else {
-                    info!("Quantized {} model has {} layers.", arch, nlayers,);
+                    info!(
+                        "Quantized {} model has {} decoder layers ({} total blocks).",
+                        arch, decoder_nlayers, total_nlayers
+                    );
                 }
-                (arch, nlayers)
+                (arch, total_nlayers, decoder_nlayers)
             };
-            let handle =
-                progress_worker(Some(num_subprogress), nlayers, Arc::clone(&reporter)).await;
+            let handle = progress_worker(
+                Some(num_subprogress),
+                decoder_nlayers,
+                Arc::clone(&reporter),
+            )
+            .await;
             let gguf_shard_paths = paths.get_weight_filenames();
             if gguf_shard_paths.len() > 1 {
                 info!(
@@ -830,12 +837,7 @@ impl DefaultLoader {
                 let is_mtp_model = matches!(arch.as_str(), "qwen35" | "qwen35moe");
                 if is_mtp_model {
                     let metadata = vb.first_content_metadata();
-                    let nextn_predict_layers = metadata
-                        .get(&format!("{arch}.nextn_predict_layers"))
-                        .map(|v| v.to_u32())
-                        .transpose()?
-                        .unwrap_or(0) as usize;
-                    let mtp_block_idx = nlayers.saturating_sub(nextn_predict_layers);
+                    let mtp_block_idx = decoder_nlayers;
                     let has_mtp_weights =
                         Qwen3_5MtpHead::has_gguf_mtp_weights_at(&vb, mtp_block_idx);
                     if !has_mtp_weights {

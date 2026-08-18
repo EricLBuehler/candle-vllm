@@ -6,6 +6,7 @@ use crate::backend::progress::{ProgressLike, ProgressReporter};
 use crate::openai::distributed::AllReduce;
 use crate::openai::distributed::{Comm, Rc, VocabParallelLinear};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
+use crate::openai::models::linear::qmatmul_forward;
 use crate::openai::models::mask::get_attention_causal_mask;
 use crate::openai::models::utils::{resolve_input_seqlens, resolve_mamba_seq_slots};
 use crate::InputMetadata;
@@ -18,6 +19,62 @@ use either::Either;
 use parking_lot::{RwLock, RwLockWriteGuard};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+fn is_dense_gguf_dtype(dtype: candle_core::quantized::GgmlDType) -> bool {
+    matches!(
+        dtype,
+        candle_core::quantized::GgmlDType::F32
+            | candle_core::quantized::GgmlDType::F16
+            | candle_core::quantized::GgmlDType::BF16
+    )
+}
+
+fn is_iq_gguf_dtype(dtype: candle_core::quantized::GgmlDType) -> bool {
+    matches!(
+        dtype,
+        candle_core::quantized::GgmlDType::IQ2_XXS
+            | candle_core::quantized::GgmlDType::IQ2_XS
+            | candle_core::quantized::GgmlDType::IQ3_XXS
+            | candle_core::quantized::GgmlDType::IQ1_S
+            | candle_core::quantized::GgmlDType::IQ4_NL
+            | candle_core::quantized::GgmlDType::IQ3_S
+            | candle_core::quantized::GgmlDType::IQ2_S
+            | candle_core::quantized::GgmlDType::IQ4_XS
+            | candle_core::quantized::GgmlDType::IQ1_M
+    )
+}
+
+fn qmatmul_from_restored(
+    restored: Tensor,
+    orig_dtype: candle_core::quantized::GgmlDType,
+) -> Result<QMatMul> {
+    if is_dense_gguf_dtype(orig_dtype) {
+        return Ok(QMatMul::Tensor(restored));
+    }
+    if is_iq_gguf_dtype(orig_dtype) {
+        // IQ tensors cannot be requantized after the GQA layout restoration.
+        // Keep the restored F16 matrix dense instead.
+        return Ok(QMatMul::TensorF16(restored));
+    }
+    let last_dim = restored.dim(candle_core::D::Minus1)?;
+    let wdtype = if last_dim % orig_dtype.block_size() != 0 {
+        candle_core::quantized::GgmlDType::Q8_0
+    } else {
+        orig_dtype
+    };
+    QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
+        restored, wdtype,
+    )?))
+}
+
+fn qmatmul_forward_dtype_compatible(linear: &QMatMul, x: &Tensor) -> Result<Tensor> {
+    match linear {
+        QMatMul::Tensor(weight) if weight.dtype() != x.dtype() => linear
+            .forward(&x.to_dtype(weight.dtype())?)?
+            .to_dtype(x.dtype()),
+        _ => qmatmul_forward(linear, x),
+    }
+}
 
 /// Undo the GGUF tiled v-head layout along the leading dimension.
 /// GGUF stores v-heads interleaved with k-groups as [num_v_per_k, num_k_heads, head_dim, ...].
@@ -92,11 +149,17 @@ struct Mlp {
 impl Mlp {
     #[allow(unused_mut)]
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let w1 = self.feed_forward_w1.forward(xs)?;
-        let w3 = self.feed_forward_w3.forward(xs)?;
-        let mut y = self
-            .feed_forward_w2
-            .forward(&(candle_nn::ops::silu(&w1)? * w3)?)?;
+        let w1 = qmatmul_forward_dtype_compatible(&self.feed_forward_w1, xs)?;
+        let w3 = qmatmul_forward_dtype_compatible(&self.feed_forward_w3, xs)?;
+        let w3 = if w3.dtype() != w1.dtype() {
+            w3.to_dtype(w1.dtype())?
+        } else {
+            w3
+        };
+        let mut y = qmatmul_forward_dtype_compatible(
+            &self.feed_forward_w2,
+            &(candle_nn::ops::silu(&w1)? * w3)?,
+        )?;
         #[cfg(feature = "nccl")]
         if let Some(all_reduce) = &self.all_reduce {
             y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
@@ -156,7 +219,11 @@ impl QuantizedGatedDeltaNet {
         let in_proj_qkv = if needs_untile {
             let qt = prefix_vb.get_no_shape("attn_qkv.weight")?;
             let orig_dtype = qt.dtype();
-            let w = qt.dequantize_f16(device)?;
+            let w = if is_dense_gguf_dtype(orig_dtype) {
+                qt.dequantize(device)?
+            } else {
+                qt.dequantize_f16(device)?
+            };
             drop(qt);
             let q = w.narrow(0, 0, key_dim)?;
             let k = w.narrow(0, key_dim, key_dim)?;
@@ -164,90 +231,66 @@ impl QuantizedGatedDeltaNet {
             let v = undo_tiled_v_heads_first_dim(&v_raw, num_k_heads, num_v_heads, head_v_dim)?;
             let restored = Tensor::cat(&[&q, &k, &v], 0)?.contiguous()?;
             drop(w);
-            let last_dim = restored.dim(candle_core::D::Minus1)?;
-            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
-                candle_core::quantized::GgmlDType::Q8_0
-            } else {
-                orig_dtype
-            };
-            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
-                restored, wdtype,
-            )?))?
+            qmatmul_from_restored(restored, orig_dtype)?
         } else {
             QMatMul::from_arc(prefix_vb.get_no_shape("attn_qkv.weight")?)?
         };
         let in_proj_z = if needs_untile {
             let qt = prefix_vb.get_no_shape("attn_gate.weight")?;
             let orig_dtype = qt.dtype();
-            let w = qt.dequantize_f16(device)?;
+            let w = if is_dense_gguf_dtype(orig_dtype) {
+                qt.dequantize(device)?
+            } else {
+                qt.dequantize_f16(device)?
+            };
             drop(qt);
             let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, head_v_dim)?
                 .contiguous()?;
-            let last_dim = w.dim(candle_core::D::Minus1)?;
-            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
-                candle_core::quantized::GgmlDType::Q8_0
-            } else {
-                orig_dtype
-            };
-            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
-                w, wdtype,
-            )?))?
+            qmatmul_from_restored(w, orig_dtype)?
         } else {
             QMatMul::from_arc(prefix_vb.get_no_shape("attn_gate.weight")?)?
         };
         let in_proj_b = if needs_untile {
             let qt = prefix_vb.get_no_shape("ssm_beta.weight")?;
             let orig_dtype = qt.dtype();
-            let w = qt.dequantize_f16(device)?;
+            let w = if is_dense_gguf_dtype(orig_dtype) {
+                qt.dequantize(device)?
+            } else {
+                qt.dequantize_f16(device)?
+            };
             drop(qt);
             let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, 1)?.contiguous()?;
-            let last_dim = w.dim(candle_core::D::Minus1)?;
-            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
-                candle_core::quantized::GgmlDType::Q8_0
-            } else {
-                orig_dtype
-            };
-            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
-                w, wdtype,
-            )?))?
+            qmatmul_from_restored(w, orig_dtype)?
         } else {
             QMatMul::from_arc(prefix_vb.get_no_shape("ssm_beta.weight")?)?
         };
         let in_proj_a = if needs_untile {
             let qt = prefix_vb.get_no_shape("ssm_alpha.weight")?;
             let orig_dtype = qt.dtype();
-            let w = qt.dequantize_f16(device)?;
+            let w = if is_dense_gguf_dtype(orig_dtype) {
+                qt.dequantize(device)?
+            } else {
+                qt.dequantize_f16(device)?
+            };
             drop(qt);
             let w = undo_tiled_v_heads_first_dim(&w, num_k_heads, num_v_heads, 1)?.contiguous()?;
-            let last_dim = w.dim(candle_core::D::Minus1)?;
-            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
-                candle_core::quantized::GgmlDType::Q8_0
-            } else {
-                orig_dtype
-            };
-            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
-                w, wdtype,
-            )?))?
+            qmatmul_from_restored(w, orig_dtype)?
         } else {
             QMatMul::from_arc(prefix_vb.get_no_shape("ssm_alpha.weight")?)?
         };
         let out_proj = if needs_untile {
             let qt = prefix_vb.get_no_shape("ssm_out.weight")?;
             let orig_dtype = qt.dtype();
-            let w = qt.dequantize_f16(device)?;
+            let w = if is_dense_gguf_dtype(orig_dtype) {
+                qt.dequantize(device)?
+            } else {
+                qt.dequantize_f16(device)?
+            };
             drop(qt);
             let v = undo_tiled_v_heads_last_dim(&w, num_k_heads, num_v_heads, head_v_dim)?
                 .contiguous()?;
             drop(w);
-            let last_dim = v.dim(candle_core::D::Minus1)?;
-            let wdtype = if last_dim % orig_dtype.block_size() != 0 {
-                candle_core::quantized::GgmlDType::Q8_0
-            } else {
-                orig_dtype
-            };
-            QMatMul::from_arc(Arc::new(candle_core::quantized::QTensor::quantize_owned(
-                v, wdtype,
-            )?))?
+            qmatmul_from_restored(v, orig_dtype)?
         } else {
             QMatMul::from_arc(prefix_vb.get_no_shape("ssm_out.weight")?)?
         };
@@ -381,7 +424,7 @@ impl QuantizedGatedDeltaNet {
         let is_prefill = input_metadata.is_prefill;
 
         let xs_f32 = xs.to_dtype(DType::F32)?;
-        let proj_qkv = self.in_proj_qkv.forward(&xs_f32)?;
+        let proj_qkv = qmatmul_forward_dtype_compatible(&self.in_proj_qkv, &xs_f32)?;
         let q = proj_qkv.narrow(1, 0, self.key_dim)?.contiguous()?;
         let k = proj_qkv
             .narrow(1, self.key_dim, self.key_dim)?
@@ -389,9 +432,9 @@ impl QuantizedGatedDeltaNet {
         let v = proj_qkv
             .narrow(1, self.key_dim * 2, self.value_dim)?
             .contiguous()?;
-        let z = self.in_proj_z.forward(&xs_f32)?;
-        let b = self.in_proj_b.forward(&xs_f32)?;
-        let a = self.in_proj_a.forward(&xs_f32)?;
+        let z = qmatmul_forward_dtype_compatible(&self.in_proj_z, &xs_f32)?;
+        let b = qmatmul_forward_dtype_compatible(&self.in_proj_b, &xs_f32)?;
+        let a = qmatmul_forward_dtype_compatible(&self.in_proj_a, &xs_f32)?;
 
         let mixed_qkv = Tensor::cat(&[&q, &k, &v], 1)?;
 
@@ -572,7 +615,7 @@ impl QuantizedGatedDeltaNet {
             self.head_v_dim,
         )?;
 
-        self.out_proj.forward(&gated_output)
+        qmatmul_forward_dtype_compatible(&self.out_proj, &gated_output)
     }
 
     pub(crate) fn rollback_mtp_verify(
@@ -837,12 +880,6 @@ impl GGUFQWen3_5 {
                     block_count
                 );
             }
-            tracing::info!(
-                "GGUF model declares {} MTP prediction layer(s); loading {} decoder layer(s) from {} total block(s).",
-                nextn_predict_layers,
-                block_count - nextn_predict_layers,
-                block_count
-            );
             block_count -= nextn_predict_layers;
         }
         let rms_norm_eps =

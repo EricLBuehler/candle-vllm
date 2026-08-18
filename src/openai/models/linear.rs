@@ -19,13 +19,23 @@
 //! ```
 use super::QuantConfig;
 use crate::backend::gptq::{gptq_matmul, marlin_weight_repack};
-use crate::candle::Module;
 use crate::candle::{
     quantized::{gguf_file, QMatMul, QTensor},
     DType, Device, Result, Tensor,
 };
 use crate::openai::distributed::shard;
+#[cfg(feature = "cuda")]
+use attention_rs::kernels::ffi::gguf_gemm;
+#[cfg(feature = "cuda")]
+use candle_core::backend::BackendStorage;
+#[cfg(feature = "cuda")]
+use candle_core::cuda_backend::cudarc::driver::DevicePtr;
+#[cfg(feature = "cuda")]
+use candle_core::cuda_backend::WrapErr;
 use candle_core::quantized;
+#[cfg(feature = "cuda")]
+use candle_core::CudaStorage;
+use candle_core::{CpuStorage, Layout, Module, Shape};
 pub use candle_nn::var_builder::Shard;
 pub use candle_nn::var_builder::ShardedVarBuilder as VarBuilder;
 
@@ -58,6 +68,138 @@ pub fn set_linear_is_prefill(is_prefill: bool) -> LinearPrefillGuard {
 
 pub fn linear_is_prefill() -> bool {
     LINEAR_IS_PREFILL.with(|flag| flag.get())
+}
+
+fn is_iq_gguf_dtype(dtype: quantized::GgmlDType) -> bool {
+    matches!(
+        dtype,
+        quantized::GgmlDType::IQ2_XXS
+            | quantized::GgmlDType::IQ2_XS
+            | quantized::GgmlDType::IQ3_XXS
+            | quantized::GgmlDType::IQ1_S
+            | quantized::GgmlDType::IQ4_NL
+            | quantized::GgmlDType::IQ3_S
+            | quantized::GgmlDType::IQ2_S
+            | quantized::GgmlDType::IQ4_XS
+            | quantized::GgmlDType::IQ1_M
+    )
+}
+
+#[cfg(feature = "cuda")]
+fn iq_gguf_dtype_code(dtype: quantized::GgmlDType) -> Result<i32> {
+    Ok(match dtype {
+        quantized::GgmlDType::IQ2_XXS => 6,
+        quantized::GgmlDType::IQ2_XS => 7,
+        quantized::GgmlDType::IQ3_XXS => 8,
+        quantized::GgmlDType::IQ4_XS => 9,
+        quantized::GgmlDType::IQ1_S => 10,
+        quantized::GgmlDType::IQ4_NL => 11,
+        quantized::GgmlDType::IQ3_S => 12,
+        quantized::GgmlDType::IQ2_S => 13,
+        quantized::GgmlDType::IQ1_M => 14,
+        dtype => candle_core::bail!("unsupported native IQ GGUF dtype {dtype:?}"),
+    })
+}
+
+#[cfg(feature = "cuda")]
+struct GgufIqMatMul {
+    weight: Arc<QTensor>,
+}
+
+#[cfg(feature = "cuda")]
+impl GgufIqMatMul {
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout) -> Result<(CudaStorage, Shape)> {
+        if x.dtype() != DType::F32 {
+            candle_core::bail!(
+                "native IQ GGUF GEMM requires F32 activations, got {:?}",
+                x.dtype()
+            );
+        }
+        if !x_l.is_contiguous() {
+            candle_core::bail!("native IQ GGUF GEMM requires contiguous activations: {x_l:?}");
+        }
+        let x_dims = x_l.shape().dims();
+        let Some(&size_k) = x_dims.last() else {
+            candle_core::bail!("native IQ GGUF GEMM requires a rank-2-or-higher input");
+        };
+        let (size_n, weight_k) = self.weight.shape().dims2()?;
+        if size_k != weight_k {
+            candle_core::bail!(
+                "native IQ GGUF GEMM input/weight mismatch: input K={}, weight shape={:?}",
+                size_k,
+                self.weight.shape()
+            );
+        }
+        let size_m = x_l.shape().elem_count() / size_k;
+        let mut output_dims = x_dims.to_vec();
+        *output_dims.last_mut().unwrap() = size_n;
+        let output_shape = Shape::from(output_dims);
+
+        let input = x.as_cuda_slice::<f32>()?;
+        let input = input.slice(x_l.start_offset()..x_l.start_offset() + x_l.shape().elem_count());
+        let dev = x.device().clone();
+        let output = unsafe { dev.alloc::<f32>(output_shape.elem_count()) }.w()?;
+        let stream = *dev.cu_stream() as i64;
+        let input_ptr = *input.device_ptr() as *const f32;
+        let weight_ptr = self.weight.device_ptr()? as *const std::ffi::c_void;
+        let output_ptr = *output.device_ptr() as *mut f32;
+        let dtype = iq_gguf_dtype_code(self.weight.dtype())?;
+
+        unsafe {
+            gguf_gemm(
+                input_ptr,
+                weight_ptr,
+                output_ptr,
+                size_m as i32,
+                size_n as i32,
+                size_k as i32,
+                dtype,
+                stream,
+            );
+        }
+        Ok((CudaStorage::wrap_cuda_slice(output, dev), output_shape))
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl candle_core::CustomOp1 for GgufIqMatMul {
+    fn name(&self) -> &'static str {
+        "native_iq_gguf_gemm"
+    }
+
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
+        candle_core::bail!("native IQ GGUF GEMM is only implemented on CUDA")
+    }
+
+    fn cuda_fwd(&self, x: &CudaStorage, x_l: &Layout) -> Result<(CudaStorage, Shape)> {
+        self.cuda_fwd(x, x_l)
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn native_iq_gguf_matmul(x: &Tensor, weight: Arc<QTensor>) -> Result<Tensor> {
+    x.apply_op1_no_bwd(&GgufIqMatMul { weight })
+}
+
+/// Forward a GGUF projection, using the native IQ GEMM path when available.
+///
+/// Several quantized model implementations store their GGUF projections as
+/// raw `QMatMul`s instead of `QLinear`s. Keep those call sites on the same
+/// native IQ path used by `QLinear`, which is important for CUDA graph
+/// capture because the fallback dequantizes the IQ tensor on every forward.
+pub fn qmatmul_forward(linear: &QMatMul, x: &Tensor) -> Result<Tensor> {
+    #[cfg(feature = "cuda")]
+    if let QMatMul::QTensor(weight) = linear {
+        if is_iq_gguf_dtype(weight.dtype()) {
+            let x = if x.dtype() == DType::F32 {
+                x.clone()
+            } else {
+                x.to_dtype(DType::F32)?
+            };
+            return native_iq_gguf_matmul(&x, weight.clone());
+        }
+    }
+    linear.forward(x)
 }
 
 #[derive(Clone, Debug)]
@@ -767,6 +909,10 @@ impl QLinear {
 }
 
 impl QLinear {
+    fn forward_inner(&self, x: &Tensor) -> Result<Tensor> {
+        qmatmul_forward(&self.inner, x)
+    }
+
     pub fn forward_no_dequant(&self, x: &Tensor) -> Result<Tensor> {
         let xs = match *x.dims() {
             [bsize, seq_len, dim1, dim2] => {
@@ -788,19 +934,20 @@ impl QLinear {
         let xs = match *x.dims() {
             [bsize, seq_len, dim1, _] => {
                 if seq_len > 1 {
-                    QMatMul::forward(&self.inner, &xs)?
+                    self.forward_inner(&xs)?
                 } else {
-                    QMatMul::forward(&self.inner, &xs)?.reshape((bsize, seq_len, dim1, ()))?
+                    self.forward_inner(&xs)?
+                        .reshape((bsize, seq_len, dim1, ()))?
                 }
             }
             [bsize, seq_len, _] => {
                 if seq_len > 1 {
-                    QMatMul::forward(&self.inner, &xs)?
+                    self.forward_inner(&xs)?
                 } else {
-                    QMatMul::forward(&self.inner, &xs)?.reshape((bsize, seq_len, ()))?
+                    self.forward_inner(&xs)?.reshape((bsize, seq_len, ()))?
                 }
             }
-            _ => QMatMul::forward(&self.inner, &xs)?,
+            _ => self.forward_inner(&xs)?,
         };
 
         if let Some(bias) = &self.bias {
@@ -938,6 +1085,22 @@ fn load_fp8_weight(vb: &VarBuilder, shape: (usize, usize), shard: Shard) -> Resu
     // older exports that preserve the same bytes as an unsigned tensor.
     vb.get_with_hints_dtype(shape, "weight", shard, DType::F8E4M3)
         .or_else(|_| vb.get_with_hints_dtype(shape, "weight", shard, DType::U8))
+}
+
+/// Check the shape returned by a sharded scale load before treating it as a
+/// channel-wise scale. `ShardedSafeTensors` derives the returned shape from
+/// the checkpoint tensor, not from the requested shape, so a block scale such
+/// as `[48, 40]` can be returned by a probe for `[6144, 1]` on two ranks.
+pub(crate) fn is_channel_scale_shape(shape: &[usize], out_dim: usize, shard: Shard) -> bool {
+    if shape.len() != 2 || shape[1] != 1 {
+        return false;
+    }
+    let local_out = if shard.world_size > 1 && shard.dim == 0 {
+        out_dim.checked_div(shard.world_size).unwrap_or(0)
+    } else {
+        out_dim
+    };
+    shape[0] == local_out || shape[0] == out_dim
 }
 
 pub(crate) fn load_fp8_input_scale(vb: &VarBuilder) -> Result<Option<f32>> {
@@ -1202,8 +1365,10 @@ fn load_ln_fp8_with_hints(
     let channel_scale = ["weight_scale", "weight_scale_inv", "scale"]
         .into_iter()
         .find_map(|name| {
-            vb.get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
-                .ok()
+            let scale = vb
+                .get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
+                .ok()?;
+            is_channel_scale_shape(scale.dims(), out_dim, channel_shard).then_some(scale)
         });
     let (weight_scale, scale_shard, scale_global_dim) = if let Some(scale) = channel_scale {
         // The kernel uses the local input width as the channel-wise block
@@ -1351,6 +1516,21 @@ impl Module for LinearX {
 }
 
 impl LinearX {
+    /// Run a dense linear while accepting activations with a different dtype.
+    /// GGUF layout restoration can leave a dense F16/F32 matrix in the model
+    /// even though the surrounding activations are F32.
+    pub fn forward_dense_dtype_compatible(&self, x: &Tensor) -> Result<Tensor> {
+        if let Self::Linear(linear) = self {
+            let weight_dtype = linear.weight().dtype();
+            if weight_dtype != x.dtype() {
+                return linear
+                    .forward(&x.to_dtype(weight_dtype)?)?
+                    .to_dtype(x.dtype());
+            }
+        }
+        self.forward(x)
+    }
+
     pub fn new(
         weight: Tensor,
         bias: Option<Tensor>,
@@ -2112,5 +2292,24 @@ impl Module for LnNvfp4 {
         } else {
             Ok(result)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_channel_scale_shape;
+    use candle_nn::var_builder::Shard;
+
+    #[test]
+    fn channel_scale_probe_rejects_tp_block_scales() {
+        let tp = Shard {
+            dim: 0,
+            rank: 0,
+            world_size: 2,
+        };
+
+        assert!(is_channel_scale_shape(&[3072, 1], 6144, tp));
+        assert!(is_channel_scale_shape(&[6144, 1], 6144, tp));
+        assert!(!is_channel_scale_shape(&[24, 40], 6144, tp));
     }
 }
