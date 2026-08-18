@@ -1,5 +1,5 @@
 use crate::tools::Tool;
-use minijinja::{context, Environment};
+use minijinja::{context, Environment, Value};
 use regex::Regex;
 use std::sync::OnceLock;
 use tokenizers::Tokenizer;
@@ -139,6 +139,7 @@ pub struct ChatTemplate {
     preserve_tokens: Vec<String>,
     add_generation_prompt: bool,
     enable_thinking: bool,
+    reasoning_effort: Option<String>,
 }
 
 #[derive(Default, Clone)]
@@ -326,6 +327,7 @@ impl ChatTemplate {
             preserve_tokens: Vec::new(),
             add_generation_prompt,
             enable_thinking,
+            reasoning_effort: None,
         };
         if system_message.is_some() {
             template.append_message(
@@ -362,6 +364,10 @@ impl ChatTemplate {
 
     pub fn enable_thinking(&self) -> bool {
         self.enable_thinking
+    }
+
+    pub fn set_reasoning_effort(&mut self, effort: Option<String>) {
+        self.reasoning_effort = effort;
     }
 
     pub fn set_escape_tokens(&mut self, mut tokens: Vec<String>) {
@@ -480,6 +486,11 @@ impl ChatTemplate {
               bos_token => self.bos_token,
               eos_token => self.eos_token,
               enable_thinking => self.enable_thinking,
+              reasoning_effort => self
+                  .reasoning_effort
+                  .as_deref()
+                  .map(Value::from)
+                  .unwrap_or(Value::UNDEFINED),
               tools => tools,
             })
             .map_err(ApplyChatTemplateError::RenderTemplateError)
@@ -597,9 +608,16 @@ impl DefaultConversation {
         template.generation_prompt_replay_suffix(tools, rendered_prompt)
     }
 
-    pub fn get_prompt(&mut self, enable_thinking: bool, tools: &Vec<Tool>) -> String {
+    pub fn get_prompt(
+        &mut self,
+        enable_thinking: bool,
+        reasoning_effort: Option<&str>,
+        tools: &Vec<Tool>,
+    ) -> String {
         self.inner.add_generation_prompt = true;
         self.inner.set_enable_thinking(enable_thinking);
+        self.inner
+            .set_reasoning_effort(reasoning_effort.map(str::to_string));
         self.inner
             .apply_chat_template(tools, false)
             .expect("candle-vllm chat template rendering failed")

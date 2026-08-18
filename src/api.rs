@@ -559,7 +559,7 @@ impl Engine {
             };
 
             let enable_thinking = request.thinking.unwrap_or(true);
-            let prompt = conversation.get_prompt(enable_thinking, &tool_config.tools);
+            let prompt = conversation.get_prompt(enable_thinking, None, &tool_config.tools);
 
             (
                 prompt,
