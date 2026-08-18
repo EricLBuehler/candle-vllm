@@ -241,7 +241,7 @@ impl TensorParallelColumnLinear {
         Self { linear, bias: None }
     }
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let mut xs = self.linear.forward(x)?;
+        let mut xs = self.linear.forward_dense_dtype_compatible(x)?;
         if let Some(bias) = &self.bias {
             xs = xs.broadcast_add(bias)?;
         }
@@ -705,7 +705,7 @@ impl TensorParallelRowLinear {
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let mut xs = self.linear.forward(x)?;
+        let mut xs = self.linear.forward_dense_dtype_compatible(x)?;
         #[cfg(feature = "nccl")]
         if let Some(all_reduce) = &self.all_reduce {
             xs = xs.apply_op1_no_bwd(all_reduce)?;
@@ -941,7 +941,7 @@ impl MergedParallelColumnLinear {
         }
         let mut vec_linear = Vec::<TensorParallelColumnLinear>::new();
         let mut output_splits: Option<Vec<usize>> = None;
-        use crate::openai::models::linear::{LinearX, LnFp8, QLinear};
+        use crate::openai::models::linear::{is_channel_scale_shape, LinearX, LnFp8, QLinear};
         if is_fp8_quant {
             if chunk_dim != 0 {
                 candle_core::bail!(
@@ -984,8 +984,10 @@ impl MergedParallelColumnLinear {
             let channel_scale = ["weight_scale", "weight_scale_inv", "scale"]
                 .into_iter()
                 .find_map(|name| {
-                    vb.get_with_hints_dtype((out_dim, 1), name, no_shard, DType::F32)
-                        .ok()
+                    let scale = vb
+                        .get_with_hints_dtype((out_dim, 1), name, no_shard, DType::F32)
+                        .ok()?;
+                    is_channel_scale_shape(scale.dims(), out_dim, no_shard).then_some(scale)
                 });
             let (weight_scale, by) = if let Some(scale) = channel_scale {
                 block_size = vec![1, in_dim];

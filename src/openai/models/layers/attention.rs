@@ -7,6 +7,7 @@ use crate::openai::distributed::{
     TensorParallelColumnLinear, TensorParallelRowLinear, VarBuilder,
 };
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
+use crate::openai::models::linear::{is_channel_scale_shape, qmatmul_forward};
 use crate::openai::models::Config;
 use crate::{InputMetadata, PagedAttention};
 use candle_core::quantized::QMatMul;
@@ -173,8 +174,10 @@ impl Attention {
         let channel_scale = ["weight_scale", "weight_scale_inv", "scale"]
             .into_iter()
             .find_map(|name| {
-                vb.get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
-                    .ok()
+                let scale = vb
+                    .get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
+                    .ok()?;
+                is_channel_scale_shape(scale.dims(), out_dim, channel_shard).then_some(scale)
             });
         let (weight_scale, effective_block_size, scale_shard, global_dims) =
             if let Some(scale) = channel_scale {
@@ -1111,9 +1114,9 @@ impl QuantizedAttention {
     ) -> Result<Tensor> {
         let (seq_len, _) = x.dims2()?;
 
-        let q_raw = self.attention_wq.forward(x)?;
-        let k = self.attention_wk.forward(x)?;
-        let v = self.attention_wv.forward(x)?;
+        let q_raw = qmatmul_forward(&self.attention_wq, x)?;
+        let k = qmatmul_forward(&self.attention_wk, x)?;
+        let v = qmatmul_forward(&self.attention_wv, x)?;
 
         let q_raw = if let Some(bq) = &self.attention_bq {
             q_raw.broadcast_add(bq)?
@@ -1195,7 +1198,7 @@ impl QuantizedAttention {
             y
         };
 
-        let mut y = self.attention_wo.forward(&y.to_dtype(DType::F32)?)?;
+        let mut y = qmatmul_forward(&self.attention_wo, &y.to_dtype(DType::F32)?)?;
         #[cfg(feature = "nccl")]
         if let Some(all_reduce) = &self.all_reduce {
             y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
@@ -1217,22 +1220,22 @@ impl QuantizedAttention {
             );
         }
 
-        let q_raw = self.attention_wq.forward(x)?;
-        let k = self.attention_wk.forward(x)?;
-        let v = self.attention_wv.forward(x)?;
+        let q_raw = qmatmul_forward(&self.attention_wq, x)?;
+        let k = qmatmul_forward(&self.attention_wk, x)?;
+        let v = qmatmul_forward(&self.attention_wv, x)?;
 
         let q_raw = if let Some(bq) = &self.attention_bq {
-            q_raw.broadcast_add(bq)?
+            q_raw.broadcast_add(&bq.to_dtype(q_raw.dtype())?)?
         } else {
             q_raw
         };
         let k = if let Some(bk) = &self.attention_bk {
-            k.broadcast_add(bk)?
+            k.broadcast_add(&bk.to_dtype(k.dtype())?)?
         } else {
             k
         };
         let v = if let Some(bv) = &self.attention_bv {
-            v.broadcast_add(bv)?
+            v.broadcast_add(&bv.to_dtype(v.dtype())?)?
         } else {
             v
         };
@@ -1316,7 +1319,7 @@ impl QuantizedAttention {
             y
         };
 
-        let mut y = self.attention_wo.forward(&y.to_dtype(DType::F32)?)?;
+        let mut y = qmatmul_forward(&self.attention_wo, &y.to_dtype(DType::F32)?)?;
         #[cfg(feature = "nccl")]
         if let Some(all_reduce) = &self.all_reduce {
             y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;

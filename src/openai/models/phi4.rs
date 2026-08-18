@@ -292,6 +292,7 @@ mod tests {
             isq_quant: None,
             kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: None,
+            is_f16_mode: false,
         }
     }
 

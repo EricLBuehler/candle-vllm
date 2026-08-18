@@ -10,6 +10,7 @@ use crate::openai::models::layers::others::{rms_norm, NormX};
 use crate::openai::models::layers::qrmsnorm::QRmsNorm;
 use crate::openai::models::layers::quantized_var_builder::VarBuilder as QVarBuilder;
 use crate::openai::models::layers::rotary_emb::ScalingRotaryEmbedding;
+use crate::openai::models::linear::qmatmul_forward;
 use crate::openai::models::linear::LinearX as Linear;
 use crate::openai::models::{Config, MoEConfig, QuantConfig};
 use candle_core::quantized::{QMatMul, QTensor};
@@ -479,12 +480,23 @@ impl GgufMtpMlp {
                 let shared_output = match (shared_gate, shared_expert) {
                     (Some(gate), Some(expert)) => {
                         let gate = candle_nn::ops::sigmoid(&gate.forward(xs)?)?;
-                        Some(gate.broadcast_mul(&expert.forward(xs)?)?)
+                        let expert = expert.forward(xs)?;
+                        let gate = if gate.dtype() != expert.dtype() {
+                            gate.to_dtype(expert.dtype())?
+                        } else {
+                            gate
+                        };
+                        Some(gate.broadcast_mul(&expert)?)
                     }
                     _ => None,
                 };
                 let moe = fused_moe.forward(xs, false)?;
                 if let Some(shared) = shared_output {
+                    let shared = if shared.dtype() != moe.dtype() {
+                        shared.to_dtype(moe.dtype())?
+                    } else {
+                        shared
+                    };
                     moe + shared
                 } else {
                     Ok(moe)
@@ -544,9 +556,14 @@ impl GgufDenseMlp {
     }
 
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
-        let gate = self.gate.forward(xs)?;
-        let up = self.up.forward(xs)?;
-        let mut y = self.down.forward(&(candle_nn::ops::silu(&gate)? * up)?)?;
+        let gate = qmatmul_forward(&self.gate, xs)?;
+        let up = qmatmul_forward(&self.up, xs)?;
+        let up = if up.dtype() != gate.dtype() {
+            up.to_dtype(gate.dtype())?
+        } else {
+            up
+        };
+        let mut y = qmatmul_forward(&self.down, &(candle_nn::ops::silu(&gate)? * up)?)?;
         #[cfg(feature = "nccl")]
         if let Some(all_reduce) = &self.all_reduce {
             y = all_reduce.apply(&y.to_dtype(self.dtype)?)?;
@@ -612,7 +629,7 @@ impl GgufFusedMoe {
         } else {
             xs.clone()
         };
-        let router_logits = self.gate.forward(&xs)?;
+        let router_logits = qmatmul_forward(&self.gate, &xs)?;
         let (mut topk_weights, topk_ids) =
             attention_rs::topk::topk_softmax(&router_logits, self.num_experts_per_tok)?;
         if self.norm_topk_prob {
@@ -679,10 +696,22 @@ impl GgufMtpDecoderLayer {
     fn forward_single_token(&self, xs: &Tensor, positions: &Tensor) -> Result<Tensor> {
         let residual = xs;
         let xs = self.input_layernorm.forward(xs)?;
-        let xs = (self.attn.forward_single_token_no_cache(&xs, positions)? + residual)?;
+        let attn_output = self.attn.forward_single_token_no_cache(&xs, positions)?;
+        let attn_output = if attn_output.dtype() != residual.dtype() {
+            attn_output.to_dtype(residual.dtype())?
+        } else {
+            attn_output
+        };
+        let xs = (attn_output + residual)?;
         let residual = &xs;
         let xs = self.post_attention_layernorm.forward(&xs)?;
-        residual + self.mlp.forward(&xs)?
+        let mlp_output = self.mlp.forward(&xs)?;
+        let mlp_output = if mlp_output.dtype() != residual.dtype() {
+            mlp_output.to_dtype(residual.dtype())?
+        } else {
+            mlp_output
+        };
+        residual + mlp_output
     }
 }
 
@@ -833,11 +862,17 @@ impl GgufMtpHead {
         token_embedding: &Tensor,
         positions: &Tensor,
     ) -> Result<Tensor> {
-        let norm_hidden = self.pre_fc_norm_hidden.forward(backbone_hidden)?;
-        let norm_embed = self.pre_fc_norm_embedding.forward(token_embedding)?;
+        let backbone_hidden_f32 = backbone_hidden.to_dtype(DType::F32)?;
+        let token_embedding_f32 = token_embedding.to_dtype(DType::F32)?;
+        let norm_hidden = self.pre_fc_norm_hidden.forward(&backbone_hidden_f32)?;
+        let norm_embed = self.pre_fc_norm_embedding.forward(&token_embedding_f32)?;
         let norm_embed = norm_embed.to_dtype(norm_hidden.dtype())?;
         let fused = Tensor::cat(&[norm_embed, norm_hidden], D::Minus1)?.to_dtype(DType::F32)?;
-        let xs = self.fc.forward(&fused)?.to_dtype(self.dtype)?;
+        // GGUF QMatMul returns F32, matching the quantized attention and MLP
+        // paths below. Keep the MTP residual stream in F32: casting this
+        // result to the runtime BF16 dtype makes the subsequent
+        // `attention_output + residual` binary op fail for GGUF MTP.
+        let xs = qmatmul_forward(&self.fc, &fused)?.to_dtype(DType::F32)?;
         let xs = self.layer.forward_single_token(&xs, positions)?;
         self.norm.forward(&xs)
     }
