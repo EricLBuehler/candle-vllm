@@ -1176,7 +1176,7 @@ fn load_ln_fp8_with_hints(
         )
     }
 
-    let block_size = quant_cfg
+    let mut block_size = quant_cfg
         .weight_block_size
         .clone()
         .unwrap_or(vec![128, 128]);
@@ -1191,34 +1191,67 @@ fn load_ln_fp8_with_hints(
 
     let weight = load_fp8_weight(&vb, (out_dim, in_dim), shard)?;
     let weight = normalize_sharded_2d(weight, shard, out_dim, in_dim, "weight")?;
-    let weight_scale = if let Some(s) =
-        load_scale(&vb, "weight_scale", scale_dim0, scale_dim1, shard)?
-    {
-        s
-    } else if let Some(s) = load_scale(&vb, "weight_scale_inv", scale_dim0, scale_dim1, shard)? {
-        s
+    // compressed-tensors channel-wise FP8 stores one scale per output row,
+    // [out_dim, 1], rather than a block-scale matrix.  A row-parallel
+    // projection must not shard that singleton input dimension.
+    let channel_shard = if shard.dim == 0 {
+        shard
     } else {
-        match vb.get_with_hints_dtype((scale_dim0, scale_dim1), "weight_scale", shard, DType::F32) {
-            Ok(s) => s,
-            Err(_) => vb
-                .get_with_hints_dtype(
+        Shard::default()
+    };
+    let channel_scale = ["weight_scale", "weight_scale_inv", "scale"]
+        .into_iter()
+        .find_map(|name| {
+            vb.get_with_hints_dtype((out_dim, 1), name, channel_shard, DType::F32)
+                .ok()
+        });
+    let (weight_scale, scale_shard, scale_global_dim) = if let Some(scale) = channel_scale {
+        // The kernel uses the local input width as the channel-wise block
+        // width, including for row-parallel weights.
+        block_size = vec![1, weight.dim(1)?];
+        (scale, channel_shard, (out_dim, 1))
+    } else {
+        let weight_scale = if let Some(s) =
+            load_scale(&vb, "weight_scale", scale_dim0, scale_dim1, shard)?
+        {
+            s
+        } else if let Some(s) = load_scale(&vb, "weight_scale_inv", scale_dim0, scale_dim1, shard)?
+        {
+            s
+        } else if let Some(s) = load_scale(&vb, "scale", scale_dim0, scale_dim1, shard)? {
+            s
+        } else {
+            match vb.get_with_hints_dtype(
+                (scale_dim0, scale_dim1),
+                "weight_scale",
+                shard,
+                DType::F32,
+            ) {
+                Ok(s) => s,
+                Err(_) => match vb.get_with_hints_dtype(
                     (scale_dim0, scale_dim1),
                     "weight_scale_inv",
                     shard,
                     DType::F32,
-                )
-                .map_err(|_| {
-                    candle_core::Error::Msg(
-                        "LnFp8: Missing weight_scale or weight_scale_inv".into(),
-                    )
-                })?,
-        }
+                ) {
+                    Ok(s) => s,
+                    Err(_) => vb
+                        .get_with_hints_dtype((scale_dim0, scale_dim1), "scale", shard, DType::F32)
+                        .map_err(|_| {
+                            candle_core::Error::Msg(
+                                "LnFp8: Missing weight_scale, weight_scale_inv, or scale".into(),
+                            )
+                        })?,
+                },
+            }
+        };
+        (weight_scale, shard, (scale_dim0, scale_dim1))
     };
     let weight_scale = normalize_sharded_2d(
         weight_scale,
-        shard,
-        scale_dim0,
-        scale_dim1,
+        scale_shard,
+        scale_global_dim.0,
+        scale_global_dim.1,
         "weight_scale(_inv)",
     )?;
     let input_scale = load_fp8_input_scale(&vb)?;
@@ -1377,8 +1410,28 @@ fn has_fp4_scale_tensors(vb: &VarBuilder, is_mlx: bool) -> bool {
         (vb.contains_tensor("weight_packed")
             || vb.contains_tensor("weight")
             || vb.contains_tensor("blocks"))
-            && (vb.contains_tensor("weight_scale") || vb.contains_tensor("scales"))
+            && (vb.contains_tensor("weight_scale")
+                || vb.contains_tensor("weight_scale_2")
+                || vb.contains_tensor("weight_global_scale")
+                || vb.contains_tensor("scales"))
     }
+}
+
+fn has_nvfp4_specific_tensors(vb: &VarBuilder, is_mlx: bool) -> bool {
+    if is_mlx {
+        vb.contains_tensor("weight") && vb.contains_tensor("scales")
+    } else {
+        vb.contains_tensor("weight_packed")
+            || vb.contains_tensor("blocks")
+            || vb.contains_tensor("weight_scale_2")
+            || vb.contains_tensor("weight_global_scale")
+    }
+}
+
+fn has_fp8_tensors(vb: &VarBuilder) -> bool {
+    vb.contains_tensor("weight_scale")
+        || vb.contains_tensor("weight_scale_inv")
+        || vb.contains_tensor("scale")
 }
 
 pub fn linear_x(
@@ -1400,8 +1453,9 @@ pub fn linear_x(
 
     if let Some(cfg) = &quant_config_local {
         if cfg.quant_method == "fp8" {
-            let has_fp8_scale =
-                vb.contains_tensor("weight_scale") || vb.contains_tensor("weight_scale_inv");
+            let has_fp8_scale = vb.contains_tensor("weight_scale")
+                || vb.contains_tensor("weight_scale_inv")
+                || vb.contains_tensor("scale");
             if !has_fp8_scale {
                 let weight_probe = vb.get_with_hints((out_dim, in_dim), "weight", shard)?;
                 if matches!(
@@ -1464,6 +1518,13 @@ pub fn linear_x(
                     bs
                 };
                 return Ok(LinearX::Linear(Linear::new(ws, Some(bs))));
+            }
+            if !is_mlx && !has_nvfp4_specific_tensors(&vb, false) && has_fp8_tensors(&vb) {
+                if let Ok(ln) =
+                    load_ln_fp8_with_hints(in_dim, out_dim, vb.clone(), shard, cfg, true)
+                {
+                    return Ok(LinearX::LnFp8(ln));
+                }
             }
             let ln = if is_mlx {
                 LnNvfp4::load_mlx(in_dim, out_dim, vb.clone(), shard, true)?
@@ -1546,8 +1607,9 @@ pub fn linear_no_bias_x(
 
     if let Some(cfg) = &quant_config_local {
         if cfg.quant_method == "fp8" {
-            let has_fp8_scale =
-                vb.contains_tensor("weight_scale") || vb.contains_tensor("weight_scale_inv");
+            let has_fp8_scale = vb.contains_tensor("weight_scale")
+                || vb.contains_tensor("weight_scale_inv")
+                || vb.contains_tensor("scale");
             if !has_fp8_scale {
                 let weight_probe = if let Some((chunk_idx, chunks)) = merged_chunks {
                     vb.get_with_hints(
@@ -1639,6 +1701,13 @@ pub fn linear_no_bias_x(
                     ws
                 };
                 return Ok(LinearX::Linear(Linear::new(ws, None)));
+            }
+            if !is_mlx && !has_nvfp4_specific_tensors(&vb, false) && has_fp8_tensors(&vb) {
+                if let Ok(ln) =
+                    load_ln_fp8_with_hints(in_dim, out_dim, vb.clone(), shards, cfg, false)
+                {
+                    return Ok(LinearX::LnFp8(ln));
+                }
             }
             let ln = if is_mlx {
                 LnNvfp4::load_mlx(in_dim, out_dim, vb.clone(), shards, false)?

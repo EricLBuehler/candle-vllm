@@ -154,7 +154,7 @@ impl Mistral {
             },
             comm.clone(),
             &None,
-            &None,
+            &cfg.quantization_config,
             dtype,
         )?;
 

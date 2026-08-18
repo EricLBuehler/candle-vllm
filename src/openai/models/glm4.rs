@@ -229,7 +229,7 @@ impl GLM4 {
             vb.pp("lm_head"),
             comm.clone(),
             &None,
-            &None,
+            &cfg.quantization_config,
             dtype,
         )?;
         let norm_dtype = if cfg.higher_precision_required() {

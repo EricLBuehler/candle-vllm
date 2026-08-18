@@ -955,7 +955,7 @@ impl MergedParallelColumnLinear {
                 )
             })?;
 
-            let block_size = quant_cfg
+            let mut block_size = quant_cfg
                 .weight_block_size
                 .clone()
                 .unwrap_or(vec![128, 128]);
@@ -978,35 +978,62 @@ impl MergedParallelColumnLinear {
                         DType::U8,
                     )
                 })?;
-            let scale_dim0 = (out_dim + by - 1) / by;
-            let scale_dim1 = (in_dim + bx - 1) / bx;
             let no_shard = Shard::default();
-            let weight_scale = match vb
-                .get_with_hints_dtype((), "weight_scale", no_shard, DType::F32)
-                .or_else(|_| vb.get_with_hints_dtype((1,), "weight_scale", no_shard, DType::F32))
-            {
-                Ok(s) => s.broadcast_as((scale_dim0, scale_dim1))?.contiguous()?,
-                Err(_) => match vb.get_with_hints_dtype(
-                    (scale_dim0, scale_dim1),
-                    "weight_scale",
-                    no_shard,
-                    DType::F32,
-                ) {
-                    Ok(s) => s,
-                    Err(_) => vb
-                        .get_with_hints_dtype(
-                            (scale_dim0, scale_dim1),
-                            "weight_scale_inv",
-                            no_shard,
-                            DType::F32,
-                        )
-                        .map_err(|_| {
-                            candle_core::Error::Msg(
-                                "LnFp8: Missing weight_scale or weight_scale_inv".into(),
+            // compressed-tensors channel-wise FP8 uses one scale per output
+            // row, [out_dim, 1], instead of block scales.
+            let channel_scale = ["weight_scale", "weight_scale_inv", "scale"]
+                .into_iter()
+                .find_map(|name| {
+                    vb.get_with_hints_dtype((out_dim, 1), name, no_shard, DType::F32)
+                        .ok()
+                });
+            let (weight_scale, by) = if let Some(scale) = channel_scale {
+                block_size = vec![1, in_dim];
+                (scale, 1)
+            } else {
+                let by = block_size[0];
+                let bx = block_size[1];
+                let scale_dim0 = (out_dim + by - 1) / by;
+                let scale_dim1 = (in_dim + bx - 1) / bx;
+                let weight_scale = match vb
+                    .get_with_hints_dtype((), "weight_scale", no_shard, DType::F32)
+                    .or_else(|_| {
+                        vb.get_with_hints_dtype((1,), "weight_scale", no_shard, DType::F32)
+                    }) {
+                    Ok(s) => s.broadcast_as((scale_dim0, scale_dim1))?.contiguous()?,
+                    Err(_) => match vb.get_with_hints_dtype(
+                        (scale_dim0, scale_dim1),
+                        "weight_scale",
+                        no_shard,
+                        DType::F32,
+                    ) {
+                        Ok(s) => s,
+                        Err(_) => vb
+                            .get_with_hints_dtype(
+                                (scale_dim0, scale_dim1),
+                                "weight_scale_inv",
+                                no_shard,
+                                DType::F32,
                             )
-                        })?,
-                },
+                            .or_else(|_| {
+                                vb.get_with_hints_dtype(
+                                    (scale_dim0, scale_dim1),
+                                    "scale",
+                                    no_shard,
+                                    DType::F32,
+                                )
+                            })
+                            .map_err(|_| {
+                                candle_core::Error::Msg(
+                                    "LnFp8: Missing weight_scale, weight_scale_inv, or scale"
+                                        .into(),
+                                )
+                            })?,
+                    },
+                };
+                (weight_scale, by)
             };
+            let scale_dim0 = (out_dim + by - 1) / by;
             let input_scale = crate::openai::models::linear::load_fp8_input_scale(&vb)?;
 
             #[cfg(feature = "cuda")]
@@ -1473,6 +1500,30 @@ fn pad_vocab_size(vocab_size: usize, world_size: usize) -> usize {
     ((per_rank + VOCAB_PADDING_SIZE - 1) / VOCAB_PADDING_SIZE) * VOCAB_PADDING_SIZE
 }
 
+/// Keep model-native quantization metadata for an actually quantized
+/// vocabulary head, but do not let ISQ/model-wide settings quantize a dense
+/// lm_head.  The latter is common for FP8 checkpoints with a BF16 head.
+fn native_vocab_quant_config(
+    vb: &VarBuilder,
+    quant_cfg: &Option<QuantConfig>,
+) -> Option<QuantConfig> {
+    let quant_cfg = quant_cfg.as_ref()?;
+    let has_native_quantized_weight = [
+        "weight_scale",
+        "weight_scale_inv",
+        "scale",
+        "scales",
+        "weight_packed",
+        "weight_global_scale",
+        "weight_scale_2",
+        "blocks",
+        "qweight",
+    ]
+    .into_iter()
+    .any(|name| vb.contains_tensor(name));
+    has_native_quantized_weight.then(|| quant_cfg.clone())
+}
+
 #[allow(dead_code)]
 pub struct VocabParallelLinear {
     linear: LinearX,
@@ -1493,6 +1544,9 @@ impl VocabParallelLinear {
         quant_config: &Option<QuantConfig>,
         dtype: DType,
     ) -> Result<Self> {
+        let native_quant_cfg = native_vocab_quant_config(&vb, quant_config);
+        let quant_config = &native_quant_cfg;
+        let quant = &None;
         let world_size = comm.world_size();
         if world_size <= 1 {
             let linear = linear(

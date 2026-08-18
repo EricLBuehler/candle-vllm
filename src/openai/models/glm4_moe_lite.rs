@@ -404,7 +404,7 @@ impl GLM4MoeLiteForCausalLM {
             },
             comm.clone(),
             &None,
-            &None,
+            &config.quantization_config,
             dtype,
         )?;
 
