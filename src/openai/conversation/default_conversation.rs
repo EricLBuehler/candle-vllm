@@ -490,7 +490,7 @@ impl ChatTemplate {
                   .reasoning_effort
                   .as_deref()
                   .map(Value::from)
-                  .unwrap_or(Value::UNDEFINED),
+                  .unwrap_or(Value::from("medium")),
               tools => tools,
             })
             .map_err(ApplyChatTemplateError::RenderTemplateError)
