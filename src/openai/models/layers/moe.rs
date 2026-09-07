@@ -2200,10 +2200,19 @@ struct Nvfp4Projection {
     global_scales: Tensor,
     input_scales: Tensor,
     scales_swizzled: Option<Tensor>,
+    /// Optional per-half (gate/up) weight global scales, shape [E, 2]. When
+    /// present, the GEMM applies `half_scales[e, 0]` to the gate rows and
+    /// `half_scales[e, 1]` to the up rows, so independently-quantized gate/up
+    /// projections can be merged into one fused GEMM without re-quantization.
+    half_scales: Option<Tensor>,
 }
 
 enum Nvfp4GateUpWeights {
     Fused(Nvfp4Projection),
+    // Kept as a defensive fallback for gate/up projections that cannot be fused
+    // (e.g. mismatched shapes). All supported NVFP4 load paths fuse at load
+    // time, so this variant is currently never constructed.
+    #[allow(dead_code)]
     Separate {
         gate: Nvfp4Projection,
         up: Nvfp4Projection,
@@ -2248,6 +2257,7 @@ impl Nvfp4Projection {
             global_scales: Tensor::from_vec(global_scales, (num_experts,), &dev)?,
             input_scales: Tensor::from_vec(input_scales, (num_experts,), &dev)?,
             scales_swizzled,
+            half_scales: None,
         })
     }
 }
@@ -2738,22 +2748,43 @@ impl FusedMoeNvfp4 {
             };
             (gate_up, w_size_n)
         } else {
+            // Merge independently-quantized gate/up projections into a single
+            // fused GEMM (sglang-style): byte-concatenate the FP4 blocks and
+            // E4M3 block scales, and carry the per-half global scales so the
+            // kernel applies the correct scale to each half. No re-quantization,
+            // so the original NVFP4 weights are preserved exactly.
             let gate_blocks = Tensor::stack(&gate_blocks_vec, 0)?;
             let gate_scales = Tensor::stack(&gate_scales_vec, 0)?;
             let up_blocks = Tensor::stack(&up_blocks_vec, 0)?;
             let up_scales = Tensor::stack(&up_scales_vec, 0)?;
-            let gate =
-                Nvfp4Projection::new(gate_blocks, gate_scales, gate_gscales_vec, gate_iscales_vec)?;
-            let up = Nvfp4Projection::new(up_blocks, up_scales, up_gscales_vec, up_iscales_vec)?;
-            let w_size_n = gate.blocks.dim(1)?;
-            if up.blocks.dim(1)? != w_size_n {
+            let n_gate = gate_blocks.dim(1)?;
+            let n_up = up_blocks.dim(1)?;
+            if n_gate != n_up {
                 candle::bail!(
                     "NVFP4 MoE gate/up output dimensions differ: gate={}, up={}",
-                    w_size_n,
-                    up.blocks.dim(1)?
+                    n_gate,
+                    n_up
                 );
             }
-            (Nvfp4GateUpWeights::Separate { gate, up }, w_size_n)
+            let dev = gate_blocks.device().clone();
+            let merged_blocks = Tensor::cat(&[&gate_blocks, &up_blocks], 1)?;
+            let merged_scales = Tensor::cat(&[&gate_scales, &up_scales], 1)?;
+            let mut merged_gscales = Vec::with_capacity(num_experts);
+            let mut merged_iscales = Vec::with_capacity(num_experts);
+            let mut half_rows = Vec::with_capacity(num_experts * 2);
+            for e in 0..num_experts {
+                let g = gate_gscales_vec[e];
+                let u = up_gscales_vec[e];
+                merged_gscales.push(g.max(u));
+                merged_iscales.push(gate_iscales_vec[e].max(up_iscales_vec[e]));
+                half_rows.push(g);
+                half_rows.push(u);
+            }
+            let half_scales = Tensor::from_vec(half_rows, (num_experts, 2), &dev)?;
+            let mut projection =
+                Nvfp4Projection::new(merged_blocks, merged_scales, merged_gscales, merged_iscales)?;
+            projection.half_scales = Some(half_scales);
+            (Nvfp4GateUpWeights::Fused(projection), n_gate)
         };
 
         let dev = match &gate_up {
@@ -2939,22 +2970,43 @@ impl FusedMoeNvfp4 {
             };
             (gate_up, w_size_n)
         } else {
+            // Merge independently-quantized gate/up projections into a single
+            // fused GEMM (sglang-style): byte-concatenate the FP4 blocks and
+            // E4M3 block scales, and carry the per-half global scales so the
+            // kernel applies the correct scale to each half. No re-quantization,
+            // so the original NVFP4 weights are preserved exactly.
             let gate_blocks = Tensor::stack(&gate_blocks_vec, 0)?;
             let gate_scales = Tensor::stack(&gate_scales_vec, 0)?;
             let up_blocks = Tensor::stack(&up_blocks_vec, 0)?;
             let up_scales = Tensor::stack(&up_scales_vec, 0)?;
-            let gate =
-                Nvfp4Projection::new(gate_blocks, gate_scales, gate_gscales_vec, gate_iscales_vec)?;
-            let up = Nvfp4Projection::new(up_blocks, up_scales, up_gscales_vec, up_iscales_vec)?;
-            let w_size_n = gate.blocks.dim(1)?;
-            if up.blocks.dim(1)? != w_size_n {
+            let n_gate = gate_blocks.dim(1)?;
+            let n_up = up_blocks.dim(1)?;
+            if n_gate != n_up {
                 candle::bail!(
                     "NVFP4 MoE gate/up output dimensions differ: gate={}, up={}",
-                    w_size_n,
-                    up.blocks.dim(1)?
+                    n_gate,
+                    n_up
                 );
             }
-            (Nvfp4GateUpWeights::Separate { gate, up }, w_size_n)
+            let dev = gate_blocks.device().clone();
+            let merged_blocks = Tensor::cat(&[&gate_blocks, &up_blocks], 1)?;
+            let merged_scales = Tensor::cat(&[&gate_scales, &up_scales], 1)?;
+            let mut merged_gscales = Vec::with_capacity(num_experts);
+            let mut merged_iscales = Vec::with_capacity(num_experts);
+            let mut half_rows = Vec::with_capacity(num_experts * 2);
+            for e in 0..num_experts {
+                let g = gate_gscales_vec[e];
+                let u = up_gscales_vec[e];
+                merged_gscales.push(g.max(u));
+                merged_iscales.push(gate_iscales_vec[e].max(up_iscales_vec[e]));
+                half_rows.push(g);
+                half_rows.push(u);
+            }
+            let half_scales = Tensor::from_vec(half_rows, (num_experts, 2), &dev)?;
+            let mut projection =
+                Nvfp4Projection::new(merged_blocks, merged_scales, merged_gscales, merged_iscales)?;
+            projection.half_scales = Some(half_scales);
+            (Nvfp4GateUpWeights::Fused(projection), n_gate)
         };
 
         let dev = match &gate_up {
@@ -3122,6 +3174,7 @@ impl FusedMoeNvfp4 {
                 is_prefill,
                 None,
                 projection.scales_swizzled.as_ref(),
+                projection.half_scales.as_ref(),
             )?,
             Nvfp4GateUpWeights::Separate { gate, up } => {
                 let gate_output = moe::moe_gemm_nvfp4(
@@ -3136,6 +3189,7 @@ impl FusedMoeNvfp4 {
                     is_prefill,
                     None,
                     gate.scales_swizzled.as_ref(),
+                    None,
                 )?;
                 let up_output = moe::moe_gemm_nvfp4(
                     &xs,
@@ -3149,6 +3203,7 @@ impl FusedMoeNvfp4 {
                     is_prefill,
                     None,
                     up.scales_swizzled.as_ref(),
+                    None,
                 )?;
                 Tensor::cat(&[&gate_output, &up_output], 2)?
             }
@@ -3174,6 +3229,7 @@ impl FusedMoeNvfp4 {
             is_prefill,
             down_topk_weights,
             self.down_scales_swizzled.as_ref(),
+            None,
         )?
         .reshape((num_tokens, self.num_experts_per_tok, hidden_dim))?
         .sum(1)?;

@@ -9,12 +9,26 @@ use candle_core as candle;
 use candle_nn::var_builder::Shard;
 pub use std::rc::Rc;
 
+/// NVFP4 gate/up merged into a single fused GEMM. Gate and up may have
+/// different weight global scales; `row_scales` carries the per-row (half)
+/// scale so the kernel dequantizes each half correctly without re-quant.
+struct Nvfp4MergedWeights {
+    blocks: Tensor,
+    scales: Tensor,
+    gate_gscale: f32,
+    input_scale: f32,
+    row_scales: Tensor,
+    weight_scale_swizzled: Option<Tensor>,
+    n: usize,
+}
+
 enum GateUpProjection {
     Separate {
         gate_proj: TensorParallelColumnLinear,
         up_proj: TensorParallelColumnLinear,
     },
     Packed(MergedParallelColumnLinear),
+    Nvfp4Merged(Nvfp4MergedWeights),
 }
 
 pub struct Mlp {
@@ -24,6 +38,89 @@ pub struct Mlp {
 }
 
 impl Mlp {
+    /// Merge two independently-loaded NVFP4 gate/up projections into a single
+    /// fused GEMM (sglang-style). Byte-concatenates the FP4 blocks and E4M3
+    /// block scales and carries the per-half weight global scales in
+    /// `row_scales` so the kernel applies the correct scale to each half. No
+    /// re-quantization, so the original NVFP4 weights are preserved exactly.
+    fn merge_nvfp4_gate_up(
+        gate_proj: TensorParallelColumnLinear,
+        up_proj: TensorParallelColumnLinear,
+        gate_up_merged: bool,
+    ) -> GateUpProjection {
+        if gate_up_merged {
+            return GateUpProjection::Separate { gate_proj, up_proj };
+        }
+        // Debug aid: force the separate gate/up path to build a precision
+        // baseline against the fused NVFP4 merge. No effect unless set.
+        if std::env::var("XINFER_DISABLE_NVFP4_GATEUP_MERGE").is_ok() {
+            return GateUpProjection::Separate { gate_proj, up_proj };
+        }
+        match (gate_proj.as_nvfp4(), up_proj.as_nvfp4()) {
+            (Some(g), Some(u)) => {
+                let n = g.blocks.dim(0).unwrap_or(0);
+                let same_shape = match (g.blocks.dims(), u.blocks.dims()) {
+                    (gd, ud) => gd.len() == 2 && gd == ud,
+                };
+                if n == 0 || !same_shape {
+                    return GateUpProjection::Separate { gate_proj, up_proj };
+                }
+                let blocks = match Tensor::cat(&[&g.blocks, &u.blocks], 0) {
+                    Ok(b) => b,
+                    Err(_) => return GateUpProjection::Separate { gate_proj, up_proj },
+                };
+                let scales = match Tensor::cat(&[&g.scales, &u.scales], 0) {
+                    Ok(s) => s,
+                    Err(_) => return GateUpProjection::Separate { gate_proj, up_proj },
+                };
+                let dev = blocks.device().clone();
+                let (row_scales, swizzled) = match (
+                    Tensor::full(g.global_scale, (n,), &dev),
+                    Tensor::full(u.global_scale, (n,), &dev),
+                ) {
+                    (Ok(gr), Ok(ur)) => match Tensor::cat(&[&gr, &ur], 0) {
+                        Ok(rs) => {
+                            let swizzled = {
+                                #[cfg(feature = "cuda")]
+                                {
+                                    let sm = match scales.device().as_cuda_device() {
+                                        Ok(dev) => attention_rs::cuda_utils::sm_version(dev)
+                                            .unwrap_or(0)
+                                            as usize,
+                                        Err(_) => 0,
+                                    };
+                                    if sm >= 100 {
+                                        attention_rs::nvfp4_linear::swizzle_nvfp4_weight_scales(
+                                            &scales,
+                                        )
+                                        .ok()
+                                    } else {
+                                        None
+                                    }
+                                }
+                                #[cfg(not(feature = "cuda"))]
+                                None
+                            };
+                            (rs, swizzled)
+                        }
+                        Err(_) => return GateUpProjection::Separate { gate_proj, up_proj },
+                    },
+                    _ => return GateUpProjection::Separate { gate_proj, up_proj },
+                };
+                GateUpProjection::Nvfp4Merged(Nvfp4MergedWeights {
+                    blocks,
+                    scales,
+                    gate_gscale: g.global_scale,
+                    input_scale: g.input_scale.max(u.input_scale),
+                    row_scales,
+                    weight_scale_swizzled: swizzled,
+                    n,
+                })
+            }
+            _ => GateUpProjection::Separate { gate_proj, up_proj },
+        }
+    }
+
     fn normalize_sharded_2d(
         t: Tensor,
         shard: Shard,
@@ -465,7 +562,7 @@ impl Mlp {
                 &cfg.isq_quant,
                 &cfg.quantization_config,
             )?;
-            GateUpProjection::Separate { gate_proj, up_proj }
+            Self::merge_nvfp4_gate_up(gate_proj, up_proj, use_gate_up_merged)
         };
         let down_proj = TensorParallelRowLinear::load_with_hints(
             intermediate_sz,
@@ -499,6 +596,37 @@ impl Module for Mlp {
                     );
                 }
                 (gate_up[0].clone(), gate_up[1].clone())
+            }
+            GateUpProjection::Nvfp4Merged(m) => {
+                let orig_dims = xs.dims().to_vec();
+                let x_2d = if orig_dims.len() > 2 {
+                    let features = orig_dims[orig_dims.len() - 1];
+                    let batch_size: usize = orig_dims[..orig_dims.len() - 1].iter().product();
+                    xs.reshape((batch_size, features))?
+                } else {
+                    xs.clone()
+                };
+                let gate_up = attention_rs::nvfp4_linear::nvfp4_matmul(
+                    &x_2d,
+                    &m.blocks,
+                    &m.scales,
+                    m.gate_gscale,
+                    m.input_scale,
+                    None,
+                    crate::openai::models::linear::linear_is_prefill(),
+                    m.weight_scale_swizzled.as_ref(),
+                    Some(&m.row_scales),
+                )?;
+                let leading: Vec<usize> = if orig_dims.len() > 2 {
+                    orig_dims[..orig_dims.len() - 1].to_vec()
+                } else {
+                    vec![x_2d.dim(0)?]
+                };
+                let mut gate_shape = leading.clone();
+                gate_shape.push(m.n);
+                let gate = gate_up.narrow(1, 0, m.n)?.reshape(gate_shape.clone())?;
+                let up = gate_up.narrow(1, m.n, m.n)?.reshape(gate_shape)?;
+                (gate, up)
             }
         };
         self.down_proj.forward(&(self.act_fn.forward(&gate)? * up)?)
