@@ -1398,6 +1398,13 @@ impl Module for LinearX {
 }
 
 impl LinearX {
+    pub fn as_nvfp4(&self) -> Option<&LnNvfp4> {
+        match self {
+            Self::LnNvfp4(ln) => Some(ln),
+            _ => None,
+        }
+    }
+
     /// Run a dense linear while accepting activations with a different dtype.
     /// GGUF layout restoration can leave a dense F16/F32 matrix in the model
     /// even though the surrounding activations are F32.
@@ -2165,6 +2172,7 @@ impl Module for LnNvfp4 {
             self.bias.as_ref(),
             linear_is_prefill(),
             self.weight_scale_swizzled.as_ref(),
+            None,
         )?;
 
         if orig_dims.len() > 2 {

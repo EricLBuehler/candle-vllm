@@ -247,6 +247,10 @@ impl TensorParallelColumnLinear {
         }
         Ok(xs)
     }
+
+    pub fn as_nvfp4(&self) -> Option<&crate::openai::models::linear::LnNvfp4> {
+        self.linear.as_nvfp4()
+    }
 }
 
 pub struct MergedParallelColumnLinear {
