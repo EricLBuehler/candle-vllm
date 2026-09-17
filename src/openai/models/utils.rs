@@ -85,6 +85,12 @@ pub fn resolve_text_backbone(vb: &VarBuilder, tie_word_embeddings: bool) -> Text
 pub fn resolve_input_seqlens(input_metadata: &InputMetadata) -> Result<Vec<u32>> {
     if let Some(seqlens) = input_metadata.seqlens.as_ref() {
         Ok(seqlens.clone())
+    } else if input_metadata.is_mtp_verify {
+        // MTP/DFlash verification is a single sequence, but its forward pass
+        // must retain every query row for greedy verification.  `None` is the
+        // xInfer convention for that mode; falling back to cu_seqlens_q would
+        // reduce it to one sequence length and drop all but the final row.
+        Ok(Vec::new())
     } else if let Some(cu_seqlens) = input_metadata.cu_seqlens_q.as_ref() {
         Ok(cu_seqlens.to_vec1::<u32>()?[1..].to_vec())
     } else {

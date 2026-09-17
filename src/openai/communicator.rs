@@ -85,6 +85,13 @@ pub enum MessageType {
         seq_len: usize,
         verify_payload: ForwardPayload,
     },
+    RunDFlashStep1(ForwardPayload),
+    RunDFlashStep2 {
+        anchor_token: u32,
+        seq_id: usize,
+        seq_len: usize,
+        verify_payload: ForwardPayload,
+    },
     FinishSequences(Vec<usize>),
     MambaPrefixCapture {
         seq_id: usize,

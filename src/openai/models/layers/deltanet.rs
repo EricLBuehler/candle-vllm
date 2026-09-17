@@ -511,7 +511,10 @@ impl GatedDeltaNet {
         let scale = 1.0f64 / (head_k_dim as f64).sqrt();
         let d_conv = key_dim * 2 + value_dim;
         let (conv_mtp_state, recurrent_mtp_state) = if mtp_enabled {
-            let max_verify_tokens = 16;
+            // A verify batch can contain one speculative block per active
+            // sequence. Keep enough snapshots for the largest graph/runtime
+            // batch; 16 preserves the historical single-sequence default.
+            let max_verify_tokens = config.mtp_max_verify_tokens.max(16);
             (
                 Some(Tensor::zeros(
                     (max_verify_tokens, d_conv, conv_kernel_size - 1),

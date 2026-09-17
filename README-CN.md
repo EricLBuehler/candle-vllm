@@ -132,6 +132,7 @@ candle-vllm --d 0,1 --m /home/data/Qwen3.5-35B-A3B-GGUF/ --ui-server
 - 支持分块 Prefilling（默认块大小 8K）
 - 支持 CUDA Graph
 - 支持 Qwen3.5 MTP 投机解码，并通过 `--mtp` 使用 CUDA Graph
+- 支持通过 `--draft-model` 和 `--num-speculative-tokens` 使用外部 DFlash2 投机解码
 - 支持 Model Context Protocol（MCP）和 OpenAI 兼容工具调用
 - 支持 Prefix Caching
 - 支持硬件 FP8 模型推理加速（SM90+, Qwen3 系列，Block-wise FP8 量化）
@@ -160,6 +161,9 @@ SM90_LOWER_PRECISION_GDN_PREFILL=1 candle-vllm --m Qwen/Qwen3.5-35B-A3B-FP8
 
 # Qwen3.5 MTP 投机解码（每步 2 个 draft token）
 candle-vllm --w /data/Qwen3.5-35B-A3B-FP8/ --mtp 2 --ui-server
+
+# 外部 DFlash2 投机解码
+candle-vllm --w /data/Qwen3.5-target/ --draft-model /data/Qwen3.5-DFlash2/ --num-speculative-tokens 7 --ui-server
 
 # GLM-5.2 FP8 模型
 candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
@@ -333,6 +337,33 @@ export NCCL_P2P_DISABLE=1  # 禁用 P2P 以避免非法内存访问
 
 ---
 
+### 投机解码：MTP 与 DFlash2
+
+Candle-vLLM 支持 Qwen3.5/3.6/3.8 系列目标模型的两种投机解码模式：
+
+- **内置 MTP（Multi-Token Prediction）：** 目标模型权重中包含 `mtp.*`，使用 `--mtp N`，或使用等价参数 `--num-speculative-tokens N`。
+- **外部 DFlash2：** 使用匹配的 DFlash2 草稿模型并传入 `--draft-model`。设置 `--draft-model` 后优先使用 DFlash2；`--num-speculative-tokens` 可选地覆盖草稿长度，否则使用草稿配置中的 `block_size - 1`。
+
+
+MTP 示例：
+
+```bash
+# 每个 decode step 预测 3 个 MTP 草稿 token
+candle-vllm --m /data/Qwen3.5-35B-A3B-FP8/ \
+  --num-speculative-tokens 3 --d 0 --ui-server
+```
+
+DFlash2 示例：
+
+```bash
+# Qwen3.8 目标模型及对应的 DFlash2 草稿模型
+candle-vllm --m /data/Qwen3.8-27B-FP8/ \
+  --draft-model /data/Qwen3.8-27B-DFlash2-FP8/ \
+  --num-speculative-tokens 7 --d 0 --ui-server
+```
+
+完整参数说明、API 示例、验证方法和吞吐说明见[投机解码文档](docs/speculative_decoding_cn.md)。
+
 ### 🌐 多节点推理
 
 跨多台机器分布式推理，基于 TCP 的 NCCL 引导，无需 MPI。
@@ -429,6 +460,7 @@ candle-vllm --h unix:///tmp/candle-vllm.sock --m Qwen/Qwen3.6-27B-FP8
 | [MCP & 工具调用](docs/mcp_tool_calling.md) | Model Context Protocol 集成 |
 | [工具调用解析](docs/tool_parsing.md) | 工具调用检测与解析 |
 | [Prefix Cache](docs/prefix_cache.md) | 自动 KV 缓存复用 |
+| [投机解码](docs/speculative_decoding_cn.md) | MTP 与外部 DFlash2 |
 | [多模态模型](docs/multimodal.md) | 视觉语言模型 |
 
 **在 Candle-vLLM 后端下使用 Agent：** [xbot](docs/xbot.md) · [OpenCode](docs/opencode.md) · [Kilo Code](docs/kilocode.md)

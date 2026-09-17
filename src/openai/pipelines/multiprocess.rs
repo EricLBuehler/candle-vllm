@@ -529,7 +529,7 @@ impl LLMEngine {
                 let all_logits = if use_mtp_graph {
                     #[cfg(all(feature = "cuda", feature = "graph"))]
                     {
-                        pipeline.capturer.replay_mtp(
+                        pipeline.replay_mtp_graph(
                             &verify_input,
                             &prepared.positions,
                             &prepared.metadata,
@@ -573,6 +573,120 @@ impl LLMEngine {
             }
         }
         Ok(())
+    }
+
+    fn daemon_run_dflash_step1(engine: &Arc<RwLock<Self>>, payload: &ForwardPayload) -> Result<()> {
+        let (pipeline_entry, prepared) = Self::prepare_daemon_payload_inputs(engine, payload)?;
+        let mut pipeline_entry = pipeline_entry;
+        let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
+        let drafter = pipeline
+            .dflash_drafter
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::msg("daemon DFlash2 step1 requires a drafter"))?
+            .clone();
+        let (_logits, layer_hiddens) = pipeline.forward_collecting_layers(
+            prepared.tokens,
+            &prepared.positions,
+            Some(&cache_engine.get_kv_cache()),
+            &prepared.metadata,
+            drafter.target_layer_ids(),
+        )?;
+
+        let mut guard = engine.write();
+        if guard.pipelines.insert(0, pipeline_entry).is_some() {
+            candle_core::bail!("pipeline for daemon rank 0 was replaced while detached");
+        }
+        if prepared.metadata.is_prefill {
+            Self::append_dflash_prompt_context(
+                guard.get_pipeline(0).unwrap().0.as_ref(),
+                &prepared.metadata,
+                &layer_hiddens,
+            )?;
+            guard.multiprocess_dflash_hiddens = None;
+        } else {
+            guard.multiprocess_dflash_hiddens = Some(layer_hiddens);
+        }
+        Ok(())
+    }
+
+    fn daemon_run_dflash_step2(
+        engine: &Arc<RwLock<Self>>,
+        anchor_token: u32,
+        seq_id: usize,
+        seq_len: usize,
+        verify_payload: &ForwardPayload,
+    ) -> Result<()> {
+        let (pipeline_entry, prepared) =
+            Self::prepare_daemon_payload_inputs(engine, verify_payload)?;
+        let anchor_layer_hiddens = {
+            let mut guard = engine.write();
+            guard.multiprocess_dflash_hiddens.take().ok_or_else(|| {
+                candle_core::Error::msg("missing daemon DFlash2 hidden state from step1")
+            })?
+        };
+
+        let mut pipeline_entry = pipeline_entry;
+        let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
+        let drafter = pipeline
+            .dflash_drafter
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::msg("daemon DFlash2 step2 requires a drafter"))?
+            .clone();
+        let run_result = (|| {
+            let projected_anchor = drafter.project_layer_hiddens(&anchor_layer_hiddens)?;
+            let cached_context = drafter.build_draft_context(seq_id)?;
+            if cached_context
+                .as_ref()
+                .map_or(true, |context| context.dim(0).unwrap_or(0) < seq_len)
+            {
+                drafter.append_context(seq_id, &projected_anchor)?;
+            }
+            let target_hidden = drafter
+                .build_draft_context(seq_id)?
+                .ok_or_else(|| candle_core::Error::msg("daemon DFlash2 context cache is empty"))?;
+            let draft_tokens = pipeline.dflash_draft_tokens(&target_hidden, anchor_token)?;
+            if draft_tokens.is_empty() {
+                return Ok(());
+            }
+
+            let mut verify_tokens = vec![anchor_token];
+            verify_tokens.extend_from_slice(&draft_tokens);
+            let verify_input =
+                Tensor::from_vec(verify_tokens, (draft_tokens.len() + 1,), pipeline.device())?;
+            let (all_logits, verify_layer_hiddens) = pipeline.forward_dflash_verify(
+                verify_input,
+                &prepared.positions,
+                Some(&cache_engine.get_kv_cache()),
+                &prepared.metadata,
+                drafter.target_layer_ids(),
+            )?;
+            let projected_verify_hidden = drafter.project_layer_hiddens(&verify_layer_hiddens)?;
+            let verify_result = crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
+                &all_logits,
+                &draft_tokens,
+            )?;
+            let commit_len = 1 + verify_result.num_accepted;
+            if verify_result.num_accepted < verify_result.num_proposed
+                && !pipeline.mtp_rollback_mamba(seq_id, commit_len)?
+            {
+                candle_core::bail!(
+                    "daemon DFlash2 failed to roll back mamba state for sequence {}",
+                    seq_id
+                );
+            }
+            drafter.append_verified_context(
+                seq_id,
+                &projected_verify_hidden,
+                verify_result.num_accepted,
+            )?;
+            Ok(())
+        })();
+
+        let mut guard = engine.write();
+        if guard.pipelines.insert(0, pipeline_entry).is_some() {
+            candle_core::bail!("pipeline for daemon rank 0 was replaced while detached");
+        }
+        run_result
     }
 
     #[cfg(feature = "flashinfer")]
@@ -743,6 +857,33 @@ impl LLMEngine {
             });
     }
 
+    fn broadcast_dflash_step1(&self, payload: &ForwardPayload) {
+        let mut dm = self.daemon_manager.write();
+        let _ = dm
+            .as_mut()
+            .unwrap()
+            .send_message(&MessageType::RunDFlashStep1(payload.clone()));
+    }
+
+    fn broadcast_dflash_step2(
+        &self,
+        anchor_token: u32,
+        seq_id: usize,
+        seq_len: usize,
+        verify_payload: &ForwardPayload,
+    ) {
+        let mut dm = self.daemon_manager.write();
+        let _ = dm
+            .as_mut()
+            .unwrap()
+            .send_message(&MessageType::RunDFlashStep2 {
+                anchor_token,
+                seq_id,
+                seq_len,
+                verify_payload: verify_payload.clone(),
+            });
+    }
+
     fn broadcast_finish_sequences(&self, seq_ids: &[usize]) {
         if seq_ids.is_empty() {
             return;
@@ -767,6 +908,9 @@ impl LLMEngine {
         };
         for &id in seq_ids {
             pipeline.release_sequence_state(id);
+            if let Some(drafter) = pipeline.dflash_drafter.as_ref() {
+                drafter.clear_seq_hidden(id);
+            }
         }
     }
 
@@ -824,7 +968,8 @@ impl LLMEngine {
             images,
             is_embedding,
             model_name,
-            mtp_context,
+            spec_context,
+            use_dflash,
         ) = {
             let mut guard = engine.write();
             let is_embedding = scheduled[0].is_embedding;
@@ -837,11 +982,25 @@ impl LLMEngine {
             let (pipeline, _) = guard.get_pipeline(0).unwrap();
             let device = pipeline.device();
             let model_name = pipeline.name().to_string();
-            let use_mtp = pipeline.has_mtp()
+            let use_dflash = pipeline.has_dflash()
                 && !is_prompt_request
                 && !is_embedding
                 && scheduled.len() == 1
                 && scheduled[0].sampling_params.mcp_mode.is_none();
+            let use_mtp = !use_dflash
+                && pipeline.has_mtp()
+                && !is_prompt_request
+                && !is_embedding
+                && scheduled.len() == 1
+                && scheduled[0].sampling_params.mcp_mode.is_none();
+            if pipeline.has_dflash() && is_prompt_request && !is_embedding {
+                let seq = Self::primary_sequence(&scheduled[0]);
+                if seq.deref().get_images().is_some() {
+                    candle_core::bail!(
+                        "DFlash2 prompt context collection does not support multimodal image batches"
+                    );
+                }
+            }
             #[cfg_attr(not(feature = "flashinfer"), allow(unused_mut))]
             let mut prepared = if is_prompt_request {
                 guard.prepare_prompt(scheduled, device, 0)
@@ -851,25 +1010,38 @@ impl LLMEngine {
 
             #[cfg(feature = "flashinfer")]
             if !prepared.metadata.is_prefill {
-                let use_cuda_graph = prepared
-                    .metadata
-                    .flashinfer_metadata
-                    .as_ref()
-                    .map(|fm| fm.use_cuda_graph)
-                    .unwrap_or(false);
-                if !use_cuda_graph {
-                    guard.ensure_flashinfer_decode_plan(
+                if use_dflash {
+                    guard.ensure_dflash_anchor_decode_plan(
                         0,
                         device,
                         prepared.tokens.dim(0)?,
                         &mut prepared.metadata,
                     )?;
+                } else {
+                    let use_cuda_graph = prepared
+                        .metadata
+                        .flashinfer_metadata
+                        .as_ref()
+                        .map(|fm| fm.use_cuda_graph)
+                        .unwrap_or(false);
+                    if !use_cuda_graph {
+                        guard.ensure_flashinfer_decode_plan(
+                            0,
+                            device,
+                            prepared.tokens.dim(0)?,
+                            &mut prepared.metadata,
+                        )?;
+                    }
                 }
             }
 
             let payload = Self::build_forward_payload_from_scheduler(&guard, scheduled, &prepared)?;
-            let mtp_context = if use_mtp {
-                guard.broadcast_mtp_step1(&payload);
+            let spec_context = if use_mtp || use_dflash {
+                if use_dflash {
+                    guard.broadcast_dflash_step1(&payload);
+                } else {
+                    guard.broadcast_mtp_step1(&payload);
+                }
                 let seq = Self::primary_sequence(&scheduled[0]);
                 let seq_id = seq.deref().get_id();
                 let seq_len = seq.deref().get_len();
@@ -882,7 +1054,16 @@ impl LLMEngine {
                     .iter()
                     .map(|block| block.deref_mut().block_id as u32)
                     .collect::<Vec<_>>();
-                let verify_len = pipeline.mtp_num_speculative + 1;
+                let verify_len = if use_dflash {
+                    pipeline
+                        .dflash_drafter
+                        .as_ref()
+                        .expect("has_dflash requires a loaded drafter")
+                        .num_speculative_tokens
+                        + 1
+                } else {
+                    pipeline.mtp_num_speculative + 1
+                };
                 let slot_mappings = Self::compute_mtp_slot_mappings(
                     &block_table,
                     seq_len,
@@ -924,7 +1105,11 @@ impl LLMEngine {
                     verify_payload,
                 ))
             } else {
-                guard.broadcast_forward(&payload);
+                if pipeline.has_dflash() && is_prompt_request && !is_embedding {
+                    guard.broadcast_dflash_step1(&payload);
+                } else {
+                    guard.broadcast_forward(&payload);
+                }
                 None
             };
 
@@ -981,7 +1166,8 @@ impl LLMEngine {
                 images,
                 is_embedding,
                 model_name,
-                mtp_context,
+                spec_context,
+                use_dflash,
             )
         };
 
@@ -989,8 +1175,142 @@ impl LLMEngine {
         let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
         let mut mtp_results = None;
         let run_result: Result<Tensor> = (|| {
-            if let Some((seq_id, seq_len, verify_positions, verify_metadata, verify_payload)) =
-                mtp_context
+            if use_dflash {
+                let (seq_id, seq_len, verify_positions, verify_metadata, verify_payload) =
+                    spec_context
+                        .ok_or_else(|| candle_core::Error::msg("missing DFlash2 verify context"))?;
+                let drafter = pipeline
+                    .dflash_drafter
+                    .as_ref()
+                    .ok_or_else(|| candle_core::Error::msg("missing DFlash2 drafter"))?
+                    .clone();
+                let (anchor_logits, anchor_layer_hiddens) = pipeline.forward_collecting_layers(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                    drafter.target_layer_ids(),
+                )?;
+                let anchor_result = pipeline.sample(&anchor_logits, scheduled)?;
+                match anchor_result.first() {
+                    Some(Either::Left(anchor_logprobs)) => {
+                        let anchor_token = anchor_logprobs.token;
+                        engine.read().broadcast_dflash_step2(
+                            anchor_token,
+                            seq_id,
+                            seq_len,
+                            &verify_payload,
+                        );
+                        let projected_anchor =
+                            drafter.project_layer_hiddens(&anchor_layer_hiddens)?;
+                        let cached_context = drafter.build_draft_context(seq_id)?;
+                        if cached_context
+                            .as_ref()
+                            .map_or(true, |context| context.dim(0).unwrap_or(0) < seq_len)
+                        {
+                            drafter.append_context(seq_id, &projected_anchor)?;
+                        }
+                        let target_hidden =
+                            drafter.build_draft_context(seq_id)?.ok_or_else(|| {
+                                candle_core::Error::msg("DFlash2 context cache is empty")
+                            })?;
+                        let draft_tokens =
+                            pipeline.dflash_draft_tokens(&target_hidden, anchor_token)?;
+                        if draft_tokens.is_empty() {
+                            mtp_results = Some(anchor_result);
+                            Ok(Tensor::zeros((1, 1), DType::F32, pipeline.device())?)
+                        } else {
+                            let mut verify_tokens = vec![anchor_token];
+                            verify_tokens.extend_from_slice(&draft_tokens);
+                            let verify_input = Tensor::from_vec(
+                                verify_tokens,
+                                (draft_tokens.len() + 1,),
+                                pipeline.device(),
+                            )?;
+                            let (all_logits, verify_layer_hiddens) = pipeline
+                                .forward_dflash_verify(
+                                    verify_input,
+                                    &verify_positions,
+                                    Some(&cache_engine.get_kv_cache()),
+                                    &verify_metadata,
+                                    drafter.target_layer_ids(),
+                                )?;
+                            let projected_verify_hidden =
+                                drafter.project_layer_hiddens(&verify_layer_hiddens)?;
+                            let verify_result =
+                                crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
+                                    &all_logits,
+                                    &draft_tokens,
+                                )?;
+                            crate::openai::models::qwen3_5_mtp::dflash_stats_update(
+                                verify_result.num_proposed,
+                                verify_result.num_accepted,
+                            );
+                            let dflash_steps =
+                                crate::openai::models::qwen3_5_mtp::DFLASH_TOTAL_STEPS
+                                    .load(std::sync::atomic::Ordering::Relaxed);
+                            if dflash_steps > 0
+                                && dflash_steps
+                                    % crate::openai::models::qwen3_5_mtp::MTP_STATS_LOG_INTERVAL_STEPS
+                                    == 0
+                            {
+                                tracing::info!(
+                                    "DFlash step={} {}",
+                                    dflash_steps,
+                                    crate::openai::models::qwen3_5_mtp::dflash_stats_summary()
+                                );
+                            }
+                            let commit_len = 1 + verify_result.num_accepted;
+                            if verify_result.num_accepted < verify_result.num_proposed
+                                && !pipeline.mtp_rollback_mamba(seq_id, commit_len)?
+                            {
+                                candle_core::bail!(
+                                    "DFlash2 failed to roll back mamba state for sequence {}",
+                                    seq_id
+                                );
+                            }
+                            drafter.append_verified_context(
+                                seq_id,
+                                &projected_verify_hidden,
+                                verify_result.num_accepted,
+                            )?;
+
+                            let mut results = anchor_result;
+                            let mut extra_tokens = verify_result.accepted_tokens.clone();
+                            extra_tokens.push(verify_result.continuation_token);
+                            let seq = Self::primary_sequence(scheduled.front().unwrap());
+                            let generated_before_anchor = seq
+                                .deref()
+                                .get_len()
+                                .saturating_sub(seq.deref().get_prompt_len());
+                            let remaining_after_anchor = scheduled
+                                .front()
+                                .unwrap()
+                                .sampling_params
+                                .max_tokens
+                                .saturating_sub(generated_before_anchor + 1);
+                            extra_tokens.truncate(remaining_after_anchor);
+                            if !extra_tokens.is_empty() {
+                                let mut extra_results =
+                                    pipeline.tokens_to_results(&extra_tokens, scheduled)?;
+                                results.append(&mut extra_results);
+                            }
+                            mtp_results = Some(results);
+                            Ok(all_logits)
+                        }
+                    }
+                    _ => {
+                        mtp_results = Some(anchor_result);
+                        Ok(Tensor::zeros((1, 1), DType::F32, pipeline.device())?)
+                    }
+                }
+            } else if let Some((
+                seq_id,
+                seq_len,
+                verify_positions,
+                verify_metadata,
+                verify_payload,
+            )) = spec_context
             {
                 let logits = pipeline.forward(
                     tokens,
@@ -1046,7 +1366,7 @@ impl LLMEngine {
                             let all_logits = if use_mtp_graph {
                                 #[cfg(all(feature = "cuda", feature = "graph"))]
                                 {
-                                    pipeline.capturer.replay_mtp(
+                                    pipeline.replay_mtp_graph(
                                         &verify_input,
                                         &verify_positions,
                                         &verify_metadata,
@@ -1126,6 +1446,21 @@ impl LLMEngine {
                         Ok(Tensor::zeros((1, 1), DType::F32, pipeline.device())?)
                     }
                 }
+            } else if pipeline.has_dflash() && metadata.is_prefill && !is_embedding {
+                let drafter = pipeline
+                    .dflash_drafter
+                    .as_ref()
+                    .ok_or_else(|| candle_core::Error::msg("missing DFlash2 drafter"))?
+                    .clone();
+                let (logits, layer_hiddens) = pipeline.forward_collecting_layers(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                    drafter.target_layer_ids(),
+                )?;
+                Self::append_dflash_prompt_context(pipeline, &metadata, &layer_hiddens)?;
+                Ok(logits)
             } else if is_embedding {
                 pipeline.forward_embedding(
                     tokens,
@@ -1197,6 +1532,27 @@ impl LLMEngine {
                         &verify_payload,
                     ) {
                         tracing::error!("Daemon MTP step2 failed: {:?}", e);
+                    }
+                }
+                Ok(MessageType::RunDFlashStep1(payload)) => {
+                    if let Err(e) = Self::daemon_run_dflash_step1(&engine, &payload) {
+                        tracing::error!("Daemon DFlash2 step1 failed: {:?}", e);
+                    }
+                }
+                Ok(MessageType::RunDFlashStep2 {
+                    anchor_token,
+                    seq_id,
+                    seq_len,
+                    verify_payload,
+                }) => {
+                    if let Err(e) = Self::daemon_run_dflash_step2(
+                        &engine,
+                        anchor_token,
+                        seq_id,
+                        seq_len,
+                        &verify_payload,
+                    ) {
+                        tracing::error!("Daemon DFlash2 step2 failed: {:?}", e);
                     }
                 }
                 Ok(MessageType::FinishSequences(seq_ids)) => {

@@ -41,6 +41,8 @@ pub struct Attention {
     attn_output_gate: bool,
     full_dim_qk_norm: bool,
     qk_l2_norm: bool,
+    promote_qk_to_f32: bool,
+    q_norm_dtype: DType,
     v_norm_eps: Option<f64>,
 }
 
@@ -536,18 +538,27 @@ impl Attention {
             &cfg.quantization_config,
         )?;
 
+        // Match xInfer's NormX policy: quantized/F16 checkpoints evaluate
+        // q/k normalization in F32, while ordinary BF16 checkpoints keep the
+        // model dtype. The surrounding q/k path converts back after the norm.
+        let q_norm_dtype =
+            if cfg.quantization_config.is_some() || cfg.isq_quant.is_some() || cfg.is_f16_mode {
+                DType::F32
+            } else {
+                vb.dtype()
+            };
         let q_norm_perhead = rms_norm_x(
             head_dim,
             cfg.rms_norm_eps,
             vb.pp("q_norm"),
-            DType::F32,
+            q_norm_dtype,
             qk_norm_add_one,
         );
         let k_norm_perhead = rms_norm_x(
             head_dim,
             cfg.rms_norm_eps,
             vb.pp("k_norm"),
-            DType::F32,
+            q_norm_dtype,
             qk_norm_add_one,
         );
 
@@ -564,7 +575,7 @@ impl Attention {
                 num_heads * head_dim,
                 cfg.rms_norm_eps,
                 vb.pp("q_norm"),
-                DType::F32,
+                q_norm_dtype,
                 qk_norm_add_one,
                 q_shard,
             );
@@ -572,7 +583,7 @@ impl Attention {
                 num_kv_heads * head_dim,
                 cfg.rms_norm_eps,
                 vb.pp("k_norm"),
-                DType::F32,
+                q_norm_dtype,
                 qk_norm_add_one,
                 kv_shard,
             );
@@ -617,8 +628,79 @@ impl Attention {
             attn_output_gate,
             full_dim_qk_norm,
             qk_l2_norm,
+            promote_qk_to_f32: cfg.higher_precision_required() || qk_l2_norm,
+            q_norm_dtype,
             v_norm_eps,
         })
+    }
+
+    /// Prepare q/k for RoPE using the same precision contract as xInfer.
+    fn prepare_qk_for_rope(
+        &self,
+        q: Tensor,
+        k: Tensor,
+        seq_len: usize,
+    ) -> Result<(Tensor, Tensor)> {
+        let (q, k) = if self.promote_qk_to_f32 && q.dtype() != DType::F32 {
+            (q.to_dtype(DType::F32)?, k.to_dtype(DType::F32)?)
+        } else {
+            (q, k)
+        };
+
+        let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
+            let input_q_dtype = q.dtype();
+            let input_k_dtype = k.dtype();
+            let q = if input_q_dtype != self.q_norm_dtype {
+                q.to_dtype(self.q_norm_dtype)?
+            } else {
+                q
+            };
+            let k = if input_k_dtype != self.q_norm_dtype {
+                k.to_dtype(self.q_norm_dtype)?
+            } else {
+                k
+            };
+            let (q, k) = if self.full_dim_qk_norm {
+                let q_2d = q.reshape((seq_len, self.num_heads * self.head_dim))?;
+                let k_2d = k.reshape((seq_len, self.num_kv_heads * self.head_dim))?;
+                (
+                    q_norm
+                        .forward(&q_2d)?
+                        .reshape((seq_len, self.num_heads, self.head_dim))?,
+                    k_norm
+                        .forward(&k_2d)?
+                        .reshape((seq_len, self.num_kv_heads, self.head_dim))?,
+                )
+            } else {
+                let q_flat = q.flatten(0, 1)?;
+                let k_flat = k.flatten(0, 1)?;
+                (
+                    q_norm
+                        .forward(&q_flat)?
+                        .reshape((seq_len, self.num_heads, self.head_dim))?,
+                    k_norm.forward(&k_flat)?.reshape((
+                        seq_len,
+                        self.num_kv_heads,
+                        self.head_dim,
+                    ))?,
+                )
+            };
+            let q = if q.dtype() != input_q_dtype {
+                q.to_dtype(input_q_dtype)?
+            } else {
+                q
+            };
+            let k = if k.dtype() != input_k_dtype {
+                k.to_dtype(input_k_dtype)?
+            } else {
+                k
+            };
+            (q, k)
+        } else {
+            (q, k)
+        };
+
+        Ok((q, k))
     }
 
     pub fn forward_ext(
@@ -680,36 +762,7 @@ impl Attention {
         let k = key_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
         let v = value_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
 
-        let (q, k) = if q.dtype() != DType::F32 {
-            (q.to_dtype(DType::F32)?, k.to_dtype(DType::F32)?)
-        } else {
-            (q, k)
-        };
-
-        let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
-            if self.full_dim_qk_norm {
-                let q_2d = q.reshape((seq_len, self.num_heads * self.head_dim))?;
-                let k_2d = k.reshape((seq_len, self.num_kv_heads * self.head_dim))?;
-                let q_2d = q_norm.forward(&q_2d)?;
-                let k_2d = k_norm.forward(&k_2d)?;
-                let q = q_2d.reshape((seq_len, self.num_heads, self.head_dim))?;
-                let k = k_2d.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
-                (q, k)
-            } else {
-                let q_flat = q.flatten(0, 1)?;
-                let k_flat = k.flatten(0, 1)?;
-
-                let q_flat = q_norm.forward(&q_flat)?;
-                let k_flat = k_norm.forward(&k_flat)?;
-
-                let q = q_flat.reshape((seq_len, self.num_heads, self.head_dim))?;
-                let k = k_flat.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
-
-                (q, k)
-            }
-        } else {
-            (q, k)
-        };
+        let (q, k) = self.prepare_qk_for_rope(q, k, seq_len)?;
 
         let (mut q, mut k) = if let Some(rotary_emb) = rotary_emb {
             rotary_emb.apply_rotary_emb(&q, &k, input_positions)?
@@ -857,41 +910,7 @@ impl Attention {
         let k = key_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
         let v = value_states.reshape((seq_len, self.num_kv_heads, self.head_dim))?;
 
-        let (q, k) = if q.dtype() != DType::F32 {
-            (q.to_dtype(DType::F32)?, k.to_dtype(DType::F32)?)
-        } else {
-            (q, k)
-        };
-
-        let (q, k) = if let (Some(q_norm), Some(k_norm)) = (&self.q_norm, &self.k_norm) {
-            if self.full_dim_qk_norm {
-                let q_2d = q.reshape((seq_len, self.num_heads * self.head_dim))?;
-                let k_2d = k.reshape((seq_len, self.num_kv_heads * self.head_dim))?;
-                (
-                    q_norm
-                        .forward(&q_2d)?
-                        .reshape((seq_len, self.num_heads, self.head_dim))?,
-                    k_norm
-                        .forward(&k_2d)?
-                        .reshape((seq_len, self.num_kv_heads, self.head_dim))?,
-                )
-            } else {
-                let q_flat = q.flatten(0, 1)?;
-                let k_flat = k.flatten(0, 1)?;
-                (
-                    q_norm
-                        .forward(&q_flat)?
-                        .reshape((seq_len, self.num_heads, self.head_dim))?,
-                    k_norm.forward(&k_flat)?.reshape((
-                        seq_len,
-                        self.num_kv_heads,
-                        self.head_dim,
-                    ))?,
-                )
-            }
-        } else {
-            (q, k)
-        };
+        let (q, k) = self.prepare_qk_for_rope(q, k, seq_len)?;
 
         let rope_dtype = rotary_emb.0.cos.dtype();
         let q = if q.dtype() != rope_dtype {

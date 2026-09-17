@@ -497,8 +497,8 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
         device: &Device,
         kv_caches: Option<&Vec<(Tensor, Tensor)>>,
     ) -> Result<()> {
-        let _fp8_domain = attention_rs::fp8_linear::set_fp8_execution_domain(
-            attention_rs::fp8_linear::Fp8ExecutionDomain::DecodeGraph,
+        let _workspace_domain = attention_rs::set_graph_workspace_domain(
+            attention_rs::GraphWorkspaceDomain::DecodeGraph,
         );
         let _prefill_guard = crate::openai::models::linear::set_linear_is_prefill(false);
         self.device = Some(device.clone());
@@ -696,9 +696,8 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
             return Ok(());
         }
 
-        let _fp8_domain = attention_rs::fp8_linear::set_fp8_execution_domain(
-            attention_rs::fp8_linear::Fp8ExecutionDomain::MtpGraph,
-        );
+        let _workspace_domain =
+            attention_rs::set_graph_workspace_domain(attention_rs::GraphWorkspaceDomain::MtpGraph);
         let _prefill_guard = crate::openai::models::linear::set_linear_is_prefill(true);
         self.device = Some(device.clone());
         let verify_len = mtp_num_speculative + 1;
@@ -900,6 +899,13 @@ impl<M: CudaGraphModule> GraphCapturer<M> {
         positions: &Tensor,
         input_metadata: &InputMetadata,
     ) -> Result<Tensor> {
+        // Graph capture and replay must use the same attention workspace
+        // domain.  In particular, MTP/DFlash verification is a prefill-style
+        // graph and must not reuse the normal decode graph's FP8/workspace
+        // buffers.  Keep this guard local to replay so every caller gets the
+        // same behavior.
+        let _workspace_domain =
+            attention_rs::set_graph_workspace_domain(attention_rs::GraphWorkspaceDomain::MtpGraph);
         let verify_len = input_ids.dim(0)?;
         let max_num_blocks = (self.max_model_len + self.block_size - 1) / self.block_size;
 

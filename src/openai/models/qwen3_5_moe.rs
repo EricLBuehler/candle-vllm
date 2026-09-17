@@ -418,6 +418,8 @@ pub struct Qwen3_5MoE {
     cfg: Config,
     vocab_size: usize,
     mtp_hidden_buffer: std::sync::Mutex<Option<Tensor>>,
+    pub dflash_verify_hidden_buffers: std::sync::Mutex<Option<Vec<Tensor>>>,
+    pub dflash_target_layer_ids: std::sync::Mutex<Vec<usize>>,
 }
 
 impl Qwen3_5MoE {
@@ -494,7 +496,17 @@ impl Qwen3_5MoE {
         };
         let tie_word_embeddings = text_backbone.tie_word_embeddings;
         let embed_tokens = embedding(cfg.vocab_size, cfg.hidden_size, vb_m.pp("embed_tokens"))?;
-        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(DType::F32, cfg, device, true)?);
+        let rotary_dtype = if cfg.higher_precision_required() {
+            DType::F32
+        } else {
+            dtype
+        };
+        let rotary_emb = Arc::new(ScalingRotaryEmbedding::new(
+            rotary_dtype,
+            cfg,
+            device,
+            true,
+        )?);
 
         let hybrid = resolve_qwen3_hybrid_config(cfg);
         let layer_types = &hybrid.layer_types;
@@ -614,6 +626,8 @@ impl Qwen3_5MoE {
             cfg: cfg.clone(),
             vocab_size: cfg.vocab_size,
             mtp_hidden_buffer: std::sync::Mutex::new(None),
+            dflash_verify_hidden_buffers: std::sync::Mutex::new(None),
+            dflash_target_layer_ids: std::sync::Mutex::new(Vec::new()),
         })
     }
 
@@ -648,10 +662,73 @@ impl Qwen3_5MoE {
         Ok(())
     }
 
+    pub fn preallocate_dflash_verify_buffers(
+        &self,
+        target_layer_ids: &[usize],
+        max_verify_len: usize,
+    ) -> Result<()> {
+        let mut buffers = Vec::with_capacity(target_layer_ids.len());
+        for _ in target_layer_ids {
+            buffers.push(Tensor::zeros(
+                (max_verify_len, self.cfg.hidden_size),
+                self.dtype,
+                &self.device,
+            )?);
+        }
+        if let Ok(mut guard) = self.dflash_verify_hidden_buffers.lock() {
+            *guard = Some(buffers);
+        }
+        if let Ok(mut guard) = self.dflash_target_layer_ids.lock() {
+            *guard = target_layer_ids.to_vec();
+        }
+        Ok(())
+    }
+
+    pub fn take_dflash_verify_hiddens(&self, num_tokens: usize) -> Option<Vec<Tensor>> {
+        let ids = self.dflash_target_layer_ids.lock().ok()?;
+        let buffers = self.dflash_verify_hidden_buffers.lock().ok()?;
+        let buffers = buffers.as_ref()?;
+        if num_tokens == 0 || buffers.len() != ids.len() {
+            return None;
+        }
+        let mut output = Vec::with_capacity(buffers.len());
+        for buffer in buffers.iter() {
+            if num_tokens > buffer.dim(0).ok()? {
+                return None;
+            }
+            output.push(buffer.narrow(0, 0, num_tokens).ok()?.contiguous().ok()?);
+        }
+        Some(output)
+    }
+
     pub fn forward_lm_head(&self, hidden: &Tensor) -> Result<Tensor> {
         self.lm_head
             .forward(&hidden.to_dtype(self.dtype)?)?
             .to_dtype(DType::F32)
+    }
+
+    pub fn forward_collecting_layers(
+        &self,
+        input_ids: &Tensor,
+        input_positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        target_layer_ids: &[usize],
+    ) -> Result<(Tensor, Vec<Tensor>)> {
+        let mut collected_layers = None;
+        let logits = self.forward_inner(
+            input_ids,
+            input_positions,
+            kv_caches,
+            input_metadata,
+            false,
+            &None,
+            &None,
+            false,
+            Some(target_layer_ids),
+            &mut collected_layers,
+        )?;
+        Ok((logits, collected_layers.unwrap_or_default()))
     }
 
     pub fn forward_with_hidden(
@@ -670,6 +747,8 @@ impl Qwen3_5MoE {
             &None,
             &None,
             true,
+            None,
+            &mut None,
         )?;
         let logits = self.forward_lm_head(&hidden)?;
         Ok((logits, hidden))
@@ -691,6 +770,8 @@ impl Qwen3_5MoE {
             &None,
             &None,
             false,
+            None,
+            &mut None,
         )
     }
 
@@ -710,6 +791,8 @@ impl Qwen3_5MoE {
             &None,
             &None,
             true,
+            None,
+            &mut None,
         )
     }
 
@@ -723,6 +806,8 @@ impl Qwen3_5MoE {
         visual_pos_masks: &Option<Tensor>,
         deepstack_visual_embeds: &Option<Vec<Tensor>>,
         return_hidden: bool,
+        collect_layer_ids: Option<&[usize]>,
+        collected_layers: &mut Option<Vec<Tensor>>,
     ) -> Result<Tensor> {
         let seqlens = resolve_input_seqlens(input_metadata)?;
 
@@ -740,6 +825,9 @@ impl Qwen3_5MoE {
         } else {
             self.embed_forward(input_ids)?
         };
+        if collect_layer_ids.is_some() {
+            *collected_layers = Some(Vec::new());
+        }
 
         let mut mamba_cache = self.mamba_cache.write();
         let seq_slots = resolve_mamba_seq_slots(
@@ -773,12 +861,55 @@ impl Qwen3_5MoE {
                 &mut mamba_cache,
                 &seq_slots,
             )?;
+            if let Some(layer_ids) = collect_layer_ids {
+                if layer_ids.contains(&idx) {
+                    if let Some(layers) = collected_layers.as_mut() {
+                        layers.push(xs.clone());
+                    }
+                }
+            }
+            if input_metadata.is_mtp_verify {
+                if let (Ok(ids), Ok(buffers)) = (
+                    self.dflash_target_layer_ids.lock(),
+                    self.dflash_verify_hidden_buffers.lock(),
+                ) {
+                    if let Some(buffers) = buffers.as_ref() {
+                        for (buffer_idx, &layer_id) in ids.iter().enumerate() {
+                            if layer_id == idx {
+                                if let Some(buffer) = buffers.get(buffer_idx) {
+                                    let rows = xs.dim(0)?;
+                                    if rows <= buffer.dim(0)? {
+                                        buffer
+                                            .narrow(0, 0, rows)?
+                                            .copy_(&xs.to_dtype(buffer.dtype())?, 0)?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if let (Some(pos_mask), Some(deepstacks)) = (visual_pos_masks, deepstack_visual_embeds)
             {
                 if idx < deepstacks.len() {
                     xs = xs.apply_deep_stack(pos_mask, &deepstacks[idx])?;
                 }
             }
+        }
+
+        if collect_layer_ids.is_some() {
+            let logits_xs = if !seqlens.is_empty() {
+                let indices: Vec<_> = seqlens.iter().map(|x| x - 1).collect();
+                xs.index_select(
+                    &Tensor::from_vec(indices, (seqlens.len(),), xs.device())?,
+                    0,
+                )?
+            } else {
+                xs
+            };
+            let logits_xs = self.norm.forward(&logits_xs)?;
+            let logits = self.lm_head.forward(&logits_xs.to_dtype(self.dtype)?)?;
+            return logits.to_dtype(DType::F32);
         }
 
         if !seqlens.is_empty() && !return_hidden {
@@ -823,6 +954,8 @@ impl Qwen3_5MoE {
             visual_pos_masks,
             deepstack_visual_embeds,
             false,
+            None,
+            &mut None,
         )
     }
 

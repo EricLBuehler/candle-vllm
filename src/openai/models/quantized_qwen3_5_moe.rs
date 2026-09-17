@@ -273,6 +273,8 @@ impl GGUFQWen3_5MoE {
             kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json,
             is_f16_mode: false,
+            mtp_enabled: false,
+            mtp_max_verify_tokens: 0,
         }
     }
 
