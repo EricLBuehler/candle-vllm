@@ -1,5 +1,6 @@
 use std::fmt;
 pub mod deepseek;
+pub mod dflash;
 pub mod gemma;
 pub mod gemma3;
 pub mod gemma3_vl;
@@ -698,6 +699,14 @@ pub struct Config {
     pub extra_config_json: Option<String>,
     #[serde(default)]
     pub is_f16_mode: bool,
+    /// Enables allocation of the hybrid GDN snapshot buffers used by MTP
+    /// and external DFlash2 verification.
+    #[serde(skip)]
+    pub mtp_enabled: bool,
+    /// Maximum number of packed verify tokens that the GDN snapshot buffers
+    /// must hold (`max_num_seqs * (speculative_tokens + 1)`).
+    #[serde(skip)]
+    pub mtp_max_verify_tokens: usize,
 }
 
 impl Config {
@@ -988,6 +997,8 @@ mod tests {
             kvcache_dtype: KvCacheDtype::Auto,
             extra_config_json: None,
             is_f16_mode: false,
+            mtp_enabled: false,
+            mtp_max_verify_tokens: 0,
         }
     }
 

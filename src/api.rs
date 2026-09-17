@@ -218,6 +218,7 @@ impl EngineBuilder {
         let (pipelines, _) = loader
             .load_model(
                 paths,
+                None,
                 dtype,
                 kv_cache_dtype,
                 gguf,

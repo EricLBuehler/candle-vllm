@@ -123,9 +123,51 @@ pub struct LLMEngine {
     conversation: DefaultConversation,
     image_config: Option<ImageProcessConfig>,
     multiprocess_mtp_hidden: Option<Tensor>,
+    multiprocess_dflash_hiddens: Option<Vec<Tensor>>,
 }
 
 impl LLMEngine {
+    /// Mark prompt sequences whose Mamba state is still resident in the active
+    /// model cache.  Chunked-prefill continuations keep their slot while they
+    /// move through the waiting queue, so they do not need a prefix-cache hash
+    /// or a snapshot restore.  This is especially important for DFlash, which
+    /// disables KV prefix reuse because its projected draft context is built
+    /// from every prompt chunk.
+    fn mark_resident_mamba_prefix_states(
+        &mut self,
+        groups: &VecDeque<Arc<SequenceGroup>>,
+        rank: usize,
+    ) {
+        if groups.is_empty()
+            || !self
+                .scheduler
+                .block_engine
+                .requires_mamba_prefix_snapshots()
+        {
+            return;
+        }
+
+        let resident_ids = {
+            let (pipeline, _) = self
+                .get_pipeline(rank)
+                .expect("pipeline must exist while checking Mamba state");
+            groups
+                .iter()
+                .flat_map(Self::ordered_group_sequences)
+                .filter_map(|seq| {
+                    let seq_id = seq.deref().get_id();
+                    pipeline
+                        .has_mamba_slot_for_sequence(seq_id)
+                        .then_some(seq_id)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        for seq_id in resident_ids {
+            self.scheduler.mark_mamba_restored(seq_id);
+        }
+    }
+
     #[cfg(feature = "nccl")]
     pub(crate) fn planned_prompt_cache_statuses(
         &mut self,
@@ -140,6 +182,7 @@ impl LLMEngine {
             .scheduler
             .block_engine
             .requires_mamba_prefix_snapshots();
+        self.mark_resident_mamba_prefix_states(scheduled, rank);
         let restore_plans = self.scheduler.prepare_prompt_mamba_restores(scheduled);
         let restore_by_seq = restore_plans
             .into_iter()
@@ -399,29 +442,8 @@ impl LLMEngine {
         groups: &VecDeque<Arc<SequenceGroup>>,
         rank: usize,
     ) -> Result<()> {
-        let mut restore_plans = self.scheduler.prepare_prompt_mamba_restores(groups);
-        if restore_plans.is_empty() {
-            return Ok(());
-        }
-
-        // Chunked-prefill continuations keep their live mamba slot and state.
-        // Skip snapshot restore for those sequences and only restore requests
-        // that need their prefix state materialized into a fresh slot.
-        let resident_seq_ids = {
-            let (pipeline, _) = self.get_pipeline(rank).unwrap();
-            restore_plans
-                .iter()
-                .filter_map(|plan| {
-                    pipeline
-                        .has_mamba_slot_for_sequence(plan.seq_id)
-                        .then_some(plan.seq_id)
-                })
-                .collect::<std::collections::HashSet<_>>()
-        };
-        for seq_id in &resident_seq_ids {
-            self.scheduler.mark_mamba_restored(*seq_id);
-        }
-        restore_plans.retain(|plan| !resident_seq_ids.contains(&plan.seq_id));
+        self.mark_resident_mamba_prefix_states(groups, rank);
+        let restore_plans = self.scheduler.prepare_prompt_mamba_restores(groups);
         if restore_plans.is_empty() {
             return Ok(());
         }
@@ -516,6 +538,9 @@ impl LLMEngine {
         for (pipeline, _) in self.pipelines.values() {
             for &seq_id in seq_ids {
                 pipeline.release_sequence_state(seq_id);
+                if let Some(drafter) = pipeline.dflash_drafter.as_ref() {
+                    drafter.clear_seq_hidden(seq_id);
+                }
             }
         }
 
@@ -539,6 +564,7 @@ impl LLMEngine {
             return Ok(0);
         }
 
+        self.mark_resident_mamba_prefix_states(scheduled, rank);
         let restore_plans = self.scheduler.prepare_prompt_mamba_restores(scheduled);
         if restore_plans.is_empty() {
             return Ok(0);
@@ -815,6 +841,16 @@ impl LLMEngine {
                 pipeline
                     .preallocate_mtp_hidden_buffer(scheduler_config.max_num_parallel_reqs.max(8))?;
             }
+            if pipeline.has_dflash() {
+                let drafter = pipeline
+                    .dflash_drafter
+                    .as_ref()
+                    .expect("has_dflash requires a loaded drafter");
+                pipeline.preallocate_dflash_verify_buffers(
+                    drafter.target_layer_ids(),
+                    drafter.num_speculative_tokens + 1,
+                )?;
+            }
             pipeline.set_mamba_prefix_cache_capacity(mamba_prefix_capacity);
             #[cfg(all(feature = "cuda", feature = "graph"))]
             {
@@ -872,6 +908,7 @@ impl LLMEngine {
             conversation,
             image_config,
             multiprocess_mtp_hidden: None,
+            multiprocess_dflash_hiddens: None,
         }));
         {
             let mut e = engine.write();
@@ -1347,6 +1384,25 @@ impl LLMEngine {
         Ok(())
     }
 
+    /// Layer-collecting DFlash anchor forwards are eager model calls. They
+    /// cannot consume the decode CUDA-graph metadata produced for the normal
+    /// path, so give them a regular FlashInfer decode plan explicitly.
+    #[cfg(feature = "flashinfer")]
+    fn ensure_dflash_anchor_decode_plan(
+        &self,
+        rank: usize,
+        device: &candle_core::Device,
+        input_batch: usize,
+        metadata: &mut InputMetadata,
+    ) -> Result<()> {
+        if let Some(fm) = metadata.flashinfer_metadata.as_mut() {
+            fm.use_cuda_graph = false;
+            fm.decode_plan_info = None;
+            fm.mla_decode_plan_info = None;
+        }
+        self.ensure_flashinfer_decode_plan(rank, device, input_batch, metadata)
+    }
+
     pub fn generate_once(
         engine: Arc<RwLock<Self>>,
         rank: usize,
@@ -1645,16 +1701,25 @@ impl LLMEngine {
         }
         self.execute_scheduler_ops(&scheduler_outputs, rank)?;
         if let Some((pipeline, _)) = self.get_pipeline(rank) {
-            if pipeline.has_mtp() && scheduler_outputs.scheduled.len() == 1 {
+            if (pipeline.has_mtp() || pipeline.has_dflash())
+                && scheduler_outputs.scheduled.len() == 1
+            {
                 let group = scheduler_outputs.scheduled.front().unwrap();
                 let seq = Self::primary_sequence(group);
                 if !seq.deref().is_prompt() {
+                    let extra_tokens = if pipeline.has_dflash() {
+                        pipeline
+                            .dflash_drafter
+                            .as_ref()
+                            .expect("has_dflash requires a loaded drafter")
+                            .num_speculative_tokens
+                            + 1
+                    } else {
+                        pipeline.mtp_num_speculative + 1
+                    };
                     self.scheduler
                         .block_engine
-                        .reserve_additional_token_slots_for_seq(
-                            &seq,
-                            pipeline.mtp_num_speculative + 1,
-                        );
+                        .reserve_additional_token_slots_for_seq(&seq, extra_tokens);
                 }
             }
         }
@@ -1760,22 +1825,33 @@ impl LLMEngine {
             let last_len_host = vec![last_page_tokens as u32];
             let kv_len_arr_host = vec![total_kv_len];
             let q_cu_seqlens_host = vec![0u32, q_len as u32];
-            let prefill_plan_info = Some(attention_rs::flashinfer::prefill_plan(
-                device,
-                &q_cu_seqlens_host,
-                &indptr_host,
-                &kv_len_arr_host,
-                q_len as u32,
-                1,
-                params.num_qo_heads,
-                params.num_kv_heads,
-                params.head_dim,
-                params.page_size,
-                params.out_dtype,
-                None,
-                Some(params.kv_dtype),
-                false,
-            )?);
+            #[cfg(all(feature = "cuda", feature = "graph"))]
+            let use_cuda_graph = self
+                .get_pipeline(rank)
+                .map(|(pipeline, _)| pipeline.is_mtp_graph_captured(q_len))
+                .unwrap_or(false);
+            #[cfg(not(all(feature = "cuda", feature = "graph")))]
+            let use_cuda_graph = false;
+            let prefill_plan_info = if use_cuda_graph {
+                None
+            } else {
+                Some(attention_rs::flashinfer::prefill_plan(
+                    device,
+                    &q_cu_seqlens_host,
+                    &indptr_host,
+                    &kv_len_arr_host,
+                    q_len as u32,
+                    1,
+                    params.num_qo_heads,
+                    params.num_kv_heads,
+                    params.head_dim,
+                    params.page_size,
+                    params.out_dtype,
+                    None,
+                    Some(params.kv_dtype),
+                    false,
+                )?)
+            };
 
             Some(attention_rs::FlashInferMetadata {
                 indptr: Tensor::from_vec(indptr_host.clone(), (2,), device)?,
@@ -1791,7 +1867,7 @@ impl LLMEngine {
                     (q_len,),
                     device,
                 )?),
-                use_cuda_graph: false,
+                use_cuda_graph,
                 decode_plan_info: None,
                 prefill_plan_info,
                 mla_decode_plan_info: None,
@@ -1814,18 +1890,66 @@ impl LLMEngine {
                 (1, block_table.len()),
                 device,
             )?),
-            block_tables_host: None,
-            context_lens_host: None,
+            block_tables_host: Some(vec![block_table.to_vec()]),
+            context_lens_host: Some(vec![total_kv_len]),
             context_lens: Some(Tensor::from_vec(vec![total_kv_len], (1,), device)?),
             cu_seqlens_q: Some(Tensor::from_vec(vec![0u32, q_len as u32], (2,), device)?),
             cu_seqlens_k: Some(Tensor::from_vec(vec![0u32, total_kv_len], (2,), device)?),
             max_seqlen_q: q_len,
             max_seqlen_k: seq_len + q_len,
             max_context_len: seq_len + q_len,
-            seqlens: Some(Vec::new()),
+            seqlens: None,
             flashinfer_metadata,
             is_mtp_verify: true,
         })
+    }
+
+    fn append_dflash_prompt_context(
+        pipeline: &DefaultPipeline,
+        metadata: &InputMetadata,
+        layer_hiddens: &[Tensor],
+    ) -> Result<()> {
+        let drafter = pipeline
+            .dflash_drafter
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::msg("missing DFlash2 drafter"))?;
+        let projected = drafter.project_layer_hiddens(layer_hiddens)?;
+        let sequence_ids = metadata.sequence_ids.as_ref().ok_or_else(|| {
+            candle_core::Error::msg("DFlash2 prompt metadata has no sequence ids")
+        })?;
+        let seqlens = metadata.seqlens.as_ref().ok_or_else(|| {
+            candle_core::Error::msg("DFlash2 prompt metadata has no sequence lengths")
+        })?;
+        if sequence_ids.len() != seqlens.len() {
+            candle_core::bail!(
+                "DFlash2 prompt metadata has {} sequence ids but {} sequence lengths",
+                sequence_ids.len(),
+                seqlens.len()
+            );
+        }
+        let total_rows = projected.dim(0)?;
+        let mut offset = 0usize;
+        for (&seq_id, &seq_len) in sequence_ids.iter().zip(seqlens) {
+            let seq_len = seq_len as usize;
+            if seq_len > total_rows.saturating_sub(offset) {
+                candle_core::bail!(
+                    "DFlash2 prompt hidden rows are shorter than metadata: offset {}, length {}, rows {}",
+                    offset,
+                    seq_len,
+                    total_rows
+                );
+            }
+            drafter.append_context(seq_id, &projected.narrow(0, offset, seq_len)?)?;
+            offset += seq_len;
+        }
+        if offset != total_rows {
+            candle_core::bail!(
+                "DFlash2 prompt hidden rows ({}) do not match metadata rows ({})",
+                total_rows,
+                offset
+            );
+        }
+        Ok(())
     }
 
     fn execute_scheduled_batch(
@@ -1841,7 +1965,8 @@ impl LLMEngine {
             images,
             is_embedding,
             model_name,
-            mtp_context,
+            spec_context,
+            use_dflash,
         ) = {
             let mut guard = engine.write();
             let is_embedding = scheduled[0].is_embedding;
@@ -1854,7 +1979,13 @@ impl LLMEngine {
             let (pipeline, _) = guard.get_pipeline(rank).unwrap();
             let device = pipeline.device();
             let model_name = pipeline.name().to_string();
-            let use_mtp = pipeline.has_mtp()
+            let use_dflash = pipeline.has_dflash()
+                && !is_prompt_request
+                && !is_embedding
+                && scheduled.len() == 1
+                && scheduled[0].sampling_params.mcp_mode.is_none();
+            let use_mtp = !use_dflash
+                && pipeline.has_mtp()
                 && !is_prompt_request
                 && !is_embedding
                 && scheduled.len() == 1
@@ -1867,19 +1998,28 @@ impl LLMEngine {
             }?;
             #[cfg(feature = "flashinfer")]
             if !prepared.metadata.is_prefill {
-                let use_cuda_graph = prepared
-                    .metadata
-                    .flashinfer_metadata
-                    .as_ref()
-                    .map(|fm| fm.use_cuda_graph)
-                    .unwrap_or(false);
-                if !use_cuda_graph {
-                    guard.ensure_flashinfer_decode_plan(
+                if use_dflash {
+                    guard.ensure_dflash_anchor_decode_plan(
                         rank,
                         device,
                         prepared.tokens.dim(0)?,
                         &mut prepared.metadata,
                     )?;
+                } else {
+                    let use_cuda_graph = prepared
+                        .metadata
+                        .flashinfer_metadata
+                        .as_ref()
+                        .map(|fm| fm.use_cuda_graph)
+                        .unwrap_or(false);
+                    if !use_cuda_graph {
+                        guard.ensure_flashinfer_decode_plan(
+                            rank,
+                            device,
+                            prepared.tokens.dim(0)?,
+                            &mut prepared.metadata,
+                        )?;
+                    }
                 }
             }
             let PreparedInputs {
@@ -1888,7 +2028,7 @@ impl LLMEngine {
                 metadata,
             } = prepared;
 
-            let mtp_context = if use_mtp {
+            let spec_context = if use_mtp || use_dflash {
                 let seq = Self::primary_sequence(&scheduled[0]);
                 let seq_id = seq.deref().get_id();
                 let seq_len = seq.deref().get_len();
@@ -1901,7 +2041,16 @@ impl LLMEngine {
                     .iter()
                     .map(|block| block.deref_mut().block_id as u32)
                     .collect::<Vec<_>>();
-                let verify_len = pipeline.mtp_num_speculative + 1;
+                let verify_len = if use_dflash {
+                    pipeline
+                        .dflash_drafter
+                        .as_ref()
+                        .expect("has_dflash requires a loaded drafter")
+                        .num_speculative_tokens
+                        + 1
+                } else {
+                    pipeline.mtp_num_speculative + 1
+                };
                 let slot_mappings = Self::compute_mtp_slot_mappings(
                     &block_table,
                     seq_len,
@@ -1972,7 +2121,8 @@ impl LLMEngine {
                 images,
                 is_embedding,
                 model_name,
-                mtp_context,
+                spec_context,
+                use_dflash,
             )
         };
 
@@ -1980,7 +2130,139 @@ impl LLMEngine {
         let (pipeline, cache_engine) = (pipeline_entry.0.as_mut(), &pipeline_entry.1);
         let mut mtp_results = None;
         let run_result: Result<Tensor> = (|| {
-            if let Some((seq_id, seq_len, verify_positions, verify_metadata)) = mtp_context {
+            if use_dflash {
+                let (seq_id, seq_len, verify_positions, verify_metadata) = spec_context
+                    .ok_or_else(|| candle_core::Error::msg("missing DFlash2 verify context"))?;
+                let drafter = pipeline
+                    .dflash_drafter
+                    .as_ref()
+                    .ok_or_else(|| candle_core::Error::msg("missing DFlash2 drafter"))?
+                    .clone();
+                let logits = pipeline.forward_collecting_layers(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                    drafter.target_layer_ids(),
+                )?;
+                let (anchor_logits, anchor_hidden_states) = logits;
+                let anchor_result = pipeline.sample(&anchor_logits, scheduled)?;
+                match anchor_result.first() {
+                    Some(Either::Left(anchor_logprobs)) => {
+                        let anchor_token = anchor_logprobs.token;
+                        let projected_step_hidden =
+                            drafter.project_layer_hiddens(&anchor_hidden_states)?;
+                        let cached_context = drafter.build_draft_context(seq_id)?;
+                        if cached_context
+                            .as_ref()
+                            .map_or(true, |context| context.dim(0).unwrap_or(0) < seq_len)
+                        {
+                            drafter.append_context(seq_id, &projected_step_hidden)?;
+                        }
+                        let target_hidden =
+                            drafter.build_draft_context(seq_id)?.ok_or_else(|| {
+                                candle_core::Error::msg("DFlash2 context cache is empty")
+                            })?;
+
+                        let draft_tokens =
+                            pipeline.dflash_draft_tokens(&target_hidden, anchor_token)?;
+                        if draft_tokens.is_empty() {
+                            mtp_results = Some(anchor_result);
+                            return Ok(Tensor::zeros(
+                                (1, 1),
+                                candle_core::DType::F32,
+                                pipeline.device(),
+                            )?);
+                        }
+
+                        let mut verify_tokens = vec![anchor_token];
+                        verify_tokens.extend_from_slice(&draft_tokens);
+                        let verify_input = Tensor::from_vec(
+                            verify_tokens,
+                            (draft_tokens.len() + 1,),
+                            pipeline.device(),
+                        )?;
+                        let _prefill_guard = set_linear_is_prefill(true);
+                        let (all_logits, verify_layer_hiddens) = pipeline.forward_dflash_verify(
+                            verify_input,
+                            &verify_positions,
+                            Some(&cache_engine.get_kv_cache()),
+                            &verify_metadata,
+                            drafter.target_layer_ids(),
+                        )?;
+                        let projected_verify_hidden =
+                            drafter.project_layer_hiddens(&verify_layer_hiddens)?;
+                        let verify_result =
+                            crate::openai::models::qwen3_5_mtp::verify_draft_greedy(
+                                &all_logits,
+                                &draft_tokens,
+                            )?;
+                        crate::openai::models::qwen3_5_mtp::dflash_stats_update(
+                            verify_result.num_proposed,
+                            verify_result.num_accepted,
+                        );
+                        let dflash_steps = crate::openai::models::qwen3_5_mtp::DFLASH_TOTAL_STEPS
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        if dflash_steps > 0
+                            && dflash_steps
+                                % crate::openai::models::qwen3_5_mtp::MTP_STATS_LOG_INTERVAL_STEPS
+                                == 0
+                        {
+                            info!(
+                                "DFlash step={} {}",
+                                dflash_steps,
+                                crate::openai::models::qwen3_5_mtp::dflash_stats_summary()
+                            );
+                        }
+                        let commit_len = 1 + verify_result.num_accepted;
+                        if verify_result.num_accepted < verify_result.num_proposed
+                            && !pipeline.mtp_rollback_mamba(seq_id, commit_len)?
+                        {
+                            candle_core::bail!(
+                                "DFlash2 failed to roll back mamba state for sequence {}",
+                                seq_id
+                            );
+                        }
+                        drafter.append_verified_context(
+                            seq_id,
+                            &projected_verify_hidden,
+                            verify_result.num_accepted,
+                        )?;
+
+                        let mut results = anchor_result;
+                        let mut extra_tokens = verify_result.accepted_tokens.clone();
+                        extra_tokens.push(verify_result.continuation_token);
+                        let seq = Self::primary_sequence(scheduled.front().unwrap());
+                        let generated_before_anchor = seq
+                            .deref()
+                            .get_len()
+                            .saturating_sub(seq.deref().get_prompt_len());
+                        let remaining_after_anchor = scheduled
+                            .front()
+                            .unwrap()
+                            .sampling_params
+                            .max_tokens
+                            .saturating_sub(generated_before_anchor + 1);
+                        extra_tokens.truncate(remaining_after_anchor);
+                        if !extra_tokens.is_empty() {
+                            let mut extra_results =
+                                pipeline.tokens_to_results(&extra_tokens, scheduled)?;
+                            results.append(&mut extra_results);
+                        }
+                        mtp_results = Some(results);
+                        Ok(all_logits)
+                    }
+                    _ => {
+                        mtp_results = Some(anchor_result);
+                        Ok(Tensor::zeros(
+                            (1, 1),
+                            candle_core::DType::F32,
+                            pipeline.device(),
+                        )?)
+                    }
+                }
+            } else if let Some((seq_id, seq_len, verify_positions, verify_metadata)) = spec_context
+            {
                 let logits = pipeline.forward(
                     tokens,
                     &positions,
@@ -2024,7 +2306,6 @@ impl LLMEngine {
                                 (draft_tokens.len() + 1,),
                                 pipeline.device(),
                             )?;
-                            let _prefill_guard = set_linear_is_prefill(true);
                             #[cfg(all(feature = "cuda", feature = "graph"))]
                             let use_mtp_graph =
                                 pipeline.capturer.is_mtp_captured(draft_tokens.len() + 1);
@@ -2033,7 +2314,7 @@ impl LLMEngine {
                             let all_logits = if use_mtp_graph {
                                 #[cfg(all(feature = "cuda", feature = "graph"))]
                                 {
-                                    pipeline.capturer.replay_mtp(
+                                    pipeline.replay_mtp_graph(
                                         &verify_input,
                                         &verify_positions,
                                         &verify_metadata,
@@ -2120,6 +2401,26 @@ impl LLMEngine {
                         )?)
                     }
                 }
+            } else if pipeline.has_dflash() && metadata.is_prefill && !is_embedding {
+                if images.is_some() {
+                    candle_core::bail!(
+                        "DFlash2 prompt context collection does not support multimodal image batches"
+                    );
+                }
+                let drafter = pipeline
+                    .dflash_drafter
+                    .as_ref()
+                    .ok_or_else(|| candle_core::Error::msg("missing DFlash2 drafter"))?
+                    .clone();
+                let (logits, layer_hiddens) = pipeline.forward_collecting_layers(
+                    tokens,
+                    &positions,
+                    Some(&cache_engine.get_kv_cache()),
+                    &metadata,
+                    drafter.target_layer_ids(),
+                )?;
+                Self::append_dflash_prompt_context(pipeline, &metadata, &layer_hiddens)?;
+                Ok(logits)
             } else if is_embedding {
                 pipeline.forward_embedding(
                     tokens,

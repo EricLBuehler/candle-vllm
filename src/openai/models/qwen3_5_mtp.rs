@@ -22,6 +22,9 @@ use std::sync::Arc;
 pub static MTP_TOTAL_PROPOSED: AtomicUsize = AtomicUsize::new(0);
 pub static MTP_TOTAL_ACCEPTED: AtomicUsize = AtomicUsize::new(0);
 pub static MTP_TOTAL_STEPS: AtomicUsize = AtomicUsize::new(0);
+pub static DFLASH_TOTAL_PROPOSED: AtomicUsize = AtomicUsize::new(0);
+pub static DFLASH_TOTAL_ACCEPTED: AtomicUsize = AtomicUsize::new(0);
+pub static DFLASH_TOTAL_STEPS: AtomicUsize = AtomicUsize::new(0);
 pub const MTP_STATS_LOG_INTERVAL_STEPS: usize = 256;
 
 #[derive(Debug, Clone)]
@@ -37,6 +40,9 @@ pub fn verify_draft_greedy(
     draft_tokens: &[u32],
 ) -> Result<MtpVerifyResult> {
     let num_positions = verify_logits.dim(0)?;
+    if num_positions == 0 {
+        candle_core::bail!("speculative verification returned no target logits");
+    }
     let num_proposed = draft_tokens.len();
     let verify_logits = verify_logits.to_dtype(DType::F32)?;
     let target_tokens = verify_logits.argmax(D::Minus1)?.to_vec1::<u32>()?;
@@ -78,6 +84,33 @@ pub fn mtp_stats_summary() -> String {
     let steps = MTP_TOTAL_STEPS.load(Ordering::Relaxed);
     format!(
         "MTP Stats: proposed={}, accepted={}, acceptance_rate={:.2}%, avg_tokens/step={:.2}",
+        proposed,
+        accepted,
+        if proposed > 0 {
+            accepted as f64 / proposed as f64 * 100.0
+        } else {
+            0.0
+        },
+        if steps > 0 {
+            (accepted + 2 * steps) as f64 / steps as f64
+        } else {
+            1.0
+        }
+    )
+}
+
+pub fn dflash_stats_update(proposed: usize, accepted: usize) {
+    DFLASH_TOTAL_PROPOSED.fetch_add(proposed, Ordering::Relaxed);
+    DFLASH_TOTAL_ACCEPTED.fetch_add(accepted, Ordering::Relaxed);
+    DFLASH_TOTAL_STEPS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn dflash_stats_summary() -> String {
+    let proposed = DFLASH_TOTAL_PROPOSED.load(Ordering::Relaxed);
+    let accepted = DFLASH_TOTAL_ACCEPTED.load(Ordering::Relaxed);
+    let steps = DFLASH_TOTAL_STEPS.load(Ordering::Relaxed);
+    format!(
+        "DFlash Stats: proposed={}, accepted={}, acceptance_rate={:.2}%, avg_tokens/step={:.2}",
         proposed,
         accepted,
         if proposed > 0 {

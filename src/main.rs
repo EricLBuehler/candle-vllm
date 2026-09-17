@@ -84,6 +84,15 @@ struct Args {
     #[arg(long)]
     mtp: Option<usize>,
 
+    /// External DFlash2 draft model (local Hugging Face directory or model id).
+    #[arg(long)]
+    draft_model: Option<String>,
+
+    /// Number of DFlash2/MTP speculative tokens per step. DFlash2 takes priority when
+    /// --draft-model is provided; otherwise this is an alias for --mtp.
+    #[arg(long)]
+    num_speculative_tokens: Option<usize>,
+
     #[arg(long, default_value_t = false)]
     cpu: bool,
 
@@ -243,6 +252,7 @@ async fn main() -> Result<()> {
             .init();
     }
 
+    let mtp_num_speculative = args.mtp.or(args.num_speculative_tokens);
     let loader = Box::new(
         DefaultLoader::new(
             args.model_id,
@@ -251,10 +261,28 @@ async fn main() -> Result<()> {
             args.enforce_parser.clone(),
             args.yarn_scaling_factor,
         )
-        .with_mtp(args.mtp),
+        .with_mtp(mtp_num_speculative),
     );
 
-    let (paths, gguf) = loader.prepare_model_weights(args.hf_token, args.hf_token_path)?;
+    let (paths, gguf) =
+        loader.prepare_model_weights(args.hf_token.clone(), args.hf_token_path.clone())?;
+    let draft_paths = if let Some(draft_model) = args.draft_model.as_deref() {
+        let (draft_paths, draft_gguf) = DefaultLoader::prepare_draft_model_weights(
+            draft_model,
+            args.hf_token.clone(),
+            args.hf_token_path.clone(),
+        )?;
+        if draft_gguf {
+            candle_core::bail!("DFlash2 draft models must use safetensors weights");
+        }
+        Some(draft_paths)
+    } else {
+        None
+    };
+    let prefix_cache_enabled = !args.disable_prefix_cache && args.draft_model.is_none();
+    if args.draft_model.is_some() && !args.disable_prefix_cache {
+        warn!("DFlash2 disables prefix KV caching so its projected context stays consistent");
+    }
 
     let dtype = candle_vllm::get_dtype(args.dtype);
     let kvcache_dtype_enum = if let Some(ref s) = args.kvcache_dtype {
@@ -392,6 +420,7 @@ async fn main() -> Result<()> {
             loader
                 .load_model(
                     paths,
+                    draft_paths.clone(),
                     dtype,
                     kv_cache_dtype,
                     gguf,
@@ -418,6 +447,7 @@ async fn main() -> Result<()> {
             loader
                 .load_model(
                     paths,
+                    draft_paths.clone(),
                     dtype,
                     kv_cache_dtype,
                     gguf,
@@ -455,6 +485,7 @@ async fn main() -> Result<()> {
             loader
                 .load_model(
                     paths,
+                    draft_paths.clone(),
                     dtype,
                     kv_cache_dtype,
                     gguf,
@@ -528,7 +559,7 @@ async fn main() -> Result<()> {
                         detected * 1024 * 1024,
                         estimate,
                         args.max_num_seqs,
-                        !args.disable_prefix_cache,
+                        prefix_cache_enabled,
                         args.mamba_fraction,
                     ) {
                         let reserved_mamba_mb = plan.budget_bytes.div_ceil(1024 * 1024);
@@ -654,7 +685,7 @@ async fn main() -> Result<()> {
     } else {
         0
     };
-    let prefix_cache_max_blocks = if !args.disable_prefix_cache {
+    let prefix_cache_max_blocks = if prefix_cache_enabled {
         let max_blocks = args
             .prefix_cache_max_tokens
             .map(|tokens| tokens / cache_config.block_size)
@@ -664,7 +695,7 @@ async fn main() -> Result<()> {
         0
     };
     let prefix_cache_config = PrefixCacheConfig {
-        enabled: !args.disable_prefix_cache,
+        enabled: prefix_cache_enabled,
         max_cached_blocks: prefix_cache_max_blocks,
     };
 

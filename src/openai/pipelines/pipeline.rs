@@ -22,6 +22,7 @@ use crate::{
         },
         models::{
             deepseek::DeepSeek,
+            dflash::{DFlashDrafter, DFlashModelConfig},
             gemma::Gemma,
             gemma3::Gemma3,
             gemma3_vl::Gemma3ForConditionalGeneration,
@@ -164,6 +165,7 @@ pub struct DefaultPipeline {
     pub image_config: Option<ImageProcessConfig>,
     pub mtp_head: Option<Arc<Qwen3_5MtpHead>>,
     pub mtp_num_speculative: usize,
+    pub dflash_drafter: Option<Arc<DFlashDrafter>>,
     #[cfg(all(feature = "cuda", feature = "graph"))]
     pub capturer: GraphCapturer<CudaGraphWrapper<CudaGraphFn>>,
 }
@@ -229,6 +231,24 @@ impl DefaultLoader {
     pub fn with_mtp(mut self, mtp_num_speculative: Option<usize>) -> Self {
         self.mtp_num_speculative = mtp_num_speculative;
         self
+    }
+
+    pub fn prepare_draft_model_weights(
+        draft_model: &str,
+        hf_token: Option<String>,
+        hf_token_path: Option<String>,
+    ) -> Result<(DefaultModelPaths, bool)> {
+        let draft_path = Path::new(draft_model);
+        let loader = if draft_path.exists() {
+            if draft_path.is_dir() {
+                Self::new(None, Some(draft_model.to_string()), None, None, None)
+            } else {
+                Self::new(None, None, Some(draft_model.to_string()), None, None)
+            }
+        } else {
+            Self::new(Some(draft_model.to_string()), None, None, None, None)
+        };
+        loader.prepare_model_weights(hf_token, hf_token_path)
     }
 
     fn public_model_name(&self) -> Option<String> {
@@ -716,6 +736,7 @@ impl DefaultLoader {
     pub async fn load_model(
         &self,
         paths: DefaultModelPaths,
+        draft_paths: Option<DefaultModelPaths>,
         dtype: DType,
         kv_cache_dtype: DType,
         gguf: bool,
@@ -729,6 +750,27 @@ impl DefaultLoader {
         #[cfg(feature = "nccl")] global_rank: Option<usize>, //must pass current global rank in multi-node mode
         #[cfg(feature = "nccl")] global_world_size: Option<usize>, //must pass total number of devices used in multi-node mode
     ) -> Result<(Vec<Box<DefaultPipeline>>, PipelineConfig)> {
+        if draft_paths.is_some() && gguf {
+            candle_core::bail!(
+                "DFlash2 requires a safetensors target model; GGUF targets are not supported"
+            );
+        }
+        let draft_config = if let Some(draft_paths) = draft_paths.as_ref() {
+            let config_data = std::fs::read(draft_paths.get_config_filename()).map_err(|e| {
+                candle_core::Error::msg(format!("Failed to read DFlash2 config: {e}"))
+            })?;
+            let config: DFlashModelConfig = serde_json::from_slice(&config_data).map_err(|e| {
+                candle_core::Error::msg(format!("Failed to parse DFlash2 config: {e}"))
+            })?;
+            if !config.is_dflash2() {
+                candle_core::bail!(
+                    "The external draft model is not a DFlash2 checkpoint (missing DFlash2 config metadata)"
+                );
+            }
+            Some(config)
+        } else {
+            None
+        };
         let reporter = Arc::new(RwLock::new(ProgressReporter::new(local_rank.unwrap_or(0))));
         let num_subprogress = local_world_size.map_or(0, |n| n - 1);
         #[cfg(feature = "nccl")]
@@ -739,7 +781,7 @@ impl DefaultLoader {
         let pipeline_num_shards = local_world_size.unwrap_or(device_ids.len());
         let _guard = candle_core::InferenceMode::enter();
         attention_rs::reset_paged_attention_layer_counter();
-        let (models, devices, config, sep_style, mtp_heads) = if gguf {
+        let (models, devices, config, sep_style, mtp_heads, dflash_drafters) = if gguf {
             let device = crate::new_device(device_ids[0]).unwrap();
             let path = paths.get_weight_filenames()[0].clone();
             info!("Loading quantized model from file {}", path.display());
@@ -1160,10 +1202,27 @@ impl DefaultLoader {
                 config.to_owned(),
                 sep_style,
                 vec![mtp_head],
+                vec![None],
             )
         } else {
             let cfile = paths.get_config_filename();
             let arch = Config::get_model_arch(&cfile)?;
+            if draft_config.is_some()
+                && !matches!(
+                    arch.as_str(),
+                    "Qwen3_5ForCausalLM"
+                        | "Qwen3_5ForConditionalGeneration"
+                        | "Qwen3_5MoeForCausalLM"
+                        | "Qwen3_5MoeForConditionalGeneration"
+                        | "Qwen3NextForCausalLM"
+                        | "Qwen3NextForConditionalGeneration"
+                )
+            {
+                candle_core::bail!(
+                    "DFlash2 currently supports only Qwen3.5-family target models, got {}",
+                    arch
+                );
+            }
 
             let mut config = match arch.as_str() {
                 "LlamaForCausalLM" => Llama::load_config(&cfile, isq.clone())?,
@@ -1211,6 +1270,18 @@ impl DefaultLoader {
                 "MiniMaxM2ForCausalLM" => MiniMaxForCausalLM::load_config(&cfile, isq.clone())?,
                 _ => panic!("Model not supported!"),
             };
+            if let Some(draft_config) = draft_config.as_ref() {
+                if draft_config
+                    .target_layer_ids()
+                    .iter()
+                    .any(|&layer_id| layer_id >= config.num_hidden_layers)
+                {
+                    candle_core::bail!(
+                        "DFlash2 target_layer_ids exceed the target model's {} layers",
+                        config.num_hidden_layers
+                    );
+                }
+            }
             if !matches!(
                 arch.as_str(),
                 "DeepseekV2ForCausalLM"
@@ -1267,6 +1338,20 @@ impl DefaultLoader {
             }
 
             config.is_f16_mode = dtype == DType::F16;
+            let speculative_tokens = draft_config
+                .as_ref()
+                .map(|draft| {
+                    self.mtp_num_speculative
+                        .unwrap_or_else(|| draft.block_size().saturating_sub(1))
+                })
+                .unwrap_or_else(|| self.mtp_num_speculative.unwrap_or(0));
+            config.mtp_enabled = speculative_tokens > 0;
+            // The current scheduler runs speculative verification for one
+            // sequence at a time. Size this from the requested graph batch
+            // while retaining the historical 16-row floor used by GDN.
+            config.mtp_max_verify_tokens = max_num_seqs
+                .max(1)
+                .saturating_mul(speculative_tokens.saturating_add(1));
 
             info!("Model {:?}", config);
 
@@ -1336,6 +1421,8 @@ impl DefaultLoader {
                     #[cfg(not(feature = "nccl"))]
                     let comm = Rc::new(Comm::default());
 
+                    let dflash_comm = comm.clone();
+
                     let vb = unsafe {
                         candle_nn::var_builder::ShardedSafeTensors::var_builder(
                             &paths, dtype, &device,
@@ -1343,7 +1430,11 @@ impl DefaultLoader {
                         .unwrap()
                     };
 
-                    let mtp_num_speculative = self.mtp_num_speculative.unwrap_or(0);
+                    let mtp_num_speculative = if draft_config.is_some() {
+                        0
+                    } else {
+                        self.mtp_num_speculative.unwrap_or(0)
+                    };
                     let mtp_head = if mtp_num_speculative > 0 {
                         let is_mtp_model = matches!(
                             arch.as_str(),
@@ -1383,6 +1474,31 @@ impl DefaultLoader {
                     } else {
                         None
                     };
+
+                    let dflash_drafter = if let (Some(draft_config), Some(draft_paths)) =
+                        (draft_config.as_ref(), draft_paths.as_ref())
+                    {
+                        let draft_weight_files = draft_paths.get_weight_filenames();
+                        Some(Arc::new(DFlashDrafter::new(
+                            draft_config,
+                            &draft_weight_files,
+                            dflash_comm,
+                            dtype,
+                            &device,
+                            self.mtp_num_speculative,
+                        )?))
+                    } else {
+                        None
+                    };
+
+                    // The hybrid GDN layers need speculative snapshot storage
+                    // before model construction. DFlash2 shares this storage
+                    // with built-in MTP, even though it has no MTP head.
+                    // DFlash verification uses the same hybrid GDN snapshot and
+                    // rollback machinery as MTP.  It does not load an MTP head,
+                    // so the presence of an MTP head alone is insufficient to
+                    // enable the per-layer speculative state buffers.
+                    let speculative_mamba_enabled = mtp_head.is_some() || draft_config.is_some();
 
                     let (model, sep) = match arch.as_str() {
                         "LlamaForCausalLM" => (
@@ -1441,9 +1557,9 @@ impl DefaultLoader {
                                     &config,
                                     dtype,
                                     &device,
-                                    comm,
-                                    Arc::clone(&reporter),
-                                    mtp_head.is_some(),
+                                comm,
+                                Arc::clone(&reporter),
+                                    speculative_mamba_enabled,
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
@@ -1463,7 +1579,7 @@ impl DefaultLoader {
                                     &device,
                                     comm,
                                     Arc::clone(&reporter),
-                                    mtp_head.is_some(),
+                                    speculative_mamba_enabled,
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
@@ -1497,7 +1613,7 @@ impl DefaultLoader {
                                     &device,
                                     comm,
                                     Arc::clone(&reporter),
-                                    mtp_head.is_some(),
+                                    speculative_mamba_enabled,
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
@@ -1520,7 +1636,7 @@ impl DefaultLoader {
                                     &device,
                                     comm,
                                     Arc::clone(&reporter),
-                                    mtp_head.is_some(),
+                                    speculative_mamba_enabled,
                                 )
                                 .map_err(|e| {
                                     candle_core::Error::msg(format!(
@@ -1708,7 +1824,7 @@ impl DefaultLoader {
                     #[cfg(feature = "cuda")]
                     device.synchronize()?;
 
-                    Ok((model, device, sep, mtp_head))
+                    Ok((model, device, sep, mtp_head, dflash_drafter))
                 })
                 .collect();
             let has_err = results.iter().any(|r| r.is_err());
@@ -1721,14 +1837,16 @@ impl DefaultLoader {
             let mut models = Vec::new();
             let mut sep_style = Vec::new();
             let mut mtp_heads = Vec::new();
+            let mut dflash_drafters = Vec::new();
 
             for result in results {
                 match result {
-                    Ok((model, device, sep, mtp_head)) => {
+                    Ok((model, device, sep, mtp_head, dflash_drafter)) => {
                         devices.push(device);
                         models.push(model);
                         sep_style.push(sep);
                         mtp_heads.push(mtp_head);
+                        dflash_drafters.push(dflash_drafter);
                     }
                     Err(e) => {
                         return Err(e);
@@ -1736,7 +1854,14 @@ impl DefaultLoader {
                 }
             }
 
-            (models, devices, config, sep_style[0].clone(), mtp_heads)
+            (
+                models,
+                devices,
+                config,
+                sep_style[0].clone(),
+                mtp_heads,
+                dflash_drafters,
+            )
         };
 
         warn!("Done loading.");
@@ -1770,6 +1895,7 @@ impl DefaultLoader {
             .enumerate()
             .map(|(rank, model)| {
                 let mtp_head = mtp_heads.get(rank).cloned().unwrap_or(None);
+                let dflash_drafter = dflash_drafters.get(rank).cloned().unwrap_or(None);
                 let logits_processor = {
                     LogitsProcessor::new(
                         SAMPLING_SEED,
@@ -1962,6 +2088,7 @@ impl DefaultLoader {
                         pipeline_num_shards,
                         mtp_head,
                         self.mtp_num_speculative.unwrap_or(0),
+                        dflash_drafter,
                         #[cfg(all(feature = "cuda", feature = "graph"))]
                         block_size,
                         #[cfg(all(feature = "cuda", feature = "graph"))]
@@ -2023,6 +2150,7 @@ impl DefaultPipeline {
         _num_shards: usize,
         mtp_head: Option<Arc<Qwen3_5MtpHead>>,
         mtp_num_speculative: usize,
+        dflash_drafter: Option<Arc<DFlashDrafter>>,
         #[cfg(all(feature = "cuda", feature = "graph"))] block_size: usize,
         #[cfg(all(feature = "cuda", feature = "graph"))] max_num_seqs: usize,
     ) -> Result<Self> {
@@ -2169,6 +2297,7 @@ impl DefaultPipeline {
             image_config,
             mtp_head,
             mtp_num_speculative,
+            dflash_drafter,
             #[cfg(all(feature = "cuda", feature = "graph"))]
             capturer: GraphCapturer::new(
                 wrapper,
@@ -2191,6 +2320,9 @@ impl DefaultPipeline {
         input_metadata: &InputMetadata,
         images: Option<&crate::openai::multimodal::ImageData>,
     ) -> Result<Tensor> {
+        // MTP/DFlash verification uses the prefill-shaped path for both the
+        // hybrid GDN transition and quantized projection kernels.  This is
+        // also the mode used while capturing the corresponding CUDA graph.
         let _fp8_linear_prefill_guard = set_linear_is_prefill(input_metadata.is_prefill);
         #[cfg(all(feature = "cuda", feature = "graph"))]
         if !input_metadata.is_prefill {
@@ -2347,6 +2479,185 @@ impl DefaultPipeline {
 
     pub fn has_mtp(&self) -> bool {
         self.mtp_head.is_some() && self.mtp_num_speculative > 0
+    }
+
+    pub fn has_dflash(&self) -> bool {
+        self.dflash_drafter.is_some()
+    }
+
+    #[cfg(all(feature = "cuda", feature = "graph"))]
+    pub fn is_mtp_graph_captured(&self, verify_len: usize) -> bool {
+        self.capturer.is_mtp_captured(verify_len)
+    }
+
+    pub fn preallocate_dflash_verify_buffers(
+        &self,
+        target_layer_ids: &[usize],
+        max_verify_len: usize,
+    ) -> Result<()> {
+        match &self.model {
+            LLMModel::Qwen3_5(model) => {
+                model.preallocate_dflash_verify_buffers(target_layer_ids, max_verify_len)
+            }
+            LLMModel::Qwen3_5MoE(model) => {
+                model.preallocate_dflash_verify_buffers(target_layer_ids, max_verify_len)
+            }
+            LLMModel::Qwen3VL(model) => {
+                model.preallocate_dflash_verify_buffers(target_layer_ids, max_verify_len)
+            }
+            _ => candle_core::bail!("DFlash2 requires a Qwen3.5-family target model"),
+        }
+    }
+
+    pub fn take_dflash_verify_hiddens(&self, num_tokens: usize) -> Option<Vec<Tensor>> {
+        match &self.model {
+            LLMModel::Qwen3_5(model) => model.take_dflash_verify_hiddens(num_tokens),
+            LLMModel::Qwen3_5MoE(model) => model.take_dflash_verify_hiddens(num_tokens),
+            LLMModel::Qwen3VL(model) => model.take_dflash_verify_hiddens(num_tokens),
+            _ => None,
+        }
+    }
+
+    pub fn forward_collecting_layers(
+        &self,
+        input_tokens: Tensor,
+        input_positions: &Tensor,
+        kv_cache: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        target_layer_ids: &[usize],
+    ) -> Result<(Tensor, Vec<Tensor>)> {
+        // Keep eager DFlash verification in the same prefill kernel mode as
+        // its GDN transition and CUDA-graph capture path.
+        let _fp8_linear_prefill_guard = set_linear_is_prefill(input_metadata.is_prefill);
+        match &self.model {
+            LLMModel::Qwen3_5(model) => model.forward_collecting_layers(
+                &input_tokens,
+                input_positions,
+                kv_cache,
+                input_metadata,
+                target_layer_ids,
+            ),
+            LLMModel::Qwen3_5MoE(model) => model.forward_collecting_layers(
+                &input_tokens,
+                input_positions,
+                kv_cache,
+                input_metadata,
+                target_layer_ids,
+            ),
+            LLMModel::Qwen3VL(model) => model.forward_collecting_layers(
+                &input_tokens,
+                input_positions,
+                kv_cache,
+                input_metadata,
+                target_layer_ids,
+            ),
+            _ => candle_core::bail!("DFlash2 requires a Qwen3.5-family target model"),
+        }
+    }
+
+    #[cfg(all(feature = "cuda", feature = "graph"))]
+    pub fn replay_mtp_graph(
+        &self,
+        input_tokens: &Tensor,
+        input_positions: &Tensor,
+        input_metadata: &InputMetadata,
+    ) -> Result<Tensor> {
+        // The graph replay mutates the hybrid model's recurrent state.  Keep
+        // the write lock for the whole replay so the graph cannot race with
+        // cache readers or with a state rollback.  This is the same ownership
+        // rule as ordinary decode graph replay in `forward`.
+        let _prefill_guard = set_linear_is_prefill(true);
+        match &self.model {
+            LLMModel::Qwen3_5(model) => {
+                let _mamba_guard = model.lock_mamba_cache_for_graph();
+                self.capturer
+                    .replay_mtp(input_tokens, input_positions, input_metadata)
+            }
+            LLMModel::Qwen3_5MoE(model) => {
+                let _mamba_guard = model.lock_mamba_cache_for_graph();
+                self.capturer
+                    .replay_mtp(input_tokens, input_positions, input_metadata)
+            }
+            LLMModel::QWen3_5GGUF(model) => {
+                let _mamba_guard = model.lock_mamba_cache_for_graph();
+                self.capturer
+                    .replay_mtp(input_tokens, input_positions, input_metadata)
+            }
+            LLMModel::QWen3_5GGUFMoE(model) => {
+                let _mamba_guard = model.lock_mamba_cache_for_graph();
+                self.capturer
+                    .replay_mtp(input_tokens, input_positions, input_metadata)
+            }
+            LLMModel::Qwen3VL(model) => {
+                if let Some(_mamba_guard) = model.lock_mamba_cache_for_graph() {
+                    self.capturer
+                        .replay_mtp(input_tokens, input_positions, input_metadata)
+                } else {
+                    self.capturer
+                        .replay_mtp(input_tokens, input_positions, input_metadata)
+                }
+            }
+            _ => candle_core::bail!("MTP graph requires a Qwen3.5-family target model"),
+        }
+    }
+
+    pub fn forward_dflash_verify(
+        &self,
+        input_tokens: Tensor,
+        input_positions: &Tensor,
+        kv_cache: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        target_layer_ids: &[usize],
+    ) -> Result<(Tensor, Vec<Tensor>)> {
+        #[cfg(all(feature = "cuda", feature = "graph"))]
+        if self.capturer.is_mtp_captured(input_tokens.dim(0)?) {
+            let logits = self.replay_mtp_graph(&input_tokens, input_positions, input_metadata)?;
+            let layer_hiddens = self
+                .take_dflash_verify_hiddens(input_tokens.dim(0)?)
+                .ok_or_else(|| {
+                    candle_core::Error::msg(
+                        "DFlash2 verify graph did not produce intermediate layer hiddens",
+                    )
+                })?;
+            return Ok((logits, layer_hiddens));
+        }
+
+        self.forward_collecting_layers(
+            input_tokens,
+            input_positions,
+            kv_cache,
+            input_metadata,
+            target_layer_ids,
+        )
+    }
+
+    pub fn dflash_draft_tokens(
+        &self,
+        target_hidden: &Tensor,
+        anchor_token: u32,
+    ) -> Result<Vec<u32>> {
+        let drafter = self
+            .dflash_drafter
+            .as_ref()
+            .ok_or_else(|| candle_core::Error::msg("DFlash2 drafter is not loaded"))?
+            .clone();
+        let embed_fn = |draft_tokens: &Tensor| -> Result<Tensor> {
+            match &self.model {
+                LLMModel::Qwen3_5(model) => model.embed_forward(draft_tokens),
+                LLMModel::Qwen3_5MoE(model) => model.embed_forward(draft_tokens),
+                LLMModel::Qwen3VL(model) => model.embed_forward(draft_tokens),
+                _ => candle_core::bail!("DFlash2 supports Qwen3.5-family target models"),
+            }
+        };
+        let lm_head_fn = |hidden: &Tensor| -> Result<Tensor> {
+            match &self.model {
+                LLMModel::Qwen3_5(model) => model.forward_lm_head(hidden),
+                LLMModel::Qwen3_5MoE(model) => model.forward_lm_head(hidden),
+                LLMModel::Qwen3VL(model) => model.forward_lm_head(hidden),
+                _ => candle_core::bail!("DFlash2 supports Qwen3.5-family target models"),
+            }
+        };
+        drafter.draft_tokens(target_hidden, &embed_fn, &lm_head_fn, anchor_token)
     }
 
     pub fn preallocate_mtp_hidden_buffer(&self, max_batch_size: usize) -> Result<()> {
@@ -2995,9 +3306,17 @@ impl DefaultPipeline {
             LLMModel::GLM5(_) => Ok(()),
             _ => {
                 self.capturer.capture(&self.device, kv_caches)?;
-                if self.has_mtp() {
+                if self.has_mtp() || self.has_dflash() {
+                    let speculative_tokens = if self.has_dflash() {
+                        self.dflash_drafter
+                            .as_ref()
+                            .expect("has_dflash requires a loaded drafter")
+                            .num_speculative_tokens
+                    } else {
+                        self.mtp_num_speculative
+                    };
                     self.capturer
-                        .capture_mtp(&self.device, kv_caches, self.mtp_num_speculative)?;
+                        .capture_mtp(&self.device, kv_caches, speculative_tokens)?;
                 }
                 match &self.model {
                     LLMModel::Qwen3_5(model) => model.reset_mamba_cache()?,

@@ -132,6 +132,7 @@ Chat demo on **Apple Silicon** (M4, 16GB unified memory, Q2K, QWen3-8B)
 - Support Chunked Prefilling (default chunk size 8K)
 - Support CUDA Graph
 - Support Qwen3.5 MTP speculative decoding with CUDA Graph via `--mtp`
+- Support external DFlash2 speculative decoding via `--draft-model` and `--num-speculative-tokens`
 - Support Model Context Protocol (MCP) and OpenAI-compatible tool calling
 - Support Prefix Caching
 - Support Block-wise FP8 Models (SM90+, Qwen3 Series)
@@ -186,6 +187,9 @@ SM90_LOWER_PRECISION_GDN_PREFILL=1 candle-vllm --m Qwen/Qwen3.5-35B-A3B-FP8
 
 # Qwen3.5 MTP speculative decoding (2 draft tokens per step)
 candle-vllm --w /data/Qwen3.5-35B-A3B-FP8/ --mtp 2 --ui-server
+
+# External DFlash2 speculative decoding
+candle-vllm --w /data/Qwen3.5-target/ --draft-model /data/Qwen3.5-DFlash2/ --num-speculative-tokens 7 --ui-server
 
 # GLM-5.2 FP8 Model
 candle-vllm --d 0,1,2,3,4,5,6,7 --m zai-org/GLM-5.2-FP8 --ui-server
@@ -333,6 +337,31 @@ export NCCL_P2P_DISABLE=1  # disable P2P if encountering illegal memory access
 
 ---
 
+
+### Speculative decoding: MTP and DFlash2
+
+Candle-vLLM supports two speculative-decoding modes for Qwen3.5/3.6/3.8-family targets:
+
+- **Built-in MTP (Multi-Token Prediction):** the target checkpoint contains `mtp.*` weights. Use `--mtp N` or the equivalent `--num-speculative-tokens N`.
+- **External DFlash2:** use a matching DFlash2 draft checkpoint with `--draft-model`. If `--draft-model` is set, DFlash2 takes priority over MTP; `--num-speculative-tokens` optionally overrides the draft width (otherwise `block_size - 1` from the draft config is used).
+
+MTP example:
+
+```bash
+# Three MTP draft tokens per decode step
+candle-vllm --m /data/Qwen3.5-35B-A3B-FP8/ \
+  --num-speculative-tokens 3 --ui-server
+```
+
+DFlash2 example:
+
+```bash
+# Qwen3.8 target and its matching DFlash2 draft checkpoint
+candle-vllm --m /data/Qwen3.8-27B-FP8/ \
+  --draft-model /data/Qwen3.8-27B-DFlash2-FP8/ \
+  --num-speculative-tokens 7 --ui-server
+```
+
 ### 🌐 Multi-Node Inference
 
 Distribute inference across multiple machines using TCP-based NCCL bootstrap. No MPI required.
@@ -429,6 +458,7 @@ candle-vllm --h unix:///tmp/candle-vllm.sock --m Qwen/Qwen3.6-27B-FP8
 | [MCP & Tool Calling](docs/mcp_tool_calling.md) | Model Context Protocol integration |
 | [Tool Call Parsing](docs/tool_parsing.md) | Tool call detection and parsing |
 | [Prefix Cache](docs/prefix_cache.md) | Automatic KV cache reuse |
+| [Speculative Decoding](docs/speculative_decoding.md) | MTP and external DFlash2 |
 | [Multimodal Models](docs/multimodal.md) | Vision-language models |
 
 **Using Agents under Candle-vLLM backend:** [xbot](docs/xbot.md) · [OpenCode](docs/opencode.md) · [Kilo Code](docs/kilocode.md)

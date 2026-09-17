@@ -455,6 +455,65 @@ impl Qwen3VLForConditionalGeneration {
         }
     }
 
+    pub fn embed_forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(model) => model.embed_forward(input_ids),
+            Qwen3TextModel::MoE35(model) => model.embed_forward(input_ids),
+            _ => candle_core::bail!("Qwen3VL DFlash2 requires a Qwen3.5 text backbone"),
+        }
+    }
+
+    pub fn forward_collecting_layers(
+        &self,
+        input_ids: &Tensor,
+        positions: &Tensor,
+        kv_caches: Option<&Vec<(Tensor, Tensor)>>,
+        input_metadata: &InputMetadata,
+        target_layer_ids: &[usize],
+    ) -> Result<(Tensor, Vec<Tensor>)> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(model) => model.forward_collecting_layers(
+                input_ids,
+                positions,
+                kv_caches,
+                input_metadata,
+                target_layer_ids,
+            ),
+            Qwen3TextModel::MoE35(model) => model.forward_collecting_layers(
+                input_ids,
+                positions,
+                kv_caches,
+                input_metadata,
+                target_layer_ids,
+            ),
+            _ => candle_core::bail!("DFlash2 layer collection requires a Qwen3.5 text backbone"),
+        }
+    }
+
+    pub fn preallocate_dflash_verify_buffers(
+        &self,
+        target_layer_ids: &[usize],
+        max_verify_len: usize,
+    ) -> Result<()> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(model) => {
+                model.preallocate_dflash_verify_buffers(target_layer_ids, max_verify_len)
+            }
+            Qwen3TextModel::MoE35(model) => {
+                model.preallocate_dflash_verify_buffers(target_layer_ids, max_verify_len)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub fn take_dflash_verify_hiddens(&self, num_tokens: usize) -> Option<Vec<Tensor>> {
+        match &self.text_model {
+            Qwen3TextModel::Dense35(model) => model.take_dflash_verify_hiddens(num_tokens),
+            Qwen3TextModel::MoE35(model) => model.take_dflash_verify_hiddens(num_tokens),
+            _ => None,
+        }
+    }
+
     pub fn embed_weight(&self) -> Result<Tensor> {
         match &self.text_model {
             Qwen3TextModel::Dense35(m) => Ok(m.embed_weight().clone()),
