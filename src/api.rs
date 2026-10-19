@@ -54,6 +54,8 @@ pub struct EngineBuilder {
     presence_penalty: Option<f32>,
     prefill_chunk_size: Option<usize>,
     yarn_scaling_factor: Option<f64>,
+    /// Qwen3.5/3.6 MTP speculative decoding: number of draft tokens per step.
+    mtp: Option<usize>,
 }
 
 impl EngineBuilder {
@@ -79,6 +81,7 @@ impl EngineBuilder {
             presence_penalty: None,
             prefill_chunk_size: None,
             yarn_scaling_factor: None,
+            mtp: None,
         }
     }
 
@@ -176,6 +179,13 @@ impl EngineBuilder {
         self
     }
 
+    /// Enable Qwen3.5/3.6 MTP speculative decoding with `n` draft tokens per
+    /// step. Ignored (with a warning) if the weights carry no MTP head.
+    pub fn with_mtp(mut self, n: Option<usize>) -> Self {
+        self.mtp = n;
+        self
+    }
+
     pub async fn build_async(self) -> Result<Engine> {
         let (model_id, weight_path, weight_file) = match self.repo {
             ModelRepo::ModelID((model_id, filename)) => (
@@ -190,13 +200,16 @@ impl EngineBuilder {
             }
         };
 
-        let loader = Box::new(DefaultLoader::new(
-            model_id.clone(),
-            weight_path.clone(),
-            weight_file.clone(),
-            None,
-            self.yarn_scaling_factor,
-        ));
+        let loader = Box::new(
+            DefaultLoader::new(
+                model_id.clone(),
+                weight_path.clone(),
+                weight_file.clone(),
+                None,
+                self.yarn_scaling_factor,
+            )
+            .with_mtp(self.mtp),
+        );
 
         // Use cached token if available, or try to load safely without prompt (api mode should not block on stdin)
         // For now, passing None will use default path or fail if not found/env var not set.
